@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from novel_system.services.review_scores import normalize_score
@@ -24,7 +25,7 @@ PATCH_LONG_SOURCE_CHARS = 1000
 
 class WriterPassagePatchEmpty(ValueError):
     """局部改写没有一个能用的选项（``reason``：``no_options`` 没给 / 全是空的；``paragraphs_collapsed`` 给的都把
-    几段挤成了一段）。拒绝式：不再拿写死的句子凑数。"""
+    原文的几段挤成了一段）。拒绝式：不再拿写死的句子凑数。"""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -216,7 +217,10 @@ def _normalize_patch_output(payload: Any, *, source_excerpt: str, issue_dimensio
 
     拒绝式（作者 2026-09-15「没有模型就不兜底」）：没有一个可用的选项 → :class:`WriterPassagePatchEmpty`，调用方回错；
     只有一个就给一个——以前拿退役演示故事里写死的句子（「证据袋」「门缝」）补足三个 / 两个选项，会被作者插进正文。
-    把几段挤成了一段的选项（原文有两段以上，或者一段里挤进了好几句对白而原文没有这样写）不要，不去替作者拼。"""
+
+    挤段（重评 R12 复核补充 2：拒绝或标出，不替作者拼）：原文有两段以上、选项只有一段 → 这个选项不要
+    （:func:`paragraphs_collapsed`）；选项只有一段、原文或选项里两轮对白首尾紧挨（:func:`dialogue_collapsed`）→ 只是
+    嫌疑，选项留着、标 ``collapsed: true``，由写作台提示作者。"""
 
     if not isinstance(payload, dict):
         raise WriterPassagePatchEmpty("no_options")
@@ -248,6 +252,7 @@ def _normalize_patch_output(payload: Any, *, source_excerpt: str, issue_dimensio
                 "changed_dimensions": dimensions or [issue_dimension],
                 "why_it_helps": str(patch.get("why_it_helps") or patch.get("reason") or ""),
                 "patch_type": str(patch.get("patch_type") or "replace_excerpt"),
+                "collapsed": dialogue_collapsed(source_paragraphs, paragraphs),
             }
         )
     if not options:
@@ -269,20 +274,24 @@ def _option_paragraphs(patch: dict[str, Any]) -> list[str]:
     return split_paragraphs(replacement) if isinstance(replacement, str) else []
 
 
-_OPENING_QUOTES = ("“", "「", "『")
-
-
-def _utterances(paragraph: str) -> int:
-    return sum(paragraph.count(mark) for mark in _OPENING_QUOTES)
+# 两轮对白首尾紧挨：一句的后引号后面只隔空白就是下一句的前引号（”“ / 」「 / 』『）
+_PACKED_TURNS_RE = re.compile(r"[”」』]\s*[“「『]")
 
 
 def paragraphs_collapsed(source_paragraphs: list[str], option_paragraphs: list[str]) -> bool:
-    """这个选项是不是把几段挤成了一段（与起草的「整场挤成一段」同一个意思）：选项只有一段，而原文有两段以上；或者
-    这一段里挤进了两句以上的对白、原文却没有哪一段这样写（小说对白一句一段）。"""
+    """这个选项把原文的几段挤成了一段（与起草的「整场挤成一段」同一个意思）：原文有两段以上，选项只有一段。
+    这样的选项不要——插进正文会把作者分好的段并成一段。"""
+
+    return len(option_paragraphs) == 1 and len(source_paragraphs) >= 2
+
+
+def dialogue_collapsed(source_paragraphs: list[str], option_paragraphs: list[str]) -> bool:
+    """只有一段的选项可能把几轮对白挤在了一段（小说对白一句一段）：原文或这一段里有两轮对白首尾紧挨（``”“``）。
+    只是嫌疑——原文自己就这样写时照着写也会命中——所以选项留着、标出来，不丢。
+
+    不按引号个数判（复核 P02b-R2）：说话人插在一句话中间（“走吧，”她说，“别回头。”）也有四个引号、两个前引号，
+    按个数判会把这种最常见的对白写法、以及对它的每一次润色，都当成挤段丢掉——全丢光就是一次白花钱的 502。"""
 
     if len(option_paragraphs) != 1:
         return False
-    if len(source_paragraphs) >= 2:
-        return True
-    source_packs_dialogue = any(_utterances(paragraph) >= 2 for paragraph in source_paragraphs)
-    return _utterances(option_paragraphs[0]) >= 2 and not source_packs_dialogue
+    return any(_PACKED_TURNS_RE.search(paragraph) for paragraph in (*source_paragraphs, *option_paragraphs))

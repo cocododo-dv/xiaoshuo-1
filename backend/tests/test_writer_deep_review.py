@@ -20,7 +20,8 @@ from novel_system.db.models import (
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.writer_deep_review import WriterDeepReviewService
-from novel_system.services.writer_deep_review import _normalize_deep_review_output
+from novel_system.services.writer_deep_review import _normalize_deep_review_output, _normalize_patch_output
+from novel_system.services.writer_deep_review_output import WriterPassagePatchEmpty
 
 
 import pytest as _pytest_wr
@@ -916,9 +917,45 @@ def test_a_patch_with_no_usable_option_is_a_502_without_author_action(client: Te
     assert response.status_code == 502
     error = response.json()["error"]
     assert error["code"] == "WRITER_PASSAGE_PATCH_EMPTY" and "author_action" not in error.get("details", {})
+    assert error["details"]["reason"] == "paragraphs_collapsed"
     assert "给出可用的改写" in error["message"]
     session.expire_all()
     assert session.query(PassagePatchCandidate).count() == 0
+
+
+def test_only_a_multi_paragraph_source_squeezed_into_one_paragraph_is_dropped_packed_dialogue_is_flagged() -> None:
+    """挤段（重评 R12）：原文几段、选项一段 → 不要，全是这样就是 paragraphs_collapsed。两轮对白挤在一段只是嫌疑 →
+    选项留着、标 ``collapsed``（复核 P02b-R2）。说话人插在一句话中间（“走吧，”她说，“别回头。”）是最常见的对白写法、
+    只是一轮：以前按前引号个数判，这样的选项（「对话化」、对一句对白的润色）全被当成挤段丢掉，全丢光就是 502。"""
+
+    def options(source: str, *candidates: list[str]) -> list[dict]:
+        return _normalize_patch_output(
+            {"patches": [{"paragraphs": paragraphs} for paragraphs in candidates]},
+            source_excerpt=source,
+            issue_dimension="author_instruction",
+        )["replacement_options"]
+
+    narration = "她站在门口，想叫他先走，又没开口。"
+    kept = options(narration, ["“走吧，”她说，“别回头。”"], ["她站在门口。“走吧，”她说，“别回头。”"], ["她说：“走吧。”他没动。“别回头。”"])
+    assert [option["paragraphs"] for option in kept] == [["“走吧，”她说，“别回头。”"], ["她站在门口。“走吧，”她说，“别回头。”"], ["她说：“走吧。”他没动。“别回头。”"]]
+    assert [option["collapsed"] for option in kept] == [False, False, False]
+    # 润色一句插了说话人的对白：原文四个引号，也只是一轮
+    assert options("“走吧，”她说，“别回头。”", ["“走，”她压低声音，“别回头。”"])[0]["collapsed"] is False
+    # R12 的例子：原文把两轮对白挤在一行、选项也只有一段 → 留着、标出来；分成两段的不标
+    packed = options("“你听见了吗？”“听见了。”许望说。", ["“听见了？”“嗯。”"], ["“听见了？”她问。", "“嗯。”许望说。"])
+    assert [option["collapsed"] for option in packed] == [True, False]
+    # 「对话化」把两轮挤进一段（中间隔个空格也算）：同样只标出来
+    assert options(narration, ["“你来了？” 「来了。」"])[0]["collapsed"] is True
+
+    # 原文两段、选项一段：不要；全是这样就报 paragraphs_collapsed
+    two = "她站在门口。\n“走吧。”"
+    assert [option["paragraphs"] for option in options(two, ["她站在门口，只说了一句走吧。"], ["她站在门口。", "“走吧。”"])] == [["她站在门口。", "“走吧。”"]]
+    try:
+        options(two, ["她站在门口，只说了一句走吧。"])
+    except WriterPassagePatchEmpty as exc:
+        assert exc.reason == "paragraphs_collapsed"
+    else:  # pragma: no cover
+        raise AssertionError("a two-paragraph source squeezed into one paragraph must be dropped")
 
 
 def test_accepting_a_cross_paragraph_rewrite_records_the_reading(session, monkeypatch) -> None:
