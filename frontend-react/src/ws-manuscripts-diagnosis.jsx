@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { Notice, Spinner } from "./ws-ui.jsx";
 import { wrAiError } from "./ws-writer-ai.js";
 import { FindingLine, writerIntents } from "./ws-finding-ui.jsx";
-import { runChapterDeepReview, useChapterDiagnosis } from "./ws-manuscripts-diagnosis-store.js";
+import { useChapterDiagnosis } from "./ws-manuscripts-diagnosis-store.js";
 import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
@@ -16,12 +16,11 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    「在写作台看这一处」（带 signal_id）。
    第三轮：通读记着每场正文的哈希，改过的场服务端算得出来——改前的通读给「只通读改过的 N 场」（POST scope=changed：
    未改的场沿用上次的发现，标「沿用上次」）和「整章重新通读」；没有场改过时服务端不调模型，这里说一句。
-   通读的响应带 diagnosis_rollup，随广播交给计数 store（WsDiagnosis）。读写都在 ws-manuscripts-diagnosis-store.js，
+   通读的响应带 diagnosis_rollup，随广播交给计数 store（WsDiagnosis）。读写都在 ws-manuscripts-diagnosis-store.js
+   （一次通读只属于发起它的那一章：等模型时换了章，回包、提示、出错都不落到别的章上），
    这里只管画；一条发现的版式与文学质量共用（ws-finding-ui.jsx 的 FindingLine）。
    章里各场都还没有正文时（后端对它回 409 WRITER_DEEP_REVIEW_NO_TEXT，不调模型）两个通读按钮不可点。
    ========================================================== */
-
-const { useState } = React;
 
 const AI_STATUS_TEXT = {
   not_run: "还没通读过：让模型读整章，判断承诺、升级、兑现与收束，发现落到各场。",
@@ -49,28 +48,11 @@ function chapterHasNoText(payload) {
 
 function ManuDiagnosis({ chapter, go }) {
   const chapterId = chapter && chapter.backendId;
-  const { status, payload, error, reload, setPayload } = useChapterDiagnosis(chapter);
-  const [running, setRunning] = useState(null);   // 正在跑的 scope："all" | "changed"
-  const [runError, setRunError] = useState(null);
-  const [runNotice, setRunNotice] = useState(null);
+  /* running：这一章正在跑的通读（"all" | "changed" | null）；runError / runNotice 也只是这一章的 */
+  const { status, payload, error, reload, run, running, runError, runNotice } = useChapterDiagnosis(chapter);
   const scenesById = {};
   ((chapter && chapter.scenes) || []).forEach((scene, index) => { if (scene && scene.backendId) scenesById[scene.backendId] = { ...scene, index }; });
 
-  const run = async (scope = "all") => {
-    if (!chapterId || running) return;
-    setRunning(scope);
-    setRunError(null);
-    setRunNotice(null);
-    try {
-      const next = await runChapterDeepReview(chapterId, scope);
-      setPayload(next);
-      if (next && next.notice && next.notice.code === "CHAPTER_REVIEW_UP_TO_DATE") setRunNotice(next.notice.message || "上次通读之后没有场改过字。");
-    } catch (err) {
-      setRunError(err || new Error("chapter deep review failed"));
-    } finally {
-      setRunning(null);
-    }
-  };
   const goWriter = (scene, signalId) => {
     if (!go || !scene || !scene.sid) return;
     go("writer", writerIntents(scene.sid, { deep: true, signalId: signalId || "" }));

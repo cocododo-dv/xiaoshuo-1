@@ -49,6 +49,8 @@ async function render(node) {
   await act(async () => root.render(node));
   return host;
 }
+/* 成稿中心换章时诊断页签不重挂（同一个 ManuDiagnosis，只换 chapter）：在最近挂上的那个根上重画 */
+const rerender = (node) => act(async () => mounted[mounted.length - 1].root.render(node));
 const click = (node) => act(async () => node.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 const button = (host, text) => [...host.querySelectorAll("button")].find((node) => node.textContent.includes(text));
 
@@ -156,6 +158,104 @@ describe("成稿中心 · 诊断页签", () => {
     const other = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
     await vi.waitFor(() => expect(other.querySelector('[data-testid="chapter-deep-review-run"]').disabled).toBe(false), T);
     expect(other.textContent).not.toContain("写出正文之后才能通读");
+  });
+
+  describe("换章：页签上只有正在看的这一章（一次通读只属于发起它的那一章）", () => {
+    const CH2 = {
+      id: "ch02", backendId: "c2", n: "02", title: "夜渡", state: "writing",
+      scenes: [{ sid: "ch02s1", backendId: "s9", title: "渡口", state: "done" }],
+    };
+    const only = (chapterId, issue, status = "stale") => payload({
+      chapter_id: chapterId,
+      ai: { status, evaluation_id: `eval_${chapterId}_${status}`, overall_score: 0.5, revision_brief: [], created_at: "2026-09-22T10:00:00Z" },
+      chapter_findings: [{ signal_id: `ai:ending_drive:${chapterId}${status}`, source: "ai", dimension: "ending_drive", label: "收束驱动", severity: "revision", issue, recommendation: "", evidence: null, stale: false }],
+      scenes: [{ scene_id: chapterId === "c2" ? "s9" : "s1", scene_seq: 1, title: "", text_layer: "author_draft", summary: { open: 1, by_severity: {} }, ai_status: "not_run", review_status: "not_run", findings_from_chapter: [] }],
+      summary: { open: 1, blocking: 0 },
+    });
+    const pending = () => { let resolve; let reject; const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };
+
+    it("等模型时换到别的章：回包不换到那一章的页签上、也不作废那一章自己的读取，那一章的按钮照常；换回来重读到新的通读", async () => {
+      const server = { c1: only("c1", "第一章旧的诊断"), c2: only("c2", "第二章自己的诊断") };
+      apiGet.mockImplementation(async (url) => (String(url).includes("/c2/") ? server.c2 : server.c1));
+      const post = pending();
+      apiPost.mockReturnValue(post.promise);
+      const host = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第一章旧的诊断"), T);
+      await click(button(host, "重新通读"));
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/deep-review", { scope: "all" });
+      expect(button(host, "通读中")).not.toBeUndefined();
+
+      /* 作者在模型还在读第一章时点了第二章：第二章读自己的诊断，按钮不是「通读中」，能点 */
+      await rerender(<ManuDiagnosis chapter={CH2} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第二章自己的诊断"), T);
+      expect(button(host, "通读中")).toBeUndefined();
+      expect(host.querySelector('[data-testid="chapter-deep-review-run"]').disabled).toBe(false);
+
+      /* 第一章的通读回来了（服务端已记下新的通读） */
+      server.c1 = only("c1", "第一章新的通读结果", "current");
+      await act(async () => { post.resolve(server.c1); await post.promise; });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+      expect(host.textContent).toContain("第二章自己的诊断");
+      expect(host.textContent).not.toContain("第一章新的通读结果");
+      expect(host.textContent).toContain("这是改前的通读");
+
+      /* 换回第一章：照常重读，读到的就是新的通读 */
+      await rerender(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第一章新的通读结果"), T);
+      expect(host.textContent).toContain("对着现在各场的正文");
+    });
+
+    it("等模型时换了章、服务端说那一章没改过（不调模型）：那句话不挂在正在看的章上，回到那一章才看到", async () => {
+      apiGet.mockImplementation(async (url) => (String(url).includes("/c2/") ? only("c2", "第二章自己的诊断") : only("c1", "第一章的通读", "current")));
+      const post = pending();
+      apiPost.mockReturnValue(post.promise);
+      const host = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第一章的通读"), T);
+      await click(button(host, "重新通读"));
+      await rerender(<ManuDiagnosis chapter={CH2} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第二章自己的诊断"), T);
+
+      await act(async () => { post.resolve({ ...only("c1", "第一章的通读", "current"), notice: { code: "CHAPTER_REVIEW_UP_TO_DATE", message: "上次通读之后没有场改过字，不必再通读。" } }); await post.promise; });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+      expect(host.textContent).not.toContain("不必再通读");
+
+      await rerender(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("不必再通读"), T);
+    });
+
+    it("等模型时换了章、那一章的通读出错：错误不挂在正在看的章上，回到那一章才看到", async () => {
+      apiGet.mockImplementation(async (url) => (String(url).includes("/c2/") ? only("c2", "第二章自己的诊断") : only("c1", "第一章旧的诊断")));
+      const post = pending();
+      apiPost.mockReturnValue(post.promise);
+      const host = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第一章旧的诊断"), T);
+      await click(button(host, "重新通读"));
+      await rerender(<ManuDiagnosis chapter={CH2} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第二章自己的诊断"), T);
+
+      await act(async () => { post.reject(Object.assign(new Error("需要模型"), { code: "WRITER_DEEP_REVIEW_LLM_REQUIRED", status: 409, details: { author_action: { target_view: "config" } } })); await post.promise.catch(() => {}); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+      expect(host.textContent).not.toContain("没有可用的模型");
+      expect(button(host, "去系统设置")).toBeUndefined();
+
+      await rerender(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("没有可用的模型"), T);
+    });
+
+    it("换章后新章的诊断还没读回来时，不拿上一章的诊断顶着", async () => {
+      const second = pending();
+      apiGet.mockImplementation((url) => (String(url).includes("/c2/") ? second.promise : Promise.resolve(only("c1", "第一章旧的诊断"))));
+      const host = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+      await vi.waitFor(() => expect(host.textContent).toContain("第一章旧的诊断"), T);
+
+      await rerender(<ManuDiagnosis chapter={CH2} go={vi.fn()} />);
+      expect(host.textContent).not.toContain("第一章旧的诊断");
+      expect(host.textContent).toContain("正在读本章的诊断");
+      expect(host.querySelector('[data-testid="chapter-deep-review-run"]').disabled).toBe(true);
+
+      await act(async () => { second.resolve(only("c2", "第二章自己的诊断")); await second.promise; });
+      await vi.waitFor(() => expect(host.textContent).toContain("第二章自己的诊断"), T);
+    });
   });
 
   it("还没同步到服务器的章：只说一句，不发请求", async () => {
