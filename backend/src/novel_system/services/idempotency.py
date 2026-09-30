@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from novel_system.db.models import IdempotencyKey, OperationLog, SceneRunState
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
-from novel_system.services.human_review_support import structured_target
 from novel_system.services.llm_audit import (
     AUDIT_SCHEMA_VERSION,
     bounded_identifier,
@@ -755,9 +754,7 @@ def _resolve_operator_action_outcome(
 
 
 def _target(target_type: str, target_id: str) -> dict[str, str]:
-    target = structured_target(target_type, target_id)
-    assert target is not None
-    return target
+    return {"target_type": target_type, "target_id": target_id, "target_ref": f"{target_type}:{target_id}"}
 
 
 def _dedupe_targets(targets: list[dict[str, str] | None]) -> list[dict[str, str]]:
