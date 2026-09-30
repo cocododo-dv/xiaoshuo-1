@@ -11,14 +11,16 @@ import {
   stepIsPristine, stepSig, stripFe,
 } from "./ws-snow-canon.js";
 import {
-  SNOW_APPROVE_BODY, activeWork, afterApproveCatalogSync, buildStepFragment, captureDirectionBriefs, captureResync,
-  captureTriage, emitBrief, lastPushed, readSnowSyncState, recordStepHealth, setSnowSyncState, shapeStepHealth,
-  snowBriefs, snowCanon, snowErrorShape, snowHealth, snowHydrateOk, snowNotify, snowReadyFlags, snowResync,
-  snowSceneIds, snowTriage, subscribeSnow,
+  SNOW_APPROVE_BODY, activeWork, afterApproveCatalogSync, buildStepFragment, captureAssistantHistory,
+  captureDirectionBriefs, captureResync, captureTriage, emitBrief, lastPushed, readSnowSyncState, recordStepHealth,
+  setSnowSyncState, shapeStepHealth, snowAssistantHistory, snowBriefs, snowCanon, snowErrorShape, snowHealth,
+  snowHydrateOk, snowNotify, snowReadyFlags, snowResync, snowSceneIds, snowTriage, subscribeSnow,
 } from "./ws-snow-sync-state.js";
 import { adoptServerChapters, snowHydrate } from "./ws-snow-hydrate.js";
 import { flushSnowPush, retryPush, schedulePush } from "./ws-snow-push.js";
-import { chapterPreview, chapterSuggest, chapterTitles, materialize, resolveOrphanedScene } from "./ws-snow-chapter-api.js";
+import {
+  chapterPreview, chapterSuggest, chapterTitles, materialize, resolveOrphanedScene, saveChapterPlan,
+} from "./ws-snow-chapter-api.js";
 
 /* global window */
 /* ==========================================================
@@ -39,6 +41,8 @@ import { chapterPreview, chapterSuggest, chapterTitles, materialize, resolveOrph
      起因：新浏览器 / 清过缓存的会话里，视图挂载 450ms 后就把空白默认稿落盘并排队上行；
      水合失败（或只是比它慢）时，这份空白稿会 force 覆盖十步——后端对 pending_review
      步是原位改写，未确认的草稿没有历史可回。
+   - 07 的章表是分章的只读镜像（重评 R11）：07 上行不带章表，本机那一份总接服务端规范的 chapters；
+     改章表只走分章面板（确认写入 = materialize，只保存章表 = saveChapterPlan）和章节编排的改章名。
    2026-09-29 拆分：这里只剩门面（SnowSync 对象、触发面、登记口）。
      ws-snow-canon.js       前端形状 ↔ 规范草稿（纯函数）
      ws-snow-sync-state.js  每部作品的内存表、收下回包、通知
@@ -138,7 +142,8 @@ const SnowSync = {
     };
     for (const [feKey, beKey] of SNOW_STEPS) {
       const draft = stepDrafts[beKey];
-      const patched = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}`, { draft, force: true });
+      // 只读回包里的这一步：整份工作台在十步都批完之后另读一次（下面的 GET）
+      const patched = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/steps/${beKey}?include_workspace=false`, { draft, force: true });
       const patchStep = patched && patched.step;
       if (patchStep) {
         (snowCanon[id] || (snowCanon[id] = {}))[feKey] = stripFe(patchStep.draft || draft);
@@ -163,6 +168,7 @@ const SnowSync = {
     snowReadyFlags[id] = !!(workspace && workspace.ready_to_materialize);
     captureResync(id, workspace || {});
     captureDirectionBriefs(id, workspace || {});
+    captureAssistantHistory(id, workspace || {});
     const normalizedLocal = s2NormalizeState(local);
     try { localStorage.setItem(snowCacheKey(id), JSON.stringify(normalizedLocal)); } catch (e) {}
     // The import already wrote and approved every step. Seed the autosave
@@ -293,7 +299,10 @@ const SnowSync = {
     const canon = canonFromFE(feKey, cache || {});
     const server = id ? ((snowCanon[id] || {})[feKey] || null) : null;
     const base = server ? mergeCanon(server, canon) : canon;
-    return feFromCanon(feKey, applyCanonPatch(base, patch || {}));
+    // 07 的章表只从服务端来（重评 R11）：补丁里的章表不落进本机那一份——它也上不去，只会显示一张下一次水合就消失的表
+    const advice = { ...(patch || {}) };
+    if (feKey === "outline") delete advice.chapters;
+    return feFromCanon(feKey, applyCanonPatch(base, advice));
   },
   /* 阶段 T：本步的作者意图要点（后端 direction_briefs 镜像）；没有 → null */
   directionBrief(workId, feKey) {
@@ -380,6 +389,17 @@ const SnowSync = {
   },
   /* 阶段 M：工作台里存档的分诊（rowUid -> item），刷新后第 10 步也能看到上次的分诊。 */
   triageItems(workId) { return snowTriage[workId || activeWork()] || null; },
+  /* 教练日志（后端 assistant_history）的镜像：水合时随工作台收下，教练页不必另拉一整份工作台（审计 F02-11）。
+     还没收到过（这次会话还没水合成）是 null；收到过、日志是空的是 []。返回副本。 */
+  assistantHistory(workId) {
+    const list = snowAssistantHistory[workId || activeWork()];
+    return Array.isArray(list) ? list.slice() : null;
+  },
+  /* 教练 / 生成的回包带着整条日志：教练页记回镜像，视图重挂载后第一次打开教练页读到的是这次会话的最新日志 */
+  rememberAssistantHistory(workId, list) {
+    const id = workId || activeWork();
+    if (id && Array.isArray(list)) snowAssistantHistory[id] = list.slice();
+  },
   /* 阶段 R：scene_id ↔ 09 row_uid 对照（来自最近一次水合的工作台） */
   rowUidForSceneId(workId, sceneId) { const m = snowSceneIds[workId || activeWork()]; return (m && m.rowBySceneId[sceneId]) || ""; },
   sceneIdForRow(workId, rowUid) { const m = snowSceneIds[workId || activeWork()]; return (m && m.sceneByRow[rowUid]) || ""; },
@@ -413,11 +433,12 @@ const SnowSync = {
     if (res && res.step) recordStepHealth(id, feKey, res.step, res.workspace);
     return (snowHealth[id] || {})[feKey] || null;
   },
-  /* 分章：预览 / AI 建议 / AI 起章名 / 处置孤儿场 / 物化——实现在 ws-snow-chapter-api.js */
+  /* 分章：预览 / AI 建议 / AI 起章名 / 处置孤儿场 / 只保存章表 / 物化——实现在 ws-snow-chapter-api.js */
   chapterPreview,
   chapterSuggest,
   chapterTitles,
   resolveOrphanedScene,
+  saveChapterPlan,
   materialize,
 };
 

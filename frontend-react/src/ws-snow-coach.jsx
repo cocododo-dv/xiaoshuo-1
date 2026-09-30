@@ -31,19 +31,33 @@ export function useSnowCoach(api, tab) {
   const [coachBusy, setCoachBusy] = useSS(false);
   const [briefBusy, setBriefBusy] = useSS(false);
 
-  /* 进教练页且本地还没有历史 → 从 workspace 懒加载（跨会话回合可见） */
+  /* 进教练页且本地还没有历史 → 读同步层的镜像（跨会话回合可见）。水合时同步层已经随工作台收下了教练日志，
+     不必再另拉一整份工作台（审计 F02-11）；这次会话还没水合成（镜像里没有）才退回自己读一次。
+     只在本地仍为空时采用：「先看 3 个方向」会先切到教练页再收到更新的历史，旧的那一份不能把它盖掉。 */
   useSE(() => {
     if (tab !== "coach" || coachHist.length) return;
+    const workId = activeWorkId();
+    if (!workId) return;
+    let mirror = null;
+    try { mirror = SnowSync.assistantHistory(workId); } catch (e) { mirror = null; }
+    if (Array.isArray(mirror)) {
+      if (mirror.length) setCoachHist(prev => (prev.length ? prev : mirror));
+      return;
+    }
     (async () => {
       try {
-        const workId = activeWorkId();
-        if (!workId) return;
         const ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
-        // 只在本地仍为空时采用：「先看 3 个方向」会先切到教练页再收到更新的历史，懒加载的旧回包不能把它盖掉
         if (ws && Array.isArray(ws.assistant_history) && ws.assistant_history.length) setCoachHist(prev => (prev.length ? prev : ws.assistant_history));
       } catch (e) {}
     })();
   }, [tab]);
+  /* 教练 / 方向 / 生成的回包带回整条日志：记回同步层的镜像，视图重挂载后第一次打开教练页读到的是这次会话的最新日志 */
+  useSE(() => {
+    if (!coachHist.length) return;
+    const workId = activeWorkId();
+    if (!workId) return;
+    try { SnowSync.rememberAssistantHistory(workId, coachHist); } catch (e) { /* 同步层不可用（单测桩）：下次照旧读 */ }
+  }, [coachHist]);
 
   const sendCoach = async (message) => {
     const msg = String(message || "").trim();

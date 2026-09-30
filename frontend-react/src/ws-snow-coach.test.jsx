@@ -298,6 +298,21 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     expect(window.SnowSync.canonDraft).not.toHaveBeenCalled();
   });
 
+  it("F02-11：教练页先读同步层的教练日志镜像，不再另拉一整份工作台；日志记回镜像", async () => {
+    installApi({ history: [] });
+    window.SnowSync.assistantHistory = vi.fn(() => [CHAT_TURN]);
+    window.SnowSync.rememberAssistantHistory = vi.fn();
+    const host = await renderSnow("paragraph");
+    const workspaceGets = () => client.apiGet.mock.calls.filter(([url]) => String(url).includes("/snowflake-workspace")).length;
+    const before = workspaceGets();
+    await openCoach(host);
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-coach-turn"]')).toBeTruthy(), T);
+    expect(host.querySelector('[data-testid="snow-coach-turn"]').textContent).toContain("先把主角的被动写实。");
+    expect(window.SnowSync.assistantHistory).toHaveBeenCalledWith("coach-book");
+    expect(workspaceGets()).toBe(before);
+    await vi.waitFor(() => expect(window.SnowSync.rememberAssistantHistory).toHaveBeenCalledWith("coach-book", [CHAT_TURN]), T);
+  });
+
   it("教练回复里的 markdown 排成段落 / 粗体 / 斜体 / 列表，不再把星号印出来；「按此生成本步」仍把原文交给模型", async () => {
     const reply = "缺口有两处：\n\n1. **目标**：还不能拍。\n   - *做法*：给一个今晚的期限。\n2. **代价**：还没落地。\n\n<i>这句像标签</i>，照样是文字。";
     installApi({ history: [{ ...CHAT_TURN, reply, suggestions: ["先把**代价**写实"] }] });

@@ -4,6 +4,8 @@
 //    （对象缺席键幸存 / 数组按 id 对位继承 / FE 出现的标量作者说了算）；
 // 2) applyServerStep（采纳并结构化的接缝）：generate 回包 → canon 镜像 + 权威健康 + 原型形状反推。
 // 另测 feFromCanon 的 backstory 前缀行拆解与 audience 期待读者情绪的往返。
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { installApiRouter } from "./test-helpers.js";
 
@@ -61,6 +63,7 @@ function saveCache(cache) {
 
 const patchCallFor = (client, beKey) =>
   client.apiPatch.mock.calls.find(c => String(c[0]).includes(`/steps/${beKey}`));
+const readCacheOf = () => JSON.parse(window.localStorage.getItem(CACHE_KEY));
 
 // 窗口级污染免疫：resetModules 后旧模块实例的 ws:snow-saved 监听仍活着（jsdom window
 // 跨用例共享），而 vi.mock 的 client 是同一批 fn——旧实例（没有本用例的 canon 镜像）也会
@@ -84,9 +87,11 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     ];
     const stepDrafts = Object.fromEntries(order.map((key) => [key, { marker: key }]));
     const calls = [];
+    const queries = [];
     client.apiPatch.mockImplementation(async (url, body) => {
-      const key = String(url).split("/steps/")[1];
+      const [key, query] = String(url).split("/steps/")[1].split("?");
       calls.push(`patch:${key}`);
+      queries.push(query);
       return { step: { step_key: key, status: "pending_review", draft: body.draft, health: {}, completeness: {} } };
     });
     client.apiPost.mockImplementation(async (url) => {
@@ -99,6 +104,8 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     const result = await mod.SnowSync.importCanonicalPlan("prj-main", { steps: stepDrafts });
 
     expect(calls).toEqual(order.flatMap((key) => [`patch:${key}`, `approve:${key}`]));
+    // 每一步只读回包里的这一步（整份工作台在十步都批完之后另读一次）
+    expect(queries).toEqual(order.map(() => "include_workspace=false"));
     expect(client.apiPatch).toHaveBeenCalledTimes(10);
     expect(client.apiPost).toHaveBeenCalledTimes(10);
     expect(result.readyToMaterialize).toBe(true);
@@ -591,7 +598,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(client.apiGet).not.toHaveBeenCalled();
   });
 
-  it("outline 往返：paragraphs 是五段展开而非章行镜像；历史章行镜像水合成空槽；散文不造假章", async () => {
+  it("outline 往返：paragraphs 是五段展开而非章行镜像；历史章行镜像水合成空槽；章表只从规范的 chapters 来", async () => {
     const { mod } = await loadSync({});
     const saved = { scaffolds: { outline: {
       expansions: { setup: "雨城的第一天，她在档案室数缺页……", d1: "", d2: "中点：她发现改档案的是养母……", d3: "", resolution: "" },
@@ -603,23 +610,132 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     const canon = mod.canonFromFE("outline", saved);
     expect(canon.paragraphs).toEqual(["雨城的第一天，她在档案室数缺页……", "", "中点：她发现改档案的是养母……", "", ""]);
     expect(canon.paragraphs.some(p => /章名|雨夜来信/.test(p))).toBe(false);   // 不再把章行写进 paragraphs
-    expect(canon.chapters.map(c => c.title)).toEqual(["雨夜来信", "旧屋回声"]);
+    expect(canon).not.toHaveProperty("chapters");   // 重评 R11：07 的章表是只读镜像，前端不上行它
 
-    // 阶段 D 之前的草稿：paragraphs 是按幕的章行镜像 —— 不是展开文，水合成空槽；章表照旧
+    // 阶段 D 之前的草稿：paragraphs 是按幕的章行镜像 —— 不是展开文，水合成空槽；章表照规范的 chapters
     const legacy = mod.feFromCanon("outline", {
       paragraphs: ["01 雨夜来信：信件迫使主角回乡（灾一）\n02 旧屋回声：旧证词出现裂缝", "03 中点：养母", "", ""],
       chapters: [{ row_uid: "ch_a", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一", chapter_goal: "" }],
     });
     expect(legacy.scaffold.expansions).toEqual({ setup: "", d1: "", d2: "", d3: "", resolution: "" });
-    expect(legacy.scaffold.chapters.map(c => c.title)).toEqual(["雨夜来信"]);
+    expect(legacy.scaffold.chapters).toEqual([{ row_uid: "ch_a", id: "01", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一", goal: "" }]);
 
-    // 新草稿：五段散文进五槽；没有章表时散文绝不被解析成假章（与后端 parse_outline_chapters 同一纪律）
+    // 新草稿：五段散文进五槽；没有章表时散文绝不被解析成假章
     const prose = mod.feFromCanon("outline", { paragraphs: ["第一段展开。", "第二段展开。", "第三段展开。", "第四段展开。", "第五段展开。"] });
     expect(prose.scaffold.expansions).toEqual({ setup: "第一段展开。", d1: "第二段展开。", d2: "第三段展开。", d3: "第四段展开。", resolution: "第五段展开。" });
     expect(prose.scaffold.chapters).toEqual([]);
-    // 历史纯文本草稿（无 chapters）：只有真正的章行才成章
+    // 历史纯文本草稿（没有规范的 chapters）：章行解析的回退已删（后端早已不从正文解析章，B07-22）——不成章
     const legacyText = mod.feFromCanon("outline", { paragraphs: ["01 雨夜来信：信件迫使主角回乡（灾一）\n这一行不是章", "", "", ""] });
-    expect(legacyText.scaffold.chapters).toEqual([{ id: "01", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一" }]);
+    expect(legacyText.scaffold.chapters).toEqual([]);
+  });
+
+  /* 重评 R11：07 的章表是分章的只读镜像，写入口只在服务端（分章面板、章节编排改章名）。 */
+  it("R11：07 的上行不带章表——规范字段、fe_scaffold 写穿缓存、服务端镜像里的那一份都不带", async () => {
+    const serverChapters = [
+      { row_uid: "chrow_a", chapter_seq: 1, act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一", chapter_goal: "" },
+    ];
+    const { mod, client } = await loadSync({ snowflakeWorkspace: {
+      ready_to_materialize: false, current_step_key: "long_synopsis",
+      steps: [{ step_key: "long_synopsis", status: "approved", draft: { paragraphs: ["一", "二", "三", "四", "五"], chapters: serverChapters }, health: {}, completeness: {} }],
+    } });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    client.apiPatch.mockClear();
+    // 另一台电脑 / 一直开着的旧标签页：本机缓存里一张旧章表（两行旧章），作者改了一段展开
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _t: Date.now() + 10_000, drafts: {}, checks: {}, states: { outline: "active" }, history: [],
+      scaffolds: { outline: {
+        expansions: { setup: "改过的一段展开", d1: "二", d2: "三", d3: "四", resolution: "五" },
+        chapters: [{ row_uid: "", id: "01", act: 1, title: "旧章表的一章", summary: "", spine: "", goal: "" }, { row_uid: "", id: "02", act: 2, title: "旧章表的二章", summary: "", spine: "", goal: "" }],
+      } },
+    }));
+    await mod.SnowSync.retry("prj-main");
+    const call = patchCallFor(client, "long_synopsis");
+    expect(call).toBeTruthy();
+    expect(call[1].draft.paragraphs[0]).toBe("改过的一段展开");
+    expect(call[1].draft).not.toHaveProperty("chapters");
+    expect(call[1].draft.fe_scaffold).not.toHaveProperty("chapters");
+    expect(call[1].draft.fe_scaffold.expansions.setup).toBe("改过的一段展开");
+  });
+
+  it("R11：水合取服务端规范的章表——旧草稿写穿缓存里那份不同的章表、本机缓存里的旧章表都让位", async () => {
+    const serverChapters = [
+      { row_uid: "chrow_a", chapter_seq: 1, act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一", chapter_goal: "" },
+      { row_uid: "chrow_b", chapter_seq: 2, act: 2, title: "旧屋回声", summary: "旧证词出现裂缝", spine: "", chapter_goal: "" },
+    ];
+    const staleCopy = [{ row_uid: "", id: "01", act: 1, title: "旧章表的一章", summary: "", spine: "", goal: "" }];
+    const ws = {
+      ready_to_materialize: false, current_step_key: "long_synopsis",
+      steps: [{ step_key: "long_synopsis", status: "approved", health: {}, completeness: {}, draft: {
+        paragraphs: ["一", "二", "三", "四", "五"], chapters: serverChapters,
+        fe_scaffold: { expansions: { setup: "一", d1: "二", d2: "三", d3: "四", resolution: "五" }, chapters: staleCopy },
+        fe_state: "done", fe_t: 5000,
+      } }],
+    };
+    // 新浏览器：服务端为准——章表是规范的那一份，不是写穿缓存里的
+    const { mod, client } = await loadSync({ snowflakeWorkspace: ws });
+    await vi.waitFor(() => expect(readCacheOf() && readCacheOf().scaffolds.outline).toBeTruthy(), T);
+    expect(readCacheOf().scaffolds.outline.chapters.map(c => [c.row_uid, c.title])).toEqual([["chrow_a", "雨夜来信"], ["chrow_b", "旧屋回声"]]);
+    expect(readCacheOf().scaffolds.outline.expansions.setup).toBe("一");
+
+    // 本机为准（本机更新）：作者的展开留着，章表照样换成服务端那一份，视图据此重读
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _t: Date.now() + 10_000, drafts: {}, checks: {}, states: { outline: "done" }, history: [],
+      scaffolds: { outline: { expansions: { setup: "本机改过的展开", d1: "二", d2: "三", d3: "四", resolution: "五" }, chapters: staleCopy } },
+    }));
+    const hydrated = vi.fn();
+    window.addEventListener("ws:snow-hydrated", hydrated);
+    try {
+      await mod.SnowSync.refetch("prj-main");
+    } finally {
+      window.removeEventListener("ws:snow-hydrated", hydrated);
+    }
+    expect(readCacheOf().scaffolds.outline.expansions.setup).toBe("本机改过的展开");
+    expect(readCacheOf().scaffolds.outline.chapters.map(c => c.title)).toEqual(["雨夜来信", "旧屋回声"]);
+    expect(hydrated).toHaveBeenCalled();
+    expect(client.apiPatch.mock.calls.filter(([url]) => String(url).includes("/steps/long_synopsis")).every(([, body]) => !("chapters" in body.draft))).toBe(true);
+  });
+
+  it("R11「只保存章表」：PATCH chapter-plan（replace_chapters），之后本机 07 章表与 09 章标签接过服务端这一版、目录重读", async () => {
+    const serverChapters = [{ row_uid: "chrow_a", chapter_seq: 1, act: 1, title: "雨夜来信", summary: "", spine: "灾一", chapter_goal: "" }];
+    const { mod, client } = await loadSync({ snowflakeWorkspace: {
+      ready_to_materialize: false, current_step_key: "long_synopsis",
+      steps: [
+        { step_key: "long_synopsis", status: "approved", draft: { paragraphs: ["一", "二", "三", "四", "五"], chapters: [] }, health: {}, completeness: {} },
+        { step_key: "scene_list", status: "approved", health: {}, completeness: {}, draft: { scenes: [
+          { row_uid: "row_1", scene_id: "s1", summary: "夜巡", primary_form: "proactive", chapter_id: "", chapter_title: "" },
+        ] } },
+      ],
+    } });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    const payload = { chapters: [{ row_uid: "new:1", title: "雨夜来信", summary: "", act: 1, spine: "灾一", chapter_goal: "" }],
+      assignments: [{ scene_plan_id: "sp1", chapter_row_uid: "new:1" }] };
+    client.apiPatch.mockImplementation(async (url, body) => {
+      if (String(url).endsWith("/snowflake-workspace/chapter-plan")) {
+        return { assigned_scene_count: 1, healed_scene_plan_ids: [], echoed: body, workspace: { ready_to_materialize: true, steps: [
+          { step_key: "long_synopsis", status: "approved", draft: { paragraphs: ["一", "二", "三", "四", "五"], chapters: serverChapters }, health: {}, completeness: {} },
+          { step_key: "scene_list", status: "approved", health: {}, completeness: {}, draft: { scenes: [
+            { row_uid: "row_1", scene_id: "s1", summary: "夜巡", primary_form: "proactive", chapter_id: "prj-main_CH01", chapter_title: "雨夜来信" },
+          ] } },
+        ] } };
+      }
+      return {};
+    });
+    const catalogGets = () => client.apiGet.mock.calls.filter(([url]) => /\/catalog$/.test(String(url))).length;
+    const before = catalogGets();
+    const workspaceGets = () => client.apiGet.mock.calls.filter(([url]) => /\/snowflake-workspace$/.test(String(url))).length;
+    const wsBefore = workspaceGets();
+    const res = await mod.SnowSync.saveChapterPlan(payload, "prj-main");
+    expect(res.echoed).toEqual({ replace_chapters: true, ...payload });
+    expect(res.assigned_scene_count).toBe(1);
+    expect(readCacheOf().scaffolds.outline.chapters.map(c => [c.row_uid, c.title, c.spine])).toEqual([["chrow_a", "雨夜来信", "灾一"]]);
+    expect(readCacheOf().scaffolds.scenes.list[0].chapter).toBe("雨夜来信");
+    expect(workspaceGets()).toBe(wsBefore);   // 回包里的工作台就是保存之后的那一版：不再另读一次
+    await vi.waitFor(() => expect(catalogGets()).toBeGreaterThan(before), T);
+    expect(mod.SnowSync.readyToMaterialize("prj-main")).toBe(true);
+
+    const refused = Object.assign(new Error("章表不合法"), { status: 422, code: "REQUEST_VALIDATION_FAILED" });
+    client.apiPatch.mockImplementation(async () => { throw refused; });
+    await expect(mod.SnowSync.saveChapterPlan(payload, "prj-main")).rejects.toBe(refused);
   });
 
   /* —— 物化后回流（resync 补接）：pending 状态只读后端真相；resync() 同步后
@@ -1265,6 +1381,79 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(result).toEqual(expect.objectContaining({ triage_id: "t1" }));
     await expect(mod.SnowSync.saveTriageVerdict("prj-main", { row_uid: "S01", status: "bogus" })).rejects.toThrow("非法的裁定");
   });
+
+  /* F02-01 的同步一半：形态与视角只有 09 场景行这一个家 */
+  it("F02-01：第 10 步上行的形态 / 视角只取 09 的行，plan 里残留的 mode / pov 不再把服务端改回去；水合的 plan 不带它们", async () => {
+    const { mod } = await loadSync({});
+    const saved = { scaffolds: {
+      scenes: { lines: [], list: [{ id: "S03", type: "reactive", pov: "c2", place: "旅馆", event: "消化挫败", crucible: "无人可信", fn: "", spine: "" }] },
+      // 旧版第 10 步写进 plan 的渲染默认值：形态还是主动、视角还是 c1——09 早已改成反应场、换成 c2
+      planning: { sel: "S03", plans: { S03: { mode: "proactive", pov: "c1", reaction: "手抖", dilemma: "报警或沉默", decision: "去找证人", rendering: "skip" } } },
+    } };
+    const [row] = mod.canonFromFE("planning", saved).scenes;
+    expect(row).toMatchObject({ row_uid: "S03", primary_form: "reactive", pov_character_id: "c2", rendering_mode: "skip" });
+
+    const fe = mod.feFromCanon("planning", { scenes: [
+      { row_uid: "S03", primary_form: "reactive", pov_character_id: "c2", reaction: "手抖", rendering_mode: "skip" },
+    ] });
+    expect(fe.scaffold.plans.S03).not.toHaveProperty("mode");
+    expect(fe.scaffold.plans.S03).not.toHaveProperty("pov");
+    expect(fe.scaffold.plans.S03).toMatchObject({ reaction: "手抖", rendering: "skip" });
+  });
+
+  it("自动保存与结构化导入的 PATCH 只要这一步（include_workspace=false），不要整份工作台", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: JSON.parse(JSON.stringify(WS_WITH_BOOK_BRIEF)) });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    client.apiPatch.mockClear();
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _t: Date.now() + 10_000, drafts: {}, checks: {}, states: { audience: "done" }, history: [],
+      scaffolds: { audience: { genre: "悬疑", reader: "改过的读者画像", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" } },
+    }));
+    await mod.SnowSync.retry("prj-main");
+    const autosave = patchCallFor(client, "book_brief");
+    expect(autosave[0]).toBe("/api/v2/projects/prj-main/snowflake-workspace/steps/book_brief?include_workspace=false");
+  });
+
+  /* 复核 PRE-02：09 / 10 的草稿由场景规划行现拼、不带写穿键，水合只能把服务端「待审」反推成「进行中」——
+     以前账上记着「进行中」，下一次上行就把作者在这台电脑上早已确认过、之后又改了的这一步当成刚确认、自动补批准。 */
+  it("PRE-02：确认过又改了的 09（服务端待审 + revised_after_approval，规范字段水合）不会被上行自动补批准", async () => {
+    const row = { row_uid: "S01", scene_id: "prj-main_SC01", summary: "夜巡", primary_form: "proactive", pov_character_id: "c1", location: "堤上", crucible: "潮水上涨", chapter_role: "", spine: "" };
+    const ws = {
+      ready_to_materialize: false, current_step_key: "scene_details",
+      steps: [{ step_key: "scene_list", status: "pending_review", revised_after_approval: true, gate_satisfied: true,
+        draft: { scenes: [row] }, health: {}, completeness: {} }],
+    };
+    // 这台电脑上作者确认过 09，之后又改了一句（本机更新）
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _t: Date.now() + 10_000, drafts: {}, checks: {}, states: { scenes: "done" }, history: [],
+      scaffolds: { scenes: { lines: [], list: [{ id: "S01", type: "proactive", line: "main", pov: "c1", place: "堤上", event: "夜巡（改过）", crucible: "潮水上涨", fn: "", spine: "" }] } },
+    }));
+    const { mod, client } = await loadSync({ snowflakeWorkspace: ws });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    client.apiPatch.mockImplementation(async (url, body) => ({
+      step: { step_key: "scene_list", status: "pending_review", revised_after_approval: true, draft: body.draft, health: {}, completeness: {} },
+    }));
+    client.apiPost.mockClear();
+    await mod.SnowSync.retry("prj-main");
+    expect(patchCallFor(client, "scene_list")).toBeTruthy();
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/scene_list/approve"))).toBe(false);
+    expect(mod.SnowSync.needsReconfirm("prj-main", "scenes")).toBe(true);
+  });
+
+  it("F02-11：水合收下教练日志（assistant_history）——教练页读镜像，不必另拉一整份工作台", async () => {
+    const turns = [{ turn_id: "t1", step_key: "book_brief", role: "assistant", message: "先把读者定下来" }];
+    const { mod } = await loadSync({ snowflakeWorkspace: { ...JSON.parse(JSON.stringify(WS_WITH_BOOK_BRIEF)), assistant_history: turns } });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    expect(mod.SnowSync.assistantHistory("prj-main")).toEqual(turns);
+    expect(mod.SnowSync.assistantHistory("prj-other")).toBeNull();   // 还没水合过：没有镜像（教练页退回自己读）
+    // 教练 / 生成回包带回的整条日志记回镜像；返回的是副本
+    const later = [...turns, { turn_id: "t2", step_key: "book_brief", role: "assistant", message: "再想想代价" }];
+    mod.SnowSync.rememberAssistantHistory("prj-main", later);
+    const read = mod.SnowSync.assistantHistory("prj-main");
+    expect(read).toEqual(later);
+    read.push({ turn_id: "t3" });
+    expect(mod.SnowSync.assistantHistory("prj-main")).toHaveLength(2);
+  });
 });
 
 
@@ -1456,6 +1645,56 @@ describe("水合闸门与空白步保护", () => {
     await vi.waitFor(() => expect(patchCallFor(client, "one_sentence_summary")).toBeTruthy(), T);
     await sleep(300);
     expect(client.apiPatch).toHaveBeenCalledTimes(1);
+  });
+
+  /* 复核 PRE-03：落盘的 _t 是作者最后一次改动的时刻。以前视图挂载 450ms 后的那次落盘就盖上此刻，
+     一份几天前的本机缓存开一下构思页就「比服务端新」，另一台电脑后来写的内容被它随后的上行盖掉。 */
+  it("PRE-03：视图挂载后的落盘沿用读进来的时间戳——旧的本机缓存不会因为开了一下构思页就赢过服务端上更新的版本", async () => {
+    const OLD_T = Date.now() - 3 * 86_400_000;
+    const OLD = "三天前在这台电脑上写的一句。";
+    const NEWER = "另一台电脑后来写的一句。";
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({
+      _t: OLD_T, drafts: { logline: OLD }, scaffolds: {}, checks: {}, states: { logline: "active" }, history: [],
+    }));
+    let release = null;
+    const slow = new Promise(resolve => { release = () => resolve({
+      ready_to_materialize: false, current_step_key: "one_sentence_summary",
+      steps: [{ step_key: "one_sentence_summary", status: "pending_review", gate_satisfied: false,
+        draft: { summary: NEWER, fe_text: NEWER, fe_state: "active", fe_t: Date.now() - 86_400_000 },
+        health: { score: 70, status: "maybe", gaps: [], next_actions: [] }, completeness: { filled_count: 1, total_count: 1, missing_fields: [] } }],
+    }); });
+    const { client } = await loadSync({ snowflakeWorkspace: slow });
+    const hooks = await import("./ws-snow-hooks.js");
+    client.apiPatch.mockClear();
+    const pushed = () => client.apiPatch.mock.calls.filter(c => String(c[0]).includes("/steps/one_sentence_summary")).map(c => c[1].draft.summary);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    let doc = null;
+    function Probe() { doc = hooks.useSnowDocument(CACHE_KEY, "prj-main"); return null; }
+    try {
+      await act(async () => { root.render(<Probe />); });
+      await act(async () => { await sleep(700); });            // 挂载后 450ms 的那次落盘已经发生
+      expect(readCache()._t).toBe(OLD_T);                       // 以前：此刻
+      expect(readCache().drafts.logline).toBe(OLD);
+      release();
+      await vi.waitFor(() => expect(readCache().drafts.logline).toBe(NEWER), T);
+      await vi.waitFor(() => expect(doc.drafts.logline).toBe(NEWER), T);   // 视图重读了服务端那一版
+      await act(async () => { await sleep(1300); });
+      expect(pushed()).not.toContain(OLD);                      // 旧的那一句没有被 force 回服务端
+
+      // 作者真的改了：这才盖上此刻，照常上行
+      await act(async () => { doc.setDrafts(d => ({ ...d, logline: "作者此刻改的一句。" })); });
+      await act(async () => { await sleep(600); });
+      expect(readCache()._t).toBeGreaterThan(Date.now() - 60_000);
+      await vi.waitFor(() => expect(pushed()).toContain("作者此刻改的一句。"), T);
+      expect(pushed()).not.toContain(OLD);
+    } finally {
+      await act(async () => { root.unmount(); });
+      host.remove();
+      // 卸载时的落盘排了一次上行：等它在本用例里跑完，别漏到下一个用例的 mock 上
+      await sleep(900);
+    }
   });
 
   it("同步过之后亲手清空：照常上行（那一步在账上，清空是作者的编辑）", async () => {

@@ -1,14 +1,16 @@
-import { apiGet, apiPost } from "./lib/client.js";
+import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 import { emit } from "./lib/events.js";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { activeWork, captureDirectionBriefs, captureResync, captureTriage, snowReadyFlags } from "./ws-snow-sync-state.js";
+import {
+  activeWork, captureAssistantHistory, captureDirectionBriefs, captureResync, captureTriage, snowReadyFlags,
+} from "./ws-snow-sync-state.js";
 import { adoptServerChapters } from "./ws-snow-hydrate.js";
 import { flushSnowPush } from "./ws-snow-push.js";
 
 /* ==========================================================
    雪花同步 · 分章与物化的接口（2026-09-29 从 ws-snow-sync.jsx 原样搬出）
-   预览 / AI 建议 / AI 起章名 / 处置孤儿场 / 物化（materialize + outline/approve）。
-   每一步之前先排空本机还没上行的编辑（flushSnowPush）；物化后本机 07 章表接过服务端的章表。
+   预览 / AI 建议 / AI 起章名 / 处置孤儿场 / 只保存章表 / 物化（materialize + outline/approve）。
+   每一步之前先排空本机还没上行的编辑（flushSnowPush）；落了库的（只保存章表、物化）之后本机 07 章表接过服务端的章表。
    ========================================================== */
 
 async function attachMaterializationGate(result, workId) {
@@ -18,6 +20,7 @@ async function attachMaterializationGate(result, workId) {
     captureResync(workId, workspace);
     captureTriage(workId, workspace);
     captureDirectionBriefs(workId, workspace);
+    captureAssistantHistory(workId, workspace);
     return { ...(result || {}), materialization_gate: (workspace && workspace.materialization_gate) || null };
   } catch (error) {
     // 预览本身已经成功时，不因第二次只读检查失败而抹掉方案；最终 materialize 仍会
@@ -74,6 +77,22 @@ async function resolveOrphanedScene(scenePlanId, action, workId) {
   return data;
 }
 
+/* 「只保存章表」（重评 R11）：07 的章表改成只读镜像之后，确认写入被前面的步骤挡住时，作者照样能在分章面板里
+   改章名 / 章摘要 / 章界并存下来——整张章表落库（PATCH …/chapter-plan，replace_chapters），不物化。
+   payload = 面板的 {chapters, assignments}；回包 {assigned_scene_count, healed_scene_plan_ids, workspace}。
+   之后本机 07 章表与 09 行上的章标签接过服务端这一版；作者起的章名服务端当场写穿到目录，目录跟着重读
+   （拆章 / 并章、重编的「第 N 章」要等确认写入才落到目录）。失败原样上抛。 */
+async function saveChapterPlan(payload, workId) {
+  const id = workId || activeWork();
+  if (!id) throw new Error("作品尚未就绪");
+  await flushSnowPush(id);
+  const data = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan`, { replace_chapters: true, ...(payload || {}) });
+  // 回包里的工作台就是保存之后的那一版：直接拿它接章表，不再另读一次
+  try { await adoptServerChapters(id, data && data.workspace); } catch (e) {}
+  try { await WsCatalog.refresh(id); } catch (e) {}
+  return data;
+}
+
 /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉）。
    plan = 分章面板确认时的 {chapters, assignments}，与物化同一事务落库，
    不留「分了章但没物化」的中间态。
@@ -107,4 +126,6 @@ async function materialize(workId, plan) {
   };
 }
 
-export { attachMaterializationGate, chapterPreview, chapterSuggest, chapterTitles, resolveOrphanedScene, materialize };
+export {
+  attachMaterializationGate, chapterPreview, chapterSuggest, chapterTitles, resolveOrphanedScene, saveChapterPlan, materialize,
+};
