@@ -44,6 +44,7 @@ from novel_system.db.models import (
     StyleReferenceRun,
     utcnow,
 )
+from novel_system.services.style_reference.book_text import non_body_kind
 from novel_system.services.style_reference.card import DIMENSION_CARD_VERSION
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.fidelity import reference_distribution_for_book
@@ -143,11 +144,8 @@ from novel_system.services.style_reference.protected_terms import (
     proper_noun_candidates,
 )
 from novel_system.services.style_reference.schemas import FindingKind
-from novel_system.services.style_reference.structure import (
-    compute_structure_card,
-    non_body_kind,
-    render_structure_card_parts,
-)
+from novel_system.services.style_reference.structure_card import compute_structure_card
+from novel_system.services.style_reference.structure_render import render_structure_card_parts
 from novel_system.services.style_reference.tags import TAGS_VERSION
 from novel_system.services.style_reference.voice_signature import (
     VOICE_SIGNATURE_VERSION,

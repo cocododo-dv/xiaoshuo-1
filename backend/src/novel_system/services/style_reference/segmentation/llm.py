@@ -37,7 +37,7 @@ from novel_system.services.style_reference.llm_nodes import (
     load_node_runtimes,
 )
 from novel_system.services.style_reference.schemas import ParagraphType
-from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
+from novel_system.services.style_reference.book_text import is_title_paragraph
 from novel_system.services.style_reference.text_utils import (
     compact_ws,
     is_paratext_paragraph,

@@ -50,7 +50,7 @@ from novel_system.services.style_reference.protected_terms import (
     replace_protected_terms,
 )
 from novel_system.services.style_reference.schemas import FindingKind
-from novel_system.services.style_reference.structure import derive_planning_guidance
+from novel_system.services.style_reference.structure_render import derive_planning_guidance
 from novel_system.services.style_reference.validation.plagiarism import BookNgramIndex
 
 # 文风卡的一句与原书连续重合到这个字数就丢（允许 ≤11 字的作者原话作例子）

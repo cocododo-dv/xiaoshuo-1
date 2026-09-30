@@ -35,7 +35,7 @@ from novel_system.services.style_reference.schemas import (
     ExtractionPurpose,
     FindingKind,
 )
-from novel_system.services.style_reference.structure import non_body_kind
+from novel_system.services.style_reference.book_text import non_body_kind
 from novel_system.services.style_reference.text_utils import compact_ws
 from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
 

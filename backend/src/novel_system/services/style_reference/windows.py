@@ -50,7 +50,7 @@ from novel_system.services.style_reference.paragraph_root import (
     patch_book_stats,
     stored_paragraph_root,
 )
-from novel_system.services.style_reference.structure import non_body_kind, split_book_chapters
+from novel_system.services.style_reference.book_text import non_body_kind, split_book_chapters
 from novel_system.services.style_reference.tags import normalize_window_tags
 
 logger = logging.getLogger(__name__)

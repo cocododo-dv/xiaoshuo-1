@@ -103,7 +103,7 @@ from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE_FINAL,
     FEW_SHOT_IN_USER_MESSAGE_NOTE,
 )
-from novel_system.services.style_reference.structure import chapter_boundary_habits
+from novel_system.services.style_reference.structure_render import chapter_boundary_habits
 from novel_system.services.style_reference.untrusted_data import (
     FEW_SHOT_FRAME_END,
     NEUTRALIZED_MARK,

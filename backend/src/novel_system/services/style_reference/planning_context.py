@@ -42,6 +42,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_binding_config,
 )
+from novel_system.services.style_reference.book_text import is_title_paragraph
 from novel_system.services.style_reference.card import (
     LINE_STATE_EXCLUDED,
     LINE_STATE_PINNED,
@@ -56,12 +57,10 @@ from novel_system.services.style_reference.narrative_guidance import (
 from novel_system.services.style_reference.policy import ReferenceRouteDecision, decide_reference_route
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import contract_layer
-from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
-from novel_system.services.style_reference.structure import (
+from novel_system.services.style_reference.structure_card import STRUCTURE_TITLE_MAX_CHARS, chapter_titles_summary
+from novel_system.services.style_reference.structure_render import (
     PLANNING_GUIDANCE_HEADER,
     PLANNING_GUIDANCE_MAX_LINES,
-    STRUCTURE_TITLE_MAX_CHARS,
-    chapter_titles_summary,
     render_planning_guidance,
     render_structure_card_parts,
 )

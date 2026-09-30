@@ -52,7 +52,7 @@ from novel_system.services.style_reference.jobs import JOB_KIND_CLASSIFY, JOB_KI
 from novel_system.services.style_reference.learn_job import learn_payload
 from novel_system.services.style_reference.paragraph_root import ROOT_KEY
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
-from novel_system.services.style_reference.structure import render_structure_card_parts
+from novel_system.services.style_reference.structure_render import render_structure_card_parts
 
 RELEARN_TYPES_CHANGED = "types_changed"
 RELEARN_TEXT_CHANGED = "text_changed"

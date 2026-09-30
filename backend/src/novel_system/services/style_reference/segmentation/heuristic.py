@@ -1,7 +1,8 @@
 """启发式段落分类(无 LLM)——只作离线夹具模式(测试与本地语料工具)。
 
 严格 LLM(2026-09-15)之后产品路径不再用它兜底:整本分类是 LLM 分类作业(``import_job``)。
-``is_title_paragraph`` 仍被结构画像 / 锚定集抽样共用。8 类 ParagraphType:
+章题判定 ``is_title_paragraph`` 的家在 ``book_text``(结构画像、锚定集抽样、切章与这里共用同一条;本模块照旧转出这个名字)。
+8 类 ParagraphType:
 - dialogue / narration / psychology / description_env / description_char
 - action / transition / flashback
 
@@ -22,6 +23,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
+from novel_system.services.style_reference.book_text import is_title_paragraph
 from novel_system.services.style_reference.config_loader import load_optional_yaml_config
 from novel_system.services.style_reference.segmentation.types import (
     ParagraphClassification,
@@ -74,25 +76,8 @@ _SPEECH_LEAD_OUT_RE = re.compile(
 # `speech_verbs.exclusions` 从段落里剥离,再跑三条引导 / 收尾正则。补充项只在启发式
 # 里用——加进 yaml 会改动 voice_baseline.yaml 的对白引导特征(需 build-baseline 重建)。
 _EXTRA_SPEECH_EXCLUSIONS: tuple[str, ...] = ("叫做", "念头", "道具")
-# 章节标题形态:第X章 / 卷X / 一 / (一) / 《题名》 / 序 / 楔子 …,可带 ≤30 字副题
-_TITLE_RE = re.compile(
-    r"^(?:"
-    r"第\s*[零〇一二三四五六七八九十百千两\d]+\s*[章节回卷部集幕场篇]"
-    r"|卷\s*[零〇一二三四五六七八九十百\d]+"
-    r"|[一二三四五六七八九十百]{1,3}"
-    r"|\d{1,3}"
-    r"|[（(]\s*[一二三四五六七八九十\d]+\s*[）)]"
-    r"|序[章幕言]?|楔子|尾声|后记|番外|引子|终章|上篇|中篇|下篇"
-    r"|chapter\s*\d+"
-    r"|《[^》]{1,40}》"
-    # 2026-09-14 保真修补:副题允许含空格与双语(「第一幕 卡塞尔之门 The Gate to Cassell」),
-    # 但不能含分句标点(，、；),避免把普通短句当标题。
-    r")(?:\s*[：:·—\-\s]\s*[^\s，、；,;][^，、；,;]{0,46})?$",
-    re.IGNORECASE,
-)
 _SENTENCE_END_CHARS = "。！？!?…"
 _SHORT_PARAGRAPH_CHARS = 30
-_TITLE_MAX_CHARS = 48  # 2026-09-14:双语副题的章题可超过 40 字
 _INHERITABLE_TYPES = frozenset(
     {
         "dialogue",
@@ -167,26 +152,8 @@ def _is_dialogue(body: str) -> bool:
     return (quote_led or quote_ended) and quoted * 100 >= len(stripped) * 15
 
 
-def _is_title_shape(body: str) -> bool:
-    stripped = body.strip()
-    if not stripped or len(stripped) > _TITLE_MAX_CHARS:
-        return False
-    if any(ch in stripped for ch in _SENTENCE_END_CHARS):
-        return False
-    return _TITLE_RE.match(stripped) is not None
-
-
-def is_title_paragraph(text: str) -> bool:
-    """段落是否为章节标题形态(第X章 / 卷X / 一 / (一) / 《题名》 / 序 / 楔子 / Chapter N …)。
-
-    2026-09-12 结构跟随:`_is_title_shape` 的公开别名,供 `style_reference/structure.py`
-    在合成期按标题段切章。与分类器共用同一条正则,章检测与段型分类永远同口径。
-    """
-    return _is_title_shape(str(text or ""))
-
-
 def _is_transition(body: str) -> bool:
-    if _is_title_shape(body):
+    if is_title_paragraph(body):
         return True
     if len(body) >= _SHORT_PARAGRAPH_CHARS:
         return False
@@ -215,7 +182,7 @@ def _heuristic_classify_one(
     类型);单段调用时为 None,短段直接落 narration。
     """
     # 0. 章节标题形态是结构标记,先于一切语义规则
-    if _is_title_shape(body):
+    if is_title_paragraph(body):
         return "transition", _HEURISTIC_CONFIDENCE
     # 1. dialogue
     if _is_dialogue(body):
