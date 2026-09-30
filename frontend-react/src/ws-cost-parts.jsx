@@ -1,7 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { StatCard } from "./ws-quality-ui.jsx";
-import { ProgressBar, Spinner, Tag } from "./ws-ui.jsx";
+import { ProgressBar, Spinner, StatTile, Tag } from "./ws-ui.jsx";
 import { chapterLabelById, sceneLabelById } from "./labels/catalog.js";
 import { accountingStatusMeta, llmNodeLabel } from "./labels/llm.js";
 import { PHASE_LABEL, costBack } from "./ws-cost-store.js";
@@ -9,7 +8,7 @@ import { formatIntOrDash as fmtInt, formatPercentRounded as fmtPct, isoMonthDay 
 
 /* ==========================================================
    成本看板的展示件（从 ws-cost.jsx 拆出，2026-09-22）
-   格式化、趋势柱状图、阶段 / 节点 / 模型 / 章节 / 调用明细、全局用量、口径说明、下钻面板。
+   格式化、统计卡、趋势柱状图、阶段 / 节点 / 模型 / 章节 / 调用明细、全局用量、口径说明、下钻面板。
    只画不取数：数据都由 ws-cost.jsx 从 store 快照里传进来。
    以 token 为主（2026-09-30 批准 #4）：图、条、表都按 token 量；金额只在后端真算出来时（cost 不是 null）才出现——
    后端只给 config/pricing.yaml 里写了单价的模型算钱，其余是「未定价」，不再拿占位估算价编一个数。
@@ -50,6 +49,16 @@ export function pricingComplete(summary) {
 /* ==========================================================
    小部件
    ========================================================== */
+
+/* 统计卡：ws-ui 的 StatTile 外加一张卡的底（.q-stats / .q-stat 借用 ws-quality.css，与文学质量的统计块同一套）。
+   children 是跟在注释前面的小标签（如 EstimatePill 的「用量含估算」）。原在 ws-quality-ui.jsx——文学质量早就不用它了，
+   只有成本看板用，2026-10 搬到这里（F04-14 / F05-20）。 */
+export function StatCard({ label, value, hint, tone, children, className }) {
+  const note = children || hint
+    ? <>{children}{children && hint ? " " : null}{hint}</>
+    : null;
+  return <StatTile className={`q-stat${className ? ` ${className}` : ""}`} label={label} value={value} hint={note} tone={tone} />;
+}
 
 /* 有些调用的 token 数是估算的（供应商没回报实际用量，按字数估）：标一下。价格不再有占位估算。 */
 export function EstimatePill({ on }) {

@@ -1,13 +1,12 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { StatCard } from "./ws-quality-ui.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
 import { WsWorks, useActiveWorkIdentity } from "./ws-works.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner } from "./ws-ui.jsx";
 import { COST_WINDOWS, costLoad, csSnapshot, useCostState } from "./ws-cost-store.js";
 import {
-  CalibersDetails, ChapterTable, DrillPanel, EstimatePill, ModelTable, NodeBars, PhaseBars, QuotaSection, TopCallsTable,
-  TrendChart, costText, fmtInt, pricingComplete,
+  CalibersDetails, ChapterTable, DrillPanel, EstimatePill, ModelTable, NodeBars, PhaseBars, QuotaSection, StatCard,
+  TopCallsTable, TrendChart, costText, fmtInt, pricingComplete,
 } from "./ws-cost-parts.jsx";
 import { readyWorkId } from "./lib/ready-work.js";
 import { isRealWorkId } from "./lib/work-id.js";
