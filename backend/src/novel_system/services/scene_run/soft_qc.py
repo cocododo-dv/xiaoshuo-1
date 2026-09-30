@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 import logging
 from typing import Any
 
@@ -34,6 +35,7 @@ from novel_system.services.scene_generation import (
     StyleGenerationResult,
     style_notice,
 )
+from novel_system.services.scene_run.branch_control import is_derivable_control, soft_qc0_control
 from novel_system.services.scene_run.constants import (
     STYLE_PATCH_REVERTED_SKIP_REASON,
     STYLE_PATCH_REVERTED_STOP_REASON,
@@ -311,18 +313,16 @@ class SoftQcCheckpointMixin:
                 source_draft_content=style_generation.content,
                 execution_step_key="soft_qc:0",
             )
-            patch_allowed = soft_qc0.branch == "patch" and optional_spend_allowed()
-            if soft_qc0.branch == "patch" and not patch_allowed:
-                qc0_skip_reason = "budget_or_candidate_cap"
+            qc0_control = soft_qc0_control(
+                soft_qc0.branch,
+                spend_allowed=soft_qc0.branch == "patch" and optional_spend_allowed(),
+            )
+            patch_allowed = qc0_control["patch_allowed"]
+            qc0_skip_reason = qc0_control["skip_reason"]
+            if qc0_skip_reason == "budget_or_candidate_cap":
                 _LOGGER.warning(
                     "soft patch skipped for scene %s (budget/candidate cap)", scene_id
                 )
-            elif soft_qc0.branch == "human_review_required":
-                qc0_skip_reason = "human_review_required"
-            elif soft_qc0.branch != "patch":
-                qc0_skip_reason = "no_patch_requested"
-            else:
-                qc0_skip_reason = None
             self._save_soft_qc_round_checkpoint(
                 sub_index=1,
                 round_index=0,
@@ -952,18 +952,14 @@ class SoftQcCheckpointMixin:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         control = refs.get("soft_qc0_control")
+        # 存的一边按同一张分支表写；唯一没记下的输入是那时还能不能花钱，所以只能是两种之一
         if (
             not isinstance(control, dict)
-            or not isinstance(control.get("patch_allowed"), bool)
             or self._json_hash(control) != self._checkpoint_hash("soft_qc0_control")
-            or (decision.branch != "patch" and control["patch_allowed"])
-            or (control["patch_allowed"] and control.get("skip_reason") is not None)
+            or not is_derivable_control(control, partial(soft_qc0_control, decision.branch))
         ):
             raise checkpoint_corrupt("soft QC0 branch control is invalid")
-        skip_reason = control.get("skip_reason")
-        if skip_reason is not None and not isinstance(skip_reason, str):
-            raise checkpoint_corrupt("soft QC0 skip reason is invalid")
-        return control["patch_allowed"], skip_reason
+        return control["patch_allowed"], control["skip_reason"]
 
     def _load_soft_qc_checkpoint(
         self,

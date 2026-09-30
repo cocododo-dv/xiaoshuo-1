@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import partial
 import logging
 from typing import Any
 
@@ -22,6 +23,7 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.scene_generation import StyleGenerationResult, assess_rewrite_regressions
+from novel_system.services.scene_run.branch_control import is_derivable_control, near_final_eval0_control
 from novel_system.services.scene_run.constants import NEAR_FINAL_REWRITE_GATE_STAGE
 from novel_system.services.scene_run.near_final_gate import (
     _near_final_rejection_skip_reason,
@@ -180,32 +182,15 @@ class NearFinalCheckpointMixin:
             rewrite_requested = not bool(eval0.get("pass_flag")) and bool(
                 eval0.get("should_rewrite")
             )
-            rewrite_allowed = rewrite_requested and optional_spend_allowed()
-            if rewrite_requested and not rewrite_allowed:
-                skip_reason = "budget_or_candidate_cap"
-                branch = "rewrite_skipped"
+            control = near_final_eval0_control(
+                eval0,
+                spend_allowed=rewrite_requested and optional_spend_allowed(),
+            )
+            if control["branch"] == "rewrite_skipped":
                 _LOGGER.warning(
                     "near-final rewrite skipped for scene %s (budget/candidate cap)",
                     scene.scene_id,
                 )
-            elif eval0.get("requires_human_review"):
-                skip_reason = "human_review_proposal"
-                branch = "human_review_proposal"
-            elif eval0.get("pass_flag"):
-                skip_reason = "no_rewrite_requested"
-                branch = "pass"
-            elif not rewrite_requested:
-                skip_reason = "not_auto_rewrite_eligible"
-                branch = "unresolved"
-            else:
-                skip_reason = None
-                branch = "rewrite"
-            control = {
-                "branch": branch,
-                "rewrite_requested": rewrite_requested,
-                "rewrite_allowed": rewrite_allowed,
-                "skip_reason": skip_reason,
-            }
             self._save_near_evaluation_checkpoint(
                 sub_index=0,
                 round_index=0,
@@ -582,49 +567,12 @@ class NearFinalCheckpointMixin:
             "artifact_refs"
         ) or {}
         control = refs.get("near_eval0_control")
-        rewrite_requested = not bool(eval0.get("pass_flag")) and bool(
-            eval0.get("should_rewrite")
-        )
-        if (
-            not isinstance(control, dict)
-            or not isinstance(control.get("branch"), str)
-            or not isinstance(control.get("rewrite_requested"), bool)
-            or not isinstance(control.get("rewrite_allowed"), bool)
-            or self._json_hash(control) != self._checkpoint_hash("near_eval0_control")
-            or control["rewrite_requested"] != rewrite_requested
-            or (control["rewrite_allowed"] and not control["rewrite_requested"])
-            or (control["rewrite_allowed"] and control.get("skip_reason") is not None)
-            or (
-                control.get("skip_reason") is not None
-                and not isinstance(control.get("skip_reason"), str)
-            )
+        if not isinstance(control, dict) or self._json_hash(control) != self._checkpoint_hash(
+            "near_eval0_control"
         ):
             raise checkpoint_corrupt("near-final eval0 branch control is invalid")
-        expected_branch: str
-        expected_skip_reason: str | None
-        if eval0.get("requires_human_review"):
-            expected_branch, expected_skip_reason = (
-                "human_review_proposal",
-                "human_review_proposal",
-            )
-        elif eval0.get("pass_flag"):
-            expected_branch, expected_skip_reason = "pass", "no_rewrite_requested"
-        elif rewrite_requested and control["rewrite_allowed"]:
-            expected_branch, expected_skip_reason = "rewrite", None
-        elif rewrite_requested:
-            expected_branch, expected_skip_reason = (
-                "rewrite_skipped",
-                "budget_or_candidate_cap",
-            )
-        else:
-            expected_branch, expected_skip_reason = (
-                "unresolved",
-                "not_auto_rewrite_eligible",
-            )
-        if (
-            control.get("branch") != expected_branch
-            or control.get("skip_reason") != expected_skip_reason
-        ):
+        # 存的一边按同一张分支表写；唯一没记下的输入是那时还能不能花钱，所以只能是两种之一
+        if not is_derivable_control(control, partial(near_final_eval0_control, eval0)):
             raise checkpoint_corrupt("near-final eval0 branch/skip reason is inconsistent")
         return deepcopy(control)
 
