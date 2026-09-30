@@ -64,7 +64,6 @@ from novel_system.services.scene_run_jobs import (
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.text_input import clean_backfill_markers, validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
-from novel_system.services.writer_review import WriterReviewService
 
 router = APIRouter(tags=["scenes"])
 _LOGGER = logging.getLogger(__name__)
@@ -1631,9 +1630,6 @@ def scene_workbench(
                 )
                 if state is not None
                 else None
-            ),
-            "writer_review_summary": WriterReviewService(session).scene_summary(
-                scene_id
             ),
             "attempts": [_serialize_attempt(item) for item in attempts],
         },

@@ -402,7 +402,6 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
     from novel_system.services.scene_blueprint import SceneBlueprintService
     from novel_system.services.writer_deep_review import WriterDeepReviewService
-    from novel_system.services.writer_review import WriterReviewService
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("constructing a read-only service must not load prompts or runtime settings")
@@ -413,7 +412,6 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     services = [
         cls(session)
         for cls in (
-            WriterReviewService,
             WriterDeepReviewService,
             SceneBlueprintService,
             NearFinalPlanningService,
@@ -431,9 +429,9 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     with pytest.raises(AssertionError):
         runner.settings
     monkeypatch.undo()
-    assert services[2].prompt_builder.has_template("scene_blueprint")
-    assert services[2].prompt_builder is services[2].prompt_builder
-    assert services[2]._llm_runner.settings.llm_enabled is False
+    assert services[1].prompt_builder.has_template("scene_blueprint")
+    assert services[1].prompt_builder is services[1].prompt_builder
+    assert services[1]._llm_runner.settings.llm_enabled is False
 
 
 def test_injected_runner_and_builder_are_kept(session) -> None:

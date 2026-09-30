@@ -10,7 +10,6 @@ from novel_system.db.models import (
     ChapterMemory,
     ChapterState,
     FinalScene,
-    RevisionCandidate,
     SceneBundle,
     SceneCard,
     SceneRunState,
@@ -20,7 +19,6 @@ from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.reference_copy_gate import check_reference_copy, copy_gate_policies
-from novel_system.services.writer_review import WriterReviewService
 
 
 def chapter_body_hash(content: str) -> str:
@@ -53,15 +51,6 @@ class ChapterManuscriptService:
             final_scenes,
             "\n".join([assembled["content"], aggregate["content"] if aggregate else ""]),
         )
-        writer_review = WriterReviewService(self.session)
-        writer_review_summary = writer_review.chapter_summary(chapter_id)
-        editorial_workspace = self._editorial_workspace(
-            chapter_id=chapter_id,
-            scene_entries=scene_entries,
-            chapter_review=writer_review_summary,
-            writer_review=writer_review,
-            aggregate=aggregate,
-        )
         return {
             "chapter": self.lifecycle.serialize_chapter(chapter),
             "chapter_state": self.lifecycle.serialize_chapter_state(chapter_state, chapter_id),
@@ -73,8 +62,6 @@ class ChapterManuscriptService:
             "body_hash": chapter_body_hash(assembled["content"]),
             "aggregate": aggregate,
             "source_safety_scan": source_safety_scan,
-            "writer_review_summary": writer_review_summary,
-            "editorial_workspace": editorial_workspace,
             "canon_continuity": self._canon_continuity(chapter),
             "scenes": scene_entries,
         }
@@ -152,7 +139,6 @@ class ChapterManuscriptService:
             ),
             "comparison_status": self._comparison_status(assembled["content"], aggregate),
             "aggregate_row_id": aggregate["row_id"] if aggregate else None,
-            "writer_review_summary": WriterReviewService(self.session).chapter_summary(chapter.chapter_id),
             "canon_continuity": self._canon_continuity(chapter),
         }
 
@@ -317,77 +303,6 @@ class ChapterManuscriptService:
             ).audit()
         except Exception as exc:  # noqa: BLE001 — 展示用读数
             return {"safe": False, "error_code": "SOURCE_SAFETY_UNAVAILABLE", "error_type": type(exc).__name__}
-
-    def _editorial_workspace(
-        self,
-        *,
-        chapter_id: str,
-        scene_entries: list[dict[str, Any]],
-        chapter_review: dict[str, Any],
-        writer_review: WriterReviewService,
-        aggregate: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        scene_ids = [scene["scene_id"] for scene in scene_entries]
-        scene_review_by_id = writer_review.summaries("scene", scene_ids)
-        scene_reviews = [
-            {
-                "scene_id": scene["scene_id"],
-                "scene_seq": scene.get("scene_seq"),
-                "scene_goal": scene.get("scene_goal"),
-                "review": scene_review_by_id[scene["scene_id"]],
-            }
-            for scene in scene_entries
-        ]
-        candidates = self._chapter_revision_candidates(chapter_id, scene_ids)
-        review_summaries = [chapter_review, *[item["review"] for item in scene_reviews]]
-        return {
-            "reading_source": "aggregate" if aggregate else "assembled",
-            "chapter_review": chapter_review,
-            "scene_reviews": scene_reviews,
-            "revision_candidates": candidates,
-            "open_issue_counts": self._open_issue_counts(review_summaries),
-        }
-
-    def _chapter_revision_candidates(self, chapter_id: str, scene_ids: list[str]) -> list[dict[str, Any]]:
-        object_pairs = {("chapter", chapter_id), *{("scene", scene_id) for scene_id in scene_ids}}
-        rows = self.session.execute(
-            select(RevisionCandidate)
-            .where(RevisionCandidate.chapter_id == chapter_id)
-            .order_by(
-                RevisionCandidate.object_type.asc(),
-                RevisionCandidate.created_at.desc(),
-                RevisionCandidate.revision_id.asc(),
-            )
-        ).scalars().all()
-        serialized: list[dict[str, Any]] = []
-        for row in rows:
-            if (row.object_type, row.object_id) not in object_pairs:
-                continue
-            payload = WriterReviewService.serialize_revision(row)
-            payload["scope_label"] = "chapter" if row.object_type == "chapter" else row.scene_id or row.object_id
-            serialized.append(payload)
-        return serialized
-
-    @staticmethod
-    def _open_issue_counts(review_summaries: list[dict[str, Any]]) -> dict[str, int]:
-        open_candidates = 0
-        findings = 0
-        requires_human_review = 0
-        reviewed_objects = 0
-        for summary in review_summaries:
-            evaluation = summary.get("latest_evaluation")
-            if evaluation:
-                reviewed_objects += 1
-                findings += len(evaluation.get("findings") or [])
-                if evaluation.get("requires_human_review"):
-                    requires_human_review += 1
-            open_candidates += sum(1 for candidate in summary.get("candidates") or [] if candidate.get("status") == "candidate")
-        return {
-            "open_candidates": open_candidates,
-            "findings": findings,
-            "requires_human_review": requires_human_review,
-            "reviewed_objects": reviewed_objects,
-        }
 
     def _resolve_final_aggregate(self, chapter_id: str, chapter_state: ChapterState | None) -> ChapterMemory | None:
         if chapter_state is not None and chapter_state.last_final_memory_row_id:
