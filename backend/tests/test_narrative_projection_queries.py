@@ -139,7 +139,7 @@ def test_recent_checkpoint_statement_count_does_not_grow_with_earlier_scenes(ses
                 chapter_id=world_chapter(1),
                 project_id=WORLD_PROJECT,
                 scene_seq=seq,
-                scene_goal=f"第 1 章第 {seq} 场",
+                scene_goal=f"CH01 加场 {seq}",
             )
         )
     session.commit()

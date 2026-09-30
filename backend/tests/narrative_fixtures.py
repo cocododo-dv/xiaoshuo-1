@@ -132,7 +132,7 @@ _WORLD_SCENES: dict[tuple[int, int], dict[str, Any]] = {
     (2, 3): {"onstage": [LINYUAN], "pov": LINYUAN},
 }
 
-# 目标场：各摘要都取「第 2 章第 2 场之前」的状态；第 2 章第 3 场的事实在边界之后，不许出现。
+# 目标场：各摘要都取 CH02_SC02 之前的状态；CH02_SC03 的事实在边界之后，不许出现。
 WORLD_TARGET_SCENE = world_scene(2, 2)
 
 
@@ -180,7 +180,7 @@ def seed_narrative_world(session: Session) -> dict[str, Any]:
     )
     session.flush()
 
-    # 第 1 章：直接写的已认可事实
+    # CH01：直接写的已认可事实
     log_fixture_fact(
         session, scene_id=world_scene(1, 1), event_type="location_change",
         entity_id=LINYUAN, fact_key="location", fact_value="雨城",
@@ -219,7 +219,7 @@ def seed_narrative_world(session: Session) -> dict[str, Any]:
         entity_id=SUWAN, fact_key="revealed_to", fact_value=GUZHOU,
     )
 
-    # 第 2 章第 1 场：走正史核对的产品路径
+    # CH02_SC01：走正史核对的产品路径
     seed_final_scene(session, scene=scenes[(2, 1)], content=_WORLD_SCENES[(2, 1)]["final"])
     commit_scene_canon(
         session,
@@ -243,7 +243,7 @@ def seed_narrative_world(session: Session) -> dict[str, Any]:
         ],
     )
 
-    # 边界之后的事实：任何「第 2 章第 2 场之前」的摘要都不该出现
+    # 边界之后的事实：任何「CH02_SC02 之前」的摘要都不该出现
     log_fixture_fact(
         session, scene_id=world_scene(2, 3), event_type="location_change",
         entity_id=LINYUAN, fact_key="location", fact_value="钟楼",

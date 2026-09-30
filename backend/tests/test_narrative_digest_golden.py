@@ -129,7 +129,7 @@ def test_narrative_digests_match_golden(session) -> None:
 
 
 def test_facts_after_the_boundary_never_reach_a_digest(session) -> None:
-    """林远在第 2 章第 3 场才到钟楼：第 2 章第 2 场之前的摘要里他还在雨城。"""
+    """林远在 CH02_SC03 才到钟楼：CH02_SC02 之前的摘要里他还在雨城。"""
     seed_narrative_world(session)
     actual = _collect(session)
     states = {key: value for key, value in actual.items() if key.startswith("state_")}
