@@ -1,25 +1,39 @@
-"""规则维度按绑定的参考书校准——参考书那一侧的读数（审计 B04-21：从场景诊断搬进规则引擎的包）。
+"""规则维度按绑定的参考书校准——参考书那一侧的读数从哪来（审计 B04-21：从场景诊断搬进规则引擎的包）。
 
 ``calibration`` 管「拿到读数之后怎么判」（``RuleCalibration``、泊松尾 / Wilson 下界、按一稿校准词表）；这里管读数
 本身：把参考书切成单元与场级窗口，量每条规则在窗口上响的比例、「命中即毛病」词表里每个词在书里每万字的密度
-（``compute_reference_rules``），以及一场绑定的画像（``BoundProfile``：画像、它的书、「刻意复沓」标记）。
-写作台深改面板、文学质量视图、成稿门用的是同一份；节奏检查的读数（段长、叠句、句首重复）另算，在
-``scene_diagnosis.calibration``。
+（``compute_reference_rules``），读库拿一本书的段落与场界，按书的版本缓存读数（``rule_calibration_for_book`` /
+``rule_calibration_for_policy``）。写作台深改面板、文学质量视图、成稿门用的是同一份；节奏检查的读数（段长、
+叠句、句首重复）另算，在 ``scene_diagnosis.calibration``。
+
+**缓存**（进程级，锁保护，最多 ``REFERENCE_STATS_BOOKS`` 本书——两部作品绑两本书不会互相挤掉）：键是书的版本
+（``reference_book_state``）：书的统计里存着段落根哈希时用它（写段落表的人负责把它 pop 掉，契约 §3.1），否则现数
+段落数 / 最新段落时间；再加段型修订号（分类作业每次成功把 ``paragraph_types_revision`` 加一——就地重标段落类型
+不改段数也不改时间，收尾读数却按「转场段之前的那一段」取）、导入时记下的场界、书的校验和与建书时间。同一个键
+第一次算时别的线程等它算完再取，不重复算（真实参考书 2.6 万段：一次几秒）。
+
+版本读一次库（一条按主键的查询，没存根哈希的书再数一遍段落）；一次请求里逐场调用时由调用方记住结果
+（``SceneDiagnosisService`` 每个实例按画像记一份）。
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import threading
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import StyleReferenceProfile
+from novel_system.cache_registry import register_cache_reset
+from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph, StyleReferenceProfile
+from novel_system.services.config_cache import ContentKeyedCache
 from novel_system.services.literary_quality.calibration import (
     DEFAULT_RULE_CALIBRATION,
     RULE_ENDING_DIMENSIONS,
@@ -42,6 +56,8 @@ RULE_CALIBRATION_MAX_ENDINGS = 96
 RULE_CALIBRATION_MIN_WINDOWS = 4
 RULE_CALIBRATION_MIN_ENDINGS = 4
 TRANSITION_PARAGRAPH_TYPE = "transition"
+# 进程里同时记住几本书的读数（一本书的读数几百 KB）
+REFERENCE_STATS_BOOKS = 4
 _WS_RE = re.compile(r"\s+")
 
 
@@ -241,7 +257,7 @@ def rule_calibration_from_reference(stats: dict[str, Any] | None, *, deliberate_
 
 
 # ---------------------------------------------------------------------------
-# 读库：绑定的画像
+# 读库：绑定的画像、书的版本、书的段落
 # ---------------------------------------------------------------------------
 
 
@@ -300,16 +316,207 @@ def bound_profile_for_policy(session: Session, policy: _PolicyLike) -> BoundProf
     )
 
 
+@dataclass(frozen=True)
+class ReferenceBookState:
+    """一本参考书现在的样子：缓存键（``version``）、段落数、书名（校准说明里要）。"""
+
+    book_id: str
+    title: str | None
+    paragraphs: int
+    version: tuple[Any, ...]
+
+
+def reference_book_state(session: Session, book_id: str) -> ReferenceBookState | None:
+    """书的版本（读数缓存的键）。书不存在 → None；没有段落时 ``paragraphs == 0``。
+
+    书的统计里存着段落根哈希时就用它（一条按主键的查询，不数段落表）；没存时照旧数段落数、取最新段落时间。两条路
+    都再加上段型修订号、场界、校验和与建书时间（同一个书号删了重导入也认得出来）。都现读库：会话在提交时不过期对象，
+    身份映射里的书可能是别的连接改之前的样子。"""
+
+    row = session.execute(
+        select(
+            StyleReferenceBook.title,
+            func.json_extract(StyleReferenceBook.stats_json, "$.paragraph_root_sha256"),
+            func.json_extract(StyleReferenceBook.stats_json, "$.paragraph_count"),
+            func.json_extract(StyleReferenceBook.stats_json, "$.paragraph_types_revision"),
+            func.json_extract(StyleReferenceBook.stats_json, "$.scene_breaks"),
+            StyleReferenceBook.text_checksum,
+            StyleReferenceBook.created_at,
+        ).where(StyleReferenceBook.book_id == book_id)
+    ).one_or_none()
+    if row is None:
+        return None
+    title, root, stored_count, types_revision, scene_breaks, checksum, created_at = row
+    breaks_digest = hashlib.sha1(str(scene_breaks or "").encode("utf-8")).hexdigest()[:12]
+    identity = (str(types_revision or 0), breaks_digest, str(checksum or ""), str(created_at or ""))
+    if isinstance(root, str) and root:
+        try:
+            count = int(stored_count or 0)
+        except (TypeError, ValueError):
+            count = 0
+        return ReferenceBookState(book_id=book_id, title=title, paragraphs=count, version=("root", root, count, *identity))
+    count, latest = session.execute(
+        select(func.count(StyleReferenceParagraph.paragraph_id), func.max(StyleReferenceParagraph.created_at)).where(
+            StyleReferenceParagraph.book_id == book_id
+        )
+    ).one()
+    count = int(count or 0)
+    return ReferenceBookState(book_id=book_id, title=title, paragraphs=count, version=("scan", count, str(latest or ""), *identity))
+
+
+@dataclass(frozen=True)
+class ReferenceCorpus:
+    """一本书的段落正文、段型与导入时记下的场界（「其后有场界」的段落索引）。"""
+
+    texts: list[str]
+    types: list[str]
+    scene_breaks: list[int] | None
+
+
+def load_reference_corpus(session: Session, book_id: str) -> ReferenceCorpus:
+    rows = session.execute(
+        select(StyleReferenceParagraph.text, StyleReferenceParagraph.paragraph_type)
+        .where(StyleReferenceParagraph.book_id == book_id)
+        .order_by(StyleReferenceParagraph.paragraph_index.asc())
+    ).all()
+    raw_breaks = session.execute(
+        select(func.json_extract(StyleReferenceBook.stats_json, "$.scene_breaks")).where(StyleReferenceBook.book_id == book_id)
+    ).scalar_one_or_none()
+    scene_breaks: list[int] | None = None
+    if isinstance(raw_breaks, str) and raw_breaks.strip().startswith("["):
+        try:
+            parsed = json.loads(raw_breaks)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            scene_breaks = [item for item in parsed if isinstance(item, int) and not isinstance(item, bool)]
+    return ReferenceCorpus(
+        texts=[str(row[0] or "") for row in rows],
+        types=[str(row[1] or "") for row in rows],
+        scene_breaks=scene_breaks,
+    )
+
+
+class CorpusLoader:
+    """一次请求里一本书的段落只读一遍：规则读数与节奏读数都没缓存时，两边共用这一份。"""
+
+    def __init__(self, session: Session, book_id: str) -> None:
+        self._session = session
+        self._book_id = book_id
+        self._corpus: ReferenceCorpus | None = None
+
+    def __call__(self) -> ReferenceCorpus:
+        if self._corpus is None:
+            self._corpus = load_reference_corpus(self._session, self._book_id)
+        return self._corpus
+
+
+# ---------------------------------------------------------------------------
+# 按书的版本缓存的读数
+# ---------------------------------------------------------------------------
+
+
+class ReferenceStatsCache:
+    """按（书、版本）记住读数的小容量 LRU（``ContentKeyedCache``）：同一个键第一次算时别的线程等它算完再取，
+    不重复算；不同的键互不等待。只记成功算出的读数。"""
+
+    def __init__(self, *, maxsize: int = REFERENCE_STATS_BOOKS) -> None:
+        self._entries = ContentKeyedCache(maxsize=maxsize)
+        self._guard = threading.Lock()
+        self._building: dict[Hashable, threading.Lock] = {}
+
+    @property
+    def builds(self) -> int:
+        return self._entries.builds
+
+    def get_or_build(self, key: Hashable, build: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        with self._guard:
+            lock = self._building.setdefault(key, threading.Lock())
+        with lock:
+            try:
+                return self._entries.get_or_build(key, build)
+            finally:
+                with self._guard:
+                    if self._building.get(key) is lock:
+                        self._building.pop(key, None)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+
+_RULE_STATS = ReferenceStatsCache()
+register_cache_reset("literary_quality.calibration_source.rule_stats", _RULE_STATS.clear)
+
+
+def reference_rule_stats(
+    session: Session,
+    state: ReferenceBookState,
+    *,
+    corpus: Callable[[], ReferenceCorpus] | None = None,
+) -> dict[str, Any]:
+    """这本书（这个版本）的规则读数；``corpus`` 给了就从它取段落（与节奏读数共用一次读库）。"""
+
+    load = corpus or CorpusLoader(session, state.book_id)
+
+    def build() -> dict[str, Any]:
+        loaded = load()
+        return compute_reference_rules(loaded.texts, paragraph_types=loaded.types, scene_breaks=loaded.scene_breaks)
+
+    return _RULE_STATS.get_or_build((state.book_id, state.version), build)
+
+
+def rule_calibration_for_book(
+    session: Session,
+    book_id: str | None,
+    *,
+    deliberate_repetition: bool = False,
+    state: ReferenceBookState | None = None,
+    corpus: Callable[[], ReferenceCorpus] | None = None,
+) -> RuleCalibration:
+    """按这本参考书校准的规则维度；书不存在或没有段落 → 房风默认（不校准）。"""
+
+    if not book_id:
+        return DEFAULT_RULE_CALIBRATION
+    state = state if state is not None else reference_book_state(session, book_id)
+    if state is None or state.paragraphs <= 0:
+        return DEFAULT_RULE_CALIBRATION
+    stats = reference_rule_stats(session, state, corpus=corpus)
+    return rule_calibration_from_reference(stats, deliberate_repetition=deliberate_repetition)
+
+
+def rule_calibration_for_policy(session: Session, policy: _PolicyLike) -> RuleCalibration | None:
+    """成稿门 / 文学质量视图用：按策略绑定的书校准的规则维度；未绑定 / 校准不可用 → None。"""
+
+    profile = bound_profile_for_policy(session, policy)
+    if profile is None:
+        return None
+    rules = rule_calibration_for_book(session, profile.book_id, deliberate_repetition=profile.deliberate_repetition)
+    return rules if rules.active else None
+
+
 __all__ = [
     "RULE_CALIBRATION_MAX_ENDINGS",
     "RULE_CALIBRATION_MAX_WINDOWS",
     "RULE_CALIBRATION_MIN_ENDINGS",
     "RULE_CALIBRATION_MIN_WINDOWS",
     "RULE_CALIBRATION_WINDOW_CHARS",
+    "REFERENCE_STATS_BOOKS",
     "TRANSITION_PARAGRAPH_TYPE",
     "BoundProfile",
+    "CorpusLoader",
+    "ReferenceBookState",
+    "ReferenceCorpus",
+    "ReferenceStatsCache",
     "bound_profile",
     "bound_profile_for_policy",
     "compute_reference_rules",
+    "load_reference_corpus",
+    "reference_book_state",
+    "reference_rule_stats",
+    "rule_calibration_for_book",
+    "rule_calibration_for_policy",
     "rule_calibration_from_reference",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import threading
 from collections import OrderedDict
 from typing import Any
 
@@ -41,8 +42,49 @@ from novel_system.services.scene_diagnosis.vocabulary import (
 )
 from novel_system.services.style_reference.text_utils import compact_ws
 
-_FINDINGS_CACHE: "OrderedDict[tuple[Any, ...], dict[str, list[dict[str, Any]]]]" = OrderedDict()
-_FINDINGS_CACHE_MAX = 512
+# 进程里最多记住这么多场的规则 / 节奏发现（每场只留最新一份）
+FINDINGS_CACHE_SCENES = 512
+
+
+class SceneFindingsCache:
+    """规则 + 节奏发现的进程缓存：每场只留最新的一份（按正文与分段、校准签名、房风标记认），多线程安全。
+
+    以前按（场、正文哈希…）一份一份地存到 512 份：每次自动保存都多一份、旧版本再也不会被读，缓存很快塞满死版本；
+    而且没有锁——一个线程刚取到键、另一个线程就把它挤掉，``move_to_end`` 抛 KeyError（深评 GET 回 500）。
+    存进去与取出来的都是深拷贝：调用方会在发现上写 ``ignored`` / ``opinion``。"""
+
+    def __init__(self, *, maxsize: int = FINDINGS_CACHE_SCENES) -> None:
+        self.maxsize = max(1, int(maxsize))
+        self._entries: OrderedDict[str, tuple[tuple[Any, ...], list[dict[str, Any]], list[dict[str, Any]]]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, scene_id: str, version: tuple[Any, ...]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+        with self._lock:
+            entry = self._entries.get(scene_id)
+            if entry is None or entry[0] != version:
+                return None
+            self._entries.move_to_end(scene_id)
+            findings, waived = entry[1], entry[2]
+        return copy.deepcopy(findings), copy.deepcopy(waived)
+
+    def put(self, scene_id: str, version: tuple[Any, ...], findings: list[dict[str, Any]], waived: list[dict[str, Any]]) -> None:
+        entry = (version, copy.deepcopy(findings), copy.deepcopy(waived))
+        with self._lock:
+            self._entries[scene_id] = entry
+            self._entries.move_to_end(scene_id)
+            while len(self._entries) > self.maxsize:
+                self._entries.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+
+_FINDINGS_CACHE = SceneFindingsCache()
 register_cache_reset("scene_diagnosis.findings", _FINDINGS_CACHE.clear)
 
 
@@ -197,12 +239,15 @@ def cached_text_findings(
     calibration: CraftCalibration,
     house_taste: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """规则 + 节奏发现，以及这一稿里按参考作者放过的词表词；按（场、正文哈希、校准、绑定）缓存在进程里；
-    返回的是副本，调用方随便改。"""
+    """规则 + 节奏发现，以及这一稿里按参考作者放过的词表词；每场按（正文与分段、校准、绑定）缓存在进程里；
+    返回的是副本，调用方随便改。
 
-    key = (
-        str(scene_id),
+    版本里除了正文哈希（段落之间一个空格拼起来的可见文字）还有分段的指纹：只把段落分界挪到原有空格处的改动，
+    可见文字不变，发现钉的段号却变了。"""
+
+    version = (
         text.sha256,
+        text.paragraphs_sha256,
         calibration.source,
         calibration.profile_id,
         calibration.long_paragraph_chars,
@@ -211,17 +256,14 @@ def cached_text_findings(
         calibration.rules.signature,
         bool(house_taste),
     )
-    cached = _FINDINGS_CACHE.get(key)
+    cached = _FINDINGS_CACHE.get(str(scene_id), version)
     if cached is not None:
-        _FINDINGS_CACHE.move_to_end(key)
-        return copy.deepcopy(cached["findings"]), copy.deepcopy(cached["waived"])
+        return cached
     findings = rule_findings(text, house_taste=house_taste, calibration=calibration.rules) + craft_findings(
         text, calibration=calibration, house_taste=house_taste
     )
     waived = calibrate_lexicons(calibration.rules, text.plain)[1] if calibration.rules.active else []
-    _FINDINGS_CACHE[key] = {"findings": copy.deepcopy(findings), "waived": copy.deepcopy(waived)}
-    while len(_FINDINGS_CACHE) > _FINDINGS_CACHE_MAX:
-        _FINDINGS_CACHE.popitem(last=False)
+    _FINDINGS_CACHE.put(str(scene_id), version, findings, waived)
     return findings, waived
 
 

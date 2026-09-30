@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -14,23 +15,19 @@ from novel_system.db.models import (
     PassagePatchCandidate,
     SceneCard,
     SceneDraft,
-    StyleReferenceBook,
-    StyleReferenceParagraph,
     WriterEvaluation,
 )
-from novel_system.services.literary_quality import RuleCalibration
+from novel_system.services.literary_quality import DEFAULT_RULE_CALIBRATION, RuleCalibration
 from novel_system.services.literary_quality.calibration_source import (
     BoundProfile,
     bound_profile_for_policy,
-    compute_reference_rules,
+    rule_calibration_for_book,
 )
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.scene_diagnosis.calibration import (
-    _REFERENCE_CRAFT_CACHE,
     DEFAULT_CRAFT_CALIBRATION,
     CraftCalibration,
-    calibration_from_reference,
-    compute_reference_craft,
+    craft_calibration_for,
 )
 from novel_system.services.scene_diagnosis.findings import (
     cached_text_findings,
@@ -57,6 +54,7 @@ from novel_system.services.scene_text import current_author_draft, pointed_final
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.text_utils import compact_ws
 
+_LOGGER = logging.getLogger(__name__)
 STYLE_TASK_TYPE = "scene_generation"
 PATCH_CANDIDATE_LIMIT = 20
 
@@ -66,6 +64,10 @@ class SceneDiagnosisService:
         self.session = session
         # 风格参考 v3：每场一份 StylePolicy（轻量现解析，不冻结契约），一次请求内记住
         self._policy_memo: dict[str, StylePolicy] = {}
+        # 每份绑定的画像一份校准（书的版本只查一次库，而不是逐场一次；X01-03 / X01-09）
+        self._calibration_memo: dict[tuple[str, str | None, bool], CraftCalibration] = {}
+        self._rule_memo: dict[tuple[str, str | None, bool], RuleCalibration] = {}
+        self._profile_memo: dict[tuple[str, str | None], BoundProfile | None] = {}
 
     # -- 正文 --------------------------------------------------------------
 
@@ -255,9 +257,15 @@ class SceneDiagnosisService:
         return memo
 
     def bound_profile_for_policy(self, policy: StylePolicy) -> BoundProfile | None:
-        """策略绑定的画像（校准要用的三样）；未绑定 → None。书以策略为准（冻结契约记下的那本）。"""
+        """策略绑定的画像（校准要用的三样）；未绑定 → None。书以策略为准（冻结契约记下的那本）。同一个实例里
+        同一份画像只查一次库。"""
 
-        return bound_profile_for_policy(self.session, policy)
+        if not policy.bound or not policy.profile_id:
+            return None
+        key = (str(policy.profile_id), policy.book_id)
+        if key not in self._profile_memo:
+            self._profile_memo[key] = bound_profile_for_policy(self.session, policy)
+        return self._profile_memo[key]
 
     def binding_profile(self, scene: SceneCard) -> tuple[bool, BoundProfile | None]:
         """这一场有没有风格绑定，以及最具体那一层的画像（见 :meth:`style_policy`）。"""
@@ -277,63 +285,47 @@ class SceneDiagnosisService:
     def rule_calibration_for_scene(self, scene: SceneCard) -> RuleCalibration | None:
         """文学质量视图用的解析器（路由层注入 LiteraryQualityService）：有绑定给参考书的规则校准，否则 None。"""
 
-        style_bound, calibration = self.scene_calibration(scene)
-        return calibration.rules if style_bound and calibration.rules.active else None
+        return self.rule_calibration_for_policy(self.style_policy(scene))
 
     def rule_calibration_for_policy(self, policy: StylePolicy) -> RuleCalibration | None:
-        """成稿门用的解析器（风格参考 v3 V11）：按策略绑定的书校准的规则维度；未绑定 / 校准不可用 → None。"""
+        """成稿门用的解析器（风格参考 v3 V11）：按策略绑定的书校准的规则维度；未绑定 / 校准不可用 → None。
+        只算规则那一半（成稿门与文学质量视图用不到节奏读数）。"""
 
         profile = self.bound_profile_for_policy(policy)
         if profile is None:
             return None
-        rules = self.craft_calibration(profile).rules
+        rules = self._rule_calibration(profile)
         return rules if rules.active else None
 
+    def _rule_calibration(self, profile: BoundProfile) -> RuleCalibration:
+        key = (profile.profile_id, profile.book_id, bool(profile.deliberate_repetition))
+        craft = self._calibration_memo.get(key)
+        if craft is not None:
+            return craft.rules
+        rules = self._rule_memo.get(key)
+        if rules is None:
+            try:
+                rules = rule_calibration_for_book(
+                    self.session, profile.book_id, deliberate_repetition=bool(profile.deliberate_repetition)
+                )
+            except Exception:  # noqa: BLE001 — 校准读不出：按未校准处理，不让调用方失败
+                _LOGGER.warning("rule calibration unavailable for book %s", profile.book_id, exc_info=True)
+                rules = DEFAULT_RULE_CALIBRATION
+            self._rule_memo[key] = rules
+        return rules
+
     def craft_calibration(self, profile: BoundProfile | None) -> CraftCalibration:
-        """按绑定画像的参考书校准节奏检查与规则维度；读数按（书、段落数、最新段落时间）缓存在进程里
-        （『龙族』26k 段：节奏读数 ≈1.1 s、规则读数 ≈0.6 s，每个进程每本书算一次）。"""
+        """按绑定画像的参考书校准节奏检查与规则维度（``calibration.craft_calibration_for``：读数按书的版本缓存在
+        进程里）；同一个实例里同一份画像只算一次。"""
 
         if profile is None or not profile.book_id:
             return DEFAULT_CRAFT_CALIBRATION
-        try:
-            count, latest = self.session.execute(
-                select(func.count(StyleReferenceParagraph.paragraph_id), func.max(StyleReferenceParagraph.created_at)).where(
-                    StyleReferenceParagraph.book_id == profile.book_id
-                )
-            ).one()
-            count = int(count or 0)
-            if not count:
-                return DEFAULT_CRAFT_CALIBRATION
-            key = (str(profile.book_id), count, str(latest or ""))
-            stats = _REFERENCE_CRAFT_CACHE.get(key)
-            book = self.session.get(StyleReferenceBook, profile.book_id)
-            if stats is None or "rules" not in stats or "endings_source" not in (stats.get("rules") or {}):
-                rows = self.session.execute(
-                    select(StyleReferenceParagraph.text, StyleReferenceParagraph.paragraph_type)
-                    .where(StyleReferenceParagraph.book_id == profile.book_id)
-                    .order_by(StyleReferenceParagraph.paragraph_index.asc())
-                ).all()
-                texts = [str(row[0] or "") for row in rows]
-                types = [str(row[1] or "") for row in rows]
-                # 导入时记下的场界（含空行分界，段落表本身看不出来）："其后有场界" 的段落索引
-                book_stats = getattr(book, "stats_json", None) if book is not None else None
-                scene_breaks = (book_stats or {}).get("scene_breaks") if isinstance(book_stats, dict) else None
-                stats = {
-                    **compute_reference_craft(texts),
-                    "rules": compute_reference_rules(texts, paragraph_types=types, scene_breaks=scene_breaks if isinstance(scene_breaks, list) else None),
-                }
-                _REFERENCE_CRAFT_CACHE.clear()
-                _REFERENCE_CRAFT_CACHE[key] = stats
-            return calibration_from_reference(
-                profile_id=profile.profile_id,
-                book_id=profile.book_id,
-                book_title=getattr(book, "title", None),
-                stats=stats,
-                deliberate_repetition=bool(profile.deliberate_repetition),
-                rule_stats=stats.get("rules"),
-            )
-        except Exception:  # noqa: BLE001 — 校准失败退回默认阈值，不让诊断失败
-            return DEFAULT_CRAFT_CALIBRATION
+        key = (profile.profile_id, profile.book_id, bool(profile.deliberate_repetition))
+        calibration = self._calibration_memo.get(key)
+        if calibration is None:
+            calibration = craft_calibration_for(self.session, profile)
+            self._calibration_memo[key] = calibration
+        return calibration
 
     # -- 一场的诊断 --------------------------------------------------------
 

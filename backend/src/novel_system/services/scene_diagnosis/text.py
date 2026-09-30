@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 
 from novel_system.services.hash_engine import sha256_text
@@ -18,19 +19,27 @@ _WS_RE = re.compile(r"\s+")
 
 @dataclass
 class DiagnosisText:
+    """一场的诊断正文。建好之后不再改（``paragraphs`` 不追加、不替换），所以可见文字与哈希只算一次。"""
+
     layer: str
     ref: str | None
     content: str
     paragraphs: list[str] = field(default_factory=list)
     updated_at: str | None = None
 
-    @property
+    @cached_property
     def plain(self) -> str:
         return " ".join(paragraph for paragraph in self.paragraphs if paragraph.strip())
 
-    @property
+    @cached_property
     def sha256(self) -> str:
+        # 章级通读把各场的这个哈希记进评审行（contract_field_refs_json.scenes），口径不能变
         return sha256_text(self.plain)
+
+    @cached_property
+    def paragraphs_sha256(self) -> str:
+        """分段的指纹：可见文字相同、段落分界不同（段号会变）时不同。"""
+        return sha256_text("\x1e".join(self.paragraphs))
 
     @property
     def chars(self) -> int:

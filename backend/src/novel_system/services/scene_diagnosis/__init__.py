@@ -52,7 +52,6 @@ from novel_system.services.literary_quality.calibration_source import (
 )
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.scene_diagnosis.calibration import (
-    _REFERENCE_CRAFT_CACHE as _REFERENCE_CRAFT_CACHE,  # 缓存复位的登记测试从包上取
     CRAFT_ECHO_HABIT_PER_1K,
     CRAFT_LONG_PARAGRAPH_CHARS,
     CRAFT_SAME_OPENING_HABIT_PER_1K,
@@ -60,9 +59,9 @@ from novel_system.services.scene_diagnosis.calibration import (
     CraftCalibration,
     calibration_from_reference,
     compute_reference_craft,
+    craft_calibration_for,
 )
 from novel_system.services.scene_diagnosis.findings import (
-    _FINDINGS_CACHE as _FINDINGS_CACHE,  # 同上
     cached_text_findings,
     craft_findings,
     evaluation_findings,
@@ -150,6 +149,7 @@ __all__ = [
     "candidate_category_for_dimension",
     "compute_reference_craft",
     "compute_reference_rules",
+    "craft_calibration_for",
     "craft_findings",
     "evaluation_findings",
     "finding_counts",
