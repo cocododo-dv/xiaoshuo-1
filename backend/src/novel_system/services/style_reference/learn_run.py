@@ -191,17 +191,6 @@ class _LayerOutcome:
     dropped_windows: list[int]
 
 
-def set_run_status(session: Session, run_id: str | None, status: str) -> None:
-    if not run_id:
-        return
-    session.execute(
-        update(StyleReferenceRun)
-        .where(StyleReferenceRun.run_id == str(run_id), StyleReferenceRun.status == "running")
-        .values(status=status, dispatch_state=RUN_DISPATCH_STATE, finished_at=utcnow(), heartbeat_at=utcnow())
-        .execution_options(synchronize_session=False)
-    )
-
-
 class _LearnRun(JobRun):
     operation = "learn_style"
 
