@@ -67,11 +67,13 @@ from novel_system.services.llm_providers import adapter_registry, get_provider_p
 from novel_system.services.llm_route_config import (
     annotate_node_route_readiness,
     llm_readiness_summary,
+    nodes_needing_route,
     parse_route_config_or_raise,
     provider_route_api_mode,
     provider_view_ready,
     role_slot_overview,
     serialize_task_config,
+    stale_route_ids,
     validate_activating_node_route_bindings,
     writable_models_payload,
 )
@@ -278,11 +280,11 @@ class SystemConfigService:
             }
         except LLMConfigurationError:
             node_routes = {}
-        # 存量 models 快照的 node_routing 只前滚不剪枝：节点从注册表退役后，
-        # 老安装的快照仍带着它的路由。这类目录外条目没有 spec，不该渲染成
-        # 无名路由行或计入就绪统计，单列为 stale_routes 供排查。
-        stale_routes = sorted(node_id for node_id in node_routes if node_id not in node_catalog)
-        for node_id in stale_routes:
+        # 存量 models 快照的路由只前滚不剪枝：节点从注册表退役后，老安装的快照仍带着它的路由。这类目录外条目
+        # 没有 spec，不该渲染成无名路由行或计入就绪统计，单列为 stale_routes 供排查、由一键补齐 / 分工剪掉。
+        # 按快照的原始键算（解析时放在一边的、整份读不懂时的退役条目也照样列出）。
+        stale_routes = stale_route_ids(models_payload.get("parsed"))
+        for node_id in [node_id for node_id in node_routes if node_id not in node_catalog]:
             del node_routes[node_id]
         for node_id, spec in node_catalog.items():
             node_routes.setdefault(
@@ -511,21 +513,13 @@ class SystemConfigService:
         # 让「一键补齐路由」永远失败——先剪掉,并在响应里告知剪了什么。
         config_payload, pruned_stale_routes = writable_models_payload(self._category_payload("models"))
         node_routing = config_payload["node_routing"]
-        synced_node_ids: list[str] = []
         provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
         account_id = optional_text(provider.get("account_id"))
         api_mode = provider_route_api_mode(provider_id, provider)
         credential_mode = optional_text(provider.get("credential_mode"))
-        for node_id in active_llm_node_ids():
-            route = overview["node_routes"].get(node_id) or {}
-            needs_sync = (
-                not bool(route.get("configured"))
-                or not optional_text(route.get("provider_id"))
-                or not optional_text(route.get("model"))
-                or route.get("ready") is not True
-            )
-            if not needs_sync:
-                continue
+        # 逐个节点看它自己存着的路由:只重绑没配、配坏了、或服务 / 模型不就绪的节点,作者解析得了且就绪的路由一条不动
+        synced_node_ids = nodes_needing_route(node_routing, providers)
+        for node_id in synced_node_ids:
             node_routing[node_id] = default_task_config_payload(
                 node_id,
                 provider_id=provider_id,
@@ -535,7 +529,6 @@ class SystemConfigService:
                 api_mode=api_mode,
                 credential_mode=credential_mode,
             )
-            synced_node_ids.append(node_id)
 
         routing_config = parse_route_config_or_raise(config_payload)
         activate = bool_value(payload.get("activate", False))

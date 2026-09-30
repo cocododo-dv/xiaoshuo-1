@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.services.config_cache import ContentKeyedCache, safe_load_yaml
-from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs
+from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs, neutral_route_defaults
 from novel_system.services.llm_providers import default_provider_base_urls, supported_provider_types
 from novel_system.services.llm_providers.base import (
     LLMConfigurationError,
@@ -243,7 +243,9 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
 
     老快照的 ``task_routing`` 照旧解析、照旧的优先级:node_routing 里没有的节点从 task_routing 补进来,
     ``stylize`` 别名只镜像;返回值的 ``task_routing`` 是 node_routing 的镜像(给按旧名查表的调用方)。
-    每条路由缺的参数取该节点的 spec(见 ``_load_task_model_config``)。
+    每条路由缺的参数取该节点的 spec(见 ``parse_node_route``)。注册表里的节点路由写错了照旧整份报错
+    (运行时 fail-closed);没有 spec 的路由(退役节点、老别名)不会被派发,解析不了就放在一边,绝不拖垮整张表
+    ——设置页从原始键列出它们(``llm_route_config.stale_route_ids``),一键补齐 / 分工剪掉。
     """
     if raw_payload is None:
         raw_payload = {}
@@ -266,14 +268,8 @@ def parse_model_routing_config(raw_payload: Any) -> ModelRoutingConfig:
     retry_budget["provider_attempt_budget"] = provider_attempt_budget
     job_runtime = _require_mapping(raw_payload, "job_runtime")
 
-    node_routing = {
-        node_name: _load_task_model_config(node_name, node_payload)
-        for node_name, node_payload in raw_node_routing.items()
-    }
-    task_routing = {
-        task_name: _load_task_model_config(task_name, task_payload)
-        for task_name, task_payload in raw_task_routing.items()
-    }
+    node_routing = _parse_routes(raw_node_routing)
+    task_routing = _parse_routes(raw_task_routing)
 
     for task_name, task_config in task_routing.items():
         if task_name not in LEGACY_TASK_ALIASES:
@@ -296,6 +292,27 @@ def _default_models_config_path() -> Path:
     return Path(__file__).resolve().parents[4] / "config" / "models.yaml"
 
 
+def _parse_routes(raw_routes: dict[str, Any]) -> dict[str, TaskModelConfig]:
+    routes: dict[str, TaskModelConfig] = {}
+    for route_id, payload in raw_routes.items():
+        try:
+            routes[route_id] = parse_node_route(route_id, payload)
+        except LLMConfigurationError:
+            if get_llm_node_spec(route_id) is not None:
+                raise
+            # 没有 spec 的路由连中性占位都救不了(字段值非法):它不会被派发,放在一边
+    return routes
+
+
+def parse_node_route(node_id: str, payload: Any) -> TaskModelConfig:
+    """解析一条路由(字段不合法 → ``LLMConfigurationError``)。
+
+    字段级规则:快照只存作者的选择,缺的参数取节点 spec;没有 spec 的(节点后来从注册表删掉了)取中性占位
+    (``neutral_route_defaults``),好让这条惰性的退役路由照旧解析得了。一键补齐据此逐个节点判断要不要重绑。
+    """
+    return _load_task_model_config(node_id, payload)
+
+
 def _load_task_model_config(task_name: str, payload: Any) -> TaskModelConfig:
     if not isinstance(payload, dict):
         raise LLMConfigurationError(
@@ -303,9 +320,9 @@ def _load_task_model_config(task_name: str, payload: Any) -> TaskModelConfig:
             f"task_routing.{task_name} must be a mapping",
         )
     spec = get_llm_node_spec(task_name)
-    if spec is not None:
-        # 字段级:快照只存作者的选择,缺的参数取节点 spec(退役节点没有 spec,照旧要求完整)
-        payload = {**spec.route_defaults(), **payload}
+    # 字段级:快照只存作者的选择,缺的参数取节点 spec;退役节点没有 spec,取中性占位
+    defaults = spec.route_defaults() if spec is not None else neutral_route_defaults()
+    payload = {**defaults, **payload}
 
     try:
         return TaskModelConfig(

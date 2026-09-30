@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Literal
 
 
@@ -420,6 +420,20 @@ def get_llm_node_spec(node_id: str) -> LLMNodeSpec | None:
         if spec.node_id == node_id:
             return spec
     return None
+
+
+_NEUTRAL_ROUTE_FIELDS = ("temperature", "max_output_tokens", "response_format", "reasoning_level")
+
+
+def neutral_route_defaults() -> dict[str, Any]:
+    """没有 spec 的路由(节点后来从注册表删掉了)缺参数时的中性占位:``LLMNodeSpec`` 自己的字段默认值。
+
+    快照只存作者的选择(``route_payload``),节点一退役,它那条路由就没有 spec 可补参数了。这样的路由不会被派发
+    (运行时只按注册表里的节点查路由),补上占位只为让它照旧解析得了、不拖垮整张路由表:设置页列为
+    stale_routes,下一次一键补齐 / 分工剪掉——和以前整份抄进快照的退役路由一样。
+    """
+    defaults = {spec_field.name: spec_field.default for spec_field in fields(LLMNodeSpec)}
+    return {key: defaults[key] for key in _NEUTRAL_ROUTE_FIELDS}
 
 
 def default_task_config_payload(

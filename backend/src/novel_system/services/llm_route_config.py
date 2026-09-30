@@ -9,9 +9,9 @@ from __future__ import annotations
 from typing import Any
 
 from novel_system.services.errors import DomainError
-from novel_system.services.llm_node_registry import llm_node_catalog, role_slot_catalog
+from novel_system.services.llm_node_registry import active_llm_node_ids, llm_node_catalog, role_slot_catalog
 from novel_system.services.llm_provider_config import normalize_provider_model_ids
-from novel_system.services.llm_routing import LEGACY_TASK_ALIASES, parse_model_routing_config
+from novel_system.services.llm_routing import LEGACY_TASK_ALIASES, parse_model_routing_config, parse_node_route
 from novel_system.services.llm_providers.base import LLMConfigurationError, SUPPORTED_API_MODES
 from novel_system.services.value_coercion import optional_text
 
@@ -206,6 +206,35 @@ def retired_route_ids(*routing_tables: dict[str, Any]) -> list[str]:
             if key not in node_catalog and key not in LEGACY_TASK_ALIASES
         }
     )
+
+
+def stale_route_ids(models_payload: Any) -> list[str]:
+    """一份 models 配置(快照内容)里退役节点的路由 id,按原始的两张表算:解析时放在一边的退役路由也在内。"""
+    if not isinstance(models_payload, dict):
+        return []
+    tables = [models_payload.get(name) for name in ("node_routing", "task_routing")]
+    return retired_route_ids(*(table for table in tables if isinstance(table, dict)))
+
+
+def nodes_needing_route(node_routing: dict[str, Any], providers: dict[str, dict[str, Any]]) -> list[str]:
+    """一键补齐要重绑的注册表节点(按注册表顺序):没有路由、自己的路由解析不了、没绑服务或模型、服务或模型
+    不就绪。逐条解析 ``node_routing``(写路由的起点,见 ``writable_models_payload``),不看整份解析的 overview
+    ——整份快照读不懂时 overview 说「全部未配」,拿它决定重写谁会冲掉作者每一条解析得了的路由。"""
+    needed: list[str] = []
+    for node_id in active_llm_node_ids():
+        route = node_routing.get(node_id)
+        try:
+            view = serialize_task_config(node_id, parse_node_route(node_id, route), None) if route is not None else None
+        except LLMConfigurationError:
+            view = None
+        if (
+            view is None
+            or not optional_text(view.get("provider_id"))
+            or not optional_text(view.get("model"))
+            or route_readiness(view, providers).get("ready") is not True
+        ):
+            needed.append(node_id)
+    return needed
 
 
 def prune_retired_routes(config_payload: dict[str, Any]) -> list[str]:
