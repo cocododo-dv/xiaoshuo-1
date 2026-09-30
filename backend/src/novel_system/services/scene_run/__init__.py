@@ -7,7 +7,9 @@
 - :mod:`.constants` 写进检查点的跳过原因与阶段名；
 - :mod:`.near_final_gate` 准终稿重写稿的门（被拒原因、gate 小结、警告）；
 - :mod:`.results` 运行结果的装配（QC 摘要、准终稿 payload、警告合并、finality）；
-- :mod:`.snapshots` 检查点里哈希的行快照（键名与取值即契约）。
+- :mod:`.snapshots` 检查点里哈希的行快照（键名与取值即契约）；
+- :mod:`.branch_control` 准终稿第一轮 / 软 QC 第一轮之后「改不改」的分支表（存与读共用）；
+- :mod:`.context` 各阶段之间传的值（``SceneRunContext``、``ArchiveInputs``）。
 
 ``Orchestrator`` 直接继承的 mixin（彼此只经 ``self`` 互调，不互相导入，也不导入门面）：
 

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
 from functools import partial
 import logging
 from typing import Any
@@ -26,15 +25,14 @@ from novel_system.services import scene_budget
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.literary_quality import adversarial_rank_score
-from novel_system.services.qc_engine import HardQcDecision
 from novel_system.services.scene_criticality import classify_scene_with_context
 from novel_system.services.scene_generation import (
-    NeutralGenerationResult,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
 from novel_system.services.scene_lookup import get_scene_or_404
 from novel_system.services.scene_run.constants import STYLE_PATCH_REVERTED_STOP_REASON
+from novel_system.services.scene_run.context import ArchiveInputs, SceneRunContext
 from novel_system.services.scene_run.results import (
     apply_finality,
     merged_warnings,
@@ -47,30 +45,6 @@ from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER, che
 from novel_system.services.style_policy import style_policy_for_bundle
 
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class SceneRunContext:
-    """一次 ``_run_scene_pipeline`` 在各 ``_phase_*`` 之间传的东西（阶段按顺序往里填）。"""
-
-    scene: SceneCard
-    state: SceneRunState
-    contract: Any
-    author_note: str | None
-    run_policy: str
-    planning: dict[str, Any] | None = None
-    bundle: dict[str, Any] | None = None
-    criticality: Any = None
-    neutral_generation: NeutralGenerationResult | None = None
-    hard_qc: HardQcDecision | None = None
-    n_candidates: int = 1
-    candidates: list[StyleGenerationResult] = field(default_factory=list)
-    style_generation: StyleGenerationResult | None = None
-    candidate_summaries: list[dict[str, Any]] = field(default_factory=list)
-
-    @property
-    def scene_id(self) -> str:
-        return self.scene.scene_id
 
 
 class PipelineMixin:
@@ -931,6 +905,12 @@ class PipelineMixin:
             planning=planning,
             candidate_summaries=candidate_summaries,
             run_policy=run_policy,
+            # 同一进程刚做完的：归档尾段不再从检查点读回复验（只在续跑时复验，B01-11）
+            in_process=ArchiveInputs(
+                soft_qc=soft_qc,
+                final_scene=self.session.get(FinalScene, final_row_id),
+                near_final_payload=near_final_payload,
+            ),
         )
 
     def _validate_budget_checkpoint(self, state: SceneRunState) -> None:

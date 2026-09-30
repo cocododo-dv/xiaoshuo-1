@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 import logging
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from sqlalchemy import select, update
@@ -57,10 +58,10 @@ class RunLifecycleMixin:
         checkpoints = SceneRunCheckpointService(self.session)
         claim = checkpoints.acquire_execution(scene_id, effective_execution_id)
         if claim.last_node == "archived":
-            self._execution_id = effective_execution_id
-            self._run_job_id = run_job_id
-            self._checkpoint_service = checkpoints
-            try:
+            # 已归档的重放：整张清单复验，不调模型
+            with self._execution_scope(
+                effective_execution_id, run_job_id=run_job_id, checkpoints=checkpoints, llm=False
+            ):
                 self._assert_author_note_matches_bundle(
                     self._load_checkpoint_bundle(scene_id),
                     author_note,
@@ -80,23 +81,30 @@ class RunLifecycleMixin:
                         "current_final_scene_row_id": final_scene.row_id,
                     },
                 )
-            finally:
-                self._execution_id = None
-                self._run_job_id = None
-                self._checkpoint_service = None
         self._prepare_state_for_run(state, new_execution=not claim.resumed)
         state.run_policy = run_policy
         self.session.commit()
 
-        self._execution_id = effective_execution_id
-        self._run_job_id = run_job_id
-        self._checkpoint_service = checkpoints
-        self._lease_renewer = lease_renewer
-        execution_token = begin_llm_execution(
+        with self._execution_scope(
             effective_execution_id,
             run_job_id=run_job_id,
+            checkpoints=checkpoints,
             lease_renewer=lease_renewer,
-        )
+        ):
+            return self._run_with_terminal_outcome(
+                scene_id, effective_execution_id, checkpoints, author_note=author_note, run_policy=run_policy
+            )
+
+    def _run_with_terminal_outcome(
+        self,
+        scene_id: str,
+        effective_execution_id: str,
+        checkpoints: SceneRunCheckpointService,
+        *,
+        author_note: str | None,
+        run_policy: str,
+    ) -> dict:
+        """在执行范围里跑管线，按结果给执行记终态；失败时把这次执行的账本审计写回（或围上）。"""
         try:
             self._raise_if_run_cancelled()
             result = self._run_scene_pipeline(
@@ -128,12 +136,48 @@ class RunLifecycleMixin:
                 checkpoints,
             )
             raise
+
+    @contextmanager
+    def _execution_scope(
+        self,
+        execution_id: str,
+        *,
+        run_job_id: str | None,
+        checkpoints: SceneRunCheckpointService,
+        lease_renewer=None,
+        llm: bool = True,
+    ) -> Iterator[None]:
+        """一次执行的范围（B01-17）：设执行归属的四个字段、清掉上一段的读缓存，``llm`` 时开 LLM 执行上下文；
+        出范围时全部复位。"""
+        self._execution_id = execution_id
+        self._run_job_id = run_job_id
+        self._checkpoint_service = checkpoints
+        self._lease_renewer = lease_renewer
+        self._reset_execution_memos()
+        execution_token = (
+            begin_llm_execution(
+                execution_id,
+                run_job_id=run_job_id,
+                lease_renewer=lease_renewer,
+            )
+            if llm
+            else None
+        )
+        try:
+            yield
         finally:
-            end_llm_execution(execution_token)
+            if execution_token is not None:
+                end_llm_execution(execution_token)
             self._execution_id = None
             self._run_job_id = None
             self._checkpoint_service = None
             self._lease_renewer = None
+            self._reset_execution_memos()
+
+    def _reset_execution_memos(self) -> None:
+        """一次执行里的读缓存（围栏之间的运行状态行、已核对过的 bundle）。"""
+        self._checkpoint_state_cache = None
+        self._verified_bundles = None
 
     @staticmethod
     def _assert_author_note_matches_bundle(
@@ -181,15 +225,9 @@ class RunLifecycleMixin:
             for call in calls
         ]
         call_ids = {call.llm_call_id for call in calls}
+        # 只取这次执行的调用留下的失败尝试（B01-21：以前把这场历来所有失败尝试都读出来再在 Python 里筛）
         attempts = (
-            self.session.execute(
-                select(AttemptTracker).where(
-                    AttemptTracker.scene_id == scene_id,
-                    AttemptTracker.status == "failed",
-                )
-            )
-            .scalars()
-            .all()
+            self._failed_attempts_for_calls(scene_id, call_ids) if call_ids else []
         )
         attempt_snapshots: list[dict[str, Any]] = []
         for attempt in attempts:
@@ -209,6 +247,24 @@ class RunLifecycleMixin:
                 }
             )
         return {"calls": call_snapshots, "attempts": attempt_snapshots}
+
+    def _failed_attempts_for_calls(
+        self, scene_id: str, llm_call_ids: set[str]
+    ) -> list[AttemptTracker]:
+        """这一场里记在这些调用名下的失败尝试（按 details_json.llm_call_id 在库里筛）。"""
+        return list(
+            self.session.execute(
+                select(AttemptTracker).where(
+                    AttemptTracker.scene_id == scene_id,
+                    AttemptTracker.status == "failed",
+                    AttemptTracker.details_json["llm_call_id"]
+                    .as_string()
+                    .in_(sorted(llm_call_ids)),
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     def _persist_failure_audits_or_fence(
         self,
@@ -393,29 +449,25 @@ class RunLifecycleMixin:
 
         restored = 0
         restored_business_attempts = 0
+        # 已经在库里的失败尝试一次读出来（B01-21：以前每条快照查一次）；这里补回的也记进去，同一条不补两遍
+        present = {
+            (attempt.step, (attempt.details_json or {}).get("llm_call_id"))
+            for attempt in (
+                self._failed_attempts_for_calls(scene_id, restored_call_ids)
+                if restored_call_ids
+                else []
+            )
+        }
         for attempt_snapshot in snapshots.get("attempts", []):
             attempt_data = dict(attempt_snapshot)
             details = dict(attempt_data.get("details_json") or {})
             llm_call_id = details.get("llm_call_id")
             if llm_call_id not in restored_call_ids:
                 continue
-            existing_attempts = (
-                self.session.execute(
-                    select(AttemptTracker).where(
-                        AttemptTracker.scene_id == scene_id,
-                        AttemptTracker.step == attempt_data["step"],
-                        AttemptTracker.status == "failed",
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if any(
-                (attempt.details_json or {}).get("llm_call_id") == llm_call_id
-                for attempt in existing_attempts
-            ):
+            if (attempt_data["step"], llm_call_id) in present:
                 continue
             self.session.add(AttemptTracker(**attempt_data))
+            present.add((attempt_data["step"], llm_call_id))
             restored += 1
             if details.get("business_attempt_consumed", True) is not False:
                 restored_business_attempts += 1
@@ -450,19 +502,15 @@ class RunLifecycleMixin:
             scene_id,
             actor_ref="orchestrator",
         )
-        self._validate_archive_core_checkpoint(
+        # 已归档的重放：归档尾段的八份产品逐步复验（与续跑时同一张步骤表）
+        self._validate_archive_prefix(
             scene=scene,
+            contract=contract,
             final_scene=final_scene,
             carry_notes=carry_notes,
+            through=11,
             allow_terminal=True,
         )
-        self._validate_archive_rule_events_checkpoint(scene)
-        self._validate_archive_prose_checkpoint(scene, contract)
-        self._validate_archive_vector_product(scene, final_scene)
-        self._validate_archive_chapter_product(scene)
-        self._validate_archive_volume_product(scene)
-        self._validate_archive_chapter_evaluation_product(scene)
-        self._validate_archive_drift_product(scene)
         manifest = refs.get("archive_manifest")
         expected_manifest = self._archive_manifest()
         if manifest != expected_manifest or self._json_hash(
@@ -536,15 +584,21 @@ class RunLifecycleMixin:
         checkpoints = SceneRunCheckpointService(self.session)
         checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
 
-        self._execution_id = effective_execution_id
-        self._run_job_id = run_job_id
-        self._checkpoint_service = checkpoints
-        self._lease_renewer = lease_renewer
-        execution_token = begin_llm_execution(
+        with self._execution_scope(
             effective_execution_id,
             run_job_id=run_job_id,
+            checkpoints=checkpoints,
             lease_renewer=lease_renewer,
-        )
+        ):
+            return self._resume_with_terminal_outcome(scene_id, effective_execution_id, checkpoints)
+
+    def _resume_with_terminal_outcome(
+        self,
+        scene_id: str,
+        effective_execution_id: str,
+        checkpoints: SceneRunCheckpointService,
+    ) -> dict:
+        """终选后续跑：按结果给执行记终态；预算边界是可恢复的停点，返回一份带 lifecycle_budget_block 的结果。"""
         try:
             # This endpoint always owns the post-selection continuation. A failed
             # retry may already be at soft/near-final sub-checkpoints; routing it
@@ -588,9 +642,3 @@ class RunLifecycleMixin:
                 checkpoints,
             )
             raise
-        finally:
-            end_llm_execution(execution_token)
-            self._execution_id = None
-            self._run_job_id = None
-            self._checkpoint_service = None
-            self._lease_renewer = None

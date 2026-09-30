@@ -33,6 +33,8 @@ class RunCheckpointKernelMixin:
     _run_job_id: str | None
     _checkpoint_service: SceneRunCheckpointService | None
     _lease_renewer: Callable[..., Any] | None
+    # 两道围栏之间读到的运行状态行（执行 id, 行）；执行开始 / 结束时清空
+    _checkpoint_state_cache: tuple[str, SceneRunState] | None = None
 
     def _checkpoint_reached(self, node_key: str) -> bool:
         if node_key not in RUN_CHECKPOINT_ORDER:
@@ -78,7 +80,7 @@ class RunCheckpointKernelMixin:
         # still committed together below.
         self.session.flush()
         self._checkpoint_service.save_checkpoint(
-            scene_id=self._active_checkpoint_state().scene_id,
+            scene_id=self._fenced_checkpoint_state().scene_id,
             execution_id=self._execution_id,
             node_key=node_key,
             sub_index=sub_index,
@@ -130,7 +132,7 @@ class RunCheckpointKernelMixin:
         if self._checkpoint_service is None or self._execution_id is None:
             return
         self._checkpoint_service.reconcile_step_output(
-            scene_id=self._active_checkpoint_state().scene_id,
+            scene_id=self._fenced_checkpoint_state().scene_id,
             execution_id=self._execution_id,
             execution_step_key=execution_step_key,
             output_exists=False,
@@ -346,8 +348,16 @@ class RunCheckpointKernelMixin:
         return row
 
     def _active_checkpoint_state(self) -> SceneRunState:
+        """这次执行拥有的运行状态行（库里 ``active_execution_id`` 仍是它，否则 ``RUN_EXECUTION_SUPERSEDED``）。
+
+        在库里核对归属的读只在围栏处做（B01-10）：存检查点之前、对账（每次调模型之前）、执行开始时；两道围栏之间
+        的读用同一个行对象（本会话的身份映射里就是它，SELECT 也不会刷新它），一次运行少上百次 SELECT。
+        """
         if self._execution_id is None:
             raise RuntimeError("scene checkpoint context is not active")
+        cached = self._checkpoint_state_cache
+        if cached is not None and cached[0] == self._execution_id:
+            return cached[1]
         state = (
             self.session.execute(
                 select(SceneRunState).where(
@@ -363,7 +373,13 @@ class RunCheckpointKernelMixin:
                 "scene execution no longer owns state",
                 status_code=409,
             )
+        self._checkpoint_state_cache = (self._execution_id, state)
         return state
+
+    def _fenced_checkpoint_state(self) -> SceneRunState:
+        """在库里重新核对归属后的运行状态行（围栏处用）。"""
+        self._checkpoint_state_cache = None
+        return self._active_checkpoint_state()
 
     @staticmethod
     def _text_hash(content: str) -> str:

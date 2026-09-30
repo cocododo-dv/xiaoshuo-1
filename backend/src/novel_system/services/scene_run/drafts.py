@@ -32,6 +32,9 @@ from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
 
 
 class DraftCheckpointMixin:
+    # 这次执行里已核对过冻结快照的 bundle（bundle_id → 快照哈希）
+    _verified_bundles: dict[str, str] | None = None
+
     def _validate_qc_attempt(
         self,
         *,
@@ -97,18 +100,24 @@ class DraftCheckpointMixin:
             )
         if bundle.scene_id != scene_id or bundle.bundle_snapshot_hash != expected_hash:
             raise checkpoint_corrupt("checkpoint bundle identity/hash mismatch")
-        bundle_integrity = verify_bundle_snapshot_hash(
-            bundle.frozen_snapshot_json,
-            expected_hash=bundle.bundle_snapshot_hash,
-        )
-        if not bundle_integrity["valid"]:
-            raise checkpoint_corrupt(
-                "checkpoint bundle snapshot no longer matches its recorded hash",
-                details={
-                    "bundle_id": bundle.bundle_id,
-                    "bundle_integrity": bundle_integrity,
-                },
+        # 冻结快照的投影哈希一次执行只核一次（B01-11：以前一场跑下来算六遍）；执行开始 / 结束时清空
+        verified = self._verified_bundles
+        if verified is None:
+            verified = self._verified_bundles = {}
+        if verified.get(bundle.bundle_id) != bundle.bundle_snapshot_hash:
+            bundle_integrity = verify_bundle_snapshot_hash(
+                bundle.frozen_snapshot_json,
+                expected_hash=bundle.bundle_snapshot_hash,
             )
+            if not bundle_integrity["valid"]:
+                raise checkpoint_corrupt(
+                    "checkpoint bundle snapshot no longer matches its recorded hash",
+                    details={
+                        "bundle_id": bundle.bundle_id,
+                        "bundle_integrity": bundle_integrity,
+                    },
+                )
+            verified[bundle.bundle_id] = bundle.bundle_snapshot_hash
         return {
             "bundle_id": bundle.bundle_id,
             "bundle_snapshot_hash": bundle.bundle_snapshot_hash,

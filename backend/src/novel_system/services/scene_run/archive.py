@@ -38,6 +38,7 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
+from novel_system.services.scene_run.context import ArchiveInputs
 from novel_system.services.scene_run.results import apply_finality, merged_warnings, qc_decision_payload
 from novel_system.services.scene_run.snapshots import (
     archive_attempt_snapshot,
@@ -134,57 +135,59 @@ class ArchiveCheckpointMixin:
         planning,
         candidate_summaries: list[dict[str, Any]] | None,
         run_policy: str,
+        in_process: ArchiveInputs | None = None,
     ) -> dict[str, Any]:
-        """归档尾段的驱动：从子游标停下的地方接着做 4..11，每步「产出 → 自检 → 存检查点」，再复验到这一步为止的
-        全部产品；最后写 ``archived`` 与归档清单，装配运行结果。"""
+        """归档尾段的驱动：从子游标停下的地方接着做 4..11，每步「产出 → 自检 → 存检查点」；最后写 ``archived`` 与
+        归档清单，装配运行结果。
+
+        只在续跑时复验（B01-11、B03-07）：进来时已经存下的归档产品逐步复验一遍；同一进程里新做的产品存之前就核对
+        过，不再回读。``in_process`` 是同一进程刚做完的软 QC 决定、终稿行与准终稿 payload（全新的一次运行从
+        ``_finalize_after_style`` 直接交进来）；没有就从检查点读回并复验（续跑）。
+        """
         scene_id = scene.scene_id
-        selected_style = self._load_selected_style_checkpoint(scene_id)
-        soft_qc, soft_generation = self._load_soft_qc_checkpoint(
-            scene_id,
-            selected_style_generation=selected_style,
-        )
-        final_scene, near_final_payload = self._load_near_final_checkpoint(
-            scene=scene,
-            bundle=bundle,
-            source_generation=soft_generation,
-        )
+        if in_process is None:
+            selected_style = self._load_selected_style_checkpoint(scene_id)
+            soft_qc, soft_generation = self._load_soft_qc_checkpoint(
+                scene_id,
+                selected_style_generation=selected_style,
+            )
+            final_scene, near_final_payload = self._load_near_final_checkpoint(
+                scene=scene,
+                bundle=bundle,
+                source_generation=soft_generation,
+            )
+        else:
+            soft_qc = in_process.soft_qc
+            final_scene = in_process.final_scene
+            near_final_payload = in_process.near_final_payload
         state_payload = state.run_checkpoint_json or {}
         refs = state_payload.get("artifact_refs") or {}
         carry_notes = list(refs.get("carry_notes") or [])
         if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
             raise checkpoint_corrupt("near-final carry notes hash mismatch")
-        prefix = {
-            "scene": scene,
-            "contract": contract,
-            "final_scene": final_scene,
-            "carry_notes": carry_notes,
-        }
-        progress = self._near_final_checkpoint_progress()
-        if progress < 4:
-            self._archive_stage_core(
+        entry = self._near_final_checkpoint_progress()
+        if entry >= 4:
+            # 续跑：停下之前已经存下的产品逐步复验
+            archive_result = self._validate_archive_prefix(
+                scene=scene,
+                contract=contract,
+                final_scene=final_scene,
+                carry_notes=carry_notes,
+                through=entry,
+            )
+        else:
+            archive_result = self._archive_stage_core(
                 scene, final_scene, soft_qc=soft_qc, carry_notes=carry_notes
             )
-            progress = 4
-        archive_result = self._validate_archive_core_checkpoint(
-            scene=scene,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-        )
-        if progress < 5:
+        if entry < 5:
             self._archive_stage_rule_events(scene, contract, final_scene)
-            progress = 5
-        self._validate_archive_rule_events_checkpoint(scene)
-        self._validate_archive_prefix(**prefix, through=5)
-        if progress < 6:
+        if entry < 6:
             self._archive_stage_prose(scene, contract, final_scene)
-            progress = 6
-        self._validate_archive_prose_checkpoint(scene, contract)
         self._stage_archive_prose_extraction(state, final_scene)
-        self._validate_archive_prefix(**prefix, through=6)
 
         chapter_near_final = None
         for stage in ARCHIVE_PRODUCT_STAGES:
-            if progress < stage.sub_index:
+            if entry < stage.sub_index:
                 product = getattr(self, stage.run)(scene, final_scene)
                 self._validate_archive_stage_product(
                     stage, scene, final_scene, product, require_checkpoint_hash=False
@@ -195,11 +198,11 @@ class ArchiveCheckpointMixin:
                     artifact_refs={stage.hash_key: product},
                     artifact_hashes={stage.hash_key: self._json_hash(product)},
                 )
-                progress = stage.sub_index
-            product = self._validate_archive_stage_product(stage, scene, final_scene)
+            else:
+                # 进来时就存下了，上面的前缀复验核对过
+                product = self._archive_checkpoint_ref(stage.hash_key) or {}
             if stage.kind == "chapter_near_final" and product.get("outcome") == "evaluated":
                 chapter_near_final = product.get("evaluation")
-            self._validate_archive_prefix(**prefix, through=stage.sub_index)
 
         manifest = self._archive_manifest()
         state.scene_status = "archived"
@@ -266,8 +269,9 @@ class ArchiveCheckpointMixin:
         *,
         soft_qc,
         carry_notes: list[dict[str, Any]],
-    ) -> None:
-        """归档第 4 步：终稿归档（SceneMemory / 章滚动笔记 / 归档尝试），四份行快照随产品一起存。"""
+    ) -> dict[str, Any]:
+        """归档第 4 步：终稿归档（SceneMemory / 章滚动笔记 / 归档尝试），四份行快照随产品一起存；返回核对过的
+        三个行 id（与续跑时 ``_validate_archive_core_checkpoint`` 读回的一样）。"""
         archive_result = self.archiver.archive_final_scene(
             scene.scene_id,
             final_scene.row_id,
@@ -307,7 +311,7 @@ class ArchiveCheckpointMixin:
                 )
             ),
         )
-        self._validate_archive_core_checkpoint(
+        validated = self._validate_archive_core_checkpoint(
             scene=scene,
             final_scene=final_scene,
             carry_notes=carry_notes,
@@ -349,6 +353,7 @@ class ArchiveCheckpointMixin:
                 ),
             },
         )
+        return validated
 
     def _archive_stage_rule_events(
         self, scene: SceneCard, contract, final_scene: FinalScene
@@ -1708,9 +1713,11 @@ class ArchiveCheckpointMixin:
         carry_notes: list[dict[str, Any]],
         through: int,
         allow_terminal: bool = False,
-    ) -> None:
+    ) -> dict[str, Any] | None:
+        """复验归档产品到第 ``through`` 步为止；返回第 4 步核对出的行 id（``through`` 不到 4 时为 None）。"""
+        archive_result = None
         if through >= 4:
-            self._validate_archive_core_checkpoint(
+            archive_result = self._validate_archive_core_checkpoint(
                 scene=scene,
                 final_scene=final_scene,
                 carry_notes=carry_notes,
@@ -1723,6 +1730,7 @@ class ArchiveCheckpointMixin:
         for stage in ARCHIVE_PRODUCT_STAGES:
             if through >= stage.sub_index:
                 self._validate_archive_stage_product(stage, scene, final_scene)
+        return archive_result
 
     # ---- 归档效果（叙事事件 / 正文抽取 / 读数）：SceneArchiveEffects 每次调用新建，同簇互调经 dispatch=self 回到编排器
 
