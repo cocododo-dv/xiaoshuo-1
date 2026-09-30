@@ -1,8 +1,13 @@
 """归档尾段：``near_final_ready`` 的子游标 4..11 与最后的 ``archived`` 节点。
 
 ``Orchestrator`` 直接继承 ``ArchiveCheckpointMixin``：驱动（``_archive_near_final_checkpoint``）、各步的产品、
-续跑时的逐步复验与恢复、归档清单。检查点节点键、步骤键、子游标、``artifact_refs`` / ``artifact_hashes`` 键与
-``RUN_CHECKPOINT_CORRUPT`` 的校验语义一字不变。
+续跑时的逐步复验与恢复、归档清单。检查点节点键、步骤键、子游标与 ``RUN_CHECKPOINT_CORRUPT`` 的校验语义没变。
+
+持久化格式是检查点格式 v2（B01-12 / B01-14 / B03-07）：第 4 步产品 ``archive_core`` 的 ``schema_version`` 是 2，
+四份行快照只记哈希（产品里的 ``*_snapshot_hash``，``artifact_hashes`` 里各自的 ``archive_*_snapshot`` 键），
+``artifact_refs`` 里不再有 ``archive_*_snapshot`` 快照本身。读端两种格式都认：v1 的产品按
+``_ARCHIVE_CORE_PRODUCT_KEYS[1]`` 逐字段核对（格式 v2 上线前写下的检查点照样续跑）；反过来，P01c 之前的代码读不了
+v2 的检查点（回退部署时正停在归档尾段的运行会判损坏）。
 
 方法之间一律 ``self.X`` 互调：测试在编排器实例上覆盖某一步（``_run_archive_chapter_evaluation``、
 ``_archive_product``、``_archive_manifest`` …）或类上打桩，驱动与复验照样看得到。

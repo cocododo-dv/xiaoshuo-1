@@ -4,8 +4,9 @@
 ``_lease_renewer``）在 ``Orchestrator.__init__`` 里置空，``run_scene`` / ``resume_after_selection`` 开跑时设、收尾时清。
 方法之间一律 ``self.X`` 互调，测试在编排器实例上的覆盖（``_reconcile_execution_step`` 等）照样拦得住。
 
-持久化契约（检查点键名、步骤键、``sub_index``、``artifact_refs`` / ``artifact_hashes`` 键、
-``RUN_CHECKPOINT_CORRUPT`` 的校验语义、``_json_hash`` 编码）一字不变。
+内核自己的持久化契约（检查点节点键、步骤键、``sub_index``、``RUN_CHECKPOINT_CORRUPT`` 的校验语义、``_json_hash``
+编码）没变；各阶段存进 ``artifact_refs`` / ``artifact_hashes`` 的键由各阶段定——检查点格式 v2 拿掉了归档第 4 步与
+准终稿修订候选的整份行快照，只留哈希（见 :mod:`.archive` 与 :mod:`.near_final_stage`，两处都保留 v1 读取器）。
 
 续租时长每次调用时经模块属性 ``idempotency.owner_lease_ttl_seconds`` 取（测试打桩那里）。
 """

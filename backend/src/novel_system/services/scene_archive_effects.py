@@ -204,11 +204,6 @@ class SceneArchiveEffects:
                 extract_step_key if self._execution_id is not None else None
             ),
             run_job_id=self._run_job_id,
-            provider_execution_mode=getattr(
-                self.llm_runner,
-                "provider_execution_mode",
-                "online",
-            ),
         )
         result = extract_events_from_prose(
             content,
