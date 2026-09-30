@@ -47,8 +47,6 @@ from novel_system.db.models import (
 from novel_system.services.catalog_placeholders import pristine_placeholder_chapters
 from novel_system.services.catalog_trash_cascade import split_trashed_planned_cards
 from novel_system.services.chapter_title_sync import (  # noqa: F401  (is_auto_chapter_title 从这里再导出)
-    AUTO_TITLE_PATTERN,
-    PLACEHOLDER_TITLE_MARKERS,
     is_auto_chapter_title,
     mirror_chapters_into_long_synopsis,
 )
@@ -78,8 +76,6 @@ _SPINE_BY_ORDINAL = {"一": "灾一", "1": "灾一", "二": "灾二", "2": "灾�
 NEW_CHAPTER_PREFIX = "new:"
 # 占位章名的判定（「第 N 章」/「（待补）」/「未命名章节」）与章表在 07 草稿里的镜像搬到了叶子模块
 # chapter_title_sync（阶段 Z）：目录服务也要用，而它不能反过来引用本模块。
-_PLACEHOLDER_TITLE_MARKERS = PLACEHOLDER_TITLE_MARKERS
-_AUTO_TITLE_PATTERN = AUTO_TITLE_PATTERN
 # NN 章名：一句话（灾一）—— 2026-09-13 阶段 D 之前提示词 snowflake_generate_long_synopsis 与前端 07
 # 脚手架把章表镜像进 paragraphs 时用的行格式。现在 paragraphs 是五段展开的散文，章表只在 chapters 里；
 # 这个正则只为没有 chapters 的历史草稿服务。
@@ -145,13 +141,13 @@ def spine_positions(scenes: list[SnowflakeScenePlan]) -> dict[str, int]:
 
 
 def is_placeholder_chapter(chapter: Any) -> bool:
-    """07 编辑器「添加章节」点出来、还没写任何东西的章行（标题空 / 「（待补）」，摘要、章目标、脊柱全空）。
+    """07 编辑器「添加章节」点出来、还没写任何东西的章行（章名是系统起的占位——空 / 「（待补）」/「第 N 章」，
+    与 ``is_auto_chapter_title`` 同一条规则——摘要、章目标、脊柱全空）。
 
     这种章表不是作者的分章决定：把场均摊进几个「（待补）」只会得到一份没有意义的结构，
     面板应该当它不存在、直接按场景列表提议。
     """
-    title = str(getattr(chapter, "title", "") or "").strip()
-    blank_title = not title or any(marker in title for marker in _PLACEHOLDER_TITLE_MARKERS)
+    blank_title = is_auto_chapter_title(getattr(chapter, "title", ""))
     has_content = any(
         str(getattr(chapter, field, "") or "").strip() for field in ("summary", "chapter_goal", "spine")
     )
@@ -1341,8 +1337,9 @@ class SnowflakeChapteringService:
     def _refresh_auto_chapter_fields(chapters: list[SnowflakeChapterPlan], scenes: list[SnowflakeScenePlan]) -> None:
         """整张章表落库时，把**系统起的**章名与章摘要按新的结构重算；作者写的一个字都不动。
 
-        - 章名空着、或是占位「第 N 章」→ 按现在的章序重编（拆章 / 并章之后「第 3 章」不能排在第 4 位，
-          空章名物化进目录会变成章 id 字符串）；
+        - 章名空着、或是系统起的占位（「第 N 章」「（待补）」「未命名章节」，``is_auto_chapter_title``，与 AI 起章名
+          同一条规则，B07-14）→ 按现在的章序重编（拆章 / 并章之后「第 3 章」不能排在第 4 位，空章名物化进目录会变成
+          章 id 字符串，「（待补）」原样进目录也不是一个章名）；
         - 章摘要空着、或与某一场的摘要一字不差（= 提议时从场上抄来的）→ 取这一章现在的最后一场。
           作者自己写的摘要不会和某一场的摘要逐字相同。
         """
@@ -1351,8 +1348,7 @@ class SnowflakeChapteringService:
         for scene in scenes:  # scenes 已按故事序
             members.setdefault(scene.chapter_plan_id or "", []).append(scene)
         for chapter in chapters:
-            title = str(chapter.title or "").strip()
-            if not title or _AUTO_TITLE_PATTERN.match(title):
+            if is_auto_chapter_title(chapter.title):
                 chapter.title = f"第 {int(chapter.chapter_seq or 1)} 章"
             summary = str(chapter.summary or "").strip()
             mine = members.get(chapter.chapter_plan_id) or []

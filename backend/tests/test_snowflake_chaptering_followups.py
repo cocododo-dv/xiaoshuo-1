@@ -70,6 +70,21 @@ def test_only_system_made_titles_count_as_unnamed(title: str, auto: bool) -> Non
     assert is_auto_chapter_title(title) is auto
 
 
+def test_saving_the_table_numbers_every_system_made_title_by_the_same_rule(client, session) -> None:
+    """B07-14：「系统起的章名」只有一条规则。确认整张章表时，按章序重编的不只是「第 N 章」——「（待补）」
+    「未命名章节」这类占位同样是系统的，不能原样物化进目录；作者起的名字一个字都不动。"""
+    project_id = _create_project(client, "titles-placeholder-save")
+    _seed(client, project_id)
+    payload = _payload(_preview(client, project_id, scenes_per_chapter=3))
+    payload["chapters"][0]["title"] = "旧日志"
+    payload["chapters"][1]["title"] = "（待补）"
+    payload["chapters"][2]["title"] = "未命名章节"
+    saved = client.patch(f"{_base(project_id)}/chapter-plan", json=payload)
+    assert saved.status_code == 200, saved.text
+    titles = [row.title for row in SnowflakeChapteringService(session).chapter_plans(project_id)]
+    assert titles[:3] == ["旧日志", "第 2 章", "第 3 章"]
+
+
 def test_a_model_title_is_cleaned_before_it_reaches_the_chapter_table() -> None:
     assert clean_chapter_title("《旧日志》") == "旧日志"
     assert clean_chapter_title("第三章：雪夜追缉。") == "雪夜追缉"
