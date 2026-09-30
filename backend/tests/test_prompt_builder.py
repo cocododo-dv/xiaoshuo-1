@@ -248,14 +248,16 @@ def test_writer_passage_patch_schema_is_manual_only_and_targeted() -> None:
         "manual_only",
     ]
     patch_schema = payload["structured_schema"]["properties"]["patches"]["items"]
+    # writer_passage_patch v4（重评 R12，批准 #20b）：每个选项回一组段落（replacement_text 由归一按段落拼出来，旧读者
+    # 照旧读它）；不再让模型把原文与 target_text_ref 抄回来——选区一长，抄回来的那份就把输出上限吃光
     assert patch_schema["required"] == [
-        "target_text_ref",
-        "source_excerpt",
-        "replacement_text",
+        "paragraphs",
         "patch_type",
         "changed_dimensions",
         "why_it_helps",
     ]
+    assert patch_schema["properties"]["paragraphs"] == {"type": "array", "minItems": 1, "items": {"type": "string"}}
+    assert not {"target_text_ref", "source_excerpt", "replacement_text"} & set(patch_schema["properties"])
     assert (
         "Required top-level JSON keys: patches, rationale, manual_only"
         in payload["user_prompt"]
