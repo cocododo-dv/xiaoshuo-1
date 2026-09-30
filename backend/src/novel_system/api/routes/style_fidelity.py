@@ -3,14 +3,14 @@
 - ``GET /api/v1/scenes/{scene_id}/style-fidelity``：这一场每个阶段最新的读数（首稿 / 定向修改 / 补丁 / 终稿 / 对照检查）、
   风格步与补丁的决定、最近的参考评审分；
 - ``GET /api/v1/projects/{project_id}/style-fidelity``：作品的读数走势、近期常见偏差、按维平均（确定性分与评审分分开）；
-- ``GET /api/v2/style-reference/readings/{reading_id}``：一条读数；
 - ``POST /api/v2/style-reference/checks``：对照检查——建一个作业（作业表 kind=check），读数 + 参考评审 + 抄袭门；
 - ``GET /api/v2/style-reference/checks/{job_id}``：对照检查作业的进度与结果读数；
 - ``POST /api/v2/style-reference/checks/{job_id}/cancel``：取消（排队中 / 心跳过期的当场收尾，运行中的在下一个检查点收尾；
   已结束 409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``），响应与 ``GET`` 同形。
 
 读数入库只有 ``services.style_reference.readings.record_fidelity_reading`` 一个入口；这里的读接口都不写库。
-旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）与它的报告表都已删除（迁移 0091）。
+旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）与它的报告表都已删除（迁移 0091）；单读一条读数的
+``GET /api/v2/style-reference/readings/{id}`` 没有界面调用（读数随场景 / 作品 / 对照检查的载荷给出），2026-09-30 删除。
 """
 
 from __future__ import annotations
@@ -25,8 +25,6 @@ from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import StyleFidelityReading
-from novel_system.services.errors import DomainError
 from novel_system.services.style_fidelity_view import (
     project_style_fidelity,
     scene_style_fidelity,
@@ -41,7 +39,6 @@ from novel_system.services.style_reference.check_job import (
 )
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.jobs import dispatch_job
-from novel_system.services.style_reference.readings import reading_payload
 from novel_system.services.scene_lookup import get_scene_or_404, require_project
 
 router = APIRouter(tags=["style_fidelity"])
@@ -78,22 +75,6 @@ def get_project_style_fidelity(
 ):
     require_project(session, project_id)
     return ok(project_style_fidelity(session, project_id), req_id=request_id_of(request))
-
-
-@router.get(f"{STYLE_REFERENCE_PREFIX}/readings/{{reading_id}}")
-def get_fidelity_reading(
-    reading_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    row = session.get(StyleFidelityReading, reading_id)
-    if row is None:
-        raise DomainError(
-            "STYLE_REFERENCE_READING_NOT_FOUND",
-            f"reading {reading_id!r} not found",
-            status_code=404,
-        )
-    return ok({"reading": reading_payload(row)}, req_id=request_id_of(request))
 
 
 @router.post(f"{STYLE_REFERENCE_PREFIX}/checks")

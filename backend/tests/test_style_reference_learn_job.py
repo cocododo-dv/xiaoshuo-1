@@ -1062,12 +1062,20 @@ def test_learn_routes_create_dispatch_cancel_and_report(client, session, monkeyp
     assert entry["kind"] == "learn" and entry["kind_label"] == "学习文风" and entry["title"] == "雨夜集"
     assert entry["phases_done"] == list(learn_job.PHASE_ORDER)
 
-    # 找发现与证据(矩阵读的就是这个)
-    runs = client.get(f"{PREFIX}/books/learn_book/runs").json()["data"]["runs"]
-    assert runs[0]["dispatch_state"] == "learn_job"
-    findings = client.get(f"{PREFIX}/runs/{runs[0]['run_id']}/findings?include=evidence").json()["data"]["findings"]
-    assert findings and all(len(f["evidence"]) >= 2 for f in findings)
-    assert "base_confidence" not in findings[0] and "user_vote" not in findings[0]
+    # 学习作业留下的血缘：run 行标着 learn_job，每条发现至少两条证据（文风画像页的依据读的就是这些）
+    session.expire_all()
+    run = session.get(StyleReferenceRun, detail["learn"]["result"]["run_id"])
+    assert run is not None and run.dispatch_state == "learn_job"
+    findings = session.scalars(select(StyleReferenceFinding).where(StyleReferenceFinding.run_id == run.run_id)).all()
+    evidence_counts = {
+        finding.finding_id: len(
+            session.scalars(
+                select(StyleReferenceEvidence.evidence_id).where(StyleReferenceEvidence.finding_id == finding.finding_id)
+            ).all()
+        )
+        for finding in findings
+    }
+    assert findings and all(count >= 2 for count in evidence_counts.values())
 
     # 取消:没有活动作业 → 409
     cancel = client.post(f"{PREFIX}/books/learn_book/learn/cancel", json={}, headers={"X-Idempotency-Key": "cancel-1"})

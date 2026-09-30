@@ -177,9 +177,9 @@ def test_profile_needs_relearn_when_the_text_changed(client: TestClient) -> None
         book = session.get(StyleReferenceBook, book_id)
         book.stats_json = {**dict(book.stats_json or {}), "paragraph_root_sha256": "0" * 64}
         session.commit()
-    profiles = client.get(f"{PREFIX}/profiles", params={"book_id": book_id}).json()["data"]["profiles"]
-    assert [p["profile_id"] for p in profiles] == [profile_id]
-    assert profiles[0]["relearn_reason"] == "text_changed" and "profile_json" not in profiles[0]
+    summary = client.get(f"{PREFIX}/books/{book_id}").json()["data"]["book"]["profile"]
+    assert summary["profile_id"] == profile_id
+    assert summary["relearn_reason"] == "text_changed" and "profile_json" not in summary
 
 
 # ---------------------------------------------------------------------------

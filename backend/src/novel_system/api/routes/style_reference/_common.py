@@ -17,44 +17,6 @@ PATH_PREFIX = "/api/v2/style-reference"
 ROUTE_TAGS = ["style_reference"]
 
 
-def serialize_run(run) -> dict[str, Any]:
-    return {
-        "run_id": run.run_id,
-        "book_id": run.book_id,
-        "status": run.status,
-        "phase": run.phase,
-        "dispatch_state": run.dispatch_state,
-        "requested_layers": list(run.requested_layers_json or []),
-        "coverage_json": run.coverage_json or {},
-        "heartbeat_at": run.heartbeat_at,
-        "error_code": run.error_code,
-        "error_text": run.error_text,
-        "retryable": bool(run.retryable),
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "created_at": run.created_at,
-        "updated_at": run.updated_at,
-    }
-
-
-def serialize_finding(finding, *, evidence: list | None = None) -> dict[str, Any]:
-    """一条抽取发现(文风卡行的依据;``?include=evidence`` 时带证据引文)。v3 起发现不再单独审核 / 投票:
-    作者在文风卡上逐句 ✓ / ✗(``POST /profiles/{id}/card-lines/{line_id}``)。"""
-    payload = {
-        "finding_id": finding.finding_id,
-        "book_id": finding.book_id,
-        "run_id": finding.run_id,
-        "extraction_id": finding.extraction_id,
-        "sub_dimension": finding.sub_dimension,
-        "finding_kind": finding.finding_kind,
-        "statement": finding.statement,
-        "confidence": finding.confidence,
-    }
-    if evidence is not None:
-        payload["evidence"] = evidence
-    return payload
-
-
 def serialize_banned_term(term) -> dict[str, Any]:
     return {
         "term_id": term.term_id,
@@ -99,6 +61,4 @@ __all__ = [
     "dispatch",
     "llm_client_and_enabled",
     "serialize_banned_term",
-    "serialize_finding",
-    "serialize_run",
 ]

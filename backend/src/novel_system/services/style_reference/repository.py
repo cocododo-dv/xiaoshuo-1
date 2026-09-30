@@ -105,20 +105,6 @@ class StyleReferenceRepository:
     def get_run(self, run_id: str) -> StyleReferenceRun | None:
         return self.session.get(StyleReferenceRun, run_id)
 
-    def list_runs(
-        self,
-        *,
-        book_id: str | None = None,
-        status: str | None = None,
-    ) -> list[StyleReferenceRun]:
-        stmt = select(StyleReferenceRun)
-        if book_id is not None:
-            stmt = stmt.where(StyleReferenceRun.book_id == book_id)
-        if status is not None:
-            stmt = stmt.where(StyleReferenceRun.status == status)
-        stmt = stmt.order_by(StyleReferenceRun.created_at, StyleReferenceRun.run_id)
-        return list(self.session.scalars(stmt).all())
-
     # ----------------------------------------------------------- extractions
     def create_extraction(self, **kwargs: Any) -> StyleReferenceExtraction:
         row = StyleReferenceExtraction(**kwargs)
@@ -156,19 +142,6 @@ class StyleReferenceRepository:
         self.session.add(row)
         self.session.flush()
         return row
-
-    def list_evidences_for_findings(
-        self, finding_ids: list[str]
-    ) -> list[StyleReferenceEvidence]:
-        """批量 IN 查询(PR-23 evidence 读路径,避免逐条 get)。"""
-        if not finding_ids:
-            return []
-        stmt = (
-            select(StyleReferenceEvidence)
-            .where(StyleReferenceEvidence.finding_id.in_(finding_ids))
-            .order_by(StyleReferenceEvidence.created_at, StyleReferenceEvidence.evidence_id)
-        )
-        return list(self.session.scalars(stmt).all())
 
     # ------------------------------------------------------------- findings
     def create_finding(self, **kwargs: Any) -> StyleReferenceFinding:

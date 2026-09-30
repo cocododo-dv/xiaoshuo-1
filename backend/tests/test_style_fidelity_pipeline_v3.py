@@ -474,8 +474,7 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
     assert status.status_code == 200
     payload = status.json()["data"]
     assert payload["job"]["status"] == "succeeded" and payload["reading"]["judge"]["overall"] == 7.2
-    single = client.get(f"/api/v2/style-reference/readings/{payload['reading']['reading_id']}")
-    assert single.status_code == 200 and single.json()["data"]["reading"]["source"] == "manual_check"
+    assert payload["reading"]["reading_id"] and payload["reading"]["source"] == "manual_check"
 
 
 def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) -> None:
@@ -617,7 +616,6 @@ def test_judge_output_is_rescaled_and_drops_excluded_dimensions() -> None:
 def test_fidelity_endpoints_404_for_unknown_targets(client) -> None:
     assert client.get("/api/v1/scenes/NOPE/style-fidelity").status_code == 404
     assert client.get("/api/v1/projects/NOPE/style-fidelity").status_code == 404
-    assert client.get("/api/v2/style-reference/readings/NOPE").status_code == 404
     assert client.get("/api/v2/style-reference/checks/NOPE").status_code == 404
 
 

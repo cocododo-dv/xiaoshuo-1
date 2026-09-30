@@ -616,22 +616,3 @@ def test_failed_idempotent_action_does_not_half_commit():
         assert StyleReferenceRepository(session).get_run("sr_run_hd_half") is None, (
             "失败 action 的半成品 run 行不应被提交"
         )
-
-
-# ---------------------------------------------------------------------------
-# 10. GET /books/{id}/runs（矩阵深层页定位最新 run）
-# ---------------------------------------------------------------------------
-
-
-def test_list_book_runs_newest_first_and_status_filter():
-    book_id = _seed_book("listruns", cloud_policy="segments_only", with_paragraphs=False)
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_run(run_id="sr_run_lr_1", book_id=book_id, status="done", phase="done")
-        repo.create_run(run_id="sr_run_lr_2", book_id=book_id, status="running", phase="extract")
-        session.commit()
-    with _client() as client:
-        runs = client.get(f"{PREFIX}/books/{book_id}/runs").json()["data"]["runs"]
-        assert [r["run_id"] for r in runs] == ["sr_run_lr_2", "sr_run_lr_1"], "应按 created_at 倒序"
-        done = client.get(f"{PREFIX}/books/{book_id}/runs?status=done").json()["data"]["runs"]
-        assert [r["run_id"] for r in done] == ["sr_run_lr_1"]

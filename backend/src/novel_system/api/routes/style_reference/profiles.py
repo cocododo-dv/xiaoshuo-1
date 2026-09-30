@@ -1,6 +1,6 @@
-"""画像:列表(摘要)与详情(文风画像页)、文风卡行 ✓ / ✗、禁用词、本场预览(注入预览 dryrun)。
+"""画像:详情(文风画像页)、文风卡行 ✓ / ✗、禁用词、本场预览(注入预览 dryrun)。画像摘要在书库载荷里
+(``GET /books`` 每本书的 ``profile``);单列画像摘要的 ``GET /profiles`` 没有界面调用,2026-09-30 删除。
 
-- ``GET /profiles``:摘要,**不带** ``profile_json``(台账 U10);
 - ``GET /profiles/{id}``:文风画像页要的全部数据(规范化的 16 维文风卡、每句的状态与依据引文、气质、声音、结构);
 - ``POST /profiles/{id}/card-lines/{line_id}``:一句 ✓(总带上)/ ✗(不用这句),不重新学习、不让画像失效(U3);
 - ``POST /profiles/{id}/injection-preview``:只读的本场预览——与起草同一套选窗、同一个块次序(U6 / J12)。
@@ -40,7 +40,7 @@ from novel_system.services.style_reference.schemas import (
     InjectionPreviewStats,
     SystemPromptFragments,
 )
-from novel_system.services.style_reference.summaries import list_profile_summaries, profile_detail
+from novel_system.services.style_reference.summaries import profile_detail
 from novel_system.services.style_reference.protected_terms import PROTECTED_SOURCE, dismiss_protected_term
 
 router = APIRouter(tags=ROUTE_TAGS)
@@ -71,20 +71,6 @@ def _profile_or_404(session: Session, profile_id: str):
             status_code=404,
         )
     return profile
-
-
-@router.get(f"{PATH_PREFIX}/profiles")
-def list_profiles(
-    request: Request,
-    book_id: str | None = None,
-    status: str | None = None,
-    session: Session = Depends(get_session),
-):
-    """画像摘要(按创建时间):画像版本、学在何时、文风卡几句、要不要重新学;不带 ``profile_json``。"""
-    return ok(
-        {"profiles": list_profile_summaries(session, book_id=book_id, status=status)},
-        req_id=request_id_of(request),
-    )
 
 
 @router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}")

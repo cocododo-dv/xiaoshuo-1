@@ -22,7 +22,6 @@ from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
 )
 from novel_system.services.style_reference.inject.bindings import (
-    describe_binding_layers,
     most_specific_binding,
     resolve_binding_layers,
 )
@@ -771,19 +770,19 @@ def test_preview_uses_the_drafting_selection_and_order(session) -> None:
     assert card_only["stats"]["few_shot_windows"] == 0 and "strategy" not in card_only["fragments"]
 
 
-def test_describe_binding_layers_is_cheap_and_marks_the_applied_layer(session, monkeypatch) -> None:
+def test_binding_layers_list_every_hit_and_only_the_most_specific_applies(session, monkeypatch) -> None:
+    """命中层由泛到具体（登记来源用），生效的是最具体的一层；解析只查列、不渲染。"""
     from novel_system.services.style_reference.inject import render as render_module
 
     _b1, project_profile = seed_reference(session, "layers_p")
     _b2, scene_profile = seed_reference(session, "layers_s")
     bind(session, project_profile, binding_id="layers_project")
     bind(session, scene_profile, binding_id="layers_scene", scope="scene", scope_ref_id="SC_LAYERS", config_json={"sample_windows": 8})
-    monkeypatch.setattr(render_module, "render_style", lambda *a, **k: pytest.fail("describe must not render"))
-    data = describe_binding_layers(session, PROJECT_ID, "scene_generation", scene_id="SC_LAYERS")
-    assert [layer["binding_id"] for layer in data["layers"]] == ["layers_project", "layers_scene"]
-    assert [layer["applied"] for layer in data["layers"]] == [False, True]
-    assert data["merged"]["binding_id"] == "layers_scene" and data["merged"]["sample_windows"] == 8
-    assert [item["binding_id"] for item in data["deduplicated"]] == ["layers_project"]
+    monkeypatch.setattr(render_module, "render_style", lambda *a, **k: pytest.fail("resolving layers must not render"))
+    layers = resolve_binding_layers(session, PROJECT_ID, "scene_generation", scene_id="SC_LAYERS")
+    assert [layer.binding_id for layer in layers] == ["layers_project", "layers_scene"]
+    applied = most_specific_binding(layers)
+    assert applied.binding_id == "layers_scene" and applied.config_json["sample_windows"] == 8
 
 
 # ---------------------------------------------------------------------------
