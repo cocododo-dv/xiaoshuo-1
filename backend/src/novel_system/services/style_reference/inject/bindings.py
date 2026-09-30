@@ -1,8 +1,8 @@
 """风格参考 v3 — 绑定解析（从 ``InjectionService`` 搬出，叶子模块：只依赖 ORM）。
 
-优先级单点 :data:`SCOPE_RANK`（``runtime_contract.contract_layer`` 与 ``style_policy`` 的轻量现解析都引用它，
-不各写一份）：scene（0）> character（1，POV 在前、其余台上人物按出场顺序）> project（2）> global（3）；同级取
-最新创建的一条。v3 起**只冻结最具体的一层**（:func:`most_specific_binding`）——旧的多层合并按层序把样例 /
+优先级单点 :data:`SCOPE_RANK`（``runtime_contract.contract_layer`` 也引用它），排序单点 :func:`rank_bindings`
+（冻结路径与 ``style_policy`` 的轻量现解析共用，不各写一份）：scene（0）> character（1，POV 在前、其余台上人物
+按出场顺序）> project（2）> global（3）；同级取最新创建的一条。v3 起**只冻结最具体的一层**（:func:`most_specific_binding`）——旧的多层合并按层序把样例 /
 声音取自「最后一层」，而角色层是按 POV 优先排的，最后一层恰恰是最不重要的配角（J7）。
 
 ``resolve_binding_layers`` 仍返回由泛到具体的全部命中层：bundle 需要它们的 profile id 做来源登记，
@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
@@ -59,17 +60,17 @@ def binding_rank(
     character_ids: Sequence[str] | None,
     scene_id: str | None,
 ) -> int:
-    """scene=0 > character=1 > project=2 > global=3；不匹配 99。"""
+    """:data:`SCOPE_RANK`：scene=0 > character=1 > project=2 > global=3；不匹配 99。"""
     scope = getattr(binding, "scope", None)
     ref = getattr(binding, "scope_ref_id", None)
     if scene_id and scope == "scene" and ref == scene_id:
-        return 0
+        return SCOPE_RANK["scene"]
     if character_ids and scope == "character" and ref in character_ids:
-        return 1
+        return SCOPE_RANK["character"]
     if project_id and scope == "project" and ref == project_id:
-        return 2
+        return SCOPE_RANK["project"]
     if scope == "global":
-        return 3
+        return SCOPE_RANK["global"]
     return _UNMATCHED
 
 
@@ -81,33 +82,72 @@ def _char_order(binding: Any, character_ids: Sequence[str] | None) -> int:
     return 0
 
 
-def active_bindings(session: Session, task_type: str) -> list[StyleReferenceInjectionBinding]:
-    """``status=active`` 且画像也 ``active`` 的绑定（画像状态只查一列，不加载整份 profile_json）。"""
-    bindings = list(
-        session.scalars(
-            select(StyleReferenceInjectionBinding).where(
-                StyleReferenceInjectionBinding.task_type == str(task_type),
-                StyleReferenceInjectionBinding.status == "active",
-            )
-        ).all()
-    )
-    if not bindings:
-        return []
-    profile_ids = sorted({str(b.profile_id) for b in bindings})
-    active_profiles = {
-        str(pid)
-        for pid, status in session.execute(
-            select(StyleReferenceProfile.profile_id, StyleReferenceProfile.status).where(
-                StyleReferenceProfile.profile_id.in_(profile_ids)
-            )
-        )
-        if status == "active"
-    }
-    return [b for b in bindings if str(b.profile_id) in active_profiles]
+@dataclass(frozen=True)
+class RankedBinding:
+    """命中作用域的一条活动绑定，带它的排序位置与所指画像的状态 / 书（只查列）。"""
+
+    binding: StyleReferenceInjectionBinding
+    rank: int
+    profile_status: str
+    book_id: str | None
+
+    @property
+    def usable(self) -> bool:
+        """所指画像是 active 的——只有这样的绑定能生效（画像归档 / 草稿 / 已删的绑定不生效）。"""
+        return self.profile_status == "active"
 
 
 def _sort_key(binding: Any, *, rank: int, character_ids: Sequence[str] | None) -> tuple[int, int, int]:
     return (rank, _char_order(binding, character_ids), -ts_to_int(getattr(binding, "created_at", None)))
+
+
+def rank_bindings(
+    session: Session,
+    project_id: str | None,
+    task_type: str,
+    *,
+    character_ids: Sequence[str] | None = None,
+    scene_id: str | None = None,
+) -> list[RankedBinding]:
+    """命中这个作用域的全部活动绑定（不论画像状态），按生效顺序排好：scene > 角色（POV 在前、其余台上人物按出场
+    顺序）> project > global，同级取最新——第一条 ``usable`` 的就是生效的那条。
+
+    冻结路径（:func:`resolve_active_binding` / :func:`resolve_binding_layers`）只看 ``usable`` 的；
+    ``style_policy`` 的轻量现解析也用这一份：命中的绑定全部不 usable 时降级（C7），而不是当作未绑定。"""
+    if not project_id and not character_ids and not scene_id:
+        return []
+    matched: list[tuple[int, StyleReferenceInjectionBinding]] = []
+    for binding in session.scalars(
+        select(StyleReferenceInjectionBinding).where(
+            StyleReferenceInjectionBinding.task_type == str(task_type),
+            StyleReferenceInjectionBinding.status == "active",
+        )
+    ).all():
+        rank = binding_rank(binding, project_id=project_id, character_ids=character_ids, scene_id=scene_id)
+        if rank < _UNMATCHED:
+            matched.append((rank, binding))
+    if not matched:
+        return []
+    profile_rows = {
+        str(pid): (str(status or ""), str(book_id or "") or None)
+        for pid, status, book_id in session.execute(
+            select(
+                StyleReferenceProfile.profile_id,
+                StyleReferenceProfile.status,
+                StyleReferenceProfile.book_id,
+            ).where(StyleReferenceProfile.profile_id.in_(sorted({str(b.profile_id) for _rank, b in matched})))
+        )
+    }
+    matched.sort(key=lambda item: _sort_key(item[1], rank=item[0], character_ids=character_ids))
+    return [
+        RankedBinding(
+            binding=binding,
+            rank=rank,
+            profile_status=profile_rows.get(str(binding.profile_id), ("", None))[0],
+            book_id=profile_rows.get(str(binding.profile_id), ("", None))[1],
+        )
+        for rank, binding in matched
+    ]
 
 
 def resolve_active_binding(
@@ -118,18 +158,11 @@ def resolve_active_binding(
     character_ids: Sequence[str] | None = None,
     scene_id: str | None = None,
 ) -> StyleReferenceInjectionBinding | None:
-    """最具体的一条活动绑定（scene > POV 角色 > 其余台上角色 > project > global，同级取最新）。"""
-    if not project_id and not character_ids and not scene_id:
-        return None
-    candidates: list[tuple[tuple[int, int, int], Any]] = []
-    for binding in active_bindings(session, task_type):
-        rank = binding_rank(binding, project_id=project_id, character_ids=character_ids, scene_id=scene_id)
-        if rank < _UNMATCHED:
-            candidates.append((_sort_key(binding, rank=rank, character_ids=character_ids), binding))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    """最具体的一条活动绑定（scene > POV 角色 > 其余台上角色 > project > global，同级取最新；画像须 active）。"""
+    for ranked in rank_bindings(session, project_id, task_type, character_ids=character_ids, scene_id=scene_id):
+        if ranked.usable:
+            return ranked.binding
+    return None
 
 
 def resolve_binding_layers(
@@ -144,40 +177,32 @@ def resolve_binding_layers(
 
     只用于登记来源与列给作者看；生效的是 :func:`most_specific_binding`。
     """
-    if not project_id and not character_ids and not scene_id:
-        return []
-    ranked: list[tuple[int, Any]] = []
-    for binding in active_bindings(session, task_type):
-        rank = binding_rank(binding, project_id=project_id, character_ids=character_ids, scene_id=scene_id)
-        if rank < _UNMATCHED:
-            ranked.append((rank, binding))
+    # rank_bindings 已按生效顺序排好：每一档里第一条就是这一档最该生效的，角色档里 POV 在前、同一角色取最新
+    ranked = [
+        entry
+        for entry in rank_bindings(session, project_id, task_type, character_ids=character_ids, scene_id=scene_id)
+        if entry.usable
+    ]
     if not ranked:
         return []
 
-    def _best(allowed: set[int]) -> Any | None:
-        pool = [(rank, b) for rank, b in ranked if rank in allowed]
-        if not pool:
-            return None
-        pool.sort(key=lambda item: _sort_key(item[1], rank=item[0], character_ids=character_ids))
-        return pool[0][1]
+    def _best(*scopes: str) -> Any | None:
+        allowed = {SCOPE_RANK[scope] for scope in scopes}
+        return next((entry.binding for entry in ranked if entry.rank in allowed), None)
 
-    characters = sorted(
-        (b for rank, b in ranked if rank == 1),
-        key=lambda b: (_char_order(b, character_ids), -ts_to_int(getattr(b, "created_at", None))),
-    )
     seen: set[str] = set()
     character_layers = []
-    for binding in characters:
-        ref = str(binding.scope_ref_id)
-        if ref not in seen:
+    for entry in ranked:
+        ref = str(entry.binding.scope_ref_id)
+        if entry.rank == SCOPE_RANK["character"] and ref not in seen:
             seen.add(ref)
-            character_layers.append(binding)
+            character_layers.append(entry.binding)
     layers: list[Any] = []
-    base = _best({2, 3})
+    base = _best("project", "global")
     if base is not None:
         layers.append(base)
     layers.extend(character_layers)
-    scene_binding = _best({0})
+    scene_binding = _best("scene")
     if scene_binding is not None:
         layers.append(scene_binding)
     return layers
@@ -313,11 +338,12 @@ def describe_binding_layers(
 
 __all__ = [
     "SCOPE_RANK",
-    "active_bindings",
+    "RankedBinding",
     "binding_rank",
     "describe_binding_layers",
     "most_specific_binding",
     "ordered_character_ids",
+    "rank_bindings",
     "resolve_active_binding",
     "resolve_binding_layers",
     "ts_to_int",
