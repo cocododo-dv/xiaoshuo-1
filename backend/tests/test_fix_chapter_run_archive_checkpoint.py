@@ -26,9 +26,10 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     ChapterGoal,
-    ChapterMemory,
     ChapterRunJob,
+    FinalScene,
     LlmCall,
+    SceneCard,
     SceneRunState,
     StoryProject,
     WriterEvaluation,
@@ -349,18 +350,33 @@ class _RejectedBeforeLedgerRunner:
         )
 
 
-def _seed_chapter_with_final_memory(session, *, chapter_id: str = "CH_AC01") -> str:
+def _seed_chapter_with_final_scene(session, *, chapter_id: str = "CH_AC01") -> str:
+    """章级评审要读的整章正文：一场、已归档的当前终稿（章级读者读各场终稿现拼，R13）。"""
     session.add(StoryProject(project_id="PRJ_AC01", title="归档回归", outline_text=""))
     session.add(ChapterGoal(chapter_id=chapter_id, project_id="PRJ_AC01", planned_scene_count=1, chapter_goal="章目标"))
+    session.flush()
+    scene_id = f"{chapter_id}_SC01"
+    final_id = f"final_scene_{scene_id}_v1"
     session.add(
-        ChapterMemory(
-            row_id=f"chapter_memory_final_{chapter_id}_v1",
+        SceneCard(
+            scene_id=scene_id,
             chapter_id=chapter_id,
-            aggregate_stage="final",
+            project_id="PRJ_AC01",
+            scene_seq=1,
+            scene_goal="章目标",
+            is_chapter_last=1,
+        )
+    )
+    session.add(SceneRunState(scene_id=scene_id, scene_status="archived", current_final_scene_row_id=final_id))
+    session.add(
+        FinalScene(
+            row_id=final_id,
+            scene_id=scene_id,
+            chapter_id=chapter_id,
             content="她把信封拆成两半，一半留给河。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
+            status="archived",
+            source_bundle_id="bundle_ac01",
+            source_bundle_hash="hash_ac01",
         )
     )
     session.commit()
@@ -368,7 +384,7 @@ def _seed_chapter_with_final_memory(session, *, chapter_id: str = "CH_AC01") -> 
 
 
 def test_evaluate_chapter_rejected_before_ledger_fails_closed_with_real_code(session) -> None:
-    chapter_id = _seed_chapter_with_final_memory(session)
+    chapter_id = _seed_chapter_with_final_scene(session)
     service = NearFinalAcceptanceService(session, llm_runner=_RejectedBeforeLedgerRunner())
 
     with pytest.raises(DomainError) as raised:

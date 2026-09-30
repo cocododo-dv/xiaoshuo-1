@@ -371,7 +371,7 @@ def test_public_scene_budget_initialization_creates_missing_state_once_under_two
 
 
 def test_orchestrator_budget_checkpoint_uses_only_public_canonical_initializer() -> None:
-    source = inspect.getsource(Orchestrator._run_scene_pipeline)
+    source = inspect.getsource(Orchestrator._phase_budget)
 
     assert "ensure_scene_budget_initialized(" in source
 

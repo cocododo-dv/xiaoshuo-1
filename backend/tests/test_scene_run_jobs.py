@@ -562,7 +562,6 @@ def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
     assert not verifier._checkpoint_execution_owner_matches(first_job.job_id, "rogue-job")
     historical_context = verifier._auto_critique_patch_context(
         "CHJOB_SC01",
-        provider_execution_mode="online",
         execution_id=first_job.job_id,
         run_job_id=first_job.job_id,
     )

@@ -393,7 +393,7 @@ class PovKnowledgeProjection:
         self,
         brief_lines: list[str],
         project_id: str,
-        scene_seq: None,
+        scene_seq: None = None,
         *,
         scene_id: str | None = None,
         pov_character_id: str | None = None,

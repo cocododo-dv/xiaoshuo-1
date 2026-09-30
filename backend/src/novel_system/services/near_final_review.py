@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
-    ChapterMemory,
     LlmCall,
     RevisionCandidate,
     SceneCard,
@@ -467,21 +466,8 @@ class NearFinalAcceptanceService:
         )
 
     def _chapter_source(self, chapter: ChapterGoal) -> dict[str, Any]:
-        memory = self.session.execute(
-            select(ChapterMemory)
-            .where(
-                ChapterMemory.chapter_id == chapter.chapter_id,
-                ChapterMemory.aggregate_stage == "final",
-                ChapterMemory.active_flag == 1,
-            )
-            .order_by(ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
-        ).scalars().first()
-        if memory is not None and (memory.content or "").strip():
-            return {
-                "content": memory.content,
-                "source_text_ref": f"chapter_memory:{memory.row_id}",
-                "source_bundle_id": None,
-            }
+        """章级评审读的整章正文：各场当前终稿按场序现拼（重评 R13）。不读存下来的章汇总——流水线只在章末那一场
+        重建它，先归档章末、后归档前面的场时它漏掉前面那场；场序重排、场进了回收站它也不跟着变。"""
         scene_ids = [scene.scene_id for scene in active_chapter_scenes(self.session, chapter.chapter_id)]
         # 每场的当前正文（SceneRunState 指针），不是每场最后建的那一行（B03-04）
         current_finals = current_final_scenes(self.session, scene_ids)
@@ -492,7 +478,7 @@ class NearFinalAcceptanceService:
         ]
         content = "\n\n".join(parts).strip()
         if not content:
-            raise DomainError("CHAPTER_NEAR_FINAL_SOURCE_MISSING", "chapter near-final review needs aggregate or final scene text", status_code=409)
+            raise DomainError("CHAPTER_NEAR_FINAL_SOURCE_MISSING", "chapter near-final review needs final scene text", status_code=409)
         return {"content": content, "source_text_ref": f"chapter_assembled:{chapter.chapter_id}", "source_bundle_id": None}
 
     def _chapter_bundle(self, chapter: ChapterGoal, source: dict[str, Any]) -> dict[str, Any]:

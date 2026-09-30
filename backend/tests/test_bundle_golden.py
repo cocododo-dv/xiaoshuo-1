@@ -297,7 +297,7 @@ def test_frozen_bundles_match_the_golden_snapshots(session) -> None:
     _seed_book(session)
     actual: dict[str, dict] = {}
     for scene_id in ("P_GOLD_CH01_SC01", "P_GOLD_CH01_SC02", "P_GOLD_CH02_SC01", "P_GOLD_CH02_SC02"):
-        built = BundleBuilder(session).build(scene_id, "P2")
+        built = BundleBuilder(session).build(scene_id)
         entry = _fingerprint(built["snapshot"])
         entry["bundle_snapshot_hash"] = built["bundle_snapshot_hash"]
         actual[scene_id] = entry

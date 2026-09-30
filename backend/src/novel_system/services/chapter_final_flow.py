@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import threading
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -25,6 +24,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_actions import llm_setup_action
+from novel_system.services.background_jobs import daemon_lane
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
@@ -37,6 +37,12 @@ from novel_system.services.project_status import (
     PROJECT_STATUS_CHAPTER_RUNNING,
     PROJECT_STATUS_COMPLETED,
     REFERENCE_SAFETY_RULES,
+)
+from novel_system.services.run_job_leases import (
+    CHAPTER_RUN_LANE,
+    CHAPTER_RUN_LANE_WORKERS,
+    mark_dispatched,
+    unmark_dispatched,
 )
 from novel_system.services.scene_lookup import require_project
 from novel_system.settings import get_settings
@@ -697,12 +703,22 @@ def _project_status_after_run(
 def start_project_chapter_run_job_worker(
     project_id: str, chapter_id: str, job_id: str
 ) -> None:
-    thread = threading.Thread(
-        target=_run_project_chapter_job_worker,
-        args=(project_id, chapter_id, job_id),
-        daemon=True,
-    )
-    thread.start()
+    """项目里「运行本章」的任务交给有界的章任务车道（与不带项目的章任务同一条，B03-13/14），不再每个任务起一条
+    裸线程：同一任务在本进程里只派发一次；进程在退出（车道已关）就不派发，任务行留着，下次启动的恢复接着派。
+    租约由 ``ChapterRunnerService.run_full`` 登记，进程退出时就地到期。"""
+    if not mark_dispatched(job_id):
+        return
+    lane = daemon_lane(CHAPTER_RUN_LANE, max_workers=CHAPTER_RUN_LANE_WORKERS)
+    # 车道关闭时按第一个参数（任务 id）注销丢下的派发
+    if not lane.submit(_run_dispatched_project_chapter_job, job_id, project_id, chapter_id):
+        unmark_dispatched(job_id)
+
+
+def _run_dispatched_project_chapter_job(job_id: str, project_id: str, chapter_id: str) -> None:
+    try:
+        _run_project_chapter_job_worker(project_id, chapter_id, job_id)
+    finally:
+        unmark_dispatched(job_id)
 
 
 def _run_project_chapter_job_worker(

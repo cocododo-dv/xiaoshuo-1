@@ -384,15 +384,6 @@ def llm_auto_critique(
             error_code=None,
             **ownership,
         )
-    if getattr(llm_runner, "provider_execution_mode", "online") == "offline_deterministic":
-        return replace(
-            rule_result,
-            outcome="not_invoked",
-            reason="offline_unsupported",
-            llm_call_id=None,
-            error_code=None,
-            **ownership,
-        )
     if llm_context is None:
         raise LLMAccountingRejected(
             "LLM_ACCOUNTING_CONTEXT_REQUIRED",
@@ -403,15 +394,9 @@ def llm_auto_critique(
             "LLM_ACCOUNTING_SESSION_REQUIRED",
             "LLM critic execution requires a durable accounting session",
         )
-    # A called advisory critic is always an online provider product.  Offline
-    # runners return the explicit no-call envelope above, so accepting an
-    # offline mode on a called context would let coordinated ledger rewrites
-    # masquerade as a zero-attempt deterministic success.
-    called_context = (
-        llm_context
-        if llm_context.provider_execution_mode == "online"
-        else replace(llm_context, provider_execution_mode="online")
-    )
+    # A called advisory critic is always an online provider product (the only
+    # execution mode an LLMCallContext can carry).
+    called_context = llm_context
 
     context_block = _format_scene_context(scene_context)
     task_prompt = CRITIC_TASK_PROMPT_TEMPLATE.format(

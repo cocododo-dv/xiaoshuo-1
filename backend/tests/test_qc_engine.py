@@ -47,6 +47,11 @@ from tests.real_llm_fakes import ScenePipelineOnlineFake
 QC_REPORT_ID_RE = re.compile(r"^qc_report_CH100_SC01_\d{8}T\d{12}Z_[0-9a-f]{12}$")
 
 
+# 合成场景：有「选」、有代价、结尾有动作——过得了准终稿的房风场景机制门（B03-16b：以前产品代码里有一条认
+# 「Provider-generated」字头的旁路替测试跳过这道门，现在删了）
+STYLE_SCENE_TEXT = "Provider-generated style scene text. She has to choose, and the cost is the ledger. A red envelope changes hands."
+PATCHED_SCENE_TEXT = "Provider-generated patched scene text. She has to choose, and the cost is the ledger. A red envelope changes hands."
+
 class FakeSceneClient(AccountedGenerateMixin):
     def __init__(self, *, satisfied_source: bool = True) -> None:
         self.requests: list[LLMRequest] = []
@@ -67,7 +72,7 @@ class FakeSceneClient(AccountedGenerateMixin):
             usage = {"input_tokens": 111, "output_tokens": 29, "total_tokens": 140}
         elif len(self.requests) == 2:
             payload = {
-                "scene_text": "Provider-generated style scene text. A red envelope changes hands.",
+                "scene_text": STYLE_SCENE_TEXT,
                 "style_notes": ["leaned harder into rhythm and inner tension"],
             }
             request_id = "resp_style_001"
@@ -75,7 +80,7 @@ class FakeSceneClient(AccountedGenerateMixin):
             usage = {"input_tokens": 121, "output_tokens": 33, "total_tokens": 154}
         else:
             payload = {
-                "scene_text": "Provider-generated patched scene text. A red envelope changes hands.",
+                "scene_text": PATCHED_SCENE_TEXT,
                 "style_notes": ["applied one controlled patch pass"],
             }
             request_id = "resp_patch_001"
@@ -556,7 +561,7 @@ def test_run_scene_hard_qc_pass_persists_report_and_continues(session) -> None:
     assert soft_report.next_action == "pass"
     assert state.current_qc_report_id == soft_report.qc_report_id
     assert state.current_human_review_event_id is None
-    assert style_draft.content == "Provider-generated style scene text. A red envelope changes hands."
+    assert style_draft.content == STYLE_SCENE_TEXT
     assert final_scene.content == style_draft.content
     assert final_scene.generation_llm_call_id == style_draft.generation_llm_call_id
     assert state.current_style_draft_row_id == style_draft.row_id
@@ -651,7 +656,7 @@ def test_run_scene_soft_qc_patch_rechecks_before_finalize(session) -> None:
     assert len(reports) == 2
     assert reports[0].next_action == "patch"
     assert reports[1].next_action == "pass"
-    assert patch_draft.content == "Provider-generated patched scene text. A red envelope changes hands."
+    assert patch_draft.content == PATCHED_SCENE_TEXT
     assert patch_draft.content != style_draft.content
     assert final_scene.content == patch_draft.content
     assert final_scene.generation_llm_call_id == patch_draft.generation_llm_call_id

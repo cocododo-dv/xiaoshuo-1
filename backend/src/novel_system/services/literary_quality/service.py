@@ -1,4 +1,9 @@
-"""文学质量视图（``/api/v1/literary-quality/*``）：按文本层取正文（作者稿 / 终稿 / 章节汇总 / 拼接）、逐条分析与三个入口。"""
+"""文学质量视图（``/api/v1/literary-quality/*``）：按文本层取正文（作者稿 / 终稿 / 章节汇总 / 拼接）、逐条分析与三个入口。
+
+章的正文读时现拼（重评 R13，[批准#21]）：默认层（作者稿优先）与 ``runtime`` 层拼各场当前终稿，不读存下来的章汇总
+（它可能落后于逐场终稿）；显式挑「章记忆终稿」这一层时按 :func:`aggregator.derive_chapter_aggregate` 现拼这一章
+归档过的各场记忆。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import AuthorDraft, ChapterGoal, ChapterMemory, FinalScene, SceneCard
+from novel_system.db.models import AuthorDraft, ChapterGoal, FinalScene, SceneCard
+from novel_system.services.aggregator import Aggregator, ChapterAggregateDerivation
 from novel_system.services.errors import DomainError
 from novel_system.services.literary_quality.calibration import RuleCalibration
 from novel_system.services.literary_quality.chapter_set import (
@@ -38,7 +44,7 @@ from novel_system.services.literary_quality.report import (
 from novel_system.services.literary_quality.rules import analyze_literary_quality
 from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment, weighted_score
 from novel_system.services.manuscript_html import plain_manuscript_text
-from novel_system.services.scene_text import current_author_drafts, final_chapter_memories, pointed_final_scenes
+from novel_system.services.scene_text import current_author_drafts, pointed_final_scenes
 from novel_system.services.value_coercion import optional_text
 
 
@@ -52,11 +58,11 @@ RuleCalibrationResolver = Callable[[SceneCard], "RuleCalibration | None"]
 class _TextRows:
     """一批章 / 场按文本层要读的正文行，几次批量查询查齐（B04-14：以前逐章逐场各查两三次，巡检一次看全书就是
     上百条查询）。取行的规则与单行查询逐条相同（``scene_text`` 的批量版本）：作者稿取最新的 current 一份；终稿取
-    运行状态指着的那一份、指错了取最新一份；章节汇总同理。"""
+    运行状态指着的那一份、指错了取最新一份。章记忆读时现拼（:meth:`Aggregator.derive_final_aggregates`）。"""
 
     chapter_drafts: Mapping[str, AuthorDraft]
     scene_drafts: Mapping[str, AuthorDraft]
-    chapter_memories: Mapping[str, ChapterMemory]
+    chapter_memories: Mapping[str, ChapterAggregateDerivation]
     finals: Mapping[str, FinalScene]
     chapter_scenes: Mapping[str, list[SceneCard]]  # 拼整章用：每章未删的场，按 scene_seq、scene_id
 
@@ -372,7 +378,7 @@ class LiteraryQualityService:
     ) -> _TextRows:
         """这一批章 / 场按 ``text_layer`` 会读到的正文行（用不到的那几种不查）。"""
         with_drafts = text_layer == "author_draft_preferred"
-        with_memories = text_layer in {"author_draft_preferred", "runtime", "chapter_memory_final"}
+        with_memories = text_layer == "chapter_memory_final"
         with_assembled = text_layer in {"author_draft_preferred", "runtime", "chapter_assembled"}
         with_scene_finals = text_layer in {"author_draft_preferred", "runtime", "runtime_final_scene"}
         if not with_assembled:
@@ -387,7 +393,7 @@ class LiteraryQualityService:
         return _TextRows(
             chapter_drafts=current_author_drafts(self.session, "chapter", chapter_ids) if with_drafts else {},
             scene_drafts=current_author_drafts(self.session, "scene", scene_ids) if with_drafts else {},
-            chapter_memories=final_chapter_memories(self.session, chapter_ids) if with_memories else {},
+            chapter_memories=Aggregator(self.session).derive_final_aggregates(chapter_ids) if with_memories else {},
             finals=pointed_final_scenes(self.session, final_ids),
             chapter_scenes=chapter_scenes,
         )
@@ -405,17 +411,18 @@ class LiteraryQualityService:
         if text_layer == "runtime_final_scene":
             return None
 
-        if text_layer in {"author_draft_preferred", "runtime", "chapter_memory_final"}:
-            memory = rows.chapter_memories.get(chapter_id)
-            if memory is not None:
-                return {
-                    "text_layer": "chapter_memory_final",
-                    "source_ref": f"chapter_memory:{memory.row_id}",
-                    "content": memory.content or "",
-                }
-            if text_layer == "chapter_memory_final":
+        if text_layer == "chapter_memory_final":
+            # 章记忆读时现拼：这一章此刻归档过的各场记忆按场序（位置对不上、拼不出来的章不列）
+            derivation = rows.chapter_memories.get(chapter_id)
+            if derivation is None or derivation.status != "derived":
                 return None
+            return {
+                "text_layer": "chapter_memory_final",
+                "source_ref": f"chapter_memory:{chapter_id}",
+                "content": derivation.content,
+            }
 
+        # 默认层与 runtime 层：各场当前终稿现拼（以前先读存下来的章汇总，它可能漏场、还是旧场序——R13）
         if text_layer in {"author_draft_preferred", "runtime", "chapter_assembled"}:
             parts: list[str] = []
             for scene in rows.chapter_scenes.get(chapter_id, []):

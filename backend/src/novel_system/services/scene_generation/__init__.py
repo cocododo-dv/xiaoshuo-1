@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -48,7 +48,10 @@ from novel_system.services.scene_generation.contracts import (
     STYLE_STEP_VERSION,
     NeutralGenerationResult,
     ProductCallback,
+    ProductMetadata,
+    RankingAudit,
     SceneGenerationPostprocessError,
+    StepReconciler,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
@@ -136,7 +139,10 @@ __all__ = [
     "STYLE_STEP_VERSION",
     "NeutralGenerationResult",
     "ProductCallback",
+    "ProductMetadata",
+    "RankingAudit",
     "SceneGenerationPostprocessError",
+    "StepReconciler",
     "ConstraintSnapshot",
     "SceneGenerationService",
     "StyleGenerationResult",
@@ -216,10 +222,8 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         resume_base: StyleGenerationResult | None = None,
-        product_callback: (
-            Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
-        ) = None,
-        step_reconciler: Callable[[str], None] | None = None,
+        product_callback: ProductCallback | None = None,
+        step_reconciler: StepReconciler | None = None,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -281,9 +285,7 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         n_candidates: int = 3,
-        # 编排器还在传补候选的上限（P01c 删掉这个传参后一起删）；多稿不再补候选，用不上它
-        max_candidates: int | None = None,
-        step_reconciler: Callable[[str], None] | None = None,
+        step_reconciler: StepReconciler | None = None,
         resume_bases: dict[str, StyleGenerationResult] | None = None,
         resume_products: dict[str, StyleGenerationResult] | None = None,
         product_callback: ProductCallback | None = None,

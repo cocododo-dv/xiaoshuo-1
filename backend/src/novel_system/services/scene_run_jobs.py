@@ -39,7 +39,11 @@ from novel_system.services.run_job_leases import (
     unmark_dispatched,
     update_observed,
 )
-from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, scene_job_execution_id
+from novel_system.services.scene_run_checkpoint import (
+    SceneRunCheckpointService,
+    scene_job_execution_id,
+    scene_run_outcome,
+)
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
 _LOGGER = logging.getLogger(__name__)
@@ -63,6 +67,14 @@ _BUDGET_REJECTION_CODES = frozenset(
         "LLM_USAGE_EXCEEDS_RESERVATION",
     }
 )
+# 一次场景运行停下时的场景状态 → 任务的 current_step（完成还是阻塞由 scene_run_outcome 定；表里没有的是重写中）
+_SCENE_JOB_STEP_BY_STATUS = {
+    "archived": "archived",
+    "awaiting_candidate_selection": "awaiting_candidate_selection",
+    "quality_warning_pending_acceptance": "awaiting_author_acceptance",
+    "human_review_required": "blocked",
+    "near_final_revision_required": "acceptance_review_running",
+}
 
 
 class SceneRunJobLease(RunJobLease):
@@ -1038,20 +1050,15 @@ def _run_scene_job_worker(job_id: str) -> None:
             return
         state = session.get(SceneRunState, scene_id)
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
-        if scene_status == "archived":
-            service.mark_finished(job, status="completed", current_step="archived", result=result, owner=owner)
-        elif scene_status == "awaiting_candidate_selection":
-            # Wave 3 关键场景终选停点：候选已就绪等作者选择——任务算完成而非阻塞
-            service.mark_finished(job, status="completed", current_step="awaiting_candidate_selection", result=result, owner=owner)
-        elif scene_status == "quality_warning_pending_acceptance":
-            # Wave 2 严格模式停点：有稿可归档，等作者显式接受——任务算完成而非阻塞
-            service.mark_finished(job, status="completed", current_step="awaiting_author_acceptance", result=result, owner=owner)
-        elif scene_status == "human_review_required":
-            service.mark_finished(job, status="blocked", current_step="blocked", result=result, owner=owner)
-        elif scene_status == "near_final_revision_required":
-            service.mark_finished(job, status="blocked", current_step="acceptance_review_running", result=result if isinstance(result, dict) else {}, owner=owner)
-        else:
-            service.mark_finished(job, status="blocked", current_step="rewrite_running", result=result if isinstance(result, dict) else {}, owner=owner)
+        # 与编排器同一张终态表（scene_run_outcome）：归档、终选停点（候选就绪等作者选）、严格模式停点（有稿可归档、
+        # 等作者显式接受）都算完成；其余是阻塞，current_step 说停在哪。
+        service.mark_finished(
+            job,
+            status="blocked" if scene_run_outcome(scene_status) == "failed" else "completed",
+            current_step=_SCENE_JOB_STEP_BY_STATUS.get(scene_status, "rewrite_running"),
+            result=result if isinstance(result, dict) else {},
+            owner=owner,
+        )
         session.commit()
     except DomainError as exc:
         session.rollback()

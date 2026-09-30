@@ -179,12 +179,9 @@ def extract_events_from_prose(
             "LLM_ACCOUNTING_SESSION_REQUIRED",
             "prose event extraction requires a durable accounting session",
         )
-    # A called extractor is an online advisory product.
-    called_context = (
-        llm_context
-        if llm_context.provider_execution_mode == "online"
-        else replace(llm_context, provider_execution_mode="online")
-    )
+    # A called extractor is an online advisory product (the only execution mode an
+    # LLMCallContext can carry).
+    called_context = llm_context
 
     template = _extractor_template()
     try:

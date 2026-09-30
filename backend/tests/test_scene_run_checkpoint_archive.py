@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from functools import partial
 
 import pytest
 from sqlalchemy import func, select
@@ -24,14 +26,17 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.aggregator import Aggregator
+from novel_system.services.aggregator import VOLUME_CHAPTER_SPAN, Aggregator, is_chapter_aggregate_of
+from novel_system.services.archiver import Archiver
+from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
+from novel_system.services.scene_run import archive as scene_run_archive
 
 # Importing the autouse fixture runs every test here against the accounted online fake provider.
 from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
-from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _seed_resume_scene
+from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _response, _seed_resume_scene
 
 
 def test_post_archive_failure_retries_missing_side_effects_before_archived_checkpoint(session) -> None:
@@ -230,7 +235,7 @@ def test_archive_prose_checkpoint_is_durable_and_tamper_blocks_before_next_step(
         )
 
     first = orchestrator()
-    first._index_scene_to_vector_store = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    first._run_archive_vector_index = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         RuntimeError("stop after prose checkpoint")
     )
     with pytest.raises(RuntimeError, match="stop after prose checkpoint"):
@@ -245,8 +250,8 @@ def test_archive_prose_checkpoint_is_durable_and_tamper_blocks_before_next_step(
     session.commit()
 
     resumed = orchestrator()
-    resumed._index_scene_to_vector_store = lambda *_args, **_kwargs: pytest.fail(
-        "tampered prose prefix must block before vector indexing"
+    resumed._run_archive_vector_index = lambda *_args, **_kwargs: pytest.fail(
+        "tampered prose prefix must block before the vector slot"
     )
     with pytest.raises(DomainError) as corrupt:
         resumed.run_scene("CH_RESUME_SC01", execution_id=execution_id)
@@ -493,9 +498,11 @@ def test_chapter_evaluation_settled_parent_without_row_blocks_resend_and_budget_
     assert state.scene_tokens_used == tokens_before
 
 
-def test_archive_vector_external_write_is_reused_after_cursor_crash(session) -> None:
+def test_archive_stage_seven_is_a_retired_slot_that_resumes_and_is_tamper_checked(session) -> None:
+    """[批准#1]（重评 R1）：归档第 7 步的向量索引已退役——槽位还在（sub_index 7、清单条目），记一份 retired 空产品；
+    停在它之后的检查点照样续跑，产品被改动照样拦。"""
     _seed_resume_scene(session)
-    execution_id = "idempotency:archive-vector-crash"
+    execution_id = "idempotency:archive-vector-retired"
     generation_client = _CountingGenerationClient()
 
     def orchestrator() -> Orchestrator:
@@ -506,64 +513,38 @@ def test_archive_vector_external_write_is_reused_after_cursor_crash(session) -> 
         )
 
     first = orchestrator()
-    original = first._index_scene_to_vector_store
-
-    def _write_then_crash(scene, content, **kwargs):  # noqa: ANN001, ANN003, ANN202
-        result = original(scene, content, **kwargs)
-        assert result["outcome"] in {"indexed", "already_present", "non_persistent"}
-        raise RuntimeError("crash after vector write")
-
-    first._index_scene_to_vector_store = _write_then_crash
-    with pytest.raises(RuntimeError, match="crash after vector write"):
+    first._run_archive_chapter_aggregate = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("stop after the retired vector slot")
+    )
+    with pytest.raises(RuntimeError, match="stop after the retired vector slot"):
         first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
     state = session.get(SceneRunState, "CH_RESUME_SC01")
-    assert state.run_checkpoint_json["sub_index"] == 6
-    assert state.scene_status != "archived"
-
-    resumed = orchestrator()
-    resumed._run_archive_chapter_aggregate = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        RuntimeError("stop after vector cursor")
-    )
-    with pytest.raises(RuntimeError, match="stop after vector cursor"):
-        resumed.run_scene("CH_RESUME_SC01", execution_id=execution_id)
-    session.refresh(state)
     assert state.run_checkpoint_json["sub_index"] == 7
-    vector_product = state.run_checkpoint_json["artifact_refs"]["archive_vector_product"]
-    assert vector_product["outcome"] == "non_persistent"
-    assert vector_product["write_status"] == "already_present"
-
-
-@pytest.mark.parametrize("external_change", ["cleared", "rebuilt_by_other_scene"])
-def test_memory_vector_product_is_non_persistent_and_fast_path_ignores_external_reset(
-    session, external_change
-) -> None:
-    _seed_resume_scene(session)
-    execution_id = f"idempotency:memory-vector-{external_change}"
-
-    def orchestrator() -> Orchestrator:
-        return Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-        )
-
-    assert orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)["scene_status"] == "archived"
-    state = session.get(SceneRunState, "CH_RESUME_SC01")
     product = state.run_checkpoint_json["artifact_refs"]["archive_vector_product"]
-    assert product["backend"] == "memory"
-    assert product["outcome"] == "non_persistent"
-    from novel_system.services.vector_store import get_vector_store
+    assert product["kind"] == "vector_index"
+    assert product["outcome"] == "retired"
+    assert product["step_key"] == "archive:vector_index:0"
+    assert not {"backend", "collection_name", "write_status"} & set(product)
 
-    store = get_vector_store(backend="memory")
-    if external_change == "cleared":
-        store.delete_collection(product["collection_name"])
-    else:
-        store.write_collection(
-            product["collection_name"],
-            [{"id": "another-scene", "text": "rebuilt elsewhere"}],
-        )
+    tampered = deepcopy(state.run_checkpoint_json)
+    tampered["artifact_refs"]["archive_vector_product"]["reason"] = "tampered"
+    original = state.run_checkpoint_json
+    state.run_checkpoint_json = tampered
+    session.commit()
+    with pytest.raises(DomainError) as corrupt:
+        orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
 
-    assert orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)["scene_status"] == "archived"
+    session.refresh(state)
+    state.run_checkpoint_json = original
+    state.run_execution_status = "failed"
+    session.commit()
+    provider_calls = len(generation_client.requests)
+    result = orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    assert result["scene_status"] == "archived"
+    assert len(generation_client.requests) == provider_calls
+    manifest = session.get(SceneRunState, "CH_RESUME_SC01").run_checkpoint_json["artifact_refs"]["archive_manifest"]
+    assert [(entry["sub_index"], entry["kind"]) for entry in manifest][3] == (7, "vector_index")
 
 
 def test_non_chapter_last_writes_fixed_archive_products_and_ordered_manifest(session) -> None:
@@ -610,7 +591,11 @@ def test_archived_fast_path_revalidates_full_manifest_before_return(session) -> 
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
 
 
-def test_archive_core_checkpoint_contains_full_independently_hashed_snapshots(session) -> None:
+def test_archive_core_checkpoint_keeps_independent_snapshot_hashes_not_the_bodies(session) -> None:
+    """检查点格式 v2：第 4 步的四份行快照（终稿、场景记忆、章滚动笔记、归档尝试）各记一个独立的哈希，快照本身
+    不进检查点——以前产品里存一份、另外每份再单独存一遍，整场正文在这一步就出现六次，之后每次存检查点都整份重写；
+    准终稿评审的修订候选快照（带整份来源稿）也只记哈希。续跑时按库里的行重算快照核对哈希（改了任何一行都判损坏，
+    见下一条）。"""
     _seed_resume_scene(session)
     execution_id = "idempotency:archive-core-snapshots"
     Orchestrator(
@@ -622,21 +607,27 @@ def test_archive_core_checkpoint_contains_full_independently_hashed_snapshots(se
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     refs = state.run_checkpoint_json["artifact_refs"]
     hashes = state.run_checkpoint_json["artifact_hashes"]
-    assert {
+    snapshot_keys = {
         "archive_final_scene_snapshot",
         "archive_scene_memory_snapshot",
         "archive_rolling_note_snapshot",
         "archive_attempt_snapshot",
-    }.issubset(refs)
+    }
+    assert snapshot_keys.issubset(hashes)
+    assert not snapshot_keys & set(refs)
+    core = refs["archive_core"]
+    assert core["schema_version"] == 2
     assert {
-        "archive_final_scene_snapshot",
-        "archive_scene_memory_snapshot",
-        "archive_rolling_note_snapshot",
-        "archive_attempt_snapshot",
-    }.issubset(hashes)
-    assert refs["archive_scene_memory_snapshot"]["runtime_eligibility_basis"] == "direct_read"
-    assert refs["archive_rolling_note_snapshot"]["revision_no"] == 1
-    assert "qc_report_id" in refs["archive_attempt_snapshot"]["details_json"]
+        core["final_scene_snapshot_hash"],
+        core["scene_memory_snapshot_hash"],
+        core["rolling_note_snapshot_hash"],
+        core["archive_attempt_snapshot_hash"],
+    } == {hashes[key] for key in snapshot_keys}
+    final_text = session.get(FinalScene, refs["final_scene_row_id"]).content
+    assert final_text and final_text not in json.dumps(core, ensure_ascii=False)
+    # 准终稿评审的修订候选同理：只记哈希，不再存带整份来源稿的快照
+    assert not {"near_eval0_candidate_snapshot", "near_eval1_candidate_snapshot"} & set(refs)
+    assert {"near_eval0_candidate", "near_eval1_candidate"} & set(hashes)
 
 
 @pytest.mark.parametrize(
@@ -1046,3 +1037,332 @@ def test_chapter_last_sub10_crash_reuses_evaluation_parent_and_budget(session) -
         parent.budget_charged_tokens,
         parent.total_tokens,
     ) == counters
+
+
+# ---------------------------------------------------------------------------------------------- 章汇总的输入（R13）
+
+
+def _archived_sibling(session, scene_id: str, *, scene_seq: int, text: str) -> None:
+    """同一章里先归档好的另一场（不走流水线：只落终稿、归档）。"""
+    session.add(
+        SceneCard(
+            scene_id=scene_id,
+            chapter_id="CH_RESUME",
+            project_id="P_RESUME",
+            scene_seq=scene_seq,
+            scene_goal="sibling",
+            is_chapter_last=0,
+        )
+    )
+    final_id = f"final_scene_{scene_id}_v1"
+    session.add(SceneRunState(scene_id=scene_id, scene_status="ready", current_final_scene_row_id=final_id))
+    session.add(
+        FinalScene(
+            row_id=final_id,
+            scene_id=scene_id,
+            chapter_id="CH_RESUME",
+            content=text,
+            status="draft",
+            source_bundle_id=f"bundle_{scene_id}",
+            source_bundle_hash=f"hash_{scene_id}",
+        )
+    )
+    session.flush()
+    Archiver(session).archive_final_scene(scene_id, final_id, carry_notes_json=[], author_confirmed_final=True)
+    session.commit()
+
+
+class _FixedTextGenerationClient(_CountingGenerationClient):
+    """起草的每个节点都交回同一段正文：章末那一场的终稿就是它，测试才好让别的场含着它。"""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    def generate(self, request):  # noqa: ANN001, ANN201
+        self.requests.append(request)
+        return _response({"scene_text": self.text}, f"generation-{len(self.requests)}")
+
+
+def _stop_after_sub9(
+    session, execution_id: str, *, generation_client: _CountingGenerationClient | None = None
+) -> dict:
+    """章末那一场跑到归档第 10 步（章级准终稿评审）前停下；返回检查点里的章汇总产品。"""
+    first = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(
+            session, llm_client=generation_client or _CountingGenerationClient()
+        ),
+        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+    )
+    first._run_archive_chapter_evaluation = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("stop after sub9")
+    )
+    with pytest.raises(RuntimeError, match="stop after sub9"):
+        first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    assert state.run_checkpoint_json["sub_index"] == 9
+    return state.run_checkpoint_json["artifact_refs"]["archive_chapter_product"]
+
+
+def _resume(session, execution_id: str) -> dict:
+    return Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
+        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+    ).run_scene("CH_RESUME_SC01", execution_id=execution_id)
+
+
+def test_chapter_last_archive_leaves_a_trashed_sibling_out_of_the_aggregate_and_resumes(session) -> None:
+    """R13：回收站里的场不在这一章里。以前它的记忆算成「位置孤儿」，章末那一场的章汇总从此拼不出来；现在汇总照常
+    重建、只是没有它，输入清单与汇总一致，续跑时复验通过。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    _archived_sibling(session, "CH_RESUME_SC00", scene_seq=1, text="回收站里那一场的正文。")
+    AuthorLifecycleService(session).trash_scenes(["CH_RESUME_SC00"], "author")
+    session.commit()
+    execution_id = "idempotency:chapter-last-trashed-sibling"
+
+    product = _stop_after_sub9(session, execution_id)
+
+    assert product["outcome"] == "aggregated"
+    assert [item["scene_id"] for item in product["inputs"]] == ["CH_RESUME_SC01"]
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    final = session.get(FinalScene, session.get(SceneRunState, "CH_RESUME_SC01").current_final_scene_row_id)
+    assert memory.content == final.content
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+def test_chapter_last_resume_accepts_an_aggregate_whose_scene_order_differs_from_memory_row_ids(session) -> None:
+    """章汇总按场序拼，输入清单按 row_id 排；两者不一致时（手加的场 id 带随机后缀、雪花的场 id 来自构思行）续跑复验
+    也得认——以前复验按 row_id 序重拼再逐字比，章末那一场在第 8 步之后停下就再也续不上（RUN_CHECKPOINT_CORRUPT）。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    # 场序在前、row_id 在后的一场
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text="林昭先读了旧信。")
+    execution_id = "idempotency:chapter-last-scene-order"
+
+    product = _stop_after_sub9(session, execution_id)
+
+    assert product["outcome"] == "aggregated"
+    assert [item["scene_id"] for item in product["inputs"]] == ["CH_RESUME_SC01", "CH_RESUME_SC09"]
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content.startswith("林昭先读了旧信。\n")
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+_CHAPTER_LAST_TEXT = "林昭拆开旧信，雨一直下，她把最后一页压回案卷底下才起身。"
+
+
+def test_chapter_last_archives_when_its_whole_text_also_occurs_in_an_earlier_scene(session) -> None:
+    """复核 A1-R1：章末那一场的全文也出现在前面某一场里（短短的收尾场、重复的正文）。按「在汇总里第一次出现的位置」
+    排，它就排到了中间那一场前面，对的汇总反被判损坏——新跑的第 8 步自检就失败，续跑、重放也一样，这一场永远归档
+    不了。这一章 row_id 序正是场序，按 row_id 序重拼的旧自检是认的。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 3
+    session.commit()
+    first_text = f"林昭说：走吧。{_CHAPTER_LAST_TEXT}"
+    _archived_sibling(session, "CH_RESUME_SC00A", scene_seq=1, text=first_text)
+    _archived_sibling(session, "CH_RESUME_SC00B", scene_seq=2, text="第二场，她把旧信收进案卷。")
+    execution_id = "idempotency:chapter-last-text-inside-an-earlier-scene"
+
+    product = _stop_after_sub9(
+        session, execution_id, generation_client=_FixedTextGenerationClient(_CHAPTER_LAST_TEXT)
+    )
+
+    assert product["outcome"] == "aggregated"
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content == f"{first_text}\n第二场，她把旧信收进案卷。\n{_CHAPTER_LAST_TEXT}"
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+    # 已归档的重放（同一执行键再跑）走快路径，第 8 步照样复验
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+@pytest.mark.parametrize("tail", ["门外有人敲了三下。", "\n门外有人敲了三下。"], ids=["same-line", "next-line"])
+def test_chapter_last_archives_when_its_whole_text_opens_an_earlier_scene(session, tail: str) -> None:
+    """复核 A1-R1：前一场正以章末那一场的全文开头（同一行接着写，或另起一行）。两段在汇总里第一次出现的位置都是
+    开头，只能靠 row_id 分先后，章末那一场的 row_id 在前，对的汇总又被判损坏。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    # 场序在前、row_id 在后的一场，以章末那一场的全文开头
+    earlier_text = f"{_CHAPTER_LAST_TEXT}{tail}"
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text=earlier_text)
+    execution_id = "idempotency:chapter-last-text-opens-an-earlier-scene"
+
+    product = _stop_after_sub9(
+        session, execution_id, generation_client=_FixedTextGenerationClient(_CHAPTER_LAST_TEXT)
+    )
+
+    assert product["outcome"] == "aggregated"
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content == f"{earlier_text}\n{_CHAPTER_LAST_TEXT}"
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+    assert _resume(session, execution_id)["scene_status"] == "archived"  # 已归档的重放
+
+
+def test_chapter_last_resume_still_rejects_an_aggregate_that_is_not_exactly_its_inputs(session) -> None:
+    """次序放宽之后自检照样逐字：汇总里多出清单之外的文字（行与检查点里的快照一起改、产品哈希也重算）就报损坏。"""
+    from novel_system.services.hash_engine import sha256_json_plain
+
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text="林昭先读了旧信。")
+    execution_id = "idempotency:chapter-last-forged-aggregate"
+    product = _stop_after_sub9(session, execution_id)
+
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    forged = f"{memory.content}\n案卷里没有的一段。"
+    memory.content = forged
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    payload = deepcopy(state.run_checkpoint_json)
+    payload["artifact_refs"]["archive_chapter_product"]["chapter_memory"]["content"] = forged
+    payload["artifact_hashes"]["archive_chapter_product"] = sha256_json_plain(
+        payload["artifact_refs"]["archive_chapter_product"]
+    )
+    state.run_checkpoint_json = payload
+    session.commit()
+
+    with pytest.raises(DomainError) as corrupt:
+        _resume(session, execution_id)
+    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
+    assert "chapter aggregate output changed" in str(corrupt.value)
+
+
+def test_chapter_last_self_check_compares_the_scene_order_join_before_searching(session, monkeypatch) -> None:
+    """复核 I4-R1：第 8 步自检先按现在的场序把清单里的记忆拼一次比——新做的产品、场序没改过的续跑都一次比完，用不着
+    逐段对（逐段对有步数上限，最坏的输入走满就报损坏）。这里把逐段对的步数压成 0：清单按 row_id 排、与场序相反，只有
+    先按场序比的自检过得去——新跑的第 8 步、续跑、已归档的重放都是。"""
+    monkeypatch.setattr(
+        scene_run_archive, "is_chapter_aggregate_of", partial(is_chapter_aggregate_of, max_steps=0)
+    )
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    # 场序在前、row_id 在后的一场
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text="林昭先读了旧信。")
+    execution_id = "idempotency:chapter-last-scene-order-first"
+
+    product = _stop_after_sub9(session, execution_id)
+
+    assert product["outcome"] == "aggregated"
+    assert [item["scene_id"] for item in product["inputs"]] == ["CH_RESUME_SC01", "CH_RESUME_SC09"]
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+    assert _resume(session, execution_id)["scene_status"] == "archived"  # 已归档的重放
+
+
+def test_chapter_last_resume_after_the_chapter_was_reordered_still_recognises_its_aggregate(session) -> None:
+    """复核 I4-R1：第 8 步之后、续跑之前，作者对调了这一章前两场的先后。汇总是按原来的场序拼的，按现在的场序先比比不上，
+    就逐段对——第二场正以第一场的全文开头，照样认得出，续跑照常归档。（章末那一场的前一场没变，起草时的上下文也没变。）"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 4
+    session.commit()
+    _archived_sibling(session, "CH_RESUME_SC07", scene_seq=1, text="林昭先读了旧信。")
+    _archived_sibling(session, "CH_RESUME_SC08", scene_seq=2, text="林昭先读了旧信。\n雨城的钟敲过三下。")
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=3, text="第三场，她把旧信收进案卷。")
+    execution_id = "idempotency:chapter-last-reordered-before-resume"
+    product = _stop_after_sub9(session, execution_id)
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content.startswith("林昭先读了旧信。\n林昭先读了旧信。\n雨城的钟敲过三下。\n第三场，")
+
+    # 前两场对调（同一章里场序不能重号，先挪到空着的号上）
+    first, second = session.get(SceneCard, "CH_RESUME_SC07"), session.get(SceneCard, "CH_RESUME_SC08")
+    first.scene_seq = 90
+    session.flush()
+    second.scene_seq = 1
+    session.flush()
+    first.scene_seq = 2
+    session.commit()
+
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+# ------------------------------------------------------------------ 卷汇总不看第 8 步的结果（复核 I4-R2）
+
+
+def test_chapter_last_volume_rolls_up_the_stored_aggregate_when_stage_8_cannot_rebuild_it(session) -> None:
+    """流水线第 9 步不看第 8 步的结果：章末那一场到了卷边界，第 8 步拼不出章汇总（同一章里一条没有场景卡的有效记忆——
+    位置对不上的旧行），第 9 步照样卷，卷进去的是这一章存着的那份旧汇总。晋升不一样：这一次章汇总没重建成就不卷
+    （``volume_aggregate`` 记 ``skipped``，见 test_chapter_aggregate_derive_on_read.py）。这里钉住的是现状，写在
+    services/archive_effects_plan.py 的说明里；两条路径要是对齐，改这里也改那份说明。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    session.get(ChapterGoal, scene.chapter_id).display_order = VOLUME_CHAPTER_SPAN
+    for ordinal in range(1, VOLUME_CHAPTER_SPAN):
+        chapter_id = f"CH_RESUME_{ordinal}"
+        session.add(
+            ChapterGoal(
+                chapter_id=chapter_id,
+                project_id="P_RESUME",
+                display_order=ordinal,
+                chapter_goal=f"prior {ordinal}",
+            )
+        )
+        session.add(
+            ChapterMemory(
+                row_id=f"chapter_memory_final_{chapter_id}_v1",
+                chapter_id=chapter_id,
+                aggregate_stage="final",
+                content=f"prior atmosphere {ordinal}",
+                active_flag=1,
+                runtime_eligible=1,
+                runtime_eligibility_basis="direct_read",
+            )
+        )
+    stored = ChapterMemory(
+        row_id="chapter_memory_final_CH_RESUME_v1",
+        chapter_id="CH_RESUME",
+        aggregate_stage="final",
+        content="这一章存着的旧汇总。",
+        active_flag=1,
+        runtime_eligible=1,
+        runtime_eligibility_basis="direct_read",
+    )
+    session.add(stored)
+    session.add(
+        SceneMemory(
+            row_id="scene_memory_CH_RESUME_GHOST_v1",
+            scene_id="CH_RESUME_GHOST",
+            chapter_id="CH_RESUME",
+            content="没有场景卡的一场。",
+            source_bundle_id="bundle_ghost",
+            final_scene_row_id="final_scene_CH_RESUME_GHOST_v1",
+            active_flag=1,
+        )
+    )
+    session.commit()
+    execution_id = "idempotency:chapter-last-volume-after-blocked-aggregate"
+
+    chapter_product = _stop_after_sub9(session, execution_id)
+
+    assert chapter_product["outcome"] == "no_op"
+    assert chapter_product["result"]["status"] == "blocked"
+    assert chapter_product["result"]["reason"] == "scene_memory_position_orphan"
+    refs = session.get(SceneRunState, scene.scene_id).run_checkpoint_json["artifact_refs"]
+    volume_product = refs["archive_volume_product"]
+    assert volume_product["outcome"] == "aggregated"
+    summary = session.get(VolumeSummary, volume_product["volume_summary"]["row_id"])
+    assert f"【第{VOLUME_CHAPTER_SPAN}章 氛围】这一章存着的旧汇总。" in summary.atmosphere_summary
+    # 第 8 步什么也没写：存着的那份还是这一章唯一一份、仍然有效
+    assert session.get(ChapterMemory, stored.row_id).active_flag == 1
+    assert session.scalar(
+        select(func.count()).select_from(ChapterMemory).where(ChapterMemory.chapter_id == "CH_RESUME")
+    ) == 1

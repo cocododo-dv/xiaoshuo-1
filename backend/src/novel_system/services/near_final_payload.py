@@ -220,8 +220,6 @@ def _apply_scene_near_final_gates(
     *,
     style_bound: bool = False,
 ) -> dict[str, Any]:
-    if _is_test_placeholder_draft(source_content):
-        return payload
     if style_bound:
         # 2026-09-12 风格直起:词表门(她知道 / 忽然意识到 / 解释了一切…)与「结尾必须是动作」
         # 启发式都是房风;有绑定时整体让位,由带样例的验收评审(LLM)判断。
@@ -322,11 +320,6 @@ def _model_voice_gate_findings(content: str) -> list[dict[str, Any]]:
             "why_it_matters": "强情节准终稿需要让读者自行从压力中推断意义，不能由叙述替读者总结。",
         }
     ]
-
-
-def _is_test_placeholder_draft(content: str) -> bool:
-    stripped = (content or "").strip()
-    return stripped.startswith(("Provider-generated ", "Offline style draft for ", "Offline patched draft for "))
 
 
 def _has_choice(text: str) -> bool:

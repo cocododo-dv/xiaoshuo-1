@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 import uuid
@@ -13,8 +14,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     AuthorDraft,
     ChapterGoal,
-    ChapterMemory,
-    ChapterState,
     FinalScene,
     OperationLog,
     SceneBundle,
@@ -23,7 +22,8 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.aggregator import Aggregator
-from novel_system.services.archiver import Archiver
+from novel_system.services.archive_effects_plan import aggregate_volume_after_chapter
+from novel_system.services.archiver import Archiver, gate_audit_summary
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
@@ -31,7 +31,9 @@ from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.scene_lookup import scene_project_id
+from novel_system.services.scene_text import final_chapter_memory
 
+_LOGGER = logging.getLogger(__name__)
 
 _MAX_CANONICAL_CHARS = 1_000_000
 _BLOCK_TAGS = {"address", "article", "blockquote", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "pre", "section"}
@@ -100,6 +102,19 @@ def canonical_content_hash(content: str) -> str:
     return sha256_text(content)
 
 
+def _promotion_gate_record(final_text_gate: dict[str, Any]) -> dict[str, Any]:
+    """成稿门结果里晋升留下、回给前端的那一份（B04-24）：归档摘要（与归档尝试记录里的同一份）+ 不拦的警告。
+
+    警告前端要读（``validation.final_text_gate.warnings``：用了参考书的专名 / 原文重合这次没查成，提升之后告诉作者
+    一声，ws-copy-gate.js）；整份结果（每一维的信号与全部发现、连续性与内容安全的明细）没有人读，不再进审计与回包。
+    """
+    return {
+        **gate_audit_summary(final_text_gate),
+        "warning_codes": list(final_text_gate.get("warning_codes") or []),
+        "warnings": list(final_text_gate.get("warnings") or []),
+    }
+
+
 class CanonicalSceneService:
     """Promote a scene AuthorDraft into the immutable canonical FinalScene chain.
 
@@ -125,8 +140,8 @@ class CanonicalSceneService:
         归档时记的「像不像」读数带这个来源）。
 
         步骤都在同一个事务里，检查与写入的先后固定（B08-11）：请求校验 → 读基线（场景、当前权威正文、
-        修订号）→ 规范正文 → 同一修订已经发布且派生齐全就原样返回 → 成稿门 → 草稿 / 指针双 CAS 发布新版 →
-        归档、事实延续、章汇总 → 审计。
+        修订号）→ 规范正文 → 同一修订已经发布且这一场的派生齐全就原样返回 → 成稿门 → 草稿 / 指针双 CAS 发布新版 →
+        归档、事实延续、章汇总（尽力而为：章汇总只是派生缓存，章级读者读各场终稿现拼，重建不成只记日志——R13）→ 审计。
         """
         draft = self.session.get(AuthorDraft, draft_id)
         if draft is None:
@@ -239,8 +254,8 @@ class CanonicalSceneService:
         content_hash: str,
         actor_ref: str,
     ) -> dict[str, Any] | None:
-        """同一份作者稿修订已经是权威正文、派生（场景记忆 / 章汇总 / 审计）也都对得上：不再写任何东西，原样回报。
-        派生不齐（返回 None）就照常走发布。"""
+        """同一份作者稿修订已经是权威正文、这一场的派生（场景记忆 / 审计）也都对得上：不再写任何东西，原样回报。
+        派生不齐（返回 None）就照常走发布。章汇总不看（派生缓存，见 :meth:`_complete_derivation`）。"""
         current_final = base.current_final
         assert current_final is not None
         existing_derivation = self._complete_derivation(draft=draft, state=base.state, final=current_final)
@@ -405,14 +420,24 @@ class CanonicalSceneService:
                 actor_ref=actor_ref or "operator",
                 note="作者确认本次正文修订不改变既有叙事事实",
             )
-        aggregate_result = Aggregator(self.session).run_final_aggregate(scene.chapter_id)
-        if not aggregate_result or aggregate_result.get("status") != "created":
-            raise DomainError(
-                "CANONICAL_AGGREGATE_REBUILD_BLOCKED",
-                "canonical scene was not published because chapter memory could not be rebuilt atomically",
-                status_code=409,
-                details={"scene_id": scene.scene_id, "aggregate_result": aggregate_result or {}},
+        # 章汇总照旧重建，但它只是派生缓存（章级读者读各场终稿现拼，R13）：拼不出来（同一章里位置对不上的旧行）
+        # 只记日志、不挡发布——以前这里 409，章里一场进了回收站，别的场就再也晋升不了
+        aggregate_result = Aggregator(self.session).run_final_aggregate(scene.chapter_id) or {}
+        if aggregate_result.get("status") == "created":
+            # 与流水线同样的确定性收尾（[批准#22]，三条归档路径的差别见 archive_effects_plan 的说明）：章汇总之后接着卷汇总
+            volume_result = aggregate_volume_after_chapter(self.session, scene.chapter_id)
+        else:
+            _LOGGER.warning(
+                "chapter aggregate not rebuilt after promoting scene %s (chapter %s): %s %s %s",
+                scene.scene_id,
+                scene.chapter_id,
+                aggregate_result.get("status"),
+                aggregate_result.get("reason"),
+                aggregate_result.get("scene_ids") or "",
             )
+            # 卷汇总从各章的章汇总卷起：这一章的没重建，就不拿旧的那份去卷
+            volume_result = {"status": "skipped", "reason": "chapter_aggregate_not_created"}
+        gate_record = _promotion_gate_record(final_text_gate)
 
         self.session.add(
             OperationLog(
@@ -433,7 +458,9 @@ class CanonicalSceneService:
                     "narrative_sync_status": state.narrative_sync_status,
                     "accepted_warning_codes": request.accepted_warning_codes,
                     "source_safety_scan": safety_scan,
-                    "final_text_gate": final_text_gate,
+                    "final_text_gate": gate_record,
+                    "chapter_aggregate": aggregate_result.get("status"),
+                    "volume_aggregate": volume_result.get("status"),
                     "actor_ref": actor_ref or "operator",
                 },
             )
@@ -454,14 +481,14 @@ class CanonicalSceneService:
             "author_confirmed_final": archive_result["author_confirmed_final"],
             "finality": archive_result["finality"],
             "scene_memory_row_id": archive_result["scene_memory_row_id"],
-            "chapter_memory_row_id": aggregate_result["chapter_memory_row_id"],
+            "chapter_memory_row_id": aggregate_result.get("chapter_memory_row_id"),
             "narrative_sync_status": state.narrative_sync_status,
             "canonical_dirty": False,
             "canon_continuity": canon_continuity,
             "validation": {
                 "canonical_char_count": len(canonical_text),
                 "source_safety_scan": safety_scan,
-                "final_text_gate": final_text_gate,
+                "final_text_gate": gate_record,
                 "accepted_warning_codes": request.accepted_warning_codes,
             },
         }
@@ -589,7 +616,12 @@ class CanonicalSceneService:
         state: SceneRunState,
         final: FinalScene,
     ) -> dict[str, Any] | None:
-        """Return the current immutable derivation only when every pointer agrees."""
+        """Return the current immutable derivation only when every pointer agrees.
+
+        这一场自己的派生（指针、场景记忆、晋升审计）齐全就算。章汇总不在里面（R13）：它只是派生缓存，同一章别的场
+        归档、重排、进回收站都会让它落后——以前这里要求它逐字对得上，同一修订的重放就跟着重新发布一遍。
+        ``chapter_memory_row_id`` 只是顺带报告这一章当前存着的那份汇总（没有就 None）。
+        """
 
         if (
             draft.last_promoted_revision_no != draft.revision_no
@@ -618,72 +650,6 @@ class CanonicalSceneService:
             or target_memory.content != final.content
             or target_memory.source_bundle_id != final.source_bundle_id
             or target_memory.runtime_eligible != 1
-        ):
-            return None
-
-        active_scene_memories = list(
-            self.session.execute(
-                select(SceneMemory).where(
-                    SceneMemory.chapter_id == final.chapter_id,
-                    SceneMemory.active_flag == 1,
-                )
-            ).scalars().all()
-        )
-        scene_ids = {memory.scene_id for memory in active_scene_memories}
-        if not scene_ids:
-            return None
-        scenes = list(
-            self.session.execute(
-                select(SceneCard).where(
-                    SceneCard.scene_id.in_(scene_ids),
-                    SceneCard.chapter_id == final.chapter_id,
-                    SceneCard.trashed_flag == 0,
-                )
-            ).scalars().all()
-        )
-        scene_by_id = {scene.scene_id: scene for scene in scenes}
-        if set(scene_by_id) != scene_ids:
-            return None
-        counts: dict[str, int] = {}
-        for memory in active_scene_memories:
-            counts[memory.scene_id] = counts.get(memory.scene_id, 0) + 1
-        if any(count != 1 for count in counts.values()):
-            return None
-        ordered_memories = sorted(
-            active_scene_memories,
-            key=lambda memory: (
-                int(scene_by_id[memory.scene_id].scene_seq or 0),
-                memory.scene_id,
-                memory.created_at or "",
-                memory.row_id,
-            ),
-        )
-        expected_chapter_content = "\n".join(memory.content for memory in ordered_memories)
-
-        chapter_state = self.session.get(ChapterState, final.chapter_id)
-        if (
-            chapter_state is None
-            or chapter_state.chapter_backfill_pending_count != 0
-            or chapter_state.aggregate_block_reason != "none"
-            or not chapter_state.last_final_memory_row_id
-        ):
-            return None
-        chapter_memories = list(
-            self.session.execute(
-                select(ChapterMemory).where(
-                    ChapterMemory.chapter_id == final.chapter_id,
-                    ChapterMemory.aggregate_stage == "final",
-                    ChapterMemory.active_flag == 1,
-                )
-            ).scalars().all()
-        )
-        if len(chapter_memories) != 1:
-            return None
-        chapter_memory = chapter_memories[0]
-        if (
-            chapter_memory.row_id != chapter_state.last_final_memory_row_id
-            or chapter_memory.runtime_eligible != 1
-            or chapter_memory.content != expected_chapter_content
         ):
             return None
 
@@ -722,9 +688,10 @@ class CanonicalSceneService:
                 "author_confirmed_final": True,
                 "status": "reused_existing_canonical",
             }
+        chapter_memory = final_chapter_memory(self.session, final.chapter_id)
         return {
             "scene_memory_row_id": target_memory.row_id,
-            "chapter_memory_row_id": chapter_memory.row_id,
+            "chapter_memory_row_id": chapter_memory.row_id if chapter_memory is not None else None,
             "source_safety_scan": source_safety_scan,
             "final_text_gate": final_text_gate,
         }
