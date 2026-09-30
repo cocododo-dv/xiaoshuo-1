@@ -26,7 +26,7 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.aggregator import Aggregator, is_chapter_aggregate_of
+from novel_system.services.aggregator import VOLUME_CHAPTER_SPAN, Aggregator, is_chapter_aggregate_of
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.orchestrator import Orchestrator
@@ -1293,3 +1293,76 @@ def test_chapter_last_resume_after_the_chapter_was_reordered_still_recognises_it
 
     assert _resume(session, execution_id)["scene_status"] == "archived"
 
+
+# ------------------------------------------------------------------ 卷汇总不看第 8 步的结果（复核 I4-R2）
+
+
+def test_chapter_last_volume_rolls_up_the_stored_aggregate_when_stage_8_cannot_rebuild_it(session) -> None:
+    """流水线第 9 步不看第 8 步的结果：章末那一场到了卷边界，第 8 步拼不出章汇总（同一章里一条没有场景卡的有效记忆——
+    位置对不上的旧行），第 9 步照样卷，卷进去的是这一章存着的那份旧汇总。晋升不一样：这一次章汇总没重建成就不卷
+    （``volume_aggregate`` 记 ``skipped``，见 test_chapter_aggregate_derive_on_read.py）。这里钉住的是现状，写在
+    services/archive_effects_plan.py 的说明里；两条路径要是对齐，改这里也改那份说明。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    session.get(ChapterGoal, scene.chapter_id).display_order = VOLUME_CHAPTER_SPAN
+    for ordinal in range(1, VOLUME_CHAPTER_SPAN):
+        chapter_id = f"CH_RESUME_{ordinal}"
+        session.add(
+            ChapterGoal(
+                chapter_id=chapter_id,
+                project_id="P_RESUME",
+                display_order=ordinal,
+                chapter_goal=f"prior {ordinal}",
+            )
+        )
+        session.add(
+            ChapterMemory(
+                row_id=f"chapter_memory_final_{chapter_id}_v1",
+                chapter_id=chapter_id,
+                aggregate_stage="final",
+                content=f"prior atmosphere {ordinal}",
+                active_flag=1,
+                runtime_eligible=1,
+                runtime_eligibility_basis="direct_read",
+            )
+        )
+    stored = ChapterMemory(
+        row_id="chapter_memory_final_CH_RESUME_v1",
+        chapter_id="CH_RESUME",
+        aggregate_stage="final",
+        content="这一章存着的旧汇总。",
+        active_flag=1,
+        runtime_eligible=1,
+        runtime_eligibility_basis="direct_read",
+    )
+    session.add(stored)
+    session.add(
+        SceneMemory(
+            row_id="scene_memory_CH_RESUME_GHOST_v1",
+            scene_id="CH_RESUME_GHOST",
+            chapter_id="CH_RESUME",
+            content="没有场景卡的一场。",
+            source_bundle_id="bundle_ghost",
+            final_scene_row_id="final_scene_CH_RESUME_GHOST_v1",
+            active_flag=1,
+        )
+    )
+    session.commit()
+    execution_id = "idempotency:chapter-last-volume-after-blocked-aggregate"
+
+    chapter_product = _stop_after_sub9(session, execution_id)
+
+    assert chapter_product["outcome"] == "no_op"
+    assert chapter_product["result"]["status"] == "blocked"
+    assert chapter_product["result"]["reason"] == "scene_memory_position_orphan"
+    refs = session.get(SceneRunState, scene.scene_id).run_checkpoint_json["artifact_refs"]
+    volume_product = refs["archive_volume_product"]
+    assert volume_product["outcome"] == "aggregated"
+    summary = session.get(VolumeSummary, volume_product["volume_summary"]["row_id"])
+    assert f"【第{VOLUME_CHAPTER_SPAN}章 氛围】这一章存着的旧汇总。" in summary.atmosphere_summary
+    # 第 8 步什么也没写：存着的那份还是这一章唯一一份、仍然有效
+    assert session.get(ChapterMemory, stored.row_id).active_flag == 1
+    assert session.scalar(
+        select(func.count()).select_from(ChapterMemory).where(ChapterMemory.chapter_id == "CH_RESUME")
+    ) == 1

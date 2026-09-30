@@ -4,7 +4,9 @@
 - 不带作者稿的两种采纳（已归档的重放、流水线稿）既不重建章汇总，也不做卷汇总（章级读者读时现拼）。
 
 流水线那一边（章末那一场的归档第 8 / 9 步）由 ``test_scene_run_checkpoint_archive.py`` 的
-``test_chapter_last_sub9_volume_boundary_crash_reuses_same_summary`` 钉住。
+``test_chapter_last_sub9_volume_boundary_crash_reuses_same_summary`` 与
+``test_chapter_last_volume_rolls_up_the_stored_aggregate_when_stage_8_cannot_rebuild_it``（第 8 步拼不出章汇总，第 9 步
+照样卷存着的那份）钉住；晋升这一次章汇总没重建成、卷汇总记 ``skipped`` 的那一条在 ``test_chapter_aggregate_derive_on_read.py``。
 """
 
 from __future__ import annotations
