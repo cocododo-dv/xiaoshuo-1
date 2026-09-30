@@ -10,6 +10,7 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     PassagePatchCandidate,
+    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,
@@ -326,7 +327,7 @@ def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(clien
     assert evaluation["source_text_ref"] == f"author_draft:{draft['draft_id']}"
 
 
-def test_passage_patch_candidate_accepts_without_overwriting_final_and_records_preference(client: TestClient, session) -> None:
+def test_passage_patch_candidate_accepts_without_overwriting_final_and_learns_no_preference(client: TestClient, session) -> None:
     _seed_finished_scene(session)
     original_final = session.get(FinalScene, FINAL_ROW_ID).content
 
@@ -364,20 +365,15 @@ def test_passage_patch_candidate_accepts_without_overwriting_final_and_records_p
     assert session.get(FinalScene, FINAL_ROW_ID).content == original_final
     row = session.get(PassagePatchCandidate, candidate["patch_id"])
     assert row.selected_option_id == candidate["replacement_options"][1]["option_id"]
+    assert row.author_decision_note == "更有刺。"
 
-    profile_response = client.get("/api/v1/author-preference-profile")
-    assert profile_response.status_code == 200
-    profile = profile_response.json()["data"]["profile"]
-    assert profile["status"] == "draft"
-    assert profile["runtime_eligible"] is False
-    assert "更锋利" in " ".join(profile["summary"]["preferred_revision_moves"])
-
-    session.expire_all()
-    db_profile = session.get(AuthorPreferenceProfile, profile["profile_id"])
-    assert db_profile.status == "draft"
+    # 写作偏好学习已退役（批准 #6）：采纳只记在候选行上，不再重建偏好画像、不往待办里塞「写作偏好」卡
+    assert session.query(AuthorPreferenceProfile).count() == 0
+    assert session.query(ReviewItem).count() == 0
+    assert client.get("/api/v1/author-preference-profile").status_code == 404
 
 
-def test_rejecting_passage_patch_updates_candidate_but_keeps_preference_unpublished(client: TestClient, session) -> None:
+def test_rejecting_passage_patch_updates_only_the_candidate(client: TestClient, session) -> None:
     _seed_finished_scene(session)
 
     candidate = client.post(
@@ -402,10 +398,11 @@ def test_rejecting_passage_patch_updates_candidate_but_keeps_preference_unpublis
     rejected = reject_response.json()["data"]["candidate"]
     assert rejected["status"] == "rejected"
     assert rejected["author_decision"] == "rejected"
+    assert rejected["author_decision_note"] == "这处重复保留为人物习惯。"
 
-    profile = client.get("/api/v1/author-preference-profile").json()["data"]["profile"]
-    assert profile["runtime_eligible"] is False
-    assert any("保留" in item for item in profile["summary"]["rejected_revision_moves"])
+    session.expire_all()
+    assert session.query(AuthorPreferenceProfile).count() == 0
+    assert session.query(ReviewItem).count() == 0
 
 
 class ScriptedPassagePatchClient(OnlineAccountedExecution):
@@ -560,7 +557,9 @@ def test_passage_patch_candidate_records_quality_signal_id_for_quality_handoff(s
     assert row.quality_signal_id == "quality:scene:DEEP_CH01_SC01:template_action_reuse"
 
 
-def test_passage_patch_prompt_includes_only_approved_runtime_author_preference(session) -> None:
+def test_passage_patch_prompt_carries_no_author_preference_section(session) -> None:
+    """写作偏好学习已退役（批准 #6）：库里即使留着一份「已批准」的偏好画像（旧数据），局部改写的提示词里也没有偏好段。"""
+
     _seed_finished_scene(session)
     draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     session.add(
@@ -603,6 +602,6 @@ def test_passage_patch_prompt_includes_only_approved_runtime_author_preference(s
     )
 
     user_prompt = llm_client.requests[0].messages[1]["content"]
-    assert "更锋利的反问" in user_prompt
-    assert "解释性对白" in user_prompt
+    assert "Author Preference" not in user_prompt
+    assert "更锋利的反问" not in user_prompt and "解释性对白" not in user_prompt
     assert "草稿偏好不应进入提示词" not in user_prompt

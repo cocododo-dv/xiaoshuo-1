@@ -5,7 +5,6 @@ import logging
 import uuid
 from functools import cached_property
 from statistics import mean
-from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -13,18 +12,14 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AuthorDraft,
-    AuthorPreferenceProfile,
     ChapterGoal,
     FinalScene,
     PassagePatchCandidate,
-    ReviewItem,
     SceneCard,
     SceneRunState,
-    StoryProject,
     WriterEvaluation,
 )
 from novel_system.services.author_actions import llm_setup_action
-from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_accounting import LLMCallContext
@@ -454,8 +449,9 @@ class WriterDeepReviewService:
 
         ``issue_dimension`` 是维度键（一条诊断发现的 ``dimension``，或工具条自由改写的
         ``author_instruction``）；作者 / 诊断给的改法走 ``instruction``，发现的问题句走
-        ``issue_note``，发现的 id 走 ``quality_signal_id``——修补类别、改写策略与偏好标签按
-        维度推，画像学到的是「对白潜台词」而不是「润色」两个字。
+        ``issue_note``，发现的 id 走 ``quality_signal_id``——修补类别、改写策略与标签按维度推，
+        候选行记下的是「对白潜台词」而不是「润色」两个字（采纳 / 放弃只记在候选行上，不再推任何偏好画像：
+        写作偏好学习已退役，批准 #6）。
         """
 
         source_excerpt = _required_text(payload, "source_excerpt")
@@ -518,8 +514,6 @@ class WriterDeepReviewService:
         row.author_decision = "accepted"
         row.selected_option_id = selected_option_id
         row.author_decision_note = _optional_text(payload, "note") or row.author_decision_note
-        self.session.flush()
-        self._refresh_author_preference_profile(actor_ref=actor_ref)
         self.session.flush()
         self._record_accepted_patch_reading(row, selected_option_id)
         return {"candidate": self.serialize_patch_candidate(row)}
@@ -647,27 +641,7 @@ class WriterDeepReviewService:
         row.author_decision = "rejected"
         row.author_decision_note = _optional_text(payload, "note") or row.author_decision_note
         self.session.flush()
-        self._refresh_author_preference_profile(actor_ref=actor_ref)
-        self.session.flush()
         return {"candidate": self.serialize_patch_candidate(row)}
-
-    def author_preference_profile(self) -> dict[str, Any]:
-        profile = self._latest_preference_profile()
-        if profile is None:
-            return {
-                "profile": {
-                    "profile_id": "author_pref_global_global",
-                    "scope_type": "global",
-                    "scope_ref_id": "global",
-                    "status": "draft",
-                    "runtime_eligible": False,
-                    "summary": _empty_preference_summary(),
-                    "source_patch_ids": [],
-                    "created_at": None,
-                    "updated_at": None,
-                }
-            }
-        return {"profile": self.serialize_preference_profile(profile)}
 
     @staticmethod
     def serialize_evaluation(row: WriterEvaluation | None) -> dict[str, Any] | None:
@@ -676,21 +650,6 @@ class WriterDeepReviewService:
     @staticmethod
     def serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
         return _serialize_patch_candidate(row)
-
-    @staticmethod
-    def serialize_preference_profile(row: AuthorPreferenceProfile) -> dict[str, Any]:
-        return {
-            "profile_id": row.profile_id,
-            "scope_type": row.scope_type,
-            "scope_ref_id": row.scope_ref_id,
-            "status": row.status,
-            "runtime_eligible": bool(row.runtime_eligible),
-            "summary": row.summary_json or _empty_preference_summary(),
-            "source_patch_ids": row.source_patch_ids_json or [],
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-        }
 
     def _create_deep_review(
         self,
@@ -924,14 +883,12 @@ class WriterDeepReviewService:
     ) -> dict[str, Any]:
         target_text_ref = _optional_text(payload, "target_text_ref") or _optional_text(payload, "source_text_ref") or ""
         source_draft = self._source_draft(_optional_text(payload, "source_draft_id"))
-        preference = self._approved_runtime_preference_profile(payload)
         snapshot = _passage_patch_snapshot(
             payload=payload,
             source_excerpt=source_excerpt,
             issue_dimension=issue_dimension,
             target_text_ref=target_text_ref,
             source_draft=source_draft,
-            preference=preference,
             instruction=instruction,
             issue_note=issue_note,
         )
@@ -944,7 +901,6 @@ class WriterDeepReviewService:
             issue_dimension=issue_dimension,
             target_text_ref=target_text_ref,
             source_draft=source_draft,
-            preference=preference,
             instruction=instruction,
             issue_note=issue_note,
         )
@@ -1068,47 +1024,6 @@ class WriterDeepReviewService:
             return None
         return self.session.get(AuthorDraft, source_draft_id)
 
-    def _approved_runtime_preference_profile(self, payload: dict[str, Any]) -> AuthorPreferenceProfile | None:
-        chapter_id = _optional_text(payload, "chapter_id")
-        scene_id = _optional_text(payload, "scene_id")
-        scene = self.session.get(SceneCard, scene_id) if scene_id else None
-        chapter = self.session.get(ChapterGoal, chapter_id or (scene.chapter_id if scene else ""))
-        project_id = (scene.project_id if scene else None) or (chapter.project_id if chapter else None)
-        project = self.session.get(StoryProject, project_id) if project_id else None
-        scopes: list[tuple[str, str]] = [("global", "global")]
-        genre = " ".join(str(project.genre or "").strip().lower().split()) if project else ""
-        if genre:
-            scopes.append(("genre", genre[:120]))
-        if project_id:
-            scopes.append(("project", project_id))
-        if chapter is not None:
-            scopes.append(("chapter", chapter.chapter_id))
-        rows: list[AuthorPreferenceProfile] = []
-        for scope_type, scope_ref_id in scopes:
-            rows.extend(
-                self.session.execute(
-                    select(AuthorPreferenceProfile)
-                    .where(
-                        AuthorPreferenceProfile.scope_type == scope_type,
-                        AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
-                        AuthorPreferenceProfile.status == "approved",
-                        AuthorPreferenceProfile.runtime_eligible == 1,
-                    )
-                    .order_by(AuthorPreferenceProfile.updated_at.asc(), AuthorPreferenceProfile.profile_id.asc())
-                ).scalars().all()
-            )
-        if not rows:
-            return None
-        summary: dict[str, Any] = {}
-        for row in rows:
-            summary = merge_preference_summaries(summary, row.summary_json or {})
-        # Keep the existing snapshot contract while avoiding mutation of any
-        # persisted profile as broader scopes are merged for this target.
-        return SimpleNamespace(
-            profile_id=rows[-1].profile_id,
-            summary_json=safe_preference_summary_for_prompt(summary),
-        )
-
     def _scene_source(self, scene: SceneCard) -> dict[str, Any]:
         author_draft = self._current_author_draft("scene", scene.scene_id)
         if author_draft is not None:
@@ -1191,76 +1106,6 @@ class WriterDeepReviewService:
         if row is None:
             raise DomainError("PASSAGE_PATCH_NOT_FOUND", "passage patch candidate not found", status_code=404)
         return row
-
-    def _latest_preference_profile(self) -> AuthorPreferenceProfile | None:
-        return self.session.execute(
-            select(AuthorPreferenceProfile)
-            .where(AuthorPreferenceProfile.scope_type == "global", AuthorPreferenceProfile.scope_ref_id == "global")
-            .order_by(AuthorPreferenceProfile.created_at.desc(), AuthorPreferenceProfile.profile_id.desc())
-        ).scalars().first()
-
-    def _refresh_author_preference_profile(self, *, actor_ref: str) -> AuthorPreferenceProfile:
-        decided = self.session.execute(
-            select(PassagePatchCandidate)
-            .where(PassagePatchCandidate.author_decision.in_(("accepted", "rejected")))
-            .order_by(PassagePatchCandidate.created_at.asc(), PassagePatchCandidate.patch_id.asc())
-        ).scalars().all()
-        summary = _preference_summary(decided)
-        profile = self._latest_preference_profile()
-        if profile is None:
-            profile = AuthorPreferenceProfile(
-                profile_id="author_pref_global_global",
-                scope_type="global",
-                scope_ref_id="global",
-                status="draft",
-                runtime_eligible=0,
-                summary_json=summary,
-                source_patch_ids_json=[row.patch_id for row in decided],
-                created_by=actor_ref or "writer_deep_review",
-            )
-            self.session.add(profile)
-        else:
-            profile.status = "draft"
-            profile.runtime_eligible = 0
-            profile.summary_json = summary
-            profile.source_patch_ids_json = [row.patch_id for row in decided]
-            profile.created_by = actor_ref or profile.created_by
-        self._upsert_author_preference_review(profile, actor_ref=actor_ref)
-        return profile
-
-    def _upsert_author_preference_review(self, profile: AuthorPreferenceProfile, *, actor_ref: str) -> ReviewItem:
-        review_id = f"review_{profile.profile_id}"
-        summary = profile.summary_json or _empty_preference_summary()
-        source_patch_ids = profile.source_patch_ids_json or []
-        candidate_payload = {
-            "profile_id": profile.profile_id,
-            "scope_type": profile.scope_type,
-            "scope_ref_id": profile.scope_ref_id,
-            "summary": summary,
-            "source_patch_ids": source_patch_ids,
-        }
-        review = self.session.get(ReviewItem, review_id)
-        if review is None:
-            review = ReviewItem(
-                review_id=review_id,
-                item_type="author_preference_profile",
-                status="pending",
-                candidate_text=json.dumps(summary, ensure_ascii=False, sort_keys=True),
-                candidate_payload_json=candidate_payload,
-                active_on_approve=1,
-                materialize_status="pending",
-            )
-            self.session.add(review)
-            return review
-        review.item_type = "author_preference_profile"
-        review.status = "pending"
-        review.candidate_text = json.dumps(summary, ensure_ascii=False, sort_keys=True)
-        review.candidate_payload_json = candidate_payload
-        review.active_on_approve = 1
-        review.materialize_status = "pending"
-        review.approved_item_row_id = None
-        review.approved_item_id = None
-        return review
 
 
 def _prompt_text(content: Any) -> str:
@@ -1443,11 +1288,9 @@ def _passage_patch_snapshot(
     issue_dimension: str,
     target_text_ref: str,
     source_draft: AuthorDraft | None,
-    preference: AuthorPreferenceProfile | None,
     instruction: str | None = None,
     issue_note: str | None = None,
 ) -> dict[str, Any]:
-    preference_summary = preference.summary_json if preference is not None else {}
     inline_digests = {
         "scene_summary": json.dumps(
             {
@@ -1465,16 +1308,6 @@ def _passage_patch_snapshot(
             sort_keys=True,
         )
     }
-    if preference is not None:
-        inline_digests["style_profile"] = json.dumps(
-            {
-                "profile_id": preference.profile_id,
-                "kind": "approved_author_preference_profile",
-                "summary": preference_summary,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
     return {
         "contract_version": "WRITER_PASSAGE_PATCH_SOURCE_v1",
         "stage_allowlist_name": "writer_passage_patch",
@@ -1483,16 +1316,10 @@ def _passage_patch_snapshot(
         "source_version_refs": {
             "target_text_ref": target_text_ref,
             "source_draft_id": source_draft.draft_id if source_draft is not None else None,
-            "author_preference_profile_id": preference.profile_id if preference is not None else None,
         },
         "resolved_ref_ids": {},
         "ordered_injections": [
             {"slot": "passage_patch_target", "ref_id": target_text_ref, "digest_key": "scene_summary"},
-            {
-                "slot": "author_preference_profile",
-                "ref_id": preference.profile_id if preference is not None else "",
-                "digest_key": "style_profile",
-            },
         ],
         "inline_digests": inline_digests,
     }
@@ -1505,11 +1332,9 @@ def _passage_patch_user_prompt(
     issue_dimension: str,
     target_text_ref: str,
     source_draft: AuthorDraft | None,
-    preference: AuthorPreferenceProfile | None,
     instruction: str | None = None,
     issue_note: str | None = None,
 ) -> str:
-    preference_summary = preference.summary_json if preference is not None else {}
     target_lines = [
         "## Passage Patch Target",
         f"Target Text Ref: {target_text_ref}",
@@ -1529,9 +1354,6 @@ def _passage_patch_user_prompt(
             "",
             "## Current Author Draft Context",
             _compact_text(source_draft.content if source_draft is not None else "", 1400),
-            "",
-            "## Approved Author Preference Profile",
-            json.dumps(preference_summary, ensure_ascii=False, sort_keys=True) if preference is not None else "{}",
         ]
     )
 
@@ -1708,7 +1530,7 @@ def _preference_tags(payload: dict[str, Any], issue_dimension: str, *, instructi
     }
     if category in defaults:
         return defaults[category][:8]
-    # 自由改写：偏好画像记作者说的那句话（不是维度键）
+    # 自由改写：标签记作者说的那句话（不是维度键）
     if instruction and issue_dimension == AUTHOR_INSTRUCTION_DIMENSION:
         return [instruction[:40]]
     return [issue_dimension][:8]
@@ -1879,80 +1701,6 @@ def _revision_brief_from_findings(findings: list[dict[str, Any]]) -> list[dict[s
             }
         )
     return brief
-
-
-def _preference_summary(rows: list[PassagePatchCandidate]) -> dict[str, list[str]]:
-    preferred: list[str] = []
-    rejected: list[str] = []
-    ai_traces: list[str] = []
-    preferred_categories: list[str] = []
-    rejected_categories: list[str] = []
-    preference_tags: list[str] = []
-    for row in rows:
-        category_label = _category_label(row.candidate_category)
-        if row.author_decision == "accepted":
-            selected = _selected_option(row)
-            tone = selected.get("tone") if selected else ""
-            preferred_categories.append(category_label)
-            preference_tags.extend(str(item) for item in (row.preference_tags_json or []) if str(item).strip())
-            if tone == "sharper":
-                preferred.append("偏好更锋利的局部改写，让动作代替解释。")
-            elif tone == "subtler":
-                preferred.append("偏好更含蓄的局部改写，保留读者判断空间。")
-            elif tone == "shorter":
-                preferred.append("偏好更短的句段，压缩解释余量。")
-            else:
-                preferred.append(f"偏好{category_label}：{row.revision_strategy or row.issue_dimension}。")
-        elif row.author_decision == "rejected":
-            rejected_categories.append(category_label)
-            # Free-form author notes are audit evidence, not prompt instructions.
-            # Convert the decision into a controlled label before publication.
-            rejected.append(f"保留作者原句；拒绝自动应用{category_label}。")
-        ai_traces.extend(term for term in _repeated_ai_trace_terms(row.source_excerpt) if term not in ai_traces)
-    return {
-        "preferred_revision_moves": _dedupe(preferred),
-        "rejected_revision_moves": _dedupe(rejected),
-        "preferred_patch_categories": _dedupe(preferred_categories),
-        "rejected_patch_categories": _dedupe(rejected_categories),
-        "preference_tags": _dedupe(preference_tags),
-        "ai_trace_terms_to_watch": _dedupe(ai_traces),
-        "runtime_policy": ["偏好摘要保持 draft；审核批准前不得进入运行 bundle。"],
-    }
-
-
-def _selected_option(row: PassagePatchCandidate) -> dict[str, Any] | None:
-    for option in row.replacement_options_json or []:
-        if option.get("option_id") == row.selected_option_id:
-            return option
-    return None
-
-
-def _empty_preference_summary() -> dict[str, list[str]]:
-    return {
-        "preferred_revision_moves": [],
-        "rejected_revision_moves": [],
-        "preferred_patch_categories": [],
-        "rejected_patch_categories": [],
-        "preference_tags": [],
-        "ai_trace_terms_to_watch": [],
-        "runtime_policy": ["偏好摘要保持 draft；审核批准前不得进入运行 bundle。"],
-    }
-
-
-def _category_label(value: str | None) -> str:
-    return {
-        "dialogue_rewrite": "对白改写",
-        "action_replace": "动作替换",
-        "ending_pressure": "结尾重压",
-        "information_reorder": "信息释放重排",
-        "de_model_voice": "去模型腔",
-        "local_patch": "局部深改",
-    }.get(value or "", "局部深改")
-
-
-def _repeated_ai_trace_terms(text: str) -> list[str]:
-    watched = ("手指", "停顿", "幽蓝", "冷光", "低声", "盐霜", "泛着")
-    return [term for term in watched if text.count(term) >= 2 or (term in {"幽蓝", "冷光", "盐霜"} and term in text)]
 
 
 def _required_text(payload: dict[str, Any], key: str) -> str:

@@ -265,6 +265,36 @@ def test_badge_counts_priority_one(client, session):
     assert badge["count"] == 1
 
 
+def test_legacy_preference_decision_rows_are_not_listed(client, session):
+    """写作偏好学习退役（批准 #6，重评 R5）：库里留下的「写作偏好」决策行（不论作品内还是全局）不再进待办，
+    行本身留在库里；收件箱只列卡片行。"""
+    from novel_system.db.models import ReviewItem
+
+    project = _create_project(client)
+    pid = project["project_id"]
+    card = _card(client, pid, title="一张普通卡")
+    for review_id, project_id in (("review_author_pref_project", pid), ("review_author_pref_global_global", None)):
+        session.add(
+            ReviewItem(
+                review_id=review_id,
+                item_type="author_preference_profile",
+                status="pending",
+                candidate_text="{}",
+                candidate_payload_json={},
+                project_id=project_id,
+            )
+        )
+    session.commit()
+
+    for state in ("open", "snoozed"):
+        items = client.get(f"/api/v1/review-items?state={state}&project_id={pid}").json()["data"]["items"]
+        assert not any(str(item["id"]).startswith("review_author_pref") for item in items), items
+    open_items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    assert [item["id"] for item in open_items if not item["live"]] == [card["id"]]
+    session.expire_all()
+    assert session.get(ReviewItem, "review_author_pref_project") is not None
+
+
 def test_global_card_visible_in_any_project(client):
     project = _create_project(client)
     pid = project["project_id"]

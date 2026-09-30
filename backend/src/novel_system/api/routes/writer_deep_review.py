@@ -289,9 +289,3 @@ def reject_passage_patch_candidate(
             patch_id, body, actor_ref=actor_ref
         ),
     )
-
-
-@router.get("/api/v1/author-preference-profile")
-def get_author_preference_profile(request: Request, session: Session = Depends(get_session)):
-    payload = WriterDeepReviewService(session).author_preference_profile()
-    return ok(payload, req_id=request_id_of(request))
