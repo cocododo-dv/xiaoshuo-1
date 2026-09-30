@@ -93,10 +93,8 @@ class Canonicalizer:
 
     def text(self, value: str) -> str:
         value = _TIMESTAMP.sub(lambda match: self._token("ts", match.group(0)), value)
-        return _HEX_RUN.sub(
-            lambda match: self._token("hex", match.group(0)) if _looks_random(match.group(0)) else match.group(0),
-            value,
-        )
+        # 随机十六进制（uuid 片段、截断哈希）可能恰好全是数字，所以不看像不像随机：够长就换
+        return _HEX_RUN.sub(lambda match: self._token("hex", match.group(0)), value)
 
     def value(self, value: Any) -> Any:
         if isinstance(value, dict):
@@ -106,7 +104,3 @@ class Canonicalizer:
         if isinstance(value, str):
             return self.text(value)
         return value
-
-
-def _looks_random(token: str) -> bool:
-    return any(char.isdigit() for char in token) and any(char.isalpha() for char in token)
