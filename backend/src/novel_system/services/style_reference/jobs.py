@@ -87,6 +87,8 @@ TERMINAL_STATES = (STATE_SUCCEEDED, STATE_FAILED, STATE_CANCELLED)
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 STALE_AFTER_SECONDS = 60.0
+# 活动面板除了在跑的作业，还列这么久之内结束的（保留期清理也不删这样的作业）
+RECENT_FINISHED_SECONDS = 600.0
 SWEEP_INTERVAL_SECONDS = 30.0
 EXECUTOR_MAX_WORKERS = 2
 # 对照检查一次一个评审调用：单独一条车道，不在几十分钟的分类 / 学习后面排队
@@ -261,7 +263,9 @@ class StyleJobService:
             stmt.order_by(StyleReferenceJob.created_at.desc()).limit(1)
         ).scalar_one_or_none()
 
-    def list_recent(self, *, finished_within_seconds: float = 600.0, limit: int = 100) -> list[StyleReferenceJob]:
+    def list_recent(
+        self, *, finished_within_seconds: float = RECENT_FINISHED_SECONDS, limit: int = 100
+    ) -> list[StyleReferenceJob]:
         """活动面板：**全部**活动作业 + 最近结束的作业（默认 10 分钟内，至多 ``limit`` 条）。
 
         活动作业不受 ``limit`` 限制：界面把 ``/activity`` 当完整清单，清单里不再有的在跑条目会被收掉——十分钟里结束的
@@ -304,6 +308,7 @@ class StyleJobService:
                     finished_at=now,
                     updated_at=now,
                     error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled before start"},
+                    **_finished_values(job.kind, job.params_json),
                 )
             )
             self.session.flush()
@@ -429,6 +434,7 @@ class StyleJobService:
             finished_at=now,
             heartbeat_at=now,
             owner_token=None,
+            **_finished_values(claimed.kind, claimed.params),
         )
 
     def fail(
@@ -451,6 +457,7 @@ class StyleJobService:
             finished_at=now,
             heartbeat_at=now,
             owner_token=None,
+            **_finished_values(claimed.kind, claimed.params),
         )
 
     def release(self, claimed: ClaimedJob) -> bool:
@@ -466,6 +473,7 @@ class StyleJobService:
             finished_at=now,
             heartbeat_at=now,
             owner_token=None,
+            **_finished_values(claimed.kind, claimed.params),
         )
 
     # ------------------------------------------------------------------ 取消 / 重排 / 清扫
@@ -485,6 +493,7 @@ class StyleJobService:
                 finished_at=now,
                 owner_token=None,
                 error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled"},
+                **_finished_values(job.kind, job.params_json),
             )
         result = self.session.execute(
             update(StyleReferenceJob)
@@ -605,6 +614,7 @@ class StyleJobService:
                         finished_at=_iso(current),
                         updated_at=_iso(current),
                         error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled"},
+                        **_finished_values(job.kind, job.params_json),
                     )
                 )
                 self.session.flush()
@@ -682,9 +692,11 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
 JobHandler = Callable[[Session, ClaimedJob, StyleJobService], None]
 CancelHook = Callable[[Session, StyleReferenceJob], None]
 ResumableRule = Callable[[StyleReferenceJob], bool]
+FinishedParamsRule = Callable[[Mapping[str, Any]], dict[str, Any]]
 _HANDLERS: dict[str, JobHandler] = {}
 _CANCEL_HOOKS: dict[str, CancelHook] = {}
 _RESUMABLE_RULES: dict[str, ResumableRule] = {}
+_FINISHED_PARAMS_RULES: dict[str, FinishedParamsRule] = {}
 _EXECUTORS: dict[str, ThreadPoolExecutor] = {}
 _EXECUTOR_LOCK = threading.Lock()
 _DISPATCHED: set[str] = set()
@@ -706,9 +718,12 @@ def register_job_handler(
     *,
     on_cancelled: CancelHook | None = None,
     resumable: ResumableRule | None = None,
+    finished_params: FinishedParamsRule | None = None,
 ) -> None:
     """登记一类作业的处理器；``on_cancelled(session, job)`` 在请求 / 认领 / 清扫里直接收尾取消时调用（同一事务）；
-    ``resumable(job)`` 是这类作业「能不能继续」的规则（活动条目的 ``resumable``；缺省：失败 / 取消的都能）。"""
+    ``resumable(job)`` 是这类作业「能不能继续」的规则（活动条目的 ``resumable``；缺省：失败 / 取消的都能）；
+    ``finished_params(params)`` 是作业结束（成功 / 失败 / 取消，走哪条路都一样）时参数换成的样子——对照检查用它把
+    送检的原文换成哈希与字数（续不了的作业结束后没人再读参数）。"""
     if kind not in JOB_KINDS:
         raise ValueError(f"unknown style job kind: {kind!r}")
     _HANDLERS[kind] = handler
@@ -716,6 +731,24 @@ def register_job_handler(
         _CANCEL_HOOKS[kind] = on_cancelled
     if resumable is not None:
         _RESUMABLE_RULES[kind] = resumable
+    if finished_params is not None:
+        _FINISHED_PARAMS_RULES[kind] = finished_params
+
+
+def finished_params(kind: str | None, params: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """这类作业结束时参数要换成的样子（没有登记规则、或换了也一样 → None：参数照旧）。"""
+    rule = _FINISHED_PARAMS_RULES.get(str(kind or ""))
+    if rule is None:
+        return None
+    current = dict(params or {})
+    finished = dict(rule(current))
+    return None if finished == current else finished
+
+
+def _finished_values(kind: str | None, params: Mapping[str, Any] | None) -> dict[str, Any]:
+    """结束写要带上的列（参数按这类作业的规则换好）；没有要换的给空。"""
+    finished = finished_params(kind, params)
+    return {} if finished is None else {"params_json": finished}
 
 
 def job_resumable(job: StyleReferenceJob) -> bool:
@@ -981,6 +1014,7 @@ __all__ = [
     "JobCancelled",
     "JobInterrupted",
     "JobLost",
+    "RECENT_FINISHED_SECONDS",
     "STALE_AFTER_SECONDS",
     "STATE_CANCELLED",
     "STATE_FAILED",
@@ -993,6 +1027,7 @@ __all__ = [
     "already_active_error",
     "current_worker_generation",
     "dispatch_job",
+    "finished_params",
     "heartbeat_is_stale",
     "is_worker_interruption",
     "job_activity_entry",

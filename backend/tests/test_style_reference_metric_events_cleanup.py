@@ -178,5 +178,9 @@ def test_a_failing_maintenance_task_is_logged_and_does_not_stop_the_sweeper(_mai
     monkeypatch.setattr(cleanup, "cleanup_metric_events", lambda session, **_k: good.append(1) or {"deleted_count": 0})
     assert jobs_module.run_due_maintenance(now=12 * 3600.0) == ["other_task"]  # 还不到 24 小时:只有另一项到期
     assert good == []
-    assert jobs_module.run_due_maintenance(now=24 * 3600.0 + 1) == [cleanup.METRIC_EVENTS_MAINTENANCE_TASK, "other_task"]
+    assert jobs_module.run_due_maintenance(now=24 * 3600.0 + 1) == [
+        cleanup.METRIC_EVENTS_MAINTENANCE_TASK,
+        cleanup.JOB_RETENTION_MAINTENANCE_TASK,  # 作业表保留期同样每 24 小时一次
+        "other_task",
+    ]
     assert good == [1]

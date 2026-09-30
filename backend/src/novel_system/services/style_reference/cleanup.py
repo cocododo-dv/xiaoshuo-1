@@ -1,5 +1,6 @@
 """StyleReference 运行时 cleanup:删书(单本 / 批量共用 ``delete_reference_book``)/ 破坏式重新分类时清派生数据,
-遥测留存清理(``cleanup_metric_events``;2026-09-24 §8 C8 起由清扫线程定期跑,见文件末尾的登记)。"""
+遥测留存清理(``cleanup_metric_events``;2026-09-24 §8 C8 起由清扫线程定期跑)与作业表保留期(``prune_style_jobs``,
+批准 #23);两项维护任务由 ``workers.install_workers`` 登记。"""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -30,6 +31,10 @@ _LOGGER = logging.getLogger(__name__)
 METRIC_EVENTS_RETENTION_DAYS = 90
 METRIC_EVENTS_CLEANUP_INTERVAL_SECONDS = 24 * 3600.0
 METRIC_EVENTS_MAINTENANCE_TASK = "style_reference_metric_events_retention"
+# 作业表的保留期（批准 #23，重评 R14）：结束了的对照检查作业留 30 天；分类 / 学习每本书每种只留最近一个
+CHECK_JOB_RETENTION_DAYS = 30
+JOB_RETENTION_INTERVAL_SECONDS = 24 * 3600.0
+JOB_RETENTION_MAINTENANCE_TASK = "style_reference_job_retention"
 
 
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
@@ -301,5 +306,101 @@ def run_metric_events_retention() -> dict[str, Any]:
             "style-reference metric events retention: deleted %d event(s) older than %s",
             int(summary["deleted_count"]),
             summary.get("cutoff"),
+        )
+    return summary
+
+
+def prune_style_jobs(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    check_days: int = CHECK_JOB_RETENTION_DAYS,
+) -> dict[str, Any]:
+    """作业表的保留期（批准 #23，重评 R14；flush 不 commit）。
+
+    - 结束了的对照检查作业留 ``check_days`` 天（按结束时间；读数照旧留在读数表里，「像不像」的走势不受影响）；
+    - 分类 / 学习作业每本书每种只留最近一个（按创建时间，与书卡读的是同一个）：书卡、「继续学习」/「继续分类」都只看
+      最近一个，更早的没有界面会读；
+    - 没结束的作业一个不删；还在活动面板上的（``jobs.RECENT_FINISHED_SECONDS`` 之内结束的）也不删；
+    - 留下的已结束作业，参数按这类作业登记的结束规则换好（对照检查：送检的原文换成哈希与字数）——规则上线之前
+      就结束了的旧行也在这里补上。
+    """
+    from datetime import timedelta
+
+    from novel_system.services.style_reference.jobs import (
+        JOB_KIND_CHECK,
+        RECENT_FINISHED_SECONDS,
+        TERMINAL_STATES,
+        finished_params,
+    )
+
+    current = now or datetime.now(UTC)
+    check_cutoff = (current - timedelta(days=int(check_days))).isoformat()
+    recent_cutoff = (current - timedelta(seconds=RECENT_FINISHED_SECONDS)).isoformat()
+    rows = session.execute(
+        select(
+            StyleReferenceJob.job_id,
+            StyleReferenceJob.kind,
+            StyleReferenceJob.book_id,
+            StyleReferenceJob.state,
+            StyleReferenceJob.created_at,
+            StyleReferenceJob.finished_at,
+        ).order_by(StyleReferenceJob.created_at, StyleReferenceJob.job_id)
+    ).all()
+    latest: dict[tuple[str, str], str] = {}
+    for job_id, kind, book_id, _state, _created, _finished in rows:
+        if kind != JOB_KIND_CHECK:
+            latest[(str(kind), str(book_id or ""))] = str(job_id)  # 升序：最后写入的就是最近一个
+    expired_checks: list[str] = []
+    superseded: list[str] = []
+    for job_id, kind, book_id, state, _created, finished in rows:
+        if state not in TERMINAL_STATES:
+            continue
+        finished_at = str(finished or "")
+        if kind == JOB_KIND_CHECK:
+            if finished_at < check_cutoff:
+                expired_checks.append(str(job_id))
+        elif latest.get((str(kind), str(book_id or ""))) != str(job_id) and finished_at < recent_cutoff:
+            superseded.append(str(job_id))
+    doomed = expired_checks + superseded
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(StyleReferenceJob).where(StyleReferenceJob.job_id.in_(doomed[start : start + 500])))
+    scrubbed = 0
+    for job_id, kind, params in session.execute(
+        select(StyleReferenceJob.job_id, StyleReferenceJob.kind, StyleReferenceJob.params_json).where(
+            StyleReferenceJob.state.in_(TERMINAL_STATES),
+            StyleReferenceJob.kind == JOB_KIND_CHECK,
+        )
+    ).all():
+        finished = finished_params(kind, params if isinstance(params, dict) else {})
+        if finished is not None:
+            session.execute(
+                update(StyleReferenceJob).where(StyleReferenceJob.job_id == job_id).values(params_json=finished)
+            )
+            scrubbed += 1
+    session.flush()
+    return {
+        "deleted_check_jobs": len(expired_checks),
+        "deleted_superseded_jobs": len(superseded),
+        "scrubbed_check_jobs": scrubbed,
+        "check_cutoff": check_cutoff,
+    }
+
+
+def run_job_retention() -> dict[str, Any]:
+    """清扫线程的维护任务（R14）：自己开会话，按保留期清作业表并提交；异常由清扫线程记日志。"""
+    from novel_system.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        summary = prune_style_jobs(session)
+        session.commit()
+    if summary["deleted_check_jobs"] or summary["deleted_superseded_jobs"] or summary["scrubbed_check_jobs"]:
+        _LOGGER.info(
+            "style-reference job retention: deleted %d check job(s) older than %s, %d superseded "
+            "classify/learn job(s); scrubbed %d finished check job(s)",
+            summary["deleted_check_jobs"],
+            summary["check_cutoff"],
+            summary["deleted_superseded_jobs"],
+            summary["scrubbed_check_jobs"],
         )
     return summary

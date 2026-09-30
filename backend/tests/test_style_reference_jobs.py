@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from novel_system.db.models import StyleReferenceJob
 from novel_system.db.session import SessionLocal
@@ -42,6 +42,7 @@ def _reset_handlers():
     saved = dict(jobs_module._HANDLERS)
     saved_hooks = dict(jobs_module._CANCEL_HOOKS)
     saved_rules = dict(jobs_module._RESUMABLE_RULES)
+    saved_params = dict(jobs_module._FINISHED_PARAMS_RULES)
     yield
     jobs_module._HANDLERS.clear()
     jobs_module._HANDLERS.update(saved)
@@ -49,6 +50,8 @@ def _reset_handlers():
     jobs_module._CANCEL_HOOKS.update(saved_hooks)
     jobs_module._RESUMABLE_RULES.clear()
     jobs_module._RESUMABLE_RULES.update(saved_rules)
+    jobs_module._FINISHED_PARAMS_RULES.clear()
+    jobs_module._FINISHED_PARAMS_RULES.update(saved_params)
 
 
 def _stale(session, job_id: str, *, seconds: float = 3600) -> None:
@@ -502,3 +505,140 @@ def test_activity_lists_every_active_job_however_many_finished_recently(session)
     listed = [job.job_id for job in service.list_recent(limit=3)]
     assert old_active.job_id in listed
     assert len(listed) == 4  # 1 条在跑 + 至多 3 条刚结束
+
+
+# ---------------------------------------------------------------------------
+# 作业表的保留期与对照检查的参数（批准 #23，重评 R14）
+# ---------------------------------------------------------------------------
+
+
+def test_finished_check_jobs_keep_only_a_hash_of_the_checked_text(session) -> None:
+    """对照检查作业不论怎么结束（成功 / 失败 / 排队中取消 / 工人死后取消），送检的原文都不再留在作业行上：只留与
+    读数表同一个哈希和字数；其它种类的参数不动。"""
+    from novel_system.services.hash_engine import sha256_text
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+    book_id = _book(session)
+    service = StyleJobService(session)
+    text = "林昭把旧信压在案卷底下，雨城的钟敲了三下。"
+
+    def check_job() -> StyleReferenceJob:
+        return service.create(
+            JOB_KIND_CHECK, book_id=book_id, allow_parallel=True, params={"target": "text", "text": text, "profile_id": "p1"}
+        )
+
+    scrubbed = {"target": "text", "profile_id": "p1", "text_sha256": sha256_text(text), "text_chars": len(text)}
+    succeeded = check_job()
+    service.succeed(service.claim(succeeded.job_id), {"reading_id": "r1"})
+    failed = check_job()
+    service.fail(service.claim(failed.job_id), code="X", message="boom")
+    cancelled_in_queue = check_job()
+    service.request_cancel(cancelled_in_queue.job_id)
+    cancelled_at_checkpoint = check_job()
+    service.finish_cancelled(service.claim(cancelled_at_checkpoint.job_id))
+    dead_worker = check_job()
+    service.claim(dead_worker.job_id)
+    session.execute(
+        update(StyleReferenceJob).where(StyleReferenceJob.job_id == dead_worker.job_id).values(cancel_requested=1)
+    )
+    _stale(session, dead_worker.job_id)
+    service.sweep()
+    for job in (succeeded, failed, cancelled_in_queue, cancelled_at_checkpoint, dead_worker):
+        row = service.get(job.job_id, fresh=True)
+        assert row.state in (STATE_SUCCEEDED, STATE_FAILED, STATE_CANCELLED)
+        assert row.params_json == scrubbed, row.state
+    # 还在跑的检查作业要续读原文：结束之前不动
+    running = check_job()
+    service.claim(running.job_id)
+    assert service.get(running.job_id, fresh=True).params_json["text"] == text
+    # 分类作业没有这条规则：参数照旧
+    classify = service.create(JOB_KIND_CLASSIFY, book_id=book_id, params={"mode": "import"})
+    service.fail(service.claim(classify.job_id), code="X", message="boom")
+    assert service.get(classify.job_id, fresh=True).params_json == {"mode": "import"}
+
+
+def _job_at(
+    session,
+    kind: str,
+    book_id: str,
+    *,
+    state: str,
+    created_days_ago: float,
+    finished_days_ago: float | None = None,
+    params: dict | None = None,
+) -> str:
+    now = datetime.now(UTC)
+    job = StyleJobService(session).create(kind, book_id=book_id, allow_parallel=True, params=params or {})
+    values: dict = {"state": state, "created_at": (now - timedelta(days=created_days_ago)).isoformat()}
+    if finished_days_ago is not None:
+        values["finished_at"] = (now - timedelta(days=finished_days_ago)).isoformat()
+    session.execute(update(StyleReferenceJob).where(StyleReferenceJob.job_id == job.job_id).values(**values))
+    session.flush()
+    return job.job_id
+
+
+def test_job_retention_prunes_old_checks_and_superseded_runs_but_never_live_jobs(session) -> None:
+    from novel_system.services.style_reference.cleanup import prune_style_jobs
+    from novel_system.services.style_reference.learn_job import latest_learn_job
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+    book_a = _book(session, "sr_book_ret_a")
+    book_b = _book(session, "sr_book_ret_b")
+    old_check = _job_at(session, JOB_KIND_CHECK, book_a, state=STATE_SUCCEEDED, created_days_ago=41, finished_days_ago=40)
+    young_check = _job_at(
+        session,
+        JOB_KIND_CHECK,
+        book_a,
+        state=STATE_FAILED,
+        created_days_ago=6,
+        finished_days_ago=5,
+        params={"target": "text", "text": "案卷里夹着一封旧信"},
+    )
+    queued_check = _job_at(session, JOB_KIND_CHECK, book_a, state=STATE_QUEUED, created_days_ago=60)
+    old_learn = _job_at(session, JOB_KIND_LEARN, book_a, state=STATE_FAILED, created_days_ago=3, finished_days_ago=3)
+    latest_learn = _job_at(session, JOB_KIND_LEARN, book_a, state=STATE_FAILED, created_days_ago=1, finished_days_ago=1)
+    just_finished_classify = _job_at(
+        session, JOB_KIND_CLASSIFY, book_a, state=STATE_SUCCEEDED, created_days_ago=0.01, finished_days_ago=0.001
+    )
+    running_classify = _job_at(session, JOB_KIND_CLASSIFY, book_a, state=STATE_RUNNING, created_days_ago=0.0005)
+    older_running_learn = _job_at(session, JOB_KIND_LEARN, book_b, state=STATE_RUNNING, created_days_ago=2)
+    newest_learn_b = _job_at(session, JOB_KIND_LEARN, book_b, state=STATE_SUCCEEDED, created_days_ago=1, finished_days_ago=1)
+    old_classify_b = _job_at(session, JOB_KIND_CLASSIFY, book_b, state=STATE_CANCELLED, created_days_ago=9, finished_days_ago=9)
+    latest_classify_b = _job_at(session, JOB_KIND_CLASSIFY, book_b, state=STATE_SUCCEEDED, created_days_ago=8, finished_days_ago=8)
+
+    summary = prune_style_jobs(session)
+    remaining = set(session.scalars(select(StyleReferenceJob.job_id)).all())
+    assert remaining == {
+        young_check,
+        queued_check,  # 没结束的不删，排了多久都一样
+        latest_learn,  # 每本书每种留最近一个：「继续学习」读的就是它
+        just_finished_classify,  # 还在活动面板上（刚结束），不删
+        running_classify,
+        older_running_learn,  # 没结束的不删，即使不是最近一个
+        newest_learn_b,
+        latest_classify_b,
+    }
+    assert {old_check, old_learn, old_classify_b}.isdisjoint(remaining)
+    assert summary["deleted_check_jobs"] == 1 and summary["deleted_superseded_jobs"] == 2
+    # 规则上线之前就结束了的检查作业：原文在这里补着换成哈希
+    assert summary["scrubbed_check_jobs"] == 1
+    young = session.get(StyleReferenceJob, young_check)
+    session.refresh(young)
+    assert "text" not in young.params_json and young.params_json["text_chars"] == 9
+    assert latest_learn_job(session, book_a).job_id == latest_learn
+    # 再跑一遍什么也不做
+    again = prune_style_jobs(session)
+    assert (again["deleted_check_jobs"], again["deleted_superseded_jobs"], again["scrubbed_check_jobs"]) == (0, 0, 0)
+
+
+def test_job_retention_is_a_daily_maintenance_task() -> None:
+    from novel_system.services.style_reference import cleanup
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+    task, interval = jobs_module._MAINTENANCE[cleanup.JOB_RETENTION_MAINTENANCE_TASK]
+    assert task is cleanup.run_job_retention and interval == 24 * 3600
+    assert cleanup.CHECK_JOB_RETENTION_DAYS == 30
+

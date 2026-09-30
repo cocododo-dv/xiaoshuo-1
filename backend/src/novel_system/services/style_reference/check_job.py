@@ -681,6 +681,17 @@ def check_never_resumes(_job: StyleReferenceJob) -> bool:
     return False
 
 
+def finished_check_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """对照检查作业结束(成功 / 失败 / 取消)时的参数:送检的原文(至多 6 万字)不再留在作业行上,只留哈希与字数
+    ——读数表本来就只存 ``text_sha256``(同一个哈希),检查作业从不续跑,结束后没人再读这段文字。"""
+    finished = dict(params)
+    text = finished.pop("text", None)
+    if isinstance(text, str) and text:
+        finished["text_sha256"] = readings.text_sha256(text)
+        finished["text_chars"] = len(text)
+    return finished
+
+
 
 __all__ = [
     "CHECK_CONFIG_MISSING_CODE",
@@ -701,6 +712,7 @@ __all__ = [
     "normalize_judge_output",
     "resolve_check_client",
     "check_never_resumes",
+    "finished_check_params",
     "run_check_job",
     "run_reference_judge",
     "scene_current_text",
