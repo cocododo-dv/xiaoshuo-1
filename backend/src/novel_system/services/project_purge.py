@@ -23,8 +23,6 @@ from functools import lru_cache
 from sqlalchemy import Table, delete, or_, select
 from sqlalchemy.orm import Session
 
-from novel_system.db import models as _models  # noqa: F401 - register all mappers
-from novel_system.db.base import Base
 from novel_system.db.models import (
     AuthorDraft,
     AuthorPreferenceProfile,
@@ -35,6 +33,7 @@ from novel_system.db.models import (
     StoryCharacter,
     StyleReferenceInjectionBinding,
 )
+from novel_system.services.project_ownership import tables_child_first
 
 #: 按这些列认出「这一行属于这部作品」（值 = 作品 id / 它的章、场景、作者稿、人物的 id）
 PURGE_KEY_COLUMNS = ("project_id", "chapter_id", "scene_id", "draft_id", "character_id")
@@ -83,14 +82,10 @@ class ProjectPurgePlan:
 
 @lru_cache(maxsize=1)
 def purged_tables_child_first() -> tuple[Table, ...]:
-    """带 ``PURGE_KEY_COLUMNS`` 的表（作品本表除外，它最后单独删），子表在前：删除顺序不撞外键。"""
-    return tuple(
-        table
-        for table in reversed(Base.metadata.sorted_tables)
-        if table.name != "story_projects"
-        and table.name not in NOT_PURGED_TABLES
-        and any(column in table.c for column in PURGE_KEY_COLUMNS)
-    )
+    """带 ``PURGE_KEY_COLUMNS`` 的表（作品本表除外，它最后单独删），子表在前：删除顺序不撞外键。
+
+    与作者状态重置同一条元数据遍历（``project_ownership.tables_child_first``）。"""
+    return tables_child_first(PURGE_KEY_COLUMNS, exclude=NOT_PURGED_TABLES)
 
 
 def build_project_purge_plan(session: Session, project_id: str) -> ProjectPurgePlan:

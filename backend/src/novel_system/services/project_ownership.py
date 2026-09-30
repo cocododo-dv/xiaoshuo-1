@@ -7,25 +7,39 @@ code from silently missing a newly introduced project model.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Iterable
 from functools import lru_cache
 from typing import Any
 
-from sqlalchemy import Table, delete
-from sqlalchemy.orm import Session
+from sqlalchemy import Table
 
 from novel_system.db import models as _models  # noqa: F401 - register all mappers
 from novel_system.db.base import Base
+
+
+def tables_child_first(key_columns: Iterable[str], *, exclude: Collection[str] = ()) -> tuple[Table, ...]:
+    """Every table except ``story_projects`` (and ``exclude``) that carries any of ``key_columns``,
+    children before parents (FK-safe delete order).
+
+    The one metadata walk behind the author-state reset (``project_id``) and the permanent purge
+    (``project_purge.PURGE_KEY_COLUMNS``).
+    """
+
+    columns = tuple(key_columns)
+    return tuple(
+        table
+        for table in reversed(Base.metadata.sorted_tables)
+        if table.name != "story_projects"
+        and table.name not in exclude
+        and any(column in table.c for column in columns)
+    )
 
 
 @lru_cache(maxsize=1)
 def project_owned_tables_child_first() -> tuple[Table, ...]:
     """Return every non-root table with ``project_id`` in FK-safe delete order."""
 
-    return tuple(
-        table
-        for table in reversed(Base.metadata.sorted_tables)
-        if table.name != "story_projects" and "project_id" in table.c
-    )
+    return tables_child_first(("project_id",))
 
 
 @lru_cache(maxsize=1)
@@ -47,15 +61,3 @@ def project_owned_models_child_first() -> tuple[type[Any], ...]:
     return tuple(
         model_by_table[table] for table in project_owned_tables_child_first()
     )
-
-
-def delete_project_owned_rows(session: Session, project_id: str) -> dict[str, int]:
-    """Delete every directly project-scoped row, children before parents."""
-
-    deleted: dict[str, int] = {}
-    for table in project_owned_tables_child_first():
-        result = session.execute(
-            delete(table).where(table.c.project_id == project_id)
-        )
-        deleted[table.name] = max(int(result.rowcount or 0), 0)
-    return deleted
