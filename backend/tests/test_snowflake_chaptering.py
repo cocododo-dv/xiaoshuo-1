@@ -685,6 +685,199 @@ def test_saving_step_07_without_a_chapter_table_keeps_the_table_and_the_approved
     assert _table_snapshot(session, project_id) == before_table
 
 
+def _explicit_table(session, project_id: str) -> list[dict]:
+    """现在这张章表写成 07 的显式 ``chapters``（API 调用方给的、今天的前端上行的就是这个形状）。"""
+    return [dict(chapter, row_uid=row.row_uid) for chapter, row in zip(_CHAPTERS, _live_chapters(session, project_id))]
+
+
+def test_an_explicit_07_table_that_grows_mints_identity_only_for_the_new_chapters(client, session) -> None:
+    """显式给 07 的章表（API 调用方；前端改成不上行章表之前还有前端的 07 上行）照旧同步成章表行，走的是与分章面板
+    同一个 upsert（收下认不得的 row_uid）：加两章时前六章的身份与场景归属不动，新增的两章各拿一个新 uid，
+    铸好的 uid 写回 07 草稿（下一次保存与前端水合拿到同一个锚）。"""
+    project_id = _create_project(client, "explicit-grow")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    before_uids = [row.row_uid for row in _live_chapters(session, project_id)]
+    before_bindings = _bindings(session, project_id)
+    grown = _explicit_table(session, project_id) + [
+        {"row_uid": "", "chapter_seq": 7, "act": 3, "title": "新章甲", "summary": "补一章。", "spine": "", "chapter_goal": "过渡"},
+        {"row_uid": "", "chapter_seq": 8, "act": 3, "title": "新章乙", "summary": "再补一章。", "spine": "", "chapter_goal": "收束"},
+    ]
+
+    _patch(client, project_id, "long_synopsis", {"paragraphs": ["", "", "", ""], "chapters": grown})
+
+    after = _live_chapters(session, project_id)
+    assert [row.row_uid for row in after[:6]] == before_uids
+    minted = [row.row_uid for row in after[6:]]
+    assert len(set(minted)) == 2 and all(minted) and not set(minted) & set(before_uids), "新章必须拿到自己的新身份"
+    assert [(row.title, row.act) for row in after[6:]] == [("新章甲", 3), ("新章乙", 3)]
+    assert _bindings(session, project_id) == before_bindings, "加章不该动已有归属"
+    assert [item["row_uid"] for item in _latest_07(session, project_id).draft_json["chapters"]] == before_uids + minted
+
+
+def test_an_explicit_07_table_that_shrinks_unbinds_exactly_the_dropped_chapters_scenes(client, session) -> None:
+    """显式给的章表变短：没列出来的章软删（留一条 ``snowflake_chapter_plan_removed``，不带面板整表替换的 reason），
+    挂在它们上面的场——而且只有它们——退回「未分章」；留下的三章还是原来那三章（身份没被重铸）。"""
+    from novel_system.db.models import OperationLog
+
+    project_id = _create_project(client, "explicit-shrink")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    before = _live_chapters(session, project_id)
+    dropped = {row.chapter_plan_id for row in before[3:]}
+    before_bindings = _bindings(session, project_id)
+    loose = {scene for scene, chapter in before_bindings.items() if chapter in dropped}
+    assert loose and len(loose) < len(before_bindings)
+
+    _patch(client, project_id, "long_synopsis", {"paragraphs": ["", "", "", ""], "chapters": _explicit_table(session, project_id)[:3]})
+
+    assert [row.row_uid for row in _live_chapters(session, project_id)] == [row.row_uid for row in before[:3]]
+    after_bindings = _bindings(session, project_id)
+    assert {scene for scene, chapter in after_bindings.items() if chapter is None} == loose
+    assert {scene: chapter for scene, chapter in after_bindings.items() if scene not in loose} == {
+        scene: chapter for scene, chapter in before_bindings.items() if scene not in loose
+    }
+    removals = session.execute(
+        select(OperationLog).where(
+            OperationLog.event_type == "snowflake_chapter_plan_removed", OperationLog.object_ref.in_(dropped)
+        )
+    ).scalars().all()
+    assert {log.object_ref for log in removals} == dropped
+    assert all("reason" not in (log.payload_json or {}) for log in removals)
+
+
+def test_a_shrinking_07_table_counts_only_live_scenes_as_loose(client, session) -> None:
+    """章表收缩的提示只数活的场：09 里删掉的场（场景计划软删了、章归属还挂着）也从消失的章上摘下来，但它不是
+    「退回未分章」的场——作者在提示里看到的数与分章面板上多出来的未分章场一致。"""
+    from novel_system.db.models import SnowflakeScenePlan, utcnow
+    from novel_system.services.snowflake_chaptering import sync_long_synopsis_chapters
+
+    project_id = _create_project(client, "explicit-shrink-live")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    run = _latest_07(session, project_id)
+    table = _explicit_table(session, project_id)[:3]
+    dropped = {row.chapter_plan_id for row in _live_chapters(session, project_id)[3:]}
+    bound = [
+        plan
+        for plan in session.execute(select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == project_id)).scalars()
+        if plan.chapter_plan_id in dropped
+    ]
+    assert len(bound) >= 2
+    deleted = bound[0]
+    deleted.removed_at = utcnow()
+    session.flush()
+
+    notice = sync_long_synopsis_chapters(session, project_id, {"chapters": table}, run, approved=False)
+
+    assert notice["code"] == "CHAPTER_PLAN_SHRUNK"
+    assert notice["unbound_scene_count"] == len(bound) - 1
+    assert sum(item["unbound_scene_count"] for item in notice["dropped_chapters"]) == len(bound) - 1
+    assert all(plan.chapter_plan_id is None for plan in bound), "删掉的场也从消失的章上摘下来"
+
+
+def test_the_frontend_cache_copy_of_the_07_table_stays_the_chapter_table(client, session) -> None:
+    """复核 P04-R1：前端水合 07 时整份取写穿缓存 ``fe_scaffold``（它在就不看规范的 ``chapters``）。分章面板存了章表之后，
+    缓存里的那一份必须是同一张章表——否则新浏览器 / 另一台电脑打开 07 看到空章表，点一下「添加第一幕章节」自动
+    保存就上行一张只有一行的显式章表，全书的章被软删、每一场退回「未分章」。另一台电脑上行一张空章表（本机缓存
+    比服务端旧）时同理：存着的章表沿用，缓存里的那一份也沿用。"""
+    from tests.test_snowflake_chaptering_story_order import _payload
+
+    def fe_rows(rows) -> list[dict]:
+        # 前端 feFromCanon("outline") 的形状：两位章号、章目标叫 goal
+        return [
+            {"row_uid": row.row_uid, "id": f"{index:02d}", "act": row.act, "title": row.title or "",
+             "summary": row.summary or "", "spine": row.spine or "", "goal": row.chapter_goal or ""}
+            for index, row in enumerate(rows, start=1)
+        ]
+
+    def canon_rows(rows) -> list[dict]:
+        # 前端 canonFromFE("outline") 上行的形状
+        return [
+            {"row_uid": row.row_uid, "chapter_seq": index, "act": row.act, "title": row.title or "",
+             "summary": row.summary or "", "spine": row.spine or "", "chapter_goal": row.chapter_goal or ""}
+            for index, row in enumerate(rows, start=1)
+        ]
+
+    project_id = _create_project(client, "fe-cache-mirror")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    live = _live_chapters(session, project_id)
+    # 今天的前端上行 07 的样子：规范的 chapters + 写穿缓存（里面也有一份章表）
+    _patch(client, project_id, "long_synopsis", {
+        "paragraphs": ["", "", "", ""], "chapters": canon_rows(live),
+        "fe_scaffold": {"expansions": {}, "chapters": fe_rows(live)},
+    })
+
+    # 分章面板「只保存章表」：第二章并入第一章，第一章起个名字
+    preview = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview", json={"strategy": "keep_current"}
+    ).json()["data"]
+    payload = _payload(preview)
+    first, second = payload["chapters"][0]["row_uid"], payload["chapters"][1]["row_uid"]
+    payload["chapters"] = [chapter for chapter in payload["chapters"] if chapter["row_uid"] != second]
+    payload["chapters"][0]["title"] = "旧信回城"
+    for item in payload["assignments"]:
+        if item["chapter_row_uid"] == second:
+            item["chapter_row_uid"] = first
+    saved = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan", json=payload)
+    assert saved.status_code == 200, saved.text
+
+    live = _live_chapters(session, project_id)
+    assert len(live) == len(_CHAPTERS) - 1 and live[0].title == "旧信回城"
+    stored = _latest_07(session, project_id).draft_json
+    assert stored["fe_scaffold"]["chapters"] == fe_rows(live), "新浏览器会水合到一张过时的 / 空的 07 章表"
+    assert stored["fe_scaffold"]["expansions"] == {}
+    bindings = _bindings(session, project_id)
+    assert all(bindings.values())
+
+    # 新浏览器水合到的就是这一份，它每次 07 上行原样回传：章表与归属一行不动
+    table = [(row.row_uid, row.title) for row in live]
+    _patch(client, project_id, "long_synopsis", {
+        "paragraphs": ["改过的一幕", "", "", ""], "chapters": canon_rows(live),
+        "fe_scaffold": {"expansions": {"setup": "改过的一幕"}, "chapters": fe_rows(live)},
+    })
+    assert [(row.row_uid, row.title) for row in _live_chapters(session, project_id)] == table
+    assert _bindings(session, project_id) == bindings
+
+    # 另一台电脑的本机缓存比服务端旧、07 章表是空的：上行的章表是空表 → 沿用存着的，写穿缓存里的那一份也沿用
+    _patch(client, project_id, "long_synopsis", {
+        "paragraphs": ["改过的一幕", "又改一句", "", ""], "chapters": [],
+        "fe_scaffold": {"expansions": {"setup": "改过的一幕", "d1": "又改一句"}, "chapters": []},
+    })
+    stored = _latest_07(session, project_id).draft_json
+    assert stored["fe_scaffold"]["chapters"] == fe_rows(live)
+    assert stored["fe_scaffold"]["expansions"]["d1"] == "又改一句"
+    assert [(row.row_uid, row.title) for row in _live_chapters(session, project_id)] == table
+    assert _bindings(session, project_id) == bindings
+
+
+def test_keeping_the_live_table_also_replaces_an_old_frontend_cache_copy(client, session) -> None:
+    """保留现表的那条路（07 重新生成；从历史里恢复旧版本时也该走它）碰上带着写穿缓存的草稿——恢复的旧版本带着
+    它当时的那一份旧章表——缓存里的章表一并换成现表，缓存的其余部分原样：留着旧章表，新浏览器水合到它，下一次
+    07 上行就把旧章表当显式章表同步回来。"""
+    from novel_system.services.snowflake_chapter_table import keep_live_chapter_table
+
+    project_id = _create_project(client, "keep-live-fe")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    live = _live_chapters(session, project_id)
+    old = [{"row_uid": "chrow_old", "id": "01", "act": 1, "title": "旧的一章", "summary": "", "spine": "", "goal": ""}]
+    draft = {
+        "paragraphs": ["一幕", "", "", "", ""],
+        "chapters": [{"row_uid": "chrow_old", "chapter_seq": 1, "act": 1, "title": "旧的一章"}],
+        "fe_scaffold": {"expansions": {"setup": "一幕"}, "chapters": old},
+    }
+
+    assert keep_live_chapter_table(session, project_id, draft) is True
+
+    assert [item["row_uid"] for item in draft["chapters"]] == [row.row_uid for row in live]
+    assert [(item["row_uid"], item["title"], item["id"]) for item in draft["fe_scaffold"]["chapters"]] == [
+        (row.row_uid, row.title, f"{index:02d}") for index, row in enumerate(live, start=1)
+    ]
+    assert draft["fe_scaffold"]["expansions"] == {"setup": "一幕"}
+
+
 def test_a_frontend_payload_missing_chapters_cannot_wipe_the_chapter_table(session) -> None:
     """draft_override 是「补上未保存的本地编辑」，不是删除指令——章表同场景表一样受保护。"""
     from novel_system.services.snowflake_workspace import _merge_dicts_keeping_members
