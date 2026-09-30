@@ -94,7 +94,9 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 button.arr-card-title:hover { color: var(--accent-ink); }
-.arr-card.s-planned .arr-card-title { color: var(--ink-2); }
+/* 还没动笔的章（阶段规则读作规划中 / 待写）章名淡一档 */
+.arr-card.s-planned .arr-card-title,
+.arr-card.s-todo .arr-card-title { color: var(--ink-2); }
 .arr-card-promise { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arr-card-range { grid-area: range; font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; }
 .arr-card-spine { grid-area: spine; display: flex; }

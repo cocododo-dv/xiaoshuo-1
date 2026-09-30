@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -857,6 +860,23 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => click(host.querySelector(".arr-card-title")));
     const stat = [...host.querySelectorAll(".arr-rail-stat > span")].map((node) => node.textContent);
     expect(stat).toEqual(["0 已定稿", "2 审阅中", "1 草稿", "1 写作中", "0 规划中"]);
+  });
+
+  it("还没动笔的章（规划中 / 待写）在卡片上章名一样淡一档：卡片按阶段挂 s-*，样式表两种阶段都有", async () => {
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "规划的章", { state: "planned" }),
+      chapter("ch02", "待写的章", { state: "todo" }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const stages = [...host.querySelectorAll('[data-testid="arr-chapter-card"]')]
+      .map((node) => [...node.classList].find((cls) => cls.startsWith("s-")));
+    expect(stages).toEqual(["s-planned", "s-todo"]);
+    const css = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "ws-author.css"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const dimmed = [...css.matchAll(/([^{}]+)\{\s*color:\s*var\(--ink-2\);?\s*\}/g)]
+      .flatMap((m) => m[1].split(",").map((selector) => selector.trim()));
+    for (const stage of stages) expect(dimmed).toContain(`.arr-card.${stage} .arr-card-title`);
   });
 
   it("目录请求失败与真空作品分开呈现，并提供真实重试", async () => {
