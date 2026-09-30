@@ -26,6 +26,7 @@ import yaml
 from novel_system.db.session import SessionLocal
 from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.system_config import SystemConfigService
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 # 客户端降级阶梯的上限（MAX_OUTPUT_TOKENS_CEILING），配置值与之对齐才有意义。
 DEFAULT_FLOOR = 8192
@@ -78,6 +79,7 @@ def _targets_by_table(payload: dict[str, Any], nodes: list[str] | None, floor: i
 
 
 def main(argv: list[str] | None = None) -> int:
+    refuse_foreign_checkout("raise_llm_output_budget")
     args = _parse_args(argv)
     session = SessionLocal()
     try:

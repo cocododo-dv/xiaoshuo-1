@@ -13,6 +13,10 @@ jobs:
     name: Backend Quality Gates
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # This checkout's backend/src: the locks are installed without the project itself, and
+    # the backend/novel_system import shim is gone (B12-08).
+    env:
+      PYTHONPATH: src
     defaults:
       run:
         working-directory: backend
@@ -48,6 +52,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
+    # This checkout's backend/src: the locks are installed without the project itself, and
+    # the backend/novel_system import shim is gone (B12-08).
+    env:
+      PYTHONPATH: src
     defaults:
       run:
         working-directory: backend
@@ -86,6 +94,10 @@ jobs:
     name: Backend Chroma Integration
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # This checkout's backend/src: the locks are installed without the project itself, and
+    # the backend/novel_system import shim is gone (B12-08).
+    env:
+      PYTHONPATH: src
     defaults:
       run:
         working-directory: backend

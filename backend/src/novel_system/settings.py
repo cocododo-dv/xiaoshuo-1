@@ -74,7 +74,6 @@ class Settings:
     snowflake_input_token_budget: int = 0
     admin_token: str | None = None
     config_secret: str | None = None
-    auto_create_tables: bool = False
     cors_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -153,7 +152,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     )
     admin_token = core_runtime.admin_token
     config_secret = core_runtime.config_secret
-    auto_create_tables = bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
     cors_origins = list_env(
         "NOVEL_SYSTEM_CORS_ORIGINS",
         (
@@ -210,7 +208,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         snowflake_input_token_budget=snowflake_input_token_budget,
         admin_token=admin_token,
         config_secret=config_secret,
-        auto_create_tables=auto_create_tables,
         cors_origins=cors_origins,
         cors_allow_credentials=cors_allow_credentials,
         expose_error_detail=expose_error_detail,

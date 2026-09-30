@@ -11,9 +11,11 @@
 # NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads BOM-less .ps1 as the
 # system ANSI codepage, so non-ASCII comments corrupt parsing.
 
+# Default ports are never the dev stack's (backend 8000, React 5174): an author's running
+# stack there would answer this lane's readiness probes and the smokes would drive the live app.
 param(
     [int]$BackendPort = 8009,
-    [int]$ReactPort = 5174,
+    [int]$ReactPort = 5176,
     [int]$ReadyTimeoutSeconds = 120
 )
 
@@ -34,6 +36,29 @@ function Test-PortBindable {
     finally { if ($null -ne $listener) { $listener.Stop() } }
 }
 
+function Test-PortListening {
+    param([int]$Port)
+    $client = New-Object System.Net.Sockets.TcpClient
+    try { return $client.ConnectAsync("127.0.0.1", $Port).Wait(1000) }
+    catch { return $false }
+    finally { $client.Close() }
+}
+
+# Refuse (exit 2) before starting anything: this lane only stops the processes it starts, so
+# with another server on a chosen port its readiness probe would pass against that server and
+# the smokes would run against it.
+function Assert-PortFree {
+    param([string]$Label, [int]$Port, [string]$Parameter)
+    if ($Port -lt 1 -or $Port -gt 65535) {
+        Write-Host ("verify_react_e2e: refusing to start: -{0} {1} is not a TCP port." -f $Parameter, $Port) -ForegroundColor Red
+        exit 2
+    }
+    if ((Test-PortListening -Port $Port) -or -not (Test-PortBindable -Port $Port)) {
+        Write-Host ("verify_react_e2e: refusing to start: the {0} port {1} is already in use on 127.0.0.1. Stop whatever holds it or pick a free port with -{2} <port>." -f $Label, $Port, $Parameter) -ForegroundColor Red
+        exit 2
+    }
+}
+
 function Test-UrlHealthy {
     param([string]$Url)
     try { return (Invoke-WebRequest -UseBasicParsing $Url -TimeoutSec 5).StatusCode -eq 200 }
@@ -41,10 +66,20 @@ function Test-UrlHealthy {
 }
 
 function Wait-Until {
-    param([string]$Label, [scriptblock]$Condition, [int]$TimeoutSeconds = 120)
+    param([string]$Label, [scriptblock]$Condition, [int]$TimeoutSeconds = 120, $Process = $null)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        if (& $Condition) { return }
+        # Only our own process may answer: if it exited first (e.g. the port was taken after the
+        # preflight), fail instead of trusting whatever else answers there.
+        if ($null -ne $Process -and $Process.HasExited) {
+            throw ("The process for {0} exited before it answered." -f $Label)
+        }
+        if (& $Condition) {
+            if ($null -ne $Process -and $Process.HasExited) {
+                throw ("Something answered for {0} but our process is gone; refusing to run the smokes against it." -f $Label)
+            }
+            return
+        }
         Start-Sleep -Seconds 1
     }
     throw ("Timed out waiting for {0}." -f $Label)
@@ -78,6 +113,14 @@ function Stop-Tree {
     catch {}
 }
 
+# --- Preflight: ports first, before anything is created or started ---
+Assert-PortFree -Label "backend" -Port $BackendPort -Parameter "BackendPort"
+Assert-PortFree -Label "React" -Port $ReactPort -Parameter "ReactPort"
+if ($BackendPort -eq $ReactPort) {
+    Write-Host ("verify_react_e2e: refusing to start: the backend and React ports are both {0}." -f $BackendPort) -ForegroundColor Red
+    exit 2
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $repoRoot "backend"
 $backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
@@ -85,9 +128,6 @@ $reactDir = Join-Path $repoRoot "frontend-react"
 $runDir = Join-Path $repoRoot ".codex-run\e2e"
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 
-# --- Preflight ---
-if (-not (Test-PortBindable -Port $BackendPort)) { throw "Backend port $BackendPort is busy; stop whatever holds it first." }
-if (-not (Test-PortBindable -Port $ReactPort)) { throw "React port $ReactPort is busy; stop whatever holds it first." }
 $playwrightProbe = Join-Path $reactDir "node_modules\playwright\package.json"
 if (-not (Test-Path $playwrightProbe)) {
     throw "run-smokes needs Playwright installed in frontend-react/ (cd frontend-react; npm ci). Probe missing: $playwrightProbe"
@@ -117,17 +157,7 @@ $env:NOVEL_SYSTEM_CORS_ORIGINS = $reactUrl.TrimEnd("/")
 
 Write-Step -Message "E2E runtime DB: $dbUrl"
 
-# Migration 20260523_0036 guards the one-time legacy reference_learning drop behind a
-# backups/style_reference_legacy_*.json file (a fresh `alembic upgrade head` otherwise
-# aborts). A throwaway e2e DB has nothing to back up, so use the migration's sanctioned
-# test override (STYLE_REFERENCE_REPO_ROOT) pointed at a shim dir holding a placeholder.
-$repoShim = Join-Path $runDir "repo-shim"
-$shimBackups = Join-Path $repoShim "backups"
-New-Item -ItemType Directory -Path $shimBackups -Force | Out-Null
-Set-Content -Path (Join-Path $shimBackups "style_reference_legacy_e2e.json") -Value "{}" -Encoding ascii
-$env:STYLE_REFERENCE_REPO_ROOT = $repoShim
-
-# --- Migrate (auto_create_tables defaults off; per-suite reseed is run-smokes' job) ---
+# --- Migrate (a fresh DB needs no legacy style-reference backup; reseed is run-smokes' job) ---
 Write-Step -Message "alembic upgrade head (e2e db)"
 Push-Location $backendDir
 try {
@@ -147,11 +177,13 @@ try {
 
     # --- Start React (dev server; inject the e2e backend as default API base) ---
     Write-Step -Message "Starting React app on $reactUrl"
-    $reactCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1}' -f $backendUrl, $ReactPort
+    # --strictPort: without it Vite silently moves to the next free port while the wait below
+    # would find whatever else answers on $ReactPort.
+    $reactCommand = '$env:VITE_NOVEL_SYSTEM_API_BASE = ''{0}''; npm.cmd run dev -- --host 127.0.0.1 --port {1} --strictPort' -f $backendUrl, $ReactPort
     $reactProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $reactCommand) -WorkingDirectory $reactDir -RedirectStandardOutput "$runDir\react.out.log" -RedirectStandardError "$runDir\react.err.log" -PassThru
 
-    Wait-Until -Label "backend health ($healthUrl)" -Condition { Test-UrlHealthy -Url $healthUrl } -TimeoutSeconds $ReadyTimeoutSeconds
-    Wait-Until -Label "react home ($reactUrl)" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds $ReadyTimeoutSeconds
+    Wait-Until -Label "backend health ($healthUrl)" -Condition { Test-UrlHealthy -Url $healthUrl } -TimeoutSeconds $ReadyTimeoutSeconds -Process $backendProcess
+    Wait-Until -Label "react home ($reactUrl)" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds $ReadyTimeoutSeconds -Process $reactProcess
 
     # --- Run contract smokes from the React package that owns Playwright. ---
     Write-Step -Message "Running contract smokes (run-smokes.mjs)"

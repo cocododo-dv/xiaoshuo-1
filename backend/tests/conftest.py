@@ -16,11 +16,8 @@ from fastapi.testclient import TestClient
 # ---------------------------------------------------------------------------
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
-# 本检出里 novel_system 可以来自的两处：backend/src 下的包，和 backend/ 下只有 __init__.py 的旧导入垫片
-_CHECKOUT_PACKAGE_DIRS = (
-    (_BACKEND_DIR / "src" / "novel_system").resolve(),
-    (_BACKEND_DIR / "novel_system").resolve(),
-)
+# 本检出里 novel_system 只能来自 backend/src 下的包（backend/ 下那个 extend_path 导入垫片已删，B12-08）
+_CHECKOUT_PACKAGE_DIRS = ((_BACKEND_DIR / "src" / "novel_system").resolve(),)
 # 只有这两个 NOVEL_SYSTEM_* 可以从外面带进测试进程：可选的本地私有语料通道、E2E 通道用的解释器路径
 ENV_PASSTHROUGH = frozenset({"NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS", "NOVEL_SYSTEM_PYTHON"})
 
@@ -59,11 +56,11 @@ def _refuse_foreign_code(when: str) -> None:
 def confine_novel_system_to_this_checkout() -> None:
     """测试会话只导入本检出的 novel_system（X04-06）。
 
-    各 git worktree 共用一个 venv，venv 里可编辑安装的 .pth 指向另一个检出；backend/novel_system/__init__.py 这个
-    垫片用 ``pkgutil.extend_path``，于是 ``novel_system.__path__`` 里混进了那个检出的包目录——在本检出里删掉 / 搬走的
-    模块还能从那边悄悄导进来，测试照样绿。这里把外来目录从 ``__path__`` 里拿掉（之后本检出里没有的模块就是
-    ModuleNotFoundError），已经从外面导进来的模块直接拒跑。垫片本身留着：``python -m novel_system.tools…`` 从 backend/
-    启动时靠它。
+    各 git worktree 共用一个 venv，venv 里可编辑安装的 .pth 指向另一个检出。以前 backend/novel_system/__init__.py
+    那个垫片用 ``pkgutil.extend_path``，于是 ``novel_system.__path__`` 里混进了那个检出的包目录——在本检出里删掉 /
+    搬走的模块还能从那边悄悄导进来，测试照样绿。垫片已删（B12-08：``pythonpath = ["src"]`` 让 ``novel_system`` 是
+    backend/src 下的普通包）；这里仍把 ``__path__`` 里任何外来目录拿掉（之后本检出里没有的模块就是
+    ModuleNotFoundError），已经从外面导进来的模块直接拒跑——比如别的检出的 src 被排到了 sys.path 前面。
     """
     import novel_system
 

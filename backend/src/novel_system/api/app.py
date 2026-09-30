@@ -8,11 +8,14 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import inspect as sqlalchemy_inspect, text
-from sqlalchemy.exc import OperationalError
 
+from novel_system.api.errors import install_exception_handlers
+from novel_system.api.middleware import UnhandledErrorMiddleware
+from novel_system.api.readiness import (  # noqa: F401 — SUPPORTED_DATABASE_REVISION 仍从这里导出
+    SUPPORTED_DATABASE_REVISION,
+    check_database_ready,
+)
 from novel_system.api.response import error
 from novel_system.api.openapi_contract import install_api_openapi_contract
 from novel_system.api.request_limits import RequestBodyLimitMiddleware
@@ -39,17 +42,10 @@ from novel_system.api.routes import (
     writer_deep_review,
 )
 from novel_system.db import models  # noqa: F401
-from novel_system.db.base import Base
-from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
-from novel_system.db.session import engine
-from novel_system.services.database_errors import is_database_busy_error
-from novel_system.services.errors import DomainError
 from novel_system.settings import get_settings
-from novel_system.api.deps import request_id_of
 
 
 logger = logging.getLogger(__name__)
-SUPPORTED_DATABASE_REVISION = CURRENT_SCHEMA_REVISION
 
 
 @asynccontextmanager
@@ -115,8 +111,6 @@ def create_app() -> FastAPI:
         raise RuntimeError(
             "NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN is required when NOVEL_SYSTEM_LOCAL_ONLY=false"
         )
-    if app_settings.auto_create_tables:
-        Base.metadata.create_all(bind=engine())
     app = FastAPI(title="Novel System P2", lifespan=_lifespan)
     allow_origins = list(app_settings.cors_origins)
     allow_credentials = app_settings.cors_allow_credentials and "*" not in allow_origins
@@ -126,6 +120,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         RequestBodyLimitMiddleware,
         max_bytes=app_settings.max_request_body_bytes,
+    )
+    # Unhandled exceptions become the standard 500 envelope inside CORS, so the
+    # browser can read them and the request-id middleware stamps them (B12-03).
+    app.add_middleware(
+        UnhandledErrorMiddleware,
+        expose_error_detail=app_settings.expose_error_detail,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -210,190 +210,10 @@ def create_app() -> FastAPI:
 
     @app.get("/ready", tags=["health"])
     def ready() -> dict[str, str]:
-        try:
-            with engine().connect() as connection:
-                revisions = tuple(
-                    str(value)
-                    for value in connection.execute(
-                        text("SELECT version_num FROM alembic_version")
-                    ).scalars()
-                    if value
-                )
-                inspector = sqlalchemy_inspect(connection)
-                available_tables = set(inspector.get_table_names())
-                required_columns = {
-                    table_name: tuple(column.name for column in table.columns)
-                    for table_name, table in Base.metadata.tables.items()
-                }
-                missing_required_columns = {
-                    table_name: sorted(
-                        set(expected_columns)
-                        - {
-                            str(column["name"])
-                            for column in inspector.get_columns(table_name)
-                        }
-                    )
-                    for table_name, expected_columns in required_columns.items()
-                    if table_name in available_tables
-                }
-                missing_required_columns = {
-                    table_name: columns
-                    for table_name, columns in missing_required_columns.items()
-                    if columns
-                }
-        except Exception as exc:
-            logger.exception("Readiness database probe failed")
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database readiness probe failed",
-                status_code=503,
-                details={
-                    "retryable": True,
-                    "reason": "database_probe_failed",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                },
-            ) from exc
-        if revisions != (SUPPORTED_DATABASE_REVISION,):
-            current_revision = revisions[0] if len(revisions) == 1 else None
-            logger.error(
-                "Readiness schema revision mismatch expected=%s actual=%s",
-                SUPPORTED_DATABASE_REVISION,
-                revisions,
-            )
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database schema revision is not ready",
-                status_code=503,
-                details={
-                    "retryable": False,
-                    "reason": "schema_revision_mismatch",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                    "current_revision": current_revision,
-                },
-            )
-        missing_tables = sorted(set(Base.metadata.tables) - available_tables)
-        if missing_tables:
-            logger.error(
-                "Readiness schema table check failed revision=%s missing_tables=%s",
-                SUPPORTED_DATABASE_REVISION,
-                missing_tables,
-            )
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database schema is incomplete",
-                status_code=503,
-                details={
-                    "retryable": False,
-                    "reason": "schema_tables_missing",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                    "missing_table_count": len(missing_tables),
-                },
-            )
-        if missing_required_columns:
-            missing_column_count = sum(
-                len(columns) for columns in missing_required_columns.values()
-            )
-            logger.error(
-                "Readiness schema column check failed revision=%s tables=%s columns=%s",
-                SUPPORTED_DATABASE_REVISION,
-                len(missing_required_columns),
-                missing_column_count,
-            )
-            raise DomainError(
-                "SERVICE_NOT_READY",
-                "database schema is incomplete",
-                status_code=503,
-                details={
-                    "retryable": False,
-                    "reason": "schema_columns_missing",
-                    "expected_revision": SUPPORTED_DATABASE_REVISION,
-                    "missing_table_count": len(missing_required_columns),
-                    "missing_column_count": missing_column_count,
-                },
-            )
+        check_database_ready()
         return {"status": "ready"}
 
-    @app.exception_handler(DomainError)
-    async def domain_error_handler(request: Request, exc: DomainError):
-        return error(
-            exc.code,
-            exc.message,
-            status_code=exc.status_code,
-            details=exc.details,
-            req_id=request_id_of(request),
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def request_validation_error_handler(
-        request: Request,
-        exc: RequestValidationError,
-    ):
-        # Never echo Pydantic's ``input`` field: it can contain an entire
-        # manuscript or secret.  Field paths and stable error types are enough
-        # for clients to correct the request while preserving the API envelope.
-        issues = []
-        for item in exc.errors()[:32]:
-            issue_type = str(item.get("type") or "validation_error")
-            public_message = {
-                "extra_forbidden": "unexpected field",
-                "field_required": "required field is missing",
-                "int_type": "value must be an integer",
-                "list_type": "value must be a list",
-                "string_type": "value must be a string",
-                "string_too_long": "string exceeds the allowed length",
-                "string_too_short": "string is shorter than the allowed length",
-                "too_long": "collection exceeds the allowed length",
-                "greater_than_equal": "value is below the allowed minimum",
-                "less_than_equal": "value exceeds the allowed maximum",
-            }.get(issue_type, "invalid value")
-            issues.append(
-                {
-                    "field": ".".join(str(part) for part in item.get("loc", ())),
-                    "type": issue_type,
-                    "message": public_message,
-                }
-            )
-        return error(
-            "REQUEST_VALIDATION_FAILED",
-            "request validation failed",
-            status_code=422,
-            details={
-                "issues": issues,
-                "issue_count": len(exc.errors()),
-                "truncated": len(exc.errors()) > len(issues),
-            },
-            req_id=request_id_of(request),
-        )
-
-    @app.exception_handler(OperationalError)
-    async def operational_error_handler(request: Request, exc: OperationalError):
-        if is_database_busy_error(exc):
-            return error(
-                "DATABASE_BUSY",
-                "database is busy; retry after the current long-running operation finishes",
-                status_code=503,
-                details={"retryable": True},
-                req_id=request_id_of(request),
-            )
-        return error(
-            "DATABASE_OPERATION_FAILED",
-            "database operation failed",
-            status_code=500,
-            details={"retryable": False},
-            req_id=request_id_of(request),
-        )
-
-    @app.exception_handler(Exception)
-    async def unhandled_error_handler(request: Request, exc: Exception):
-        req_id = request_id_of(request)
-        logger.exception("Unhandled API error request_id=%s", req_id)
-        return error(
-            "INTERNAL_ERROR",
-            str(exc) if app_settings.expose_error_detail else "internal server error",
-            status_code=500,
-            details={"retryable": False},
-            req_id=req_id,
-        )
+    install_exception_handlers(app, expose_error_detail=app_settings.expose_error_detail)
 
     app.include_router(catalog.router)
     app.include_router(canon_continuity.router)

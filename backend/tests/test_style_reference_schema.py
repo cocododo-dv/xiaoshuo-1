@@ -166,20 +166,74 @@ def test_indexes_present(isolated_database: Path, fake_backup: Path) -> None:
     )
 
 
-def test_upgrade_without_backup_raises(
-    isolated_database: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # 覆盖 session-scoped backup stub:指向一个空目录,让 0036 的 glob 断言失败
+def _no_backup_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """0036 的 ``_repo_root()`` 指向一个没有 backups/ 的空目录:任何备份文件都找不到。"""
     empty_root = tmp_path / "no_backup_repo"
     empty_root.mkdir()
     monkeypatch.setenv("STYLE_REFERENCE_REPO_ROOT", str(empty_root))
 
+
+def _seed_legacy_reference_book(db_url: str) -> None:
+    engine = sa.create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO reference_books (book_id, title, source_kind, cloud_policy, analysis_focus, "
+                    "text_checksum, status, total_chars, total_segments, stats_json, created_at, updated_at) "
+                    "VALUES ('legacy_book', '旧参考书', 'upload', 'local_only', 'style', 'sha', 'ready', 10, 1, "
+                    "'{}', '2026-05-01T00:00:00+00:00', '2026-05-01T00:00:00+00:00')"
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def test_fresh_upgrade_needs_no_legacy_backup(
+    isolated_database: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """新库的旧 reference_learning 表是空的,没有可丢的东西:不需要任何备份 / 占位文件(B12-14)。"""
+    _no_backup_root(tmp_path, monkeypatch)
+
+    db_url = f"sqlite:///{isolated_database}"
+    command.upgrade(_alembic_config(db_url), "head")
+
+    tables = _existing_tables(db_url)
+    assert not set(LEGACY_TABLES) & tables
+    assert set(HEAD_TABLES) <= tables
+
+
+def test_legacy_rows_still_require_a_backup(
+    isolated_database: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧表里真有数据:没有 backups/style_reference_legacy_*.json 就不 drop。"""
+    _no_backup_root(tmp_path, monkeypatch)
     db_url = f"sqlite:///{isolated_database}"
     cfg = _alembic_config(db_url)
-    with pytest.raises(RuntimeError, match=r"backups/style_reference_legacy_"):
+    command.upgrade(cfg, REVISION_BASE)
+    _seed_legacy_reference_book(db_url)
+
+    with pytest.raises(RuntimeError, match=r"reference_books.*backups/style_reference_legacy_"):
         command.upgrade(cfg, "head")
+    assert "reference_books" in _existing_tables(db_url)
+
+
+def test_legacy_rows_are_dropped_once_a_backup_exists(
+    isolated_database: Path,
+    fake_backup: Path,
+) -> None:
+    db_url = f"sqlite:///{isolated_database}"
+    cfg = _alembic_config(db_url)
+    command.upgrade(cfg, REVISION_BASE)
+    _seed_legacy_reference_book(db_url)
+
+    command.upgrade(cfg, "head")
+
+    assert not set(LEGACY_TABLES) & _existing_tables(db_url)
 
 
 def test_findings_statement_hash_column_present(

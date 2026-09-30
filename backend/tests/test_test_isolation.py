@@ -149,8 +149,10 @@ def _other_checkout(tmp_path: Path, module: str) -> Path:
 
 
 def test_every_loaded_novel_system_module_comes_from_this_checkout() -> None:
-    allowed = {(BACKEND_DIR / "src" / "novel_system").resolve(), (BACKEND_DIR / "novel_system").resolve()}
-    assert {Path(entry).resolve() for entry in novel_system.__path__} <= allowed
+    # backend/novel_system 那个 extend_path 导入垫片已删（B12-08）：包只有 backend/src 这一处
+    package = (BACKEND_DIR / "src" / "novel_system").resolve()
+    assert {Path(entry).resolve() for entry in novel_system.__path__} == {package}
+    assert Path(novel_system.__file__).resolve() == package / "__init__.py"
     assert foreign_novel_system_modules() == []
 
 

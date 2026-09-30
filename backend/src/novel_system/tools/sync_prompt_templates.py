@@ -36,6 +36,7 @@ import yaml
 from novel_system.db.session import SessionLocal
 from novel_system.services.config_cache import safe_load_yaml
 from novel_system.services.system_config import SystemConfigService
+from novel_system.tools._checkout_guard import refuse_foreign_checkout
 
 # 版本号变了才同步的字段——它们承载创作意图，可能被作者在界面上改过。
 TEXT_FIELDS = ("version", "system_prompt", "task_prompt", "structured_schema")
@@ -151,6 +152,7 @@ def _apply(snapshot_templates: dict[str, Any], repo_templates: dict[str, Any], c
 
 
 def main(argv: list[str] | None = None) -> int:
+    refuse_foreign_checkout("sync_prompt_templates")
     args = _parse_args(argv)
     repo_path = _repo_prompts_path()
     try:

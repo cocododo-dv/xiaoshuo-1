@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
@@ -14,6 +17,30 @@ from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_r
 
 _ENGINE = None
 _SESSION_FACTORY = None
+
+# ``connection.info`` marker: ``PRAGMA defer_foreign_keys=ON`` is in force on this
+# DBAPI connection, set in the recorded state (see ``_configure_sqlite_transaction``).
+_FK_DEFERRED_KEY = "novel_system.sqlite_defer_foreign_keys"
+_FK_DEFERRED_IN_TRANSACTION = "in_transaction"
+_FK_DEFERRED_OUTSIDE_TRANSACTION = "outside_transaction"
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def json_column_dumps(value: Any) -> str:
+    """JSON 列的序列化器：中文等非 ASCII 字符原样存 UTF-8，不再写成 ``\\uXXXX``（B12-13 / X01-07）。
+
+    同样的内容以前约大 1.6 倍（实库的幂等重放缓存 403 MB → 244 MB）。读回来是同一个 Python 对象
+    （``json.loads`` 对两种写法给出同一个值，旧行照读）；哈希都在 Python 对象上算，与存的文字无关；
+    SQLite 的 ``json_extract`` / ``json_set`` 两种写法都认。只有一处例外：JSON 里可以写单个代理项
+    （``"\\ud83d"``，模型输出或请求体里都可能出现），它编不成 UTF-8、原样写会让整个事务失败——
+    这种值照旧转义存。
+    """
+
+    text = json.dumps(value, ensure_ascii=False)
+    if not text.isascii() and _LONE_SURROGATE.search(text):
+        return json.dumps(value)
+    return text
 
 
 def _running_under_pytest() -> bool:
@@ -39,6 +66,28 @@ def _sqlite_file(database_url: str) -> Path | None:
         return None
 
 
+def repository_database_file(database_url: str | None = None) -> Path | None:
+    """``database_url``(默认:本进程配置的库)指向作者的实库时返回那个文件,否则返回 None。
+
+    实库 = 本检出的 ``backend/novel_system.db``;或别的检出的实库(同名 novel_system.db,不在临时目录里)——
+    在 git worktree 里把 NOVEL_SYSTEM_DATABASE_URL 指到主检出的实库,比较「本检出的路径」拦不住。
+    内存库 / 非 SQLite / 解析不了的 URL 都不算。测试进程的引擎守卫与 ``tests/fixture_runtime.py`` 的命令行
+    (夹具只进一次性的库)共用这一条规则。
+    """
+    if database_url is None:
+        database_url = load_database_runtime().database_url
+    target = _sqlite_file(database_url)
+    if target is None:
+        return None
+    try:
+        live = DEFAULT_DATABASE_PATH.resolve()
+    except OSError:
+        return None
+    if target == live or (target.name == live.name and not _inside_temp_dir(target)):
+        return target
+    return None
+
+
 def refuse_repository_database_under_pytest(database_url: str) -> None:
     """测试进程里拒绝连仓库自己的 ``backend/novel_system.db``(作者的实库)。
 
@@ -48,16 +97,7 @@ def refuse_repository_database_under_pytest(database_url: str) -> None:
     """
     if not _running_under_pytest():
         return
-    target = _sqlite_file(database_url)
-    if target is None:
-        return
-    try:
-        live = DEFAULT_DATABASE_PATH.resolve()
-    except OSError:
-        return
-    # 本检出的实库;或别的检出的实库(同名 novel_system.db,不在临时目录里)——在 git worktree 里跑测试时
-    # 把 NOVEL_SYSTEM_DATABASE_URL 指到主检出的实库,比较「本检出的路径」拦不住
-    if target == live or (target.name == live.name and not _inside_temp_dir(target)):
+    if repository_database_file(database_url) is not None:
         raise RuntimeError(
             "refusing to open the repository database backend/novel_system.db from a pytest run; "
             "tests must use the per-test temporary database (tests/conftest.py isolated_database)"
@@ -82,6 +122,7 @@ def engine():
         _ENGINE = create_engine(
             database_runtime.database_url,
             connect_args=connect_args,
+            json_serializer=json_column_dumps,
             future=True,
         )
         if is_sqlite:
@@ -133,7 +174,8 @@ def _install_sqlite_pragmas(
     enforce_foreign_keys: bool = True,
 ) -> None:
     @event.listens_for(sqlalchemy_engine, "connect")
-    def set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+    def set_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+        connection_record.info.pop(_FK_DEFERRED_KEY, None)
         _configure_sqlite_connection(
             dbapi_connection,
             enforce_foreign_keys=enforce_foreign_keys,
@@ -144,6 +186,46 @@ def _install_sqlite_pragmas(
         @event.listens_for(sqlalchemy_engine, "begin")
         def defer_sqlite_foreign_keys(sqlalchemy_connection) -> None:
             _configure_sqlite_transaction(sqlalchemy_connection)
+
+        # The deferral marker stays valid only while SQLite keeps the flag.
+        # Every statement that runs outside a DBAPI transaction may end in an
+        # autocommit that clears it (a plain SELECT does), and every
+        # transaction end clears it; forget the marker at those points.
+        @event.listens_for(sqlalchemy_engine, "before_cursor_execute")
+        def forget_deferral_outside_transactions(
+            sqlalchemy_connection,
+            _cursor,
+            _statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            if not sqlalchemy_connection.connection.dbapi_connection.in_transaction:
+                sqlalchemy_connection.info.pop(_FK_DEFERRED_KEY, None)
+
+        @event.listens_for(sqlalchemy_engine, "commit")
+        @event.listens_for(sqlalchemy_engine, "rollback")
+        def forget_deferral_at_transaction_end(sqlalchemy_connection) -> None:
+            _forget_fk_deferral(sqlalchemy_connection)
+
+        @event.listens_for(sqlalchemy_engine, "handle_error")
+        def forget_deferral_after_database_error(exception_context) -> None:
+            # SQLite may roll a whole transaction back on some errors.
+            if exception_context.connection is not None:
+                _forget_fk_deferral(exception_context.connection)
+
+        @event.listens_for(sqlalchemy_engine, "checkin")
+        def forget_deferral_on_checkin(_dbapi_connection, connection_record) -> None:
+            if connection_record is not None:
+                connection_record.info.pop(_FK_DEFERRED_KEY, None)
+
+
+def _forget_fk_deferral(sqlalchemy_connection) -> None:
+    try:
+        info = sqlalchemy_connection.info
+    except Exception:  # noqa: BLE001 — an invalidated connection: its marker goes with its DBAPI connection
+        return
+    info.pop(_FK_DEFERRED_KEY, None)
 
 
 def _install_sqlite_session_pragmas(
@@ -157,11 +239,13 @@ def _install_sqlite_session_pragmas(
     connection after ``Session.commit()`` without reliably producing a second
     engine-level ``begin`` event.  The ORM ``after_begin`` event is the stable
     transaction boundary in that case.  Keeping both hooks also covers direct
-    ``Connection`` users and ORM users.  Before an ORM flush we explicitly open
-    a deferred DBAPI transaction when the legacy driver has not opened one yet;
-    this prevents its first DML statement from resetting the pragma.  Read-only
-    sessions remain in legacy mode, preserving the project's explicit
-    ``BEGIN IMMEDIATE`` accounting lock semantics and short-lived read behavior.
+    ``Connection`` users and ORM users; the configurator is idempotent, so the
+    usual back-to-back ``begin`` / ``after_begin`` pair costs one PRAGMA.
+    Before an ORM flush we explicitly open a deferred DBAPI transaction when
+    the legacy driver has not opened one yet; this prevents its first DML
+    statement from resetting the pragma.  Read-only sessions remain in legacy
+    mode, preserving the project's explicit ``BEGIN IMMEDIATE`` accounting lock
+    semantics and short-lived read behavior.
     """
 
     if not enforce_foreign_keys:
@@ -192,30 +276,34 @@ def _install_sqlite_session_pragmas(
 
 
 def _configure_sqlite_transaction(sqlalchemy_connection) -> None:
-    """Defer FK checks until commit for every SQLite transaction.
+    """Defer FK checks until commit for the SQLite transaction (idempotent).
 
     The model layer intentionally has few ORM relationships, so SQLAlchemy
     cannot always topologically order a valid parent/child graph added in one
     unit of work.  SQLite resets ``defer_foreign_keys`` after each commit or
-    rollback; the engine ``begin`` hook therefore must set and verify it for
-    every transaction while keeping enforcement itself enabled.
+    rollback -- and, outside a transaction, at the end of every statement that
+    reads the database -- so it is set again for every transaction while
+    enforcement itself stays enabled (verified once per connection at connect).
+
+    The hooks fire several times per transaction (engine ``begin``, ORM
+    ``after_begin``, every flush).  ``connection.info[_FK_DEFERRED_KEY]``
+    records the DBAPI state the flag was set in (inside a transaction, or
+    outside one with no statement run since); the event hooks in
+    ``_install_sqlite_pragmas`` forget it whenever SQLite may have cleared the
+    flag, so a repeated call in the same state issues nothing (B12-12 / X01-22).
+    Turning deferral on can only relax the per-statement check, never skip the
+    one at commit, so a missing flag makes FK checks stricter, not looser.
     """
 
-    foreign_keys = sqlalchemy_connection.exec_driver_sql(
-        "PRAGMA foreign_keys"
-    ).scalar_one()
-    if int(foreign_keys) != 1:
-        raise RuntimeError(
-            f"sqlite_foreign_keys_not_enabled_at_transaction_begin: actual={foreign_keys}"
-        )
+    state = (
+        _FK_DEFERRED_IN_TRANSACTION
+        if sqlalchemy_connection.connection.dbapi_connection.in_transaction
+        else _FK_DEFERRED_OUTSIDE_TRANSACTION
+    )
+    if sqlalchemy_connection.info.get(_FK_DEFERRED_KEY) == state:
+        return
     sqlalchemy_connection.exec_driver_sql("PRAGMA defer_foreign_keys=ON")
-    deferred = sqlalchemy_connection.exec_driver_sql(
-        "PRAGMA defer_foreign_keys"
-    ).scalar_one()
-    if int(deferred) != 1:
-        raise RuntimeError(
-            f"sqlite_defer_foreign_keys_not_enabled: expected=1, actual={deferred}"
-        )
+    sqlalchemy_connection.info[_FK_DEFERRED_KEY] = state
 
 
 def session_factory():

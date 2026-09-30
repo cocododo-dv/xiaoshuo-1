@@ -7,14 +7,10 @@ import sys
 from pathlib import Path
 
 
-def _prepare_style_reference_backup_root(tmp_path: Path) -> Path:
+def _repo_root_without_backups(tmp_path: Path) -> Path:
+    """迁移 0036 的仓库根指向一个没有 backups/ 的目录：新库的旧表是空的，不需要任何备份文件（B12-14）。"""
     repo_root = tmp_path / "style_reference_test_repo"
-    backup_dir = repo_root / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    (backup_dir / "style_reference_legacy_test.json").write_text(
-        '{"row_count": 0, "profiles": [], "source": "alembic-env"}',
-        encoding="utf-8",
-    )
+    repo_root.mkdir(parents=True, exist_ok=True)
     return repo_root
 
 
@@ -25,7 +21,7 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
     env["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
-    env["STYLE_REFERENCE_REPO_ROOT"] = str(_prepare_style_reference_backup_root(tmp_path))
+    env["STYLE_REFERENCE_REPO_ROOT"] = str(_repo_root_without_backups(tmp_path))
 
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend_dir / "alembic.ini"), "upgrade", "head"],
@@ -86,7 +82,7 @@ def test_alembic_upgrade_repairs_existing_human_review_event_table(tmp_path: Pat
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
     env["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
-    env["STYLE_REFERENCE_REPO_ROOT"] = str(_prepare_style_reference_backup_root(tmp_path))
+    env["STYLE_REFERENCE_REPO_ROOT"] = str(_repo_root_without_backups(tmp_path))
 
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend_dir / "alembic.ini"), "upgrade", "head"],

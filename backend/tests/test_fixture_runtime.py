@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy import func, select
@@ -22,6 +23,7 @@ from novel_system.db.models import (
 )
 import pytest
 
+from novel_system.db import session as db_session
 from novel_system.services.llm_task_runner import LLMNodeRunner
 from tests.fixture_runtime import main, seed_runtime_fixture
 from tests.real_llm_fakes import ScenePipelineOnlineFake
@@ -126,6 +128,34 @@ def test_fixture_runtime_cli_accepts_chapter_ops_e2e_fixture(capsys) -> None:
     summary = json.loads(capsys.readouterr().out)
     assert summary["review_ids"] == []
     assert summary["extra_chapter_ids"] == ["CH200"]
+
+
+@pytest.mark.parametrize("database", ["unset", "absolute", "relative", "other_checkout"])
+def test_fixture_runtime_cli_refuses_the_repository_database(monkeypatch, capsys, database: str) -> None:
+    """run-smokes.mjs 每套用例前以 ``python tests/fixture_runtime.py`` 重灌夹具，环境照搬调用者的：没设库 URL 时
+    默认库就是本检出的 backend/novel_system.db（作者的实库）。指向实库时在建引擎之前拒跑（退出码 2），夹具作品
+    进不了作者的书架；E2E 通道给的一次性库照常重灌（上一条用例）。"""
+    live = db_session.DEFAULT_DATABASE_PATH
+    if database == "unset":
+        monkeypatch.delenv("NOVEL_SYSTEM_DATABASE_URL")
+    elif database == "absolute":
+        monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{live.as_posix()}")
+    elif database == "relative":
+        monkeypatch.chdir(live.parent)  # run-smokes 在 backend/ 里起 reseed
+        monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", "sqlite:///./novel_system.db")
+    else:  # 在 git worktree 里跑、URL 指到主检出的实库
+        elsewhere = Path.home() / "some-other-checkout" / "backend" / "novel_system.db"
+        monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{elsewhere.as_posix()}")
+    existed_before = live.exists()
+    db_session.reset_engine()
+
+    with pytest.raises(SystemExit) as refused:
+        main([])
+
+    assert refused.value.code == 2
+    assert db_session._ENGINE is None  # 拒跑在建引擎之前：一条连接都没开
+    assert "refusing to seed the test fixtures" in capsys.readouterr().err
+    assert live.exists() == existed_before
 
 
 def test_fixture_runtime_is_idempotent(session) -> None:

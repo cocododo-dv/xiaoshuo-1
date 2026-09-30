@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from typing import Any
 
 from sqlalchemy import delete
@@ -25,7 +27,7 @@ from novel_system.db.models import (
     StoryProject,
     VoiceProfile,
 )
-from novel_system.db.session import SessionLocal
+from novel_system.db.session import SessionLocal, repository_database_file
 
 DEMO_PROJECT = {
     "project_id": "PRJ_DEMO_CH001",
@@ -512,10 +514,36 @@ def seed_runtime_fixture(session: Session | None = None, *, fixture: str | None 
         return summary
 
 
+def refuse_repository_database() -> None:
+    """夹具只进一次性的库：配置的库是作者的实库就拒跑（退出码 2），在建引擎之前。
+
+    ``frontend-react/scripts/run-smokes.mjs`` 每套用例前以 ``python tests/fixture_runtime.py`` 重灌夹具，环境照搬
+    调用者的；没设 ``NOVEL_SYSTEM_DATABASE_URL`` 时默认库就是本检出的 ``backend/novel_system.db``——在作者的检出里
+    单独跑 run-smokes，work-a / work-b / PRJ_DEMO_CH001 就进了实库的书架。E2E 通道（``scripts/verify_react_e2e.*``）
+    先把 URL 指到一次性的 e2e.db，不受影响。
+    """
+    target = repository_database_file()
+    if target is None:
+        return
+    if "NOVEL_SYSTEM_DATABASE_URL" in os.environ:
+        where = f"NOVEL_SYSTEM_DATABASE_URL points at the repository database {target}"
+    else:
+        where = f"NOVEL_SYSTEM_DATABASE_URL is not set, and its default {target} is the repository database"
+    print(
+        f"fixture_runtime: refusing to seed the test fixtures: {where} (the author's real data). "
+        "Point NOVEL_SYSTEM_DATABASE_URL at the throwaway database of the backend the smokes run against, "
+        "as scripts/verify_react_e2e.sh does.",
+        file=sys.stderr,
+    )
+    # 退出码 2：没碰任何东西就拒跑（与 E2E 通道的端口守卫、运维工具的检出守卫同一个约定）
+    raise SystemExit(2)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", choices=[DEMO_CHAPTER_OPS_E2E_FIXTURE, DEMO_ALL_E2E_FIXTURE])
     args = parser.parse_args(argv)
+    refuse_repository_database()
     print(json.dumps(seed_runtime_fixture(fixture=args.fixture), ensure_ascii=False, indent=2))
 
 

@@ -9,6 +9,7 @@ from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
     AuthorDraftProposal,
+    AuthorDraftRevision,
     AuthorPreferenceProfile,
     ChapterGoal,
     ChapterMemory,
@@ -27,7 +28,6 @@ from novel_system.db.models import (
     PassagePatchCandidate,
     ProjectWritingStats,
     QcReport,
-    RelationProfile,
     ReviewDerivedSnooze,
     ReviewItem,
     RevisionCandidate,
@@ -47,13 +47,20 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryCharacter,
     StoryProject,
+    StyleReferenceSceneWindows,
     SystemConfigSnapshot,
     SystemSecret,
-    VoiceProfile,
     VolumeSummary,
     WriterEvaluation,
 )
-from novel_system.tools.reset_author_state import collect_reset_summary, execute_reset, main
+from novel_system.db.base import Base
+from novel_system.tools.reset_author_state import (
+    PRESERVED_TABLES,
+    _reset_targets,
+    collect_reset_summary,
+    execute_reset,
+    main,
+)
 
 
 def _count(session, model) -> int:
@@ -518,6 +525,22 @@ def _seed_author_state(session) -> None:
                 revision_no=1,
                 status="current",
             ),
+            # 修订快照（整场正文）与每场冻结的风格选窗都没有 project_id：以前重置清不掉它们（B12-16）
+            AuthorDraftRevision(
+                draft_revision_id="author_draft_reset_rev_1",
+                draft_id="author_draft_reset",
+                revision_no=1,
+                content="author draft content",
+                words=20,
+            ),
+            StyleReferenceSceneWindows(
+                selection_id="scene_windows_reset",
+                selection_key="scene-windows-key-reset",
+                scene_id="SC_RESET_SNOW_01",
+                bundle_id="bundle_reset_scene",
+                window_refs_json=[{"window_id": "w1"}],
+                params_json={"book_id": "sr_book_kept"},
+            ),
             PassagePatchCandidate(
                 patch_id="patch_reset",
                 object_type="scene",
@@ -662,27 +685,6 @@ def _seed_author_state(session) -> None:
                 details_json={"source": "scene_qc"},
                 default_action="approve",
             ),
-            VoiceProfile(
-                row_id="voice_profile_reset",
-                voice_profile_id="VOICE_RESET",
-                version=1,
-                character_id="CHAR_RESET",
-                content="measured clipped tone",
-                active_flag=1,
-                runtime_eligible=1,
-                runtime_eligibility_basis="direct_read",
-            ),
-            RelationProfile(
-                row_id="relation_profile_reset",
-                relation_profile_id="REL_RESET",
-                left_character_id="CHAR_RESET",
-                right_character_id="CHAR_OTHER",
-                version=1,
-                content="built on mutual suspicion",
-                active_flag=1,
-                runtime_eligible=1,
-                runtime_eligibility_basis="direct_read",
-            ),
             IdempotencyKey(
                 idempotency_key="idem_reset_author_scene",
                 request_hash="req-hash-reset",
@@ -742,7 +744,12 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_audit_traces(s
     assert summary["planned_counts"]["narrative_events"] == 1
     assert summary["planned_counts"]["volume_summaries"] == 1
     assert summary["planned_counts"]["review_derived_snoozes"] == 1
+    assert summary["planned_counts"]["author_draft_revisions"] == 1
+    assert summary["planned_counts"]["style_reference_scene_windows"] == 1
     assert "reference_books" not in summary["planned_counts"]
+    # 声线卡 / 关系卡不再是重置目标（重评 R8：表由迁移 0098 删掉）
+    assert "voice_profiles" not in summary["planned_counts"]
+    assert "relation_profiles" not in summary["planned_counts"]
     assert summary["preserved_domains"] == [
         "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
         "SystemConfigSnapshot / SystemSecret",
@@ -797,6 +804,8 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
         AuthorDraft,
         AuthorDraftProposal,
         AuthorDraftEvent,
+        AuthorDraftRevision,
+        StyleReferenceSceneWindows,
         AuthorPreferenceProfile,
         FinalScene,
         SceneMemory,
@@ -805,8 +814,6 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
         AttemptTracker,
         ChapterRunJob,
         HumanReviewEvent,
-        VoiceProfile,
-        RelationProfile,
         IdempotencyKey,
         OperationLog,
     ]
@@ -900,3 +907,15 @@ def test_reset_preserves_the_ledger_of_current_style_reference_nodes(session) ->
     assert summary["deleted_counts"]["llm_calls"] == 1
     assert session.get(LlmCall, "llm_call_style_classify") is not None
     assert session.get(LlmCall, "llm_call_scene_draft") is None
+
+
+def test_every_table_is_either_reset_or_explicitly_preserved() -> None:
+    """完整性守卫（B12-16）：新表要么进重置目标，要么写进 ``PRESERVED_TABLES`` 并说明为什么留着。
+
+    修订快照与每场冻结选窗就是这样漏掉的——它们没有 project_id，按作品派生的清单看不见。"""
+    targets = {target.model.__table__.name for target in _reset_targets()}
+    tables = set(Base.metadata.tables)
+
+    assert targets & PRESERVED_TABLES == set(), "同一张表不能既重置又保留"
+    assert PRESERVED_TABLES - tables == set(), "PRESERVED_TABLES 里写着已经不存在的表：删掉这几行"
+    assert tables - targets - PRESERVED_TABLES == set(), "新表既不是重置目标也不在 PRESERVED_TABLES 里"

@@ -5,8 +5,9 @@ Revises: 20260515_0035
 Create Date: 2026-05-23
 
 PR-1 决策(plans/style-reference-v1-1-fancy-shannon.md §"已敲定决策"):
-- upgrade() 顶部强制 glob 断言 backups/style_reference_legacy_*.json 至少存在一个;
-  不存在则 raise,先跑 `python -m novel_system.tools.reset_style_reference --backup`。
+- 旧 reference_learning 表里还有数据时,upgrade() 先断言 backups/style_reference_legacy_*.json
+  至少存在一个,不存在则 raise。2026-09-29(B12-14)起只在旧表真有行时才要:新库和旧表本来就空的库
+  没有可丢的东西,不再需要仓库里放一个占位备份文件。
 - 三路并清 review_items 残留行:review_reffind_% / review_apply_% / 兜底 source orphan。
 - 反向 drop 旧 6 张表。
 - downgrade() schema-only 重建空旧表(列定义照搬 20260419_0011)。
@@ -47,14 +48,25 @@ def _repo_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[3]
 
 
-def _assert_backup_present() -> None:
+def _legacy_tables_with_rows(bind: sa.engine.Connection, existing_tables: set[str]) -> list[str]:
+    return [
+        table_name
+        for table_name in _LEGACY_TABLES_DROP_ORDER
+        if table_name in existing_tables
+        and bind.execute(sa.text(f'SELECT 1 FROM "{table_name}" LIMIT 1')).first() is not None
+    ]
+
+
+def _assert_backup_present(tables_with_rows: list[str]) -> None:
     backups_dir = _repo_root() / "backups"
     matches = list(backups_dir.glob(_LEGACY_BACKUP_GLOB)) if backups_dir.exists() else []
     if not matches:
         raise RuntimeError(
-            "[style_reference PR-1] drop 旧 reference_learning 表前必须存在 "
-            f"backups/{_LEGACY_BACKUP_GLOB}。未在 {backups_dir!s} 找到任何匹配。"
-            " 请先执行 `python -m novel_system.tools.reset_style_reference --backup` 再 alembic upgrade。"
+            "[style_reference PR-1] 旧 reference_learning 表里还有数据("
+            + "、".join(tables_with_rows)
+            + f"),drop 之前必须存在 backups/{_LEGACY_BACKUP_GLOB}。未在 {backups_dir!s} 找到任何匹配。"
+            " 请先停服务、用 `python -m novel_system.tools.db_backup --backup <库> <备份>` 备份整库,"
+            f"在 backups/ 下放一个 {_LEGACY_BACKUP_GLOB} 记下备份位置,再 alembic upgrade。"
         )
 
 
@@ -78,11 +90,14 @@ def _purge_review_items(bind: sa.engine.Connection) -> None:
 
 
 def upgrade() -> None:
-    _assert_backup_present()
-
     bind = op.get_bind()
     inspector = sa.inspect(bind)
     existing_tables = set(inspector.get_table_names())
+
+    # 只有旧表里真有数据才要求先备份:新库(或旧表本来就空的库)没有可丢的东西
+    tables_with_rows = _legacy_tables_with_rows(bind, existing_tables)
+    if tables_with_rows:
+        _assert_backup_present(tables_with_rows)
 
     if "review_items" in existing_tables:
         _purge_review_items(bind)

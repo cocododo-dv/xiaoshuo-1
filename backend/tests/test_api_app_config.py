@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
 from novel_system.db.base import Base
@@ -28,13 +29,16 @@ def _stamp_database_revision(revision: str = SUPPORTED_DATABASE_REVISION) -> Non
         )
 
 
-def test_create_app_respects_explicit_auto_create_tables_off(monkeypatch) -> None:
+def test_create_app_never_builds_the_schema_itself(monkeypatch) -> None:
+    """库结构只由 Alembic 建。退役的 NOVEL_SYSTEM_AUTO_CREATE_TABLES（B12-20）即使设成 true 也不再让后端
+    create_all 建表——那会盖住 ORM 与迁移之间的漂移。"""
     calls: list[object] = []
 
-    monkeypatch.setenv("NOVEL_SYSTEM_AUTO_CREATE_TABLES", "false")
+    monkeypatch.setenv("NOVEL_SYSTEM_AUTO_CREATE_TABLES", "true")
     monkeypatch.setattr(Base.metadata, "create_all", lambda *args, **kwargs: calls.append((args, kwargs)))
 
-    create_app()
+    with TestClient(create_app()) as client:
+        client.get("/live")
 
     assert calls == []
 
@@ -164,6 +168,63 @@ def test_unhandled_errors_return_request_id_without_leaking_exception_text() -> 
     assert payload["error"]["message"] == "internal server error"
     assert "secret database password" not in response.text
     assert payload["request_id"].startswith("req_")
+
+
+def _app_with_failing_route(exc: Exception):
+    app = create_app()
+
+    @app.get("/api/v2/boom-for-test")
+    def boom_for_test():
+        raise exc
+
+    return app
+
+
+def test_unhandled_errors_leave_through_cors_with_the_request_id(caplog) -> None:
+    """B12-03：未处理的异常以前在 CORS 与请求编号中间件之外变成 500——浏览器读不到响应，前端只能报
+    「连接接口失败」。现在它在 CORS 里面变成标准信封：带 Access-Control-Allow-Origin 与 X-Request-Id，只记一次日志。"""
+    origin = "http://127.0.0.1:5174"
+    app = _app_with_failing_route(RuntimeError("unique constraint failed: chapter_goals.display_order"))
+
+    with caplog.at_level("ERROR", logger="novel_system.api"):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get("/api/v2/boom-for-test", headers={"Origin": origin})
+
+    payload = response.json()
+    assert response.status_code == 500
+    assert response.headers.get("access-control-allow-origin") == origin
+    assert response.headers["X-Request-Id"].startswith("req_")
+    assert payload["request_id"] == response.headers["X-Request-Id"]
+    assert payload["ok"] is False and payload["data"] is None
+    assert payload["error"] == {
+        "code": "INTERNAL_ERROR",
+        "message": "internal server error",
+        "details": {"retryable": False},
+    }
+    logged = [record for record in caplog.records if record.getMessage().startswith("Unhandled API error")]
+    assert len(logged) == 1
+    assert logged[0].getMessage() == f"Unhandled API error request_id={payload['request_id']}"
+    assert logged[0].exc_info is not None
+
+
+def test_unhandled_error_detail_is_exposed_only_when_configured(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", "true")
+    app = _app_with_failing_route(RuntimeError("boom detail for the developer"))
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v2/boom-for-test")
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "boom detail for the developer"
+
+
+def test_unhandled_errors_still_propagate_to_the_server_and_test_client() -> None:
+    """信封发出去之后异常照旧往外抛：服务器照常记录，测试客户端（默认 raise_server_exceptions）照常抛出。"""
+    app = _app_with_failing_route(RuntimeError("still raised after the envelope"))
+
+    with TestClient(app) as client:
+        with pytest.raises(RuntimeError, match="still raised after the envelope"):
+            client.get("/api/v2/boom-for-test", headers={"Origin": "http://127.0.0.1:5174"})
 
 
 def test_local_only_default_rejects_non_loopback_clients() -> None:
@@ -352,6 +413,79 @@ def test_ready_rejects_head_stamp_with_missing_required_column() -> None:
         "missing_table_count": 1,
         "missing_column_count": 1,
     }
+
+
+class _ReadyStatements:
+    """记下 /ready 发出的语句：迁移版本每次都读，表 / 列结构检查（sqlite_master、table_xinfo）按版本只做一次。"""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+        event.listen(engine(), "before_cursor_execute", self._record)
+
+    def _record(self, _connection, _cursor, statement, _parameters, _context, _executemany) -> None:
+        self.statements.append(str(statement))
+
+    def take(self) -> tuple[int, int]:
+        revision_reads = sum("alembic_version" in statement for statement in self.statements)
+        structure_reads = sum(
+            "sqlite_master" in statement or "table_xinfo" in statement or "table_info" in statement
+            for statement in self.statements
+        )
+        self.statements.clear()
+        return revision_reads, structure_reads
+
+
+def test_ready_checks_the_schema_structure_once_per_revision() -> None:
+    """X01-17：以前每次探测都对 70 多张表各发一条 PRAGMA table_info；启动脚本、E2E 与部署探针都在轮询。"""
+    _stamp_database_revision()
+    statements = _ReadyStatements()
+    with TestClient(create_app()) as client:
+        first = client.get("/ready")
+        first_reads = statements.take()
+        second = client.get("/ready")
+        second_reads = statements.take()
+
+    assert first.status_code == second.status_code == 200
+    assert first_reads[0] == 1 and first_reads[1] > len(Base.metadata.tables)
+    assert second_reads == (1, 0)
+
+
+def test_ready_rechecks_the_structure_after_seeing_another_revision() -> None:
+    _stamp_database_revision()
+    with TestClient(create_app()) as client:
+        assert client.get("/ready").status_code == 200
+        with engine().begin() as connection:
+            connection.exec_driver_sql("DROP TABLE author_preference_profiles")
+        # 同一个版本上已经查过：结构检查不重做（手工改库而不动版本不是迁移的做法）
+        assert client.get("/ready").status_code == 200
+
+        _stamp_database_revision("20260716_0072")
+        mismatch = client.get("/ready")
+        _stamp_database_revision()
+        rechecked = client.get("/ready")
+
+    assert mismatch.json()["error"]["details"]["reason"] == "schema_revision_mismatch"
+    assert rechecked.status_code == 503
+    assert rechecked.json()["error"]["details"]["reason"] == "schema_tables_missing"
+
+
+def test_ready_does_not_remember_a_failed_structure_check() -> None:
+    _stamp_database_revision()
+    with engine().begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE author_preference_profiles DROP COLUMN created_by")
+    statements = _ReadyStatements()
+    with TestClient(create_app()) as client:
+        broken = client.get("/ready")
+        broken_reads = statements.take()
+        with engine().begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE author_preference_profiles ADD COLUMN created_by VARCHAR")
+        repaired = client.get("/ready")
+        repaired_reads = statements.take()
+
+    assert broken.status_code == 503
+    assert broken.json()["error"]["details"]["reason"] == "schema_columns_missing"
+    assert repaired.status_code == 200
+    assert broken_reads[1] > 0 and repaired_reads[1] > 0
 
 
 def test_remote_mode_requires_token_for_loopback_proxy_peer(monkeypatch) -> None:
