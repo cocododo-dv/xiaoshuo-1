@@ -92,6 +92,75 @@ describe("WsQuality store（overview 巡检）", () => {
   });
 });
 
+describe("WsQuality store（换作品与乱序回来的请求）", () => {
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  afterEach(() => { works.id = null; vi.restoreAllMocks(); });
+
+  const reviewPayload = (id) => ({
+    chapter_ids: [id], summary: { chapter_count: 1 }, scores: {}, chapters: [], scenes: [], repeated_patterns: [], reference_safety_findings: [],
+  });
+
+  it("换一部作品后看不到上一部的巡检、章组复审与扫描结果；换回来还在", async () => {
+    works.id = "work-a";
+    const { client, mod } = await loadStore();
+    client.apiGet.mockImplementation((u) => Promise.resolve(String(u).includes("/overview") ? overviewPayload() : {}));
+    client.apiPost.mockImplementation((u) => Promise.resolve(String(u).includes("chapter-set-review") ? reviewPayload("c1") : { score: 0.4, span_findings: [], signals: {} }));
+    await mod.qLoadOverview({});
+    await mod.qChapterSetReview({ chapter_ids: ["c1"] });
+    await mod.qAnalyzeText("甲作品的一段");
+    expect(mod.qSnapshot().review.chapter_ids).toEqual(["c1"]);
+
+    works.id = "work-b";
+    expect(mod.qSnapshot().overview).toBeNull();
+    expect(mod.qSnapshot().review).toBeNull();
+    expect(mod.qSnapshot().analyze).toBeNull();
+
+    works.id = "work-a";
+    expect(mod.qSnapshot().overview.summary.object_count).toBe(3);
+    expect(mod.qSnapshot().review.chapter_ids).toEqual(["c1"]);
+    expect(mod.qSnapshot().analyze.score).toBe(0.4);
+  });
+
+  it("换作品之后才回来的章组复审落回它自己那部作品，不显示在新作品下面", async () => {
+    works.id = "work-a";
+    const { client, mod } = await loadStore();
+    let resolveReview;
+    client.apiPost.mockImplementation(() => new Promise((resolve) => { resolveReview = resolve; }));
+    const pending = mod.qChapterSetReview({ chapter_ids: ["c1"] });
+    works.id = "work-b";
+    resolveReview(reviewPayload("c1"));
+    await pending;
+    expect(mod.qSnapshot().review).toBeNull();
+    expect(mod.qSnapshot().reviewing).toBe(false);
+    works.id = "work-a";
+    expect(mod.qSnapshot().review.chapter_ids).toEqual(["c1"]);
+    expect(mod.qSnapshot().reviewing).toBe(false);
+  });
+
+  it("连点两次「重新巡检」乱序回来：只认后发的那一次，前一次的失败也不盖上来", async () => {
+    const { client, mod } = await loadStore();
+    const pending = [];
+    client.apiGet.mockImplementation(() => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }));
+    const first = mod.qLoadOverview({ text_layer: "runtime_final_scene" });
+    const second = mod.qLoadOverview({ text_layer: "author_draft_preferred" });
+    pending[1].resolve({ ...overviewPayload(), summary: { ...overviewPayload().summary, object_count: 7 } });
+    await second;
+    expect(mod.qSnapshot().loading).toBe(false);
+    pending[0].reject(new Error("旧的那一次失败了"));
+    await first;
+    expect(mod.qSnapshot().overview.summary.object_count).toBe(7);
+    expect(mod.qSnapshot().error).toBeNull();
+
+    const third = mod.qLoadOverview({});
+    const fourth = mod.qLoadOverview({});
+    pending[3].resolve({ ...overviewPayload(), summary: { ...overviewPayload().summary, object_count: 9 } });
+    await fourth;
+    pending[2].resolve({ ...overviewPayload(), summary: { ...overviewPayload().summary, object_count: 1 } });
+    await third;
+    expect(mod.qSnapshot().overview.summary.object_count).toBe(9);
+  });
+});
+
 describe("WsQuality store（临时文本扫描 analyze）", () => {
   beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
