@@ -1,19 +1,20 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { wsNotify } from "./ws-notify.jsx";
 import { useStoreTick } from "./lib/store-utils.js";
 import { EmptyState } from "./ws-ui.jsx";
-import { srErrorInfo } from "./ws-styleref-model.js";
+import { srErrorInfo, srSceneIndex } from "./ws-styleref-model.js";
 import { srConfigureHost, srSubscribe } from "./ws-styleref-store.js";
-import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    风格参考 · 各页共用的界面零件
    · srNotify / srActiveWork —— 提示、当前作品；当前作品在模块加载时经 srConfigureHost 交给 store
-   · useSrStore —— 订阅 store 的频道重渲（lib/store-utils 的 useStoreTick）
+   · useSrStore —— 订阅 store 的频道重渲（lib/store-utils 的 useStoreTick）；useSrWorkScenes —— 当前作品的章与场（读目录 store）
    · SrErrorLine —— 出错的一句话 + 下一步按钮（去设置模型 / 打开这本 / 去学习文风）
-   · SrMenu（页头「更多」）、SrStageEmpty（缺前一步时的空态卡）、SrProgressBar（进度条）
+   · SrStageEmpty（缺前一步时的空态卡）；页头「更多」与进度条用 ws-ui 的 MenuButton / ProgressBar（srProgressTone 给语气）
    不写 window。
    ========================================================== */
 
@@ -27,16 +28,16 @@ export function srNotifyError(error, fallback) {
   srNotify(srErrorInfo(error, fallback).message);
 }
 
-/* 当前作品：书架还在加载（__loading__）或为空时返回 null */
+/* 当前作品：书架还在加载、为空、或新建的作品还没拿到正式 id 时返回 null（能拿去发请求的才算，见 lib/ready-work） */
 export function srActiveWork() {
+  const id = readyWorkId(WsWorks);
+  if (!id) return null;
+  let title = "";
   try {
-    const w = WsWorks && typeof WsWorks.active === "function" ? WsWorks.active() : null;
-    if (w && isRealWorkId(w.id)) return { id: w.id, title: w.title || "" };
-    const id = WsWorks && typeof WsWorks.activeId === "function" ? WsWorks.activeId() : null;
-    return isRealWorkId(id) ? { id, title: "" } : null;
-  } catch (e) {
-    return null;
-  }
+    const w = WsWorks.active();
+    if (w && w.id === id) title = w.title || "";
+  } catch (e) { /* 取不到书名就不说书名 */ }
+  return { id, title };
 }
 
 srConfigureHost({
@@ -46,6 +47,18 @@ srConfigureHost({
 /* 订阅 store 的若干频道（books / detail / activity），有变化就重渲 */
 export function useSrStore(...channels) {
   useStoreTick(srSubscribe(...channels));
+}
+
+/* 当前作品的章与场（本场预览、对照检查选一场、「像不像」的场名）：读目录 store WsCatalog（与章节编排、成本看板
+   同一份，按当前作品缓存），不再自己整本 GET /catalog（审计 F05-14：三处各拉一遍、从不缓存）。
+   目录还没读到时 chapters 为 null（界面说「正在读取」）；读不到时按没有场算。
+   返回 { chapters, groups, labelOf, has }（groups / labelOf / has 见 srSceneIndex）。 */
+export function useSrWorkScenes() {
+  const catalog = useCatalogChapters();
+  const loaded = WsCatalog.ready() || !!WsCatalog.loadError();
+  const chapters = loaded ? catalog : null;
+  const index = React.useMemo(() => srSceneIndex(chapters), [chapters]);
+  return { chapters, ...index };
 }
 
 /* 出错的一句话 + 下一步。onAction(action) 由页面决定怎么走（去设置、打开书、跳到学习文风）。 */
@@ -65,14 +78,9 @@ export function SrErrorLine({ error, onAction, className, testId }) {
   );
 }
 
-/* 进度条：percent 0–100 */
-export function SrProgressBar({ percent, label }) {
-  return (
-    <div className="sr-progress" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
-      <span className="sr-progress-fill" style={{ width: `${percent}%` }} />
-    </div>
-  );
-}
+/* 进度条的语气（ws-ui ProgressBar 的 tone）：在跑 warn、做完 ok、没完成 danger、取消 neutral */
+const SR_PROGRESS_TONE = { running: "warn", queued: "warn", succeeded: "ok", failed: "danger", cancelled: "neutral" };
+export function srProgressTone(status) { return SR_PROGRESS_TONE[status] || undefined; }
 
 /* 缺前一步时的空态卡：说现状，给下一步 */
 export function SrStageEmpty({ icon = "Sparkles", title, children, actionLabel, onAction, testId }) {
@@ -81,79 +89,6 @@ export function SrStageEmpty({ icon = "Sparkles", title, children, actionLabel, 
       <EmptyState icon={icon} title={title} actions={actionLabel ? <button type="button" className="btn btn-accent btn-sm" onClick={onAction}>{actionLabel}</button> : null}>
         {children}
       </EmptyState>
-    </div>
-  );
-}
-
-/* 页头「更多」菜单：按钮 + role=menu 弹层；方向键在项间移动，Esc / 点外面关闭并把焦点还给按钮。 */
-export function SrMenu({ label, items }) {
-  const [open, setOpen] = React.useState(false);
-  const wrapRef = React.useRef(null);
-  const btnRef = React.useRef(null);
-  const menuId = React.useId();
-  React.useEffect(() => {
-    if (!open) return undefined;
-    const first = wrapRef.current && wrapRef.current.querySelector('[role="menuitem"]:not([disabled])');
-    if (first) first.focus();
-    const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); setOpen(false); if (btnRef.current) btnRef.current.focus(); }
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
-  }, [open]);
-  const onMenuKey = (e) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
-    const nodes = Array.from(e.currentTarget.querySelectorAll('[role="menuitem"]:not([disabled])'));
-    if (!nodes.length) return;
-    e.preventDefault();
-    const at = nodes.indexOf(document.activeElement);
-    let next = at;
-    if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = nodes.length - 1;
-    else next = (at + (e.key === "ArrowDown" ? 1 : -1) + nodes.length) % nodes.length;
-    nodes[next].focus();
-  };
-  return (
-    <div className="sr-menu" ref={wrapRef}>
-      <button
-        ref={btnRef}
-        type="button"
-        className="btn btn-ghost btn-sm btn-icon"
-        aria-label={label}
-        title={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((o) => !o)}
-      ><I.More size={15} /></button>
-      {open && (
-        <div className="sr-menu-pop" role="menu" id={menuId} aria-label={label} onKeyDown={onMenuKey}>
-          {items.map((it) => {
-            const Ic = it.icon ? I[it.icon] : null;
-            return (
-              <button
-                key={it.id}
-                type="button"
-                role="menuitem"
-                className={`sr-menu-item${it.danger ? " is-danger" : ""}`}
-                data-testid={it.testId}
-                disabled={it.disabled}
-                title={it.title}
-                onClick={() => {
-                  // 先把焦点还给「更多」按钮再执行：菜单项马上卸载，随后打开的确认框要记住正确的「打开前焦点」
-                  setOpen(false);
-                  if (btnRef.current) btnRef.current.focus();
-                  if (it.onSelect) it.onSelect();
-                }}
-              >
-                {Ic ? <Ic size={14} /> : null}<span>{it.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

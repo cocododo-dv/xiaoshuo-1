@@ -1,5 +1,5 @@
 /* ==========================================================
-   设置 · AI 模型的纯函数（无 React、无 store）：错误文案、服务健康、路由没就绪的原因键。
+   设置 · AI 模型的纯函数（无 React、无 store）：错误文案与提示条、服务健康、路由没就绪的原因键。
    服务卡片（ws-settings-ai-providers.jsx）和接入状态 / 分工 / 高级路由（ws-settings-ai-routes.jsx）都用；
    单独成叶子模块，免得两边互相 import 成环。
    ========================================================== */
@@ -16,6 +16,19 @@ export function errText(error, fallback) {
   if (error.code === "ADMIN_TOKEN_REQUIRED") return "管理令牌缺失或不正确。在上方「接入状态」里填入后端的管理令牌后再试。";
   if (error.code === "CONFIG_SECRET_REQUIRED") return "后端没有本机配置密钥，存不了 API 密钥。请用启动脚本重新启动后端（它会自动生成并保存这把钥匙）后再试。";
   return error.message || fallback;
+}
+
+/* 页面顶上的出错提示条：setFlash 是 AISettings 的提示条状态（各区块都拿到它） */
+export function flashError(setFlash, error, fallback) {
+  setFlash({ tone: "err", text: errText(error, fallback) });
+}
+
+/* 「补齐缺失路由」的结果说一声：成功报补了几个 AI 功能（okText(n) 给那句话，三处入口说法略有不同），
+   失败按错误说。run 是已经发出的 WsAiProviders.syncMissing(...)。 */
+export function flashSyncMissing(run, setFlash, okText) {
+  return run
+    .then((result) => setFlash({ tone: "ok", text: okText(result?.synced_node_ids?.length ?? 0) }))
+    .catch((error) => flashError(setFlash, error, "补齐路由失败。"));
 }
 
 /* 服务健康：一张卡片上最多给出几枚状态标签 */

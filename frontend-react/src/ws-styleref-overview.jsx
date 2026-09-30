@@ -1,16 +1,16 @@
 import React from "react";
 import { wsConfirm } from "./ws-notify.jsx";
-import { Notice, Spinner, Tag } from "./ws-ui.jsx";
+import { Notice, ProgressBar, Spinner, Tag } from "./ws-ui.jsx";
 import { STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, paragraphTypeLabel } from "./labels/style-reference.js";
 import {
   SR_ACTIVITY_WHERE, srActivityKindLabel, srActivityView, srClassifyEstimateText, srCloudPolicyMeta, srFormatPct,
-  srFormatWhen, srJobErrorText, srProvenanceView, srRetypeUnfinished,
+  srFormatWhen, srJobErrorText, srModelGate, srProvenanceView, srRetypeUnfinished,
 } from "./ws-styleref-model.js";
 import {
-  srActivityFor, srBookDetail, srLoadBookDetail, srLoadClassifyEstimate, srLoadRuntime, srResumeClassification, srRetype,
+  srActivityFor, srBookDetail, srFetchClassifyEstimate, srLoadBookDetail, srLoadRuntime, srResumeClassification, srRetype,
   srRuntime,
 } from "./ws-styleref-store.js";
-import { SrErrorLine, SrProgressBar, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrErrorLine, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 第一步「参考书」：段落分类（进度 / 继续 / 来源与一致率 / 用模型重新分类）、这本书的事实、
@@ -64,11 +64,8 @@ function SrClassifyCard({ book, onAction }) {
   React.useEffect(() => { srLoadRuntime(); }, []);
   /* 分类要用模型（GET /runtime 说的是两个分类节点的实际路由）；「仅本机模型」的书还要求分类节点在本机 */
   const runtime = srRuntime();
-  const rt = runtime.phase === "ready" ? runtime.data : null;
-  const modelGate = !rt ? null
-    : rt.llm_enabled === false ? "还没有接入模型：重新分类要由模型给每一段分类。"
-    : book.cloudPolicy === "local_only" && rt.llm_is_local === false ? "这本书设为「仅本机模型」，但分类用的模型不在本机：先在设置里把段落分类换成本机模型。"
-    : null;
+  const gate = srModelGate(runtime.phase === "ready" ? runtime.data : null, { purpose: "classify", cloudPolicy: book.cloudPolicy });
+  const modelGate = gate ? gate.text : null;
 
   const resume = async () => {
     if (busy) return;
@@ -82,7 +79,7 @@ function SrClassifyCard({ book, onAction }) {
     if (busy) return;
     setBusy("estimate"); setError(null);
     let estimate = null;
-    try { estimate = await srLoadClassifyEstimate(book.id, { force: true }); }
+    try { estimate = await srFetchClassifyEstimate(book.id); }
     catch (e) { estimate = null; }
     setBusy(null);
     const cost = srClassifyEstimateText(estimate);
@@ -116,7 +113,7 @@ function SrClassifyCard({ book, onAction }) {
       </div>
       {running ? (
         <div className="sr-ov-live">
-          <SrProgressBar percent={view.percent} label="段落分类进度" />
+          <ProgressBar value={view.percent} label="段落分类进度" tone="warn" className="sr-progress" />
           <div className="sr-activity-meta">{srActivityKindLabel(running)} · {view.detail}</div>
           <p className="sr-ov-hint">{`可以在${SR_ACTIVITY_WHERE}里取消，之后还能从断点接着分。`}</p>
         </div>

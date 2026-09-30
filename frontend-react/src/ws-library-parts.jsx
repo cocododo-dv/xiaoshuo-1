@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { cx } from "./ws-ui.jsx";
-import { LIB_CATS } from "./ws-library-data.jsx";
+import { LIB_CATS } from "./labels/library.js";
 
 /* ==========================================================
    资料 · 共用小件：字块（LibGlyph）与条目行（LibEntryRow）。

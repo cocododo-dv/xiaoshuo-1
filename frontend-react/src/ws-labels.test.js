@@ -208,3 +208,25 @@ describe("样例窗配额的叫法（2026-09-24 O1：窗口标签记维度，不
     for (const label of Object.values(STYLE_WINDOW_SLOT_LABELS)) expect(label).not.toContain("手法");
   });
 });
+
+/* 模型节点的中文名只有一张表（批准 #19）：与后端 llm_node_registry 的节点逐个对上——后端加了节点忘了起名，
+   或删了节点这里还留着名字（批准 #24b 删掉的四个保留节点），这里就红。 */
+describe("模型节点的中文名与后端注册表一致", () => {
+  const registry = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../backend/src/novel_system/services/llm_node_registry.py"),
+    "utf8",
+  );
+  const nodeIds = [...registry.matchAll(/LLMNodeSpec\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
+
+  it("注册表里的每个节点都有中文名，表里没有注册表之外的节点", () => {
+    expect(nodeIds.length).toBeGreaterThan(20);
+    expect(nodeIds.filter((id) => !llmNodeLabel(id))).toEqual([]);
+    expect(Object.keys(LLM_NODE_LABELS).filter((id) => !nodeIds.includes(id))).toEqual([]);
+  });
+
+  it("不调度的四个保留节点已随后端删掉，不留名字", () => {
+    for (const gone of ["chapter_summary", "continuity_compression", "archive", "chapter_aggregate"]) {
+      expect(LLM_NODE_LABELS[gone], gone).toBeUndefined();
+    }
+  });
+});

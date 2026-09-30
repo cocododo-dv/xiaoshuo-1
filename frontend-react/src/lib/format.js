@@ -56,10 +56,26 @@ export function formatLocaleMonthDayTime(value) {
   return d.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-/* ISO 串直接截取：「2026-09-29」→「09-29」、「2026-09-29T08:30:00Z」→「09-29 08:30」。
-   不换时区——串里是什么钟点就显示什么（成本看板的口径）。 */
+/* 「09-29 16:30」：带时区的 ISO 串（后端记的是 UTC 时间戳）换算成浏览器所在时区再显示；空值 / 非法值返回空串。
+   成本看板调用明细的时间列（审计 F05-04：以前直接截取 UTC 串，北京时间 15:00 的调用显示成「07:00」）。 */
+export function formatLocalMonthDayTime(value) {
+  const d = value ? new Date(value) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* 日期串直接截取：「2026-09-29」→「09-29」。只给本身就是一天的串用（成本看板的日桶是后端按 UTC 分的，照原样标）。 */
 export function isoMonthDay(iso) { return (iso || "").slice(5); }
-export function isoMonthDayTime(iso) { return (iso || "").replace("T", " ").slice(5, 16); }
+
+/* 本地日历日的键「2026-09-29」（Date / 时间戳 / ISO 串，缺省为现在）：按作者所在的时区换日。
+   toISOString().slice(0, 10) 是 UTC 日——东八区早上 8 点以前还算「昨天」（审计 F05-05）。非法值返回空串。 */
+export function localDayKey(value) {
+  const d = value == null ? new Date() : new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 
 /* ---------- 数字 ---------- */
 

@@ -118,7 +118,7 @@ export function SrPortrait({ book, go, onAction }) {
           )}
 
           {(appliedBinding || legacyBinding) && workFid.data && (
-            <SrWorkFidelityCard data={workFid.data} workId={workId} workTitle={work.title || "当前作品"} go={go} />
+            <SrWorkFidelityCard data={workFid.data} workTitle={work.title || "当前作品"} go={go} />
           )}
 
           {appliedBinding ? (

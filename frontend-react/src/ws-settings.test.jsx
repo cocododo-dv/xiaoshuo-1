@@ -4,8 +4,6 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(() => Promise.resolve({})),
@@ -88,8 +86,6 @@ const click = async (el) => { await act(async () => { el.dispatchEvent(new Mouse
 describe("设置页", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
-    window.sessionStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -145,6 +141,153 @@ describe("设置页", () => {
     }
   });
 
+  it("书架还没读回来（占位作品）：项目字段只读，改动不会 PATCH 到占位 id 上；书架到了照常保存到真实作品", async () => {
+    const client = await import("./lib/client.js");
+    let resolveShelf;
+    const shelf = new Promise((resolve) => { resolveShelf = resolve; });
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf : Promise.resolve({})));
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBeNull();
+    const { WsSettings } = await import("./ws-settings.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const genreInput = () => Array.from(host.querySelectorAll(".set-row")).find(r => r.textContent.includes("题材")).querySelector("input");
+    const typeAndEnter = async (input, text) => {
+      await act(async () => { input.focus(); });
+      await act(async () => { setValue.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" })); });
+    };
+    try {
+      await act(async () => root.render(<WsSettings go={vi.fn()} t={{}} setTweak={vi.fn()} />));
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).not.toHaveBeenCalled();
+      expect(genreInput().disabled).toBe(true);
+
+      await act(async () => { resolveShelf({ items: [{ project_id: "prj-s", title: "试写本" }] }); });
+      await vi.waitFor(() => expect(WsWorks.readyId()).toBe("prj-s"));
+      await vi.waitFor(() => expect(genreInput().disabled).toBe(false));
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-s/profile", { genre: "悬疑" });
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  /* 复核 Q5-R1：本机记着上次的作品 id（每个 Playwright 冒烟都是这样起步的）而书架还没读回来时，readyWorkId 已经是那个 id，
+     屏上却还是占位作品——改动交给 WsWorks.update 会因为书架里找不到这部作品悄悄丢掉，书架一到字段重挂，敲的字也没了 */
+  it("本机记着上次的作品、书架还在读：项目字段同样只读，敲的字不会悄悄丢；书架到了照常保存", async () => {
+    window.localStorage.setItem("ws_active_work_v1", "prj-s");
+    const client = await import("./lib/client.js");
+    let resolveShelf;
+    const shelf = new Promise((resolve) => { resolveShelf = resolve; });
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf : Promise.resolve({})));
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBe("prj-s");
+    expect(WsWorks.active().id).toBe("__loading__");
+    const { WsSettings } = await import("./ws-settings.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const genreInput = () => Array.from(host.querySelectorAll(".set-row")).find(r => r.textContent.includes("题材")).querySelector("input");
+    const typeAndEnter = async (input, text) => {
+      await act(async () => { input.focus(); });
+      await act(async () => { setValue.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" })); });
+    };
+    try {
+      await act(async () => root.render(<WsSettings go={vi.fn()} t={{}} setTweak={vi.fn()} />));
+      expect(host.textContent).toContain("正在打开书架");
+      expect(genreInput().disabled).toBe(true);
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).not.toHaveBeenCalled();
+
+      await act(async () => { resolveShelf({ items: [{ project_id: "prj-s", title: "试写本", genre: "原题材" }] }); });
+      await vi.waitFor(() => expect(genreInput().disabled).toBe(false));
+      expect(genreInput().value).toBe("原题材");
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-s/profile", { genre: "悬疑" });
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("书架缓存里没有本机记着的那部作品（书架还在读）：「删除作品」不可点，确认框不会点着别的书名去删", async () => {
+    window.sessionStorage.setItem("ws_settings_tab_v1", "data");
+    window.localStorage.setItem("ws_works_cache_v1", JSON.stringify([
+      { id: "prj-a", title: "旧信" },
+      { id: "prj-b", title: "案卷" },
+    ]));
+    window.localStorage.setItem("ws_active_work_v1", "prj-c");
+    const client = await import("./lib/client.js");
+    let resolveShelf;
+    const shelf = new Promise((resolve) => { resolveShelf = resolve; });
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf : Promise.resolve({})));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBe("prj-c");
+    expect(WsWorks.active().id).toBe("prj-a");
+    const { WsSettings } = await import("./ws-settings.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<WsSettings go={vi.fn()} t={{}} setTweak={vi.fn()} />));
+      const del = btn(host, "删除作品");
+      expect(del.disabled).toBe(true);
+      await click(del);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(client.apiDelete).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveShelf({ items: [
+          { project_id: "prj-a", title: "旧信" },
+          { project_id: "prj-b", title: "案卷" },
+          { project_id: "prj-c", title: "雨城" },
+        ] });
+      });
+      await vi.waitFor(() => expect(WsWorks.active().id).toBe("prj-c"));
+      await vi.waitFor(() => expect(btn(host, "删除作品").disabled).toBe(false));
+      await click(btn(host, "删除作品"));
+      await vi.waitFor(() => expect(client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-c"));
+      expect(confirm.mock.calls[0][0]).toContain("雨城");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("新建的作品还在等正式 id：「删除作品」先不可点，不会 DELETE 临时 id；拿到正式 id 就能删", async () => {
+    window.sessionStorage.setItem("ws_settings_tab_v1", "data");
+    const view = await mountSettings();
+    const { WsWorks } = await import("./ws-works.jsx");
+    let resolveCreate;
+    view.client.apiPost.mockImplementation((url) => (
+      url === "/api/v2/projects" ? new Promise((resolve) => { resolveCreate = resolve; }) : Promise.resolve({})
+    ));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      await act(async () => { WsWorks.create({ title: "新书" }); });
+      expect(WsWorks.list().length).toBe(2);
+      expect(WsWorks.readyId()).toBeNull();
+      const del = btn(view.host, "删除作品");
+      await click(del);
+      expect(view.client.apiDelete).not.toHaveBeenCalled();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(del.disabled).toBe(true);
+
+      await act(async () => { resolveCreate({ project: { project_id: "prj-new", title: "新书" } }); });
+      await vi.waitFor(() => expect(WsWorks.readyId()).toBe("prj-new"));
+      await vi.waitFor(() => expect(btn(view.host, "删除作品").disabled).toBe(false));
+    } finally {
+      await view.unmount();
+    }
+  });
+
   it("外观：行距在快捷面板里细调过时，给一个真能改回整档的按钮", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "appear");
     const view = await mountSettings({ t: { theme: "day", texture: true, motion: "standard", mode: "writer", fontSize: 18, lineHeight: 2.15 } });
@@ -188,16 +331,47 @@ describe("设置页", () => {
     }
   });
 
-  it("高级路由用中文功能名，不再印后端的英文 label", async () => {
+  it("高级路由用中文功能名（与成本看板同一张表），不再印后端的英文 label", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "ai");
     const view = await mountSettings();
     try {
       await vi.waitFor(() => expect(view.host.querySelector(".set-advanced")).toBeTruthy());
       const adv = view.host.querySelector(".set-advanced");
       expect(adv.querySelector("summary").textContent.startsWith("高级路由")).toBe(true);
-      expect(adv.textContent).toContain("场景初稿");
+      const { llmNodeLabel } = await import("./labels/llm.js");
+      const neutral = adv.querySelector('.set-route-label[title="neutral_draft"]');
+      expect(neutral.textContent).toBe(llmNodeLabel("neutral_draft"));
+      expect(neutral.textContent).toBe("初稿");
       expect(adv.textContent).not.toContain("Neutral draft");
       expect(adv.textContent).toContain("密钥解不开");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("高级路由「用默认服务补齐」：成功报补了几个 AI 功能，失败按错误码说人话", async () => {
+    window.sessionStorage.setItem("ws_settings_tab_v1", "ai");
+    const view = await mountSettings();
+    const overview = { ...llmOverview(), missing_active_routes: ["hard_qc"] };
+    view.client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "prj-s", title: "试写本" }] });
+      if (url === "/api/v1/system-config/llm") return Promise.resolve(overview);
+      return Promise.resolve({});
+    });
+    const { WsAiProviders } = await import("./ws-ai-providers.jsx");
+    try {
+      await act(async () => { await WsAiProviders.refresh(); });
+      await vi.waitFor(() => expect(btn(view.host, "用默认服务补齐")).toBeTruthy());
+      view.client.apiAdminPost.mockResolvedValueOnce({ synced_node_ids: ["hard_qc"] });
+      await click(btn(view.host, "用默认服务补齐"));
+      await vi.waitFor(() => expect(view.host.querySelector(".set-flash").textContent).toContain("已用默认服务补齐 1 个 AI 功能。"));
+      expect(view.client.apiAdminPost).toHaveBeenCalledWith(
+        "/api/v1/system-config/llm/node-routes/sync-missing", { activate: true }, expect.anything());
+
+      view.client.apiAdminPost.mockRejectedValueOnce(Object.assign(new Error("admin token required"), { code: "ADMIN_TOKEN_REQUIRED" }));
+      await click(btn(view.host, "用默认服务补齐"));
+      await vi.waitFor(() => expect(view.host.querySelector(".set-flash").textContent).toContain("管理令牌缺失或不正确"));
+      expect(view.host.querySelector(".set-flash").textContent).not.toContain("admin token required");
     } finally {
       await view.unmount();
     }

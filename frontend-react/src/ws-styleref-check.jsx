@@ -1,14 +1,14 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { Notice, Segmented, Spinner } from "./ws-ui.jsx";
+import { Notice, ProgressBar, Segmented, Spinner } from "./ws-ui.jsx";
 import { fidErrorInfo, fidJobView, fidReadingStates } from "./ws-fidelity-model.js";
 import { fidAdoptJob, fidCancelCheck, fidCheck, fidResumeCheck, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
 import {
   FidelityCopyLine, FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityHeadline, FidelityJudgeLine,
 } from "./ws-fidelity-ui.jsx";
-import { srAppliedToWork, srFormatDuration, srFormatWhen, srIsLegacyGlobalBinding, srSceneLabel, srSceneOptions } from "./ws-styleref-model.js";
-import { srActivityTrack, srLoadProjectBinding, srLoadRuntime, srLoadWorkScenes, srProjectBinding, srRuntime } from "./ws-styleref-store.js";
-import { SrProgressBar, SrStageEmpty, srActiveWork, srNotify, useSrStore } from "./ws-styleref-ui.jsx";
+import { srAppliedToWork, srFormatDuration, srFormatWhen, srIsLegacyGlobalBinding, srModelGate } from "./ws-styleref-model.js";
+import { srActivityTrack, srLoadProjectBinding, srLoadRuntime, srProjectBinding, srRuntime } from "./ws-styleref-store.js";
+import { SrStageEmpty, srActiveWork, srNotify, useSrStore, useSrWorkScenes } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 第四步「对照检查」：拿一段文字（或当前作品的一场）对照这本书的作者，看像不像。
@@ -44,7 +44,8 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
   const [mode, setMode] = React.useState(lastTarget.sceneId ? "scene" : "text");
   const [text, setText] = React.useState(lastTarget.text || "");
   const [sceneId, setSceneId] = React.useState(lastSceneHere);
-  const [chapters, setChapters] = React.useState(null);
+  const scenes = useSrWorkScenes();
+  const chapters = workId ? scenes.chapters : [];
   const [cancelling, setCancelling] = React.useState(false);
 
   React.useEffect(() => { srLoadRuntime(); }, []);
@@ -56,17 +57,8 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
     fidAdoptJob(key, adoptJobId);
     if (onAdopted) onAdopted(adoptJobId);
   }, [adoptJobId, key]); // eslint-disable-line react-hooks/exhaustive-deps
-  React.useEffect(() => {
-    let alive = true;
-    setChapters(null);
-    if (!workId) return undefined;
-    srLoadWorkScenes(workId)
-      .then((list) => { if (alive) setChapters(list); })
-      .catch(() => { if (alive) setChapters([]); });
-    return () => { alive = false; };
-  }, [workId]);
   /* 选中的场不在这部作品的场景里（换了作品、场被删了）：清掉，不留一个看不见的选择 */
-  const sceneKnown = !!sceneId && srSceneOptions(chapters).some((group) => group.scenes.some((scene) => scene.value === sceneId));
+  const sceneKnown = !!workId && scenes.has(sceneId);
   React.useEffect(() => {
     if (chapters && sceneId && !sceneKnown) setSceneId("");
   }, [chapters, sceneId, sceneKnown]);
@@ -80,14 +72,14 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
   }
 
   const runtime = srRuntime();
-  const noLlm = runtime.phase === "ready" && !!runtime.data && runtime.data.llm_enabled === false;
+  const gate = srModelGate(runtime.phase === "ready" ? runtime.data : null, { purpose: "check" });
   const busy = !!entry && (entry.phase === "starting" || entry.phase === "running");
   /* 作品在用这本书：作品层的应用，或旧版全局应用（这部作品自己没有应用时它生效）——都按作品现在的设置（重点 / 不学）
      查（传 project_id，后端按作品现解析的策略来）；只传 profile_id 会按默认维度状态查 */
   const workBinding = workId ? (srProjectBinding(workId) || {}).data : null;
   const legacyGlobalHere = !!(workBinding && srIsLegacyGlobalBinding(workBinding.binding) && workBinding.binding.profile_id === profileId);
   const applied = srAppliedToWork(book, workId) || legacyGlobalHere;
-  const groups = srSceneOptions(chapters);
+  const groups = workId ? scenes.groups : [];
   const count = Array.from(text.trim()).length;
   const ready = mode === "text" ? count > 0 && count <= CHECK_MAX_CHARS : sceneKnown;
 
@@ -119,7 +111,7 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
   const describe = (target) => {
     if (!target) return "";
     if (target.sceneId) {
-      return srSceneLabel(chapters, target.sceneId)
+      return (workId && scenes.labelOf(target.sceneId))
         || (target.projectId && target.projectId !== workId ? "另一部作品的一场" : "当前作品的一场");
     }
     return `贴进来的 ${Array.from(String(target.text || "")).length.toLocaleString("zh-CN")} 字`;
@@ -137,13 +129,13 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
           </div>
         </div>
 
-        {noLlm && (
+        {gate && (
           <Notice
             tone="warn"
             testId="sr-check-no-llm"
-            actions={onAction ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button> : null}
+            actions={onAction ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onAction(gate.action)}>{gate.action.label}</button> : null}
           >
-            还没有接入模型：对照检查要由模型对着原文样例评审。
+            {gate.text}
           </Notice>
         )}
 
@@ -204,7 +196,7 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
         )}
 
         <div className="sr-check-foot">
-          <button type="button" className="btn btn-accent" data-testid="sr-check-start" disabled={busy || !ready || noLlm} onClick={() => start()}>
+          <button type="button" className="btn btn-accent" data-testid="sr-check-start" disabled={busy || !ready || !!gate} onClick={() => start()}>
             {busy ? <><Spinner size={13} /> 正在检查…</> : <><I.Target size={14} /> 开始对照检查</>}
           </button>
           <span className="sr-check-hint">一次检查：本机量一遍（几秒）+ 模型评审一次（几十秒到几分钟）。</span>
@@ -224,7 +216,7 @@ function SrCheckOutcome({ entry, describe, onAction, onCancel, cancelling }) {
     return (
       <div className="card sr-check-running" data-testid="sr-check-running">
         <div className="sr-check-running-head"><Spinner size={13} /> 正在对照检查{what ? `：${what}` : ""}</div>
-        <SrProgressBar percent={view.percent} label="对照检查进度" />
+        <ProgressBar value={view.percent} label="对照检查进度" tone="warn" className="sr-progress" />
         <div className="sr-activity-meta">
           {[view.label || "排队中", view.elapsed != null && view.elapsed > 0 ? `已用 ${srFormatDuration(view.elapsed)}` : null].filter(Boolean).join(" · ")}
         </div>

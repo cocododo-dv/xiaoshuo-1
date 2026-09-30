@@ -1,10 +1,11 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsAiProviders } from "./ws-ai-providers.jsx";
-import { errText, providerHealth, providerUsable, reasonKey } from "./ws-settings-ai-health.js";
+import { flashError, flashSyncMissing, providerHealth, providerUsable, reasonKey } from "./ws-settings-ai-health.js";
 import { Section, Row, Field } from "./ws-settings-shared.jsx";
 import { Notice, Tag } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
+import { llmNodeLabel } from "./labels/llm.js";
 
 /* ==========================================================
    设置 · AI 模型 → 接入状态（没就绪的原因按原因 + 服务分组，一步修好）、
@@ -13,43 +14,9 @@ import { wsConfirm } from "./ws-notify.jsx";
 
 const { useState, useMemo } = React;
 
-/* 高级路由里每个 AI 功能的中文名。后端节点目录只有英文 label（节点 id 放在悬停提示里备查）；
-   不在表里的新节点退回后端 label。 */
-const NODE_LABEL_ZH = {
-  author_proposal_generate: "作者提案生成",
-  chapter_near_final_review: "章节终审",
-  chapter_plan_review: "章节规划审阅",
-  chapter_scene_plan_candidates: "章内场景方案候选",
-  chapter_scene_plan_fill: "章内场景方案补全",
-  chapter_story_architecture: "章节故事架构",
-  character_pressure_blueprint: "人物压力蓝图",
-  extraction: "资料抽取",
-  hard_qc: "硬性质检",
-  near_final_acceptance_review: "场景终稿验收",
-  neutral_draft: "场景初稿",
-  scene_blueprint: "场景蓝图",
-  scene_literary_rewrite: "场景文学改写",
-  snowflake_chapter_plan: "构思：分章与起章名",
-  snowflake_scene_triage: "构思：场景体检",
-  snowflake_step_candidates: "构思：先看 3 个方向",
-  snowflake_step_generate: "构思：生成本步",
-  snowflake_workspace_assistant: "构思：教练",
-  soft_qc: "文学质检",
-  style_draft: "风格稿",
-  style_patch: "风格修补",
-  style_ref_extract_language: "参考书：抽取语言层",
-  style_ref_extract_narrative: "参考书：抽取叙事层",
-  style_ref_extract_scene: "参考书：抽取场景层",
-  style_ref_extract_theme: "参考书：抽取主题层",
-  style_ref_paragraph_classify_anchor: "参考书：段落分类（锚定集）",
-  style_ref_paragraph_classify_bulk: "参考书：段落分类（其余段落）",
-  style_ref_protected_terms: "参考书：识别本书专名",
-  style_ref_synthesize_profile: "参考书：写文风卡",
-  style_ref_tag_windows: "参考书：给片段打标签",
-  writer_deep_review: "写作台：深度审读",
-  writer_passage_patch: "写作台：段落修改",
-};
-const nodeLabel = (route) => NODE_LABEL_ZH[route.node_id] || route.label || route.node_id;
+/* 高级路由里每个 AI 功能的中文名：全站只有一张模型节点名表（labels/llm.js，与成本看板同一个叫法——批准 #19）；
+   表里没有的新节点退回后端的 label，再没有就给节点 id。节点 id 放在悬停提示里备查。 */
+const nodeLabel = (route) => llmNodeLabel(route.node_id) || route.label || route.node_id;
 
 /* 路由没就绪的原因 → 一句中文短语（高级路由的行尾用） */
 const REASON_SHORT = {
@@ -66,7 +33,7 @@ const REASON_SHORT = {
 
 /* ===== 没就绪的原因：按原因 + 服务分组，每组一条提示和一个能直接动手的按钮 ===== */
 function blockedGroups(overview) {
-  const blocked = (overview.readiness && overview.readiness.blocked_routes) || overview.blocked_routes || [];
+  const blocked = (overview.readiness && overview.readiness.blocked_routes) || [];
   const map = new Map();
   blocked.forEach((route) => {
     const key = reasonKey(route.reason);
@@ -210,7 +177,7 @@ function RoleSlotsSection({ state, setFlash }) {
     if (!ok) return;
     WsAiProviders.saveRoleRoutes(assignments, true)
       .then(() => { setDraft({}); setFlash({ tone: "ok", text: "分工已应用，对应 AI 功能的模型已经生效。" }); })
-      .catch((error) => setFlash({ tone: "err", text: errText(error, "应用分工失败。") }));
+      .catch((error) => flashError(setFlash, error, "应用分工失败。"));
   };
 
   return (
@@ -286,9 +253,7 @@ function AdvancedRoutes({ state, setFlash }) {
           <Notice tone="warn" title={`有 ${missing.length} 个 AI 功能还没有指派模型`}
             actions={(
               <button type="button" className="btn btn-ghost btn-sm" disabled={state.busy["sync-missing"]}
-                onClick={() => WsAiProviders.syncMissing({})
-                  .then((r) => setFlash({ tone: "ok", text: `已用默认服务补齐 ${r.synced_node_ids?.length ?? 0} 个 AI 功能。` }))
-                  .catch((error) => setFlash({ tone: "err", text: errText(error, "补齐路由失败。") }))}>
+                onClick={() => flashSyncMissing(WsAiProviders.syncMissing({}), setFlash, (n) => `已用默认服务补齐 ${n} 个 AI 功能。`)}>
                 用默认服务补齐
               </button>
             )}>

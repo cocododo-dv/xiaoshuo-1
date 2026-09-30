@@ -17,12 +17,13 @@ import {
   styleLayerOf,
 } from "./labels/style-reference.js";
 import { formatCharsWan, formatCountWan, formatDurationClock, formatMinutesApprox, formatMonthDayTime, formatPercent } from "./lib/format.js";
+import { chapterLabel, sceneLabel } from "./labels/catalog.js";
 
 /* ---------- 用于作品：绑定配置的四个旋钮 ---------- */
 
 export const SR_SAMPLE_WINDOWS_MIN = 0;
 export const SR_SAMPLE_WINDOWS_MAX = 16;
-export const SR_SAMPLE_WINDOWS_DEFAULT = 12;
+const SR_SAMPLE_WINDOWS_DEFAULT = 12;
 
 /* 参考方式（reference_mode）：三选一，每个一句真话 */
 export const SR_REFERENCE_MODES = [
@@ -102,7 +103,7 @@ export function srReferenceModeMeta(id) {
   return SR_REFERENCE_MODES.find((m) => m.id === id) || SR_REFERENCE_MODES[0];
 }
 
-export function srDraftModeMeta(id) {
+function srDraftModeMeta(id) {
   return SR_DRAFT_MODES.find((m) => m.id === id) || SR_DRAFT_MODES[0];
 }
 
@@ -359,7 +360,7 @@ export function srLearnEstimateText(estimate, { bookChars = null } = {}) {
 }
 
 /* 为什么建议重新学习 */
-export const SR_RELEARN_TEXT = {
+const SR_RELEARN_TEXT = {
   types_changed: "段落类型已更新，建议重新学习：挑样本、打标签都要看段落类型。",
   text_changed: "这本书的正文变过了，建议重新学习。",
 };
@@ -596,7 +597,7 @@ export function srSpineColor(bookId) {
 }
 
 /* ---------- 界面偏好 ws_sr_ui_v1（上次打开的书与步骤；只是便利） ---------- */
-export const SR_UI_PREFS_KEY = "ws_sr_ui_v1";
+const SR_UI_PREFS_KEY = "ws_sr_ui_v1";
 const SR_STAGE_IDS = new Set(SR_STAGES.map((s) => s.id));
 
 function srCleanPref(entry) {
@@ -657,24 +658,66 @@ export function srPickLandingBook(books, { prefs, workId, session = null } = {})
 /* 「参考书活动」面板在哪：宽屏在左栏书库里，≤1280 在页头「参考书库」打开的书库里 */
 export const SR_ACTIVITY_WHERE = "「参考书库」的「参考书活动」";
 
-/* ---------- 当前作品的场（本场预览、对照检查选一场） ---------- */
+/* ---------- 当前作品的场（本场预览、对照检查选一场、「像不像」的场名） ---------- */
 
-/* srLoadWorkScenes 的章节 → 下拉框分组 [{ label, scenes: [{ value, label }] }]（没有场的章不列） */
-export function srSceneOptions(chapters) {
-  return (chapters || []).map((chapter) => ({
-    label: `第 ${chapter.no} 章${chapter.title ? ` · ${chapter.title}` : ""}`,
-    scenes: (chapter.scenes || []).map((scene, index) => ({
-      value: scene.sceneId,
-      label: `第 ${chapter.no} 章 · 第 ${index + 1} 场${scene.title ? `「${scene.title}」` : ""}`,
-    })),
-  })).filter((group) => group.scenes.length);
+/* 目录（WsCatalog 的章：{ backendId, n, title, scenes: [{ backendId, title }] }）→
+   { groups, labelOf(sceneId), has(sceneId) }：groups 是下拉框分组 [{ label, scenes: [{ value, label }] }]（没有场的章不列），
+   叫法与全站同一套（labels/catalog 的 chapterLabel / sceneLabel：「第 3 章 · 第 2 场「码头」」，场题截短）；
+   labelOf 查一场的叫法（找不到给空串），一张表建一次，不再每查一场就把全书的选项重建一遍（审计 F05-14 / F05-27）。
+   chapters 为 null（目录还没读到）时 groups 为空。 */
+export function srSceneIndex(chapters) {
+  const groups = [];
+  const labels = new Map();
+  for (const chapter of chapters || []) {
+    const scenes = [];
+    (chapter.scenes || []).forEach((scene, index) => {
+      if (!scene || !scene.backendId) return;
+      const label = sceneLabel(chapter, index, scene, { withTitle: true });
+      scenes.push({ value: scene.backendId, label });
+      labels.set(scene.backendId, label);
+    });
+    if (scenes.length) groups.push({ label: chapterLabel(chapter), scenes });
+  }
+  return {
+    groups,
+    labelOf: (sceneId) => labels.get(sceneId) || "",
+    has: (sceneId) => !!sceneId && labels.has(sceneId),
+  };
 }
 
-/* 场景 id → 「第 3 章 · 第 2 场「码头」」（找不到给空串） */
-export function srSceneLabel(chapters, sceneId) {
-  for (const group of srSceneOptions(chapters)) {
-    const hit = group.scenes.find((scene) => scene.value === sceneId);
-    if (hit) return hit.label;
-  }
-  return "";
+/* ---------- 模型在这一步能不能用 ----------
+   一处判断（审计 F05-22：以前段落分类、学习文风、对照检查、导入对话框各推一遍）。服务端仍是最后一道闸；这里只是
+   把先看得到的拦路说在前面。runtime：GET /runtime 的数据（读不到时传 null——不拦）。
+   purpose：classify（重新分类 / 继续分类，看 runtime.llm_is_local）/ learn（学习文风，看学习节点的路由 routes，
+   local === false 是云端）/ check（对照检查，只看有没有模型）/ import（导入对话框，看 runtime.llm_is_local）。
+   cloudPolicy：书（或导入时选的）原文范围——只有「仅本机模型」才要求在本机。
+   返回 null（能用）或 { kind: "no_llm" | "not_local", text, action }，action 是「去设置模型」。 */
+const SR_MODEL_GATE_TEXT = {
+  classify: {
+    no_llm: "还没有接入模型：重新分类要由模型给每一段分类。",
+    not_local: "这本书设为「仅本机模型」，但分类用的模型不在本机：先在设置里把段落分类换成本机模型。",
+  },
+  learn: {
+    no_llm: "还没有接入模型：学习文风要由模型分层读原文。",
+    not_local: "这本书设为「仅本机模型」，但学习用的模型不在本机：在设置里把学习节点换成本机模型，或用别的范围重新导入。",
+  },
+  check: {
+    no_llm: "还没有接入模型：对照检查要由模型对着原文样例评审。",
+  },
+  import: {
+    no_llm: "先接入模型：导入之后要用模型给每一段分类",
+    not_local: "现在给段落分类的是云端模型，「仅本机模型」的书导入不了",
+  },
+};
+
+export function srModelGate(runtime, { purpose, cloudPolicy = null, routes = null } = {}) {
+  const text = SR_MODEL_GATE_TEXT[purpose];
+  if (!runtime || !text) return null;
+  const action = { type: "settings", label: "去设置模型" };
+  if (runtime.llm_enabled === false) return { kind: "no_llm", text: text.no_llm, action };
+  if (cloudPolicy !== "local_only" || !text.not_local) return null;
+  const cloud = purpose === "learn"
+    ? Array.isArray(routes) && routes.some((route) => route && route.local === false)
+    : runtime.llm_is_local === false;
+  return cloud ? { kind: "not_local", text: text.not_local, action } : null;
 }

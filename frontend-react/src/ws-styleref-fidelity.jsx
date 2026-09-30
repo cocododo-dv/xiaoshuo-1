@@ -3,8 +3,7 @@ import { StatTile, Tag } from "./ws-ui.jsx";
 import { fidFinalsSummary, fidGapsByDimension, fidScoreText } from "./ws-fidelity-model.js";
 import { fidLoadProject, fidProject, useFidelityStore } from "./ws-fidelity-store.js";
 import { FidelityMeter, FidelityTrend } from "./ws-fidelity-ui.jsx";
-import { srSceneLabel } from "./ws-styleref-model.js";
-import { srLoadWorkScenes } from "./ws-styleref-store.js";
+import { useSrWorkScenes } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 文风画像里「当前作品像不像」（2026-09-23 风格参考 v3 · P6b）
@@ -30,19 +29,12 @@ export function useSrWorkFidelity(workId, profileId) {
   };
 }
 
-export function SrWorkFidelityCard({ data, workId, workTitle, go }) {
-  const [chapters, setChapters] = React.useState(null);
-  React.useEffect(() => {
-    let alive = true;
-    if (!workId) return undefined;
-    srLoadWorkScenes(workId).then((list) => { if (alive) setChapters(list); }).catch(() => { if (alive) setChapters([]); });
-    return () => { alive = false; };
-  }, [workId]);
+export function SrWorkFidelityCard({ data, workTitle, go }) {
+  const { labelOf } = useSrWorkScenes();
   if (!data) return null;
   const finals = fidFinalsSummary(data.scene_finals);
   const gaps = Array.isArray(data.recent_gap_details) ? data.recent_gap_details : [];
   const trend = Array.isArray(data.trend) ? data.trend : [];
-  const labelOf = (sceneId) => srSceneLabel(chapters, sceneId);
   return (
     <div className="card sr-work-fid" data-testid="sr-work-fidelity">
       <div className="card-head">

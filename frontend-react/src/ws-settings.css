@@ -79,6 +79,8 @@
 .set-field { width: 260px; max-width: 100%; }
 .set-field.is-wide { width: 100%; }
 textarea.set-field { resize: vertical; min-height: 56px; }
+/* 项目字段只读时（书架还在读、新建的作品还在等正式 id，见 ws-settings.jsx 的 editableWorkId）看得出点不动 */
+.set-field:disabled { color: var(--ink-3); cursor: not-allowed; }
 .set-mono { font-family: var(--font-mono); font-size: var(--fs-sm); }
 .set-field-status { min-width: 0; font-size: var(--fs-xs); color: var(--ink-3); }
 .set-field-status:empty { display: none; }

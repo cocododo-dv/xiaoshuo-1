@@ -1,9 +1,6 @@
-// 成本看板「全局硬额度 / 全局用量」区块的渲染契约：
-// 1) 闸门全关时报用量、不报上限，也不画进度条；
-// 2) 缺 enforced / any_enforced 字段的载荷（旧后端、下钻时保留的旧 quota）必须按
-//    「已武装」渲染 —— 安全展示只能朝「有上限」的方向失败，不能谎报无上限；
-// 3) 今日金额行只在金额闸门启用时出现：它按 env 单价计价，与本页其余
-//    config/pricing.yaml 口径不同，未启用时恒为 0，摆出来会自相矛盾。
+// 成本看板「全局用量」区块：2026-09-30 重评 R3（批准 #3a）删了六道全局额度闸，这里只剩读数——
+// 报今日 / 本月 / 本作品今日的 token、今日请求与并发，不画进度条、不说「未设限」「全局硬额度」，
+// 不再指点作者去设已经退役的环境变量；「今日金额」也不再出现（它按另一套环境变量单价算）。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,18 +18,11 @@ vi.mock("./ws-catalog.jsx", () => ({
   useCatalogChapters: () => [],
 }));
 
-vi.mock("./ws-works.jsx", () => ({
-  WsWorks: { activeId: () => "P1" },
-  useActiveWorkIdentity: () => ({ id: "P1", title: "测试长篇" }),
-}));
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 let root;
 let host;
 
 async function renderQuota(quota) {
-  const { QuotaSection } = await import("./ws-cost.jsx");
+  const { QuotaSection } = await import("./ws-cost-parts.jsx");
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -40,90 +30,74 @@ async function renderQuota(quota) {
   return host;
 }
 
-afterEach(async () => {
+async function unmountQuota() {
   if (root) await act(async () => root.unmount());
   if (host) host.remove();
   root = null;
   host = null;
-});
+}
 
-// 后端在闸门关闭时的真实形状（limit 置 null，enforced false）
-const DISARMED = {
+afterEach(unmountQuota);
+
+// 后端 llm_usage_readings 的真实形状：每格 {used, limit: null, enforced: false}
+const READINGS = {
   period_timezone: "UTC",
-  any_enforced: false,
   daily_tokens: { used: 257203, limit: null, enforced: false },
   monthly_tokens: { used: 565854, limit: null, enforced: false },
   project_daily_tokens: { project_id: "P1", used: 243752, limit: null, enforced: false },
   daily_requests: { used: 73, limit: null, enforced: false },
-  concurrent_requests: { used: 0, limit: null, enforced: false },
-  daily_cost_usd: { used: 0, limit: null, enforced: false },
+  concurrent_requests: { used: 2, limit: null, enforced: false },
 };
 
-describe("成本看板 · 全局额度区块", () => {
-  it("闸门全关：报用量、标未设限，且一条进度条都不画", async () => {
-    const el = await renderQuota(DISARMED);
+describe("成本看板 · 全局用量", () => {
+  it("只报读数：五格用量都在，不画进度条，不说上限", async () => {
+    const el = await renderQuota(READINGS);
 
-    expect(el.textContent).toContain("全局用量");
-    expect(el.textContent).not.toContain("全局硬额度");
-    expect(el.textContent).toContain("243,752 token · 未设限");
-    expect(el.textContent).toContain("73 次 · 未设限");
-    expect(el.textContent).toContain("当前未设任何硬额度");
+    expect(el.querySelector("h3").textContent).toContain("全局用量");
+    expect(el.textContent).toContain("今日总量257,203 token");
+    expect(el.textContent).toContain("本月总量565,854 token");
+    expect(el.textContent).toContain("本项目今日243,752 token");
+    expect(el.textContent).toContain("今日请求73 次");
+    expect(el.textContent).toContain("并发请求2 路");
+    expect(el.textContent).toContain("按 UTC 计日");
+    expect(el.textContent).toContain("不会拦下生成");
     expect(el.querySelectorAll('[role="progressbar"]').length).toBe(0);
-  });
-
-  it("闸门全关：今日金额行不出现，也不再给出「需配置模型单价」的错误归因", async () => {
-    const el = await renderQuota(DISARMED);
-
-    expect(el.textContent).not.toContain("今日金额");
-    expect(el.textContent).not.toContain("需配置模型单价");
-  });
-
-  it("闸门启用：画进度条并显示 已用/上限 与百分比", async () => {
-    const el = await renderQuota({
-      ...DISARMED,
-      any_enforced: true,
-      project_daily_tokens: { project_id: "P1", used: 243752, limit: 250000, enforced: true },
-    });
-
-    expect(el.textContent).toContain("全局硬额度");
-    expect(el.textContent).toContain("243,752 / 250,000 token · 98%");
-    expect(el.querySelectorAll('[role="progressbar"]').length).toBe(1);
-  });
-
-  it("fail-closed：载荷缺 enforced/any_enforced 但 limit 是真数字时，仍按已武装渲染", async () => {
-    // 旧后端或下钻保留的旧 quota 就是这个形状。若拿 enforced 当判据，这里会渲染成
-    // 「未设限」，在闸门已启用且用满 90% 时向作者谎报没有上限。
-    const el = await renderQuota({
-      period_timezone: "UTC",
-      daily_tokens: { used: 900000, limit: 1000000 },
-    });
-
-    expect(el.textContent).toContain("全局硬额度");
-    expect(el.textContent).toContain("900,000 / 1,000,000 token · 90%");
     expect(el.textContent).not.toContain("未设限");
-    expect(el.textContent).not.toContain("当前未设任何硬额度");
-    expect(el.querySelectorAll('[role="progressbar"]').length).toBe(1);
+    expect(el.textContent).not.toContain("全局硬额度");
   });
 
-  it("金额闸门单独启用：该行出现，并按 4 位小数显示", async () => {
+  it("不再指点作者去设退役的环境变量，也没有「怎么设上限」", async () => {
+    const el = await renderQuota(READINGS);
+
+    expect(el.textContent).not.toContain("NOVEL_SYSTEM_");
+    expect(el.textContent).not.toContain("怎么设上限");
+    expect(el.querySelector("details")).toBeNull();
+  });
+
+  it("旧后端留下的额度字段（limit 是数、daily_cost_usd）一律不当上限、不显示金额", async () => {
+    // 部署交替期或下钻时留下的旧载荷：闸已经删了，这些数不能再被画成「已用 / 上限」
     const el = await renderQuota({
-      ...DISARMED,
+      ...READINGS,
+      any_enforced: true,
+      daily_tokens: { used: 900000, limit: 1000000, enforced: true },
       daily_cost_usd: { used: 1.5, limit: 10, enforced: true },
     });
 
-    expect(el.textContent).toContain("今日金额");
-    expect(el.textContent).toContain("1.5000 / 10.0000 USD");
-    // 其余闸门仍关闭，所以金额未启用的补充说明不该出现
-    expect(el.textContent).not.toContain("金额上限未启用");
+    expect(el.textContent).toContain("今日总量900,000 token");
+    expect(el.textContent).not.toContain("1,000,000");
+    expect(el.textContent).not.toContain("今日金额");
+    expect(el.textContent).not.toContain("USD");
+    expect(el.querySelectorAll('[role="progressbar"]').length).toBe(0);
   });
 
-  it("其他闸门启用而金额闸门未启用：补充说明指向正确的环境变量", async () => {
-    const el = await renderQuota({
-      ...DISARMED,
-      daily_tokens: { used: 10, limit: 100, enforced: true },
-    });
+  it("结算时区跟着后端说；没有读数就整块不画", async () => {
+    const el = await renderQuota({ ...READINGS, period_timezone: "Asia/Shanghai" });
+    expect(el.textContent).toContain("按 Asia/Shanghai 计日");
+    await unmountQuota();
 
-    expect(el.textContent).toContain("金额上限未启用");
-    expect(el.textContent).toContain("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD");
+    expect((await renderQuota(null)).textContent).toBe("");
+    await unmountQuota();
+
+    expect((await renderQuota({ period_timezone: "UTC" })).textContent).toBe("");
   });
 });

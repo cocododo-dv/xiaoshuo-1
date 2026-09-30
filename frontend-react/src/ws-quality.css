@@ -140,16 +140,12 @@
   font-size: var(--fs-sm); color: var(--ink-2); margin-bottom: 4px;
 }
 .cs-quota-row { margin-bottom: 8px; }
-.cs-quota-item .cs-quota-row { margin-bottom: 4px; }
-.cs-quota-item { margin-bottom: 10px; }
 .cs-bar-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .cs-bar-val { color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
-.cs-bar-val.is-danger { color: var(--danger-ink); }
 .cs-node { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cs-node.is-raw { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-2); }
+/* 成本看板的比例条是 ws-ui 的 ProgressBar（填充色走 data-tone），这里只给轨道尺寸 */
 .cs-meter { height: 8px; border-radius: 5px; background: var(--line-1); overflow: hidden; }
-.cs-meter-fill { height: 100%; background: var(--ok); border-radius: 5px; }
-.cs-meter-fill.is-danger { background: var(--danger); }
 
 /* 表格基座（原 screens.css 的 .lib-table，现在只有成本看板用；尺寸与字号由下面的 .cs-table 给） */
 .lib-table { width: 100%; border-collapse: collapse; }

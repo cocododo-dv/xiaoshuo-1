@@ -4,8 +4,6 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(() => Promise.resolve({ items: [] })),
   apiPost: vi.fn(() => Promise.resolve({})),
@@ -15,7 +13,8 @@ vi.mock("./lib/client.js", () => ({
 
 const trash = vi.hoisted(() => ({ items: [], load: { status: "ready", message: "" } }));
 
-vi.mock("./ws-catalog.jsx", () => ({
+// 视图只 import 回收站 store（ws-trash-store.js），桩就给它
+vi.mock("./ws-trash-store.js", () => ({
   WsTrashStore: {
     subscribe: () => () => {},
     list: () => trash.items,
@@ -25,8 +24,7 @@ vi.mock("./ws-catalog.jsx", () => ({
     clear: vi.fn(() => Promise.resolve(true)),
     refresh: vi.fn(() => Promise.resolve()),
   },
-  WsCatalog: { get: () => [], subscribe: () => () => {} },
-  useCatalogChapters: () => [],
+  onTrashRestored: () => () => {},
 }));
 
 const NOW = Date.now();
@@ -43,13 +41,13 @@ function sampleItems() {
 
 async function mountTrash() {
   const { WsTrash } = await import("./ws-trash.jsx");
-  const catalog = await import("./ws-catalog.jsx");
+  const trashStore = await import("./ws-trash-store.js");
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => root.render(<WsTrash go={vi.fn()} />));
   return {
-    host, store: catalog.WsTrashStore,
+    host, store: trashStore.WsTrashStore,
     unmount: async () => { await act(async () => root.unmount()); host.remove(); },
   };
 }
@@ -63,7 +61,6 @@ describe("回收站视图", () => {
     vi.resetModules();
     trash.items = sampleItems();
     trash.load = { status: "ready", message: "" };
-    window.localStorage.clear();
   });
 
   it("读不到回收站：只给一处错误和重试，不说「回收站是空的」；在读时说在读；读到了才是真的空", async () => {
@@ -102,31 +99,15 @@ describe("回收站视图", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("打开就向 store 要一次最新列表", async () => {
-    const view = await mountTrash();
-    try {
-      expect(view.store.refresh).toHaveBeenCalled();
-    } finally {
-      await view.unmount();
-    }
-  });
-
-  it("store 还没有 refresh() 时只重新拉回收站，不广播 ws:trash-changed（审阅队列也在听它）", async () => {
-    const catalog = await import("./ws-catalog.jsx");
-    const store = catalog.WsTrashStore;
-    const saved = store.refresh;
-    delete store.refresh;
-    store.push = vi.fn();
+  it("打开就向 store 要一次最新列表，不广播 ws:trash-changed（审阅队列也在听它）", async () => {
     const heard = vi.fn();
     window.addEventListener("ws:trash-changed", heard);
     const view = await mountTrash();
     try {
-      expect(store.push).toHaveBeenCalledTimes(1);
+      expect(view.store.refresh).toHaveBeenCalledTimes(1);
       expect(heard).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("ws:trash-changed", heard);
-      store.refresh = saved;
-      delete store.push;
       await view.unmount();
     }
   });

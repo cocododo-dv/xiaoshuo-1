@@ -1,13 +1,13 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { Spinner } from "./ws-ui.jsx";
+import { ProgressBar, Spinner } from "./ws-ui.jsx";
 import { srActivityActive, srActivityKindLabel, srActivityView, srInputTooSmall } from "./ws-styleref-model.js";
 import {
   srActivityClearFinished, srActivityDismiss, srActivityEntries, srActivityFor, srActivityPoke, srActivityTrack,
   srCancelClassification, srCancelLearn, srResumeClassification, srStartLearn, srSubscribe,
 } from "./ws-styleref-store.js";
 import { fidCancelCheckJob, fidCheckByJob, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
-import { SrProgressBar, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { srNotifyError, srProgressTone, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 参考书活动（左栏面板，窄屏在书库对话框里）
@@ -121,7 +121,7 @@ export function SrActivityPanel({ onOpenBook }) {
           <span className="sr-activity-title"><span className="sr-activity-kind">{kindLabel}</span><span className="text-serif">{title}</span></span>
           <span className="sr-activity-pct tab-num">{v.percentText}</span>
         </div>
-        <SrProgressBar percent={v.percent} label={`${kindLabel}${title}`} />
+        <ProgressBar value={v.percent} label={`${kindLabel}${title}`} tone={srProgressTone(status)} className="sr-progress" />
         <div className="sr-activity-meta" title={e.error && e.error.code ? `错误代码：${e.error.code}` : undefined}>{v.detail}</div>
         {(!active || canCancel) && (
           <div className="sr-activity-actions">

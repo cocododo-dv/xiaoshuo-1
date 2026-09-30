@@ -31,6 +31,7 @@ import {
   srJobErrorText,
   srLandingStage,
   srLearnEstimateText,
+  srModelGate,
   srNormalizeConfig,
   srPickLandingBook,
   srProvenanceView,
@@ -39,6 +40,7 @@ import {
   srRememberUi,
   srRetypeUnfinished,
   srRightsReady,
+  srSceneIndex,
   srSettingsEqual,
   srSortBooks,
   srStageStates,
@@ -430,5 +432,73 @@ describe("出错说法 · 后端 author_action 与死词汇（2026-09-24 清理 
     expect(srErrorInfo({ code: "STYLE_REFERENCE_CHECK_NOT_FOUND", message: "gone" }).message).toContain("已经不在了");
     expect(srErrorInfo({ code: "STYLE_REFERENCE_PROFILE_NOT_ACTIVE", message: "inactive" }).message).toContain("不是在用的版本");
     expect(srErrorInfo({ code: "STYLE_REFERENCE_IMPORT_CANCELLED", message: "import cancelled" }).message).toBe("操作没有完成，请稍后重试。");
+  });
+});
+
+/* 当前作品的场：目录 store 的章（WsCatalog 的形状）→ 下拉框分组与场名；叫法与全站同一套（审计 F05-14） */
+describe("当前作品的场", () => {
+  const chapters = [
+    { id: "ch07", backendId: "C7", n: "07", title: "雾里", scenes: [
+      { sid: "S1", backendId: "S1", title: "码头" },
+      { sid: "S2", backendId: "S2", title: "夜渡：一场很长很长的、写了二十多个字的场景题目" },
+    ] },
+    { id: "ch08", backendId: "C8", n: "08", title: "第 8 章", scenes: [{ sid: "S3", backendId: "S3", title: "" }] },
+    { id: "ch09", backendId: "C9", n: "09", title: "空章", scenes: [] },
+    { id: "ch10", backendId: "C10", n: "10", title: "临时", scenes: [{ sid: "tmp_x", backendId: null, title: "还没存好" }] },
+  ];
+
+  it("分组按章、场名是「第 N 章 · 第 M 场「场题」」（章号不补零，场题截短，占位章名不重复）；没有场的章不列", () => {
+    const { groups } = srSceneIndex(chapters);
+    expect(groups.map((g) => g.label)).toEqual(["第 7 章 · 雾里", "第 8 章"]);
+    expect(groups[0].scenes).toEqual([
+      { value: "S1", label: "第 7 章 · 第 1 场「码头」" },
+      { value: "S2", label: "第 7 章 · 第 2 场「夜渡：一场很长很长的、写了二十多个字…」" },
+    ]);
+    expect(groups[1].scenes).toEqual([{ value: "S3", label: "第 8 章 · 第 1 场" }]);
+  });
+
+  it("labelOf / has 按场的后端 id 查；目录还没读到（null）时是空的", () => {
+    const index = srSceneIndex(chapters);
+    expect(index.labelOf("S2")).toContain("第 7 章 · 第 2 场");
+    expect(index.labelOf("nope")).toBe("");
+    expect(index.has("S3")).toBe(true);
+    expect(index.has("tmp_x")).toBe(false);
+    expect(index.has("")).toBe(false);
+    const empty = srSceneIndex(null);
+    expect(empty.groups).toEqual([]);
+    expect(empty.labelOf("S1")).toBe("");
+  });
+});
+
+/* 模型在这一步能不能用：一处判断，四个页面各自的说法（审计 F05-22） */
+describe("模型在这一步能不能用", () => {
+  const cloud = { llm_enabled: true, llm_is_local: false };
+  const local = { llm_enabled: true, llm_is_local: true };
+
+  it("没有模型：每一步都拦，按那一步说，带「去设置模型」", () => {
+    for (const purpose of ["classify", "learn", "check", "import"]) {
+      const gate = srModelGate({ llm_enabled: false }, { purpose });
+      expect(gate, purpose).toMatchObject({ kind: "no_llm", action: { type: "settings", label: "去设置模型" } });
+    }
+    expect(srModelGate({ llm_enabled: false }, { purpose: "classify" }).text).toBe("还没有接入模型：重新分类要由模型给每一段分类。");
+    expect(srModelGate({ llm_enabled: false }, { purpose: "check" }).text).toBe("还没有接入模型：对照检查要由模型对着原文样例评审。");
+    expect(srModelGate({ llm_enabled: false }, { purpose: "import" }).text).toBe("先接入模型：导入之后要用模型给每一段分类");
+  });
+
+  it("「仅本机模型」的书遇上云端模型才拦；分类 / 导入看运行时，学习看学习节点的路由，对照检查不看", () => {
+    expect(srModelGate(cloud, { purpose: "classify", cloudPolicy: "local_only" })).toMatchObject({ kind: "not_local" });
+    expect(srModelGate(cloud, { purpose: "classify", cloudPolicy: "allow_full_cloud" })).toBeNull();
+    expect(srModelGate(local, { purpose: "classify", cloudPolicy: "local_only" })).toBeNull();
+    expect(srModelGate(cloud, { purpose: "import", cloudPolicy: "local_only" }).text).toBe("现在给段落分类的是云端模型，「仅本机模型」的书导入不了");
+    expect(srModelGate(cloud, { purpose: "check", cloudPolicy: "local_only" })).toBeNull();
+    // 学习：运行时说在云端也不算，要看学习节点自己的路由
+    expect(srModelGate(cloud, { purpose: "learn", cloudPolicy: "local_only", routes: [{ node_id: "a", local: true }] })).toBeNull();
+    expect(srModelGate(local, { purpose: "learn", cloudPolicy: "local_only", routes: [{ node_id: "a", local: false }] }))
+      .toMatchObject({ kind: "not_local", text: expect.stringContaining("学习用的模型不在本机") });
+  });
+
+  it("运行时还没读到（null）不拦——服务端是最后一道闸", () => {
+    expect(srModelGate(null, { purpose: "classify", cloudPolicy: "local_only" })).toBeNull();
+    expect(srModelGate(cloud, { purpose: "nope" })).toBeNull();
   });
 });

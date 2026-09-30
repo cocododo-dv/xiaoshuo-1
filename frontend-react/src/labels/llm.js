@@ -17,7 +17,9 @@ export function accountingStatusMeta(status) {
   return ACCOUNTING_STATUS_LABELS[status] || { label: status ? "其他" : "—", tone: "neutral" };
 }
 
-/* 模型节点（后端 llm_node_registry 的 node_id）的中文名。认不出的节点返回空串，
+/* 模型节点（后端 llm_node_registry 的 node_id）的中文名——唯一的一张表（2026-09-30 批准 #19：以成本看板这套为底，
+   设置 · 高级路由也读它；以前设置另有一份叫法不同的表，同一个节点在两页叫两个名字）。与后端注册表逐个对上
+   （ws-labels.test.js 读后端源码比对）；批准 #24b 删掉的四个保留节点不再留名字。认不出的节点返回空串，
    调用方回落到等宽显示原始 id（机器标识，放在 title 里也行）。 */
 export const LLM_NODE_LABELS = {
   extraction: "通用抽取",
@@ -52,10 +54,6 @@ export const LLM_NODE_LABELS = {
   writer_passage_patch: "写作台 · 段落修补",
   writer_deep_review: "写作台 · 深度审读",
   author_proposal_generate: "写作台 · 修改提案",
-  chapter_summary: "章节摘要",
-  continuity_compression: "连续性压缩",
-  archive: "归档与索引",
-  chapter_aggregate: "章节汇总",
 };
 
 export function llmNodeLabel(nodeId) {

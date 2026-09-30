@@ -2,9 +2,9 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { paragraphTypeLabel, styleDimensionLabel, styleWindowSlotLabel, windowPositionLabel } from "./labels/style-reference.js";
-import { SR_SEGMENTS_ONLY_LABEL, srFormatChars, srReferenceModeMeta, srSceneOptions } from "./ws-styleref-model.js";
-import { srLoadParagraphs, srLoadWorkScenes, srScenePreview } from "./ws-styleref-store.js";
-import { SrErrorLine } from "./ws-styleref-ui.jsx";
+import { SR_SEGMENTS_ONLY_LABEL, srFormatChars, srReferenceModeMeta } from "./ws-styleref-model.js";
+import { srLoadParagraphs, srScenePreview } from "./ws-styleref-store.js";
+import { SrErrorLine, useSrWorkScenes } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 本场预览（取代旧的「示例预览」）：挑当前作品的一场，看它起草时会拿到什么——
@@ -32,29 +32,22 @@ const SR_SCENE_WHERE = {
 };
 
 export function SrScenePreview({ book, profileId, config, workId, workTitle }) {
-  const [chapters, setChapters] = React.useState(null);
+  const { chapters, groups } = useSrWorkScenes();
   const [sceneId, setSceneId] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [preview, setPreview] = React.useState(null);
   const [previewKey, setPreviewKey] = React.useState(null);
 
+  /* 换了作品：上一部选的场与预览都不带过来（场表跟着目录 store 换） */
   React.useEffect(() => {
-    let alive = true;
-    setChapters(null);
     setSceneId("");
     setPreview(null);
-    if (!workId) return undefined;
-    srLoadWorkScenes(workId)
-      .then((list) => { if (alive) setChapters(list); })
-      .catch(() => { if (alive) setChapters([]); });
-    return () => { alive = false; };
   }, [workId]);
 
   const configKey = JSON.stringify([config.reference_mode, config.sample_windows, config.draft_mode, config.dimension_states]);
   const currentKey = `${profileId}|${sceneId}|${configKey}`;
   const outdated = !!preview && previewKey !== currentKey;
-  const groups = srSceneOptions(chapters);
 
   const run = async () => {
     if (!sceneId || busy) return;

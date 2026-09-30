@@ -2,23 +2,23 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { agoLabel } from "./lib/format.js";
 import { useStoreTick } from "./lib/store-utils.js";
-import { WsTrashStore } from "./ws-catalog.jsx";
+import { WsTrashStore } from "./ws-trash-store.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { EmptyState, Notice, PageHeader, Spinner, Tag } from "./ws-ui.jsx";
 
 /* ==========================================================
    回收站（WsTrashStore，按作品隔离）。
    以前挂在 ws-library.jsx 里：打开回收站要先下载整个资料库分块（图谱布局、档案数据层，
-   后者一 import 就去拉 /library）。现在独立成路由模块，只依赖目录 store。
+   后者一 import 就去拉 /library）。现在独立成路由模块，只依赖回收站 store（ws-trash-store.js）。
    场景的所在章也在回收站里时，场景行挂在那一章下面：恢复那一章会把它们一起带回，
    单独恢复这场会被后端拒绝，所以按钮禁用并写明原因。样式在 ws-library.css 的回收站一节。
    ========================================================== */
 
 const { useMemo, useEffect } = React;
 
-const TRASH_TYPE_BY_KIND = { 作品: "work", 章节: "chapter", 场景: "scene" };
-const trashType = (it) => (it && it.payload && it.payload.type) || TRASH_TYPE_BY_KIND[it && it.kind] || String((it && it.id) || "").split(":")[0];
-const trashChapterOf = (it) => (it && (it.chapterId || it.chapter_id)) || "";
+/* store 给每条都带 payload.type（work / chapter / scene）与 chapterId（场景的所在章，ws-trash-store.js 的 trashAdapt） */
+const trashType = (it) => (it && it.payload && it.payload.type) || "";
+const trashChapterOf = (it) => (it && it.chapterId) || "";
 const trashChapterKey = (it) => String(it.id).replace(/^chapter:/, "");
 
 /* 表格行：章节后面紧跟随它一起回收的场景（nested），其余按 store 的顺序 */
@@ -84,21 +84,16 @@ function TrashRow({ it, nested, childCount, onRestore, onPurge }) {
 }
 
 function WsTrash() {
-  useStoreTick((fn) => (WsTrashStore ? WsTrashStore.subscribe(fn) : undefined));
-  const items = WsTrashStore ? WsTrashStore.list() : [];
+  useStoreTick((fn) => WsTrashStore.subscribe(fn));
+  const items = WsTrashStore.list();
   const rows = useMemo(() => trashRows(items), [items]);
   /* 列表是空的有三种原因：真的空、还在读、读不到。只有第一种才说「回收站是空的」；
      读不到时只给一处错误和重试——删掉的东西不能看起来像是没了 */
-  const load = (WsTrashStore && typeof WsTrashStore.loadState === "function" && WsTrashStore.loadState()) || { status: "ready" };
+  const load = WsTrashStore.loadState();
 
   /* 打开就刷新：整理章节时后端会自动把空章移进回收站，那条路径不经过前端的删除动作。
-     store 还没有 refresh() 时退回到兼容壳 push()——它只重新拉一次回收站。
      不能广播 ws:trash-changed：那是「回收站内容变了」的信号，审阅队列和角标也在听，会白白多拉三次。 */
-  useEffect(() => {
-    if (!WsTrashStore) return;
-    if (typeof WsTrashStore.refresh === "function") WsTrashStore.refresh();
-    else if (typeof WsTrashStore.push === "function") WsTrashStore.push();
-  }, []);
+  useEffect(() => { WsTrashStore.refresh(); }, []);
 
   const restore = (it) => { WsTrashStore.restore(it.id); };
   const purge = async (it) => {
@@ -169,4 +164,4 @@ function WsTrash() {
   );
 }
 
-export { WsTrash, trashRows };
+export { WsTrash };

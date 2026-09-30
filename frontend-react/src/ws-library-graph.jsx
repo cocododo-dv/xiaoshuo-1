@@ -1,10 +1,11 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_CATS } from "./ws-library-data.jsx";
-import { LIB_REL_TYPES, LIB_relLabel, LIB_relType } from "./ws-library-derive.jsx";
+import { LIB_CATS } from "./labels/library.js";
+import { LIB_REL_TYPES } from "./ws-library-derive.js";
+import { GH, GW, buildEdges, computeLayout } from "./ws-library-graph-layout.js";
 import { LibEntryRow, libCatLabel } from "./ws-library-parts.jsx";
 import { wsKey } from "./ws-works.jsx";
-import { EmptyState, IconButton, Segmented } from "./ws-ui.jsx";
+import { EmptyState, IconButton, Popover, Segmented } from "./ws-ui.jsx";
 
 const { useMemo, useState, useRef, useEffect, useLayoutEffect } = React;
 
@@ -18,110 +19,10 @@ const { useMemo, useState, useRef, useEffect, useLayoutEffect } = React;
    · 工具栏只有一行：查找、图例（只列数据里真有的类别和关系）、「筛选」弹层。
    ========================================================== */
 
-const GW = 1000, GH = 660;
 /* 舞台四周留给节点半径和名字的像素边距（名字写在节点下方，所以下边多留一点） */
 const PAD = { l: 48, r: 48, t: 40, b: 56 };
 const POS_KEY = "ws-lib-graph-pos-v1";
-const posKey = () => (wsKey ? wsKey(POS_KEY) : POS_KEY);
-
-/* 无向、去重的边 */
-function buildEdges(entries, byId) {
-  const seen = new Set();
-  const edges = [];
-  entries.forEach(e => {
-    (e.links || []).forEach(l => {
-      if (!byId[l.id]) return;
-      const key = [e.id, l.id].sort().join("|");
-      if (seen.has(key)) return;
-      seen.add(key);
-      edges.push({ a: e.id, b: l.id, rel: LIB_relLabel(l), typeId: LIB_relType(l).id });
-    });
-  });
-  return edges;
-}
-
-/* 简单的力模拟 → { id: { x, y } }，铺满 [0, GW] × [0, GH]（边距在画的时候按像素加） */
-function computeLayout(edges, entries) {
-  const nodes = entries.map(e => ({ id: e.id, cat: e.cat }));
-  const idx = {};
-  nodes.forEach((n, i) => { idx[n.id] = i; });
-
-  // 确定性的初始位置：同类沿一圈聚在一起
-  const catAngle = {};
-  LIB_CATS.forEach((c, i) => { catAngle[c.id] = (i / LIB_CATS.length) * Math.PI * 2; });
-  const catCount = {};
-  const pos = nodes.map(n => {
-    const k = (catCount[n.cat] = (catCount[n.cat] || 0) + 1);
-    const a = (catAngle[n.cat] || 0) + (k * 0.7);
-    const r = 150 + (k % 4) * 46;
-    return { x: GW / 2 + Math.cos(a) * r, y: GH / 2 + Math.sin(a) * r };
-  });
-
-  const REP = 1650, SPRING = 0.045, L = 120, CENTER = 0.012, STEP = 0.9, MAXMOVE = 26;
-  const CAT_COHESION = 0.021;
-  /* 条目很多时少迭代几轮：O(n²) 的斥力是这里唯一的大头 */
-  const ITERS = nodes.length > 160 ? 260 : 520;
-  for (let it = 0; it < ITERS; it++) {
-    const fx = new Array(nodes.length).fill(0);
-    const fy = new Array(nodes.length).fill(0);
-    // 各类的重心（松散聚类，读起来成片）
-    const cc = {}, cn = {};
-    for (let i = 0; i < nodes.length; i++) {
-      const c = nodes[i].cat;
-      if (!cc[c]) { cc[c] = { x: 0, y: 0 }; cn[c] = 0; }
-      cc[c].x += pos[i].x; cc[c].y += pos[i].y; cn[c]++;
-    }
-    Object.keys(cc).forEach(c => { cc[c].x /= cn[c]; cc[c].y /= cn[c]; });
-    // 斥力（两两）
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
-        const d2 = dx * dx + dy * dy || 0.01;
-        const d = Math.sqrt(d2);
-        const f = REP / d2;
-        const ux = dx / d, uy = dy / d;
-        fx[i] += ux * f; fy[i] += uy * f;
-        fx[j] -= ux * f; fy[j] -= uy * f;
-      }
-      // 向心 + 同类内聚
-      fx[i] += (GW / 2 - pos[i].x) * CENTER;
-      fy[i] += (GH / 2 - pos[i].y) * CENTER;
-      const ctr = cc[nodes[i].cat];
-      fx[i] += (ctr.x - pos[i].x) * CAT_COHESION;
-      fy[i] += (ctr.y - pos[i].y) * CAT_COHESION;
-    }
-    // 弹簧
-    edges.forEach(e => {
-      const a = idx[e.a], b = idx[e.b];
-      if (a == null || b == null) return;
-      const dx = pos[b].x - pos[a].x, dy = pos[b].y - pos[a].y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-      const diff = (d - L) * SPRING;
-      const ux = dx / d, uy = dy / d;
-      fx[a] += ux * diff; fy[a] += uy * diff;
-      fx[b] -= ux * diff; fy[b] -= uy * diff;
-    });
-    // 积分
-    for (let i = 0; i < nodes.length; i++) {
-      let mx = fx[i] * STEP, my = fy[i] * STEP;
-      const m = Math.sqrt(mx * mx + my * my);
-      if (m > MAXMOVE) { mx = mx / m * MAXMOVE; my = my / m * MAXMOVE; }
-      pos[i].x += mx; pos[i].y += my;
-    }
-  }
-
-  // 等比缩放铺进 GW × GH，居中
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  pos.forEach(p => { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); });
-  const s = Math.min(GW / (maxX - minX || 1), GH / (maxY - minY || 1));
-  const offX = (GW - (maxX - minX) * s) / 2;
-  const offY = (GH - (maxY - minY) * s) / 2;
-  const out = {};
-  nodes.forEach((n, i) => {
-    out[n.id] = { x: offX + (pos[i].x - minX) * s, y: offY + (pos[i].y - minY) * s };
-  });
-  return out;
-}
+const posKey = () => wsKey(POS_KEY);
 
 const readSavedPos = () => {
   try { return JSON.parse(localStorage.getItem(posKey()) || "{}") || {}; } catch (e) { return {}; }
@@ -135,29 +36,15 @@ const MinusIcon = ({ size = 15 }) => (
 
 const toggleIn = (set, id) => { const n = new Set(set); if (n.has(id)) n.delete(id); else n.add(id); return n; };
 
-/* 「筛选」弹层：只列数据里出现过的类别和关系类型；名字标签全部显示或只在聚焦时显示 */
+/* 「筛选」弹层：只列数据里出现过的类别和关系类型；名字标签全部显示或只在聚焦时显示。
+   开合、Esc、点外面、Tab 出去都交给 ws-ui 的 Popover（usePopover）——以前这里自己挂 pointerdown / Esc。 */
 function GraphFilter({ cats, rels, catCount, offCats, offRels, labelMode, onCats, onRels, onLabelMode }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef(null);
   const btnRef = useRef(null);
   const hidden = offCats.size + offRels.size;
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (ev) => { if (wrapRef.current && !wrapRef.current.contains(ev.target)) setOpen(false); };
-    document.addEventListener("pointerdown", onDown);
-    return () => document.removeEventListener("pointerdown", onDown);
-  }, [open]);
-
-  const onKeyDown = (ev) => {
-    if (ev.key !== "Escape" || !open) return;
-    ev.stopPropagation();
-    setOpen(false);
-    if (btnRef.current) btnRef.current.focus();
-  };
-
   return (
-    <div className="graph-filter" ref={wrapRef} onKeyDown={onKeyDown}>
+    <div className="graph-filter">
       <button
         ref={btnRef}
         type="button"
@@ -168,51 +55,107 @@ function GraphFilter({ cats, rels, catCount, offCats, offRels, labelMode, onCats
       >
         <I.Filter size={13} /> 筛选{hidden ? <span className="graph-filter-n">{hidden}</span> : null}
       </button>
-      {open && (
-        <div className="graph-pop" role="dialog" aria-label="筛选图谱">
+      <Popover open={open} onClose={() => setOpen(false)} anchorRef={btnRef} label="筛选图谱" className="graph-pop">
+        <fieldset className="graph-pop-group">
+          <legend>类别</legend>
+          {cats.map(c => (
+            <label key={c.id} className={`graph-pop-opt acc-${c.accent}`}>
+              <input type="checkbox" checked={!offCats.has(c.id)} onChange={() => onCats(toggleIn(offCats, c.id))} />
+              <span className="graph-key-dot" aria-hidden="true" />
+              <span className="graph-pop-label">{c.label}</span>
+              <span className="graph-pop-n">{catCount[c.id] || 0}</span>
+            </label>
+          ))}
+        </fieldset>
+        {rels.length > 0 && (
           <fieldset className="graph-pop-group">
-            <legend>类别</legend>
-            {cats.map(c => (
-              <label key={c.id} className={`graph-pop-opt acc-${c.accent}`}>
-                <input type="checkbox" checked={!offCats.has(c.id)} onChange={() => onCats(toggleIn(offCats, c.id))} />
-                <span className="graph-key-dot" aria-hidden="true" />
-                <span className="graph-pop-label">{c.label}</span>
-                <span className="graph-pop-n">{catCount[c.id] || 0}</span>
+            <legend>关系</legend>
+            {rels.map(t => (
+              <label key={t.id} className={`graph-pop-opt acc-${t.accent}`} title={t.hint}>
+                <input type="checkbox" checked={!offRels.has(t.id)} onChange={() => onRels(toggleIn(offRels, t.id))} />
+                <span className="graph-key-bar" aria-hidden="true" />
+                <span className="graph-pop-label">{t.label}</span>
+                <span className="graph-pop-hint">{t.hint}</span>
               </label>
             ))}
           </fieldset>
-          {rels.length > 0 && (
-            <fieldset className="graph-pop-group">
-              <legend>关系</legend>
-              {rels.map(t => (
-                <label key={t.id} className={`graph-pop-opt acc-${t.accent}`} title={t.hint}>
-                  <input type="checkbox" checked={!offRels.has(t.id)} onChange={() => onRels(toggleIn(offRels, t.id))} />
-                  <span className="graph-key-bar" aria-hidden="true" />
-                  <span className="graph-pop-label">{t.label}</span>
-                  <span className="graph-pop-hint">{t.hint}</span>
-                </label>
-              ))}
-            </fieldset>
-          )}
-          <div className="graph-pop-group">
-            <div className="graph-pop-cap">名字</div>
-            <Segmented
-              label="名字"
-              value={labelMode}
-              onChange={onLabelMode}
-              options={[{ value: "all", label: "全部显示" }, { value: "focus", label: "只在选中时" }]}
-            />
-          </div>
-          <div className="graph-pop-foot">
-            <button type="button" className="btn btn-quiet btn-sm" disabled={!hidden && labelMode === "all"}
-              onClick={() => { onCats(new Set()); onRels(new Set()); onLabelMode("all"); }}>
-              恢复默认
-            </button>
-          </div>
+        )}
+        <div className="graph-pop-group">
+          <div className="graph-pop-cap">名字</div>
+          <Segmented
+            label="名字"
+            value={labelMode}
+            onChange={onLabelMode}
+            options={[{ value: "all", label: "全部显示" }, { value: "focus", label: "只在选中时" }]}
+          />
         </div>
-      )}
+        <div className="graph-pop-foot">
+          <button type="button" className="btn btn-quiet btn-sm" disabled={!hidden && labelMode === "all"}
+            onClick={() => { onCats(new Set()); onRels(new Set()); onLabelMode("all"); }}>
+            恢复默认
+          </button>
+        </div>
+      </Popover>
     </div>
   );
+}
+
+/* 选中节点的侧栏：是谁、几项关联、按关系类型分布，一个「查看完整档案」 */
+function GraphSidePanel({ entry, degree, breakdown, onClose, onOpen }) {
+  const kind = entry.cat === "events" ? (entry.timeLabel || "未定时间") : entry.kind;
+  return (
+    <div className={`graph-panel acc-${entry.accent}`}>
+      <div className="graph-panel-head">
+        <LibEntryRow entry={entry} glyphSize="lg" sub={`${libCatLabel(entry.cat)} · ${kind}`} className="graph-panel-row" />
+        <IconButton icon="X" label="取消选中" onClick={onClose} />
+      </div>
+      <div className="graph-panel-rel">
+        <I.Compass size={12} aria-hidden="true" /> {degree} 项关联
+      </div>
+      {breakdown.length > 0 && (
+        <div className="graph-panel-types">
+          {breakdown.map(({ t, n }) => (
+            <span key={t.id} className={`rel-chip acc-${t.accent}`} title={t.hint}>
+              <span className="graph-key-bar" aria-hidden="true" />{t.label}<b>{n}</b>
+            </span>
+          ))}
+        </div>
+      )}
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => onOpen(entry.id)}>
+        <I.BookOpen size={13} /> 查看完整档案
+      </button>
+    </div>
+  );
+}
+
+/* 缩放 / 平移（像素坐标）：视图变换、滚轮缩放（原生、非被动的监听——只有这样 preventDefault 才拦得住页面跟着滚）、
+   按钮缩放与复位，以及屏幕坐标 → 缩放平移之前的像素坐标。svg 出现 / 消失（有无关联）时重挂滚轮监听。 */
+function useGraphViewport(svgRef, size, hasEdges) {
+  const [view, setView] = useState({ k: 1, tx: 0, ty: 0 });
+  const zoomAt = (cx, cy, factor) => setView(v => {
+    const k = Math.min(3, Math.max(0.5, v.k * factor));
+    return { k, tx: cx - (cx - v.tx) * (k / v.k), ty: cy - (cy - v.ty) * (k / v.k) };
+  });
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return undefined;
+    const onWheel = (ev) => {
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAt(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.12 : 1 / 1.12);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [hasEdges]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toLocal = (clientX, clientY) => {
+    const r = svgRef.current.getBoundingClientRect();
+    return { x: (clientX - r.left - view.tx) / view.k, y: (clientY - r.top - view.ty) / view.k };
+  };
+  return {
+    view, setView, toLocal,
+    zoomBy: (f) => zoomAt(size.w / 2, size.h / 2, f),
+    resetView: () => setView({ k: 1, tx: 0, ty: 0 }),
+  };
 }
 
 function LibGraph({ selId, onSelect, onOpen, onBrowse, entries, byId }) {
@@ -321,38 +264,11 @@ function LibGraph({ selId, onSelect, onOpen, onBrowse, entries, byId }) {
   const selDegree = selRelBreakdown.reduce((n, x) => n + x.n, 0);
 
   /* ---- 缩放 / 平移（像素坐标） ---- */
-  const [view, setView] = useState({ k: 1, tx: 0, ty: 0 });
+  const { view, setView, toLocal, zoomBy, resetView } = useGraphViewport(svgRef, size, hasEdges);
   const [dragMode, setDragMode] = useState(null); /* null | "pan" | 节点 id */
   const drag = useRef(null);
   const ndrag = useRef(null);
   const clickGuard = useRef(false);
-
-  const toStage = (clientX, clientY) => {
-    const r = svgRef.current.getBoundingClientRect();
-    return { x: clientX - r.left, y: clientY - r.top };
-  };
-  /* 屏幕坐标 → 缩放 / 平移之前的像素坐标（节点所在坐标系） */
-  const toLocal = (clientX, clientY) => {
-    const s = toStage(clientX, clientY);
-    return { x: (s.x - view.tx) / view.k, y: (s.y - view.ty) / view.k };
-  };
-  const zoomAt = (cx, cy, factor) => setView(v => {
-    const k = Math.min(3, Math.max(0.5, v.k * factor));
-    return { k, tx: cx - (cx - v.tx) * (k / v.k), ty: cy - (cy - v.ty) * (k / v.k) };
-  });
-
-  /* 原生、非被动的滚轮监听：只有这样 preventDefault 才拦得住页面跟着滚 */
-  useEffect(() => {
-    const el = svgRef.current;
-    if (!el) return undefined;
-    const onWheel = (ev) => {
-      ev.preventDefault();
-      const r = el.getBoundingClientRect();
-      zoomAt(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.12 : 1 / 1.12);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [hasEdges]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onDown = (ev) => {
     if (ev.button !== 0) return;
@@ -399,8 +315,6 @@ function LibGraph({ selId, onSelect, onOpen, onBrowse, entries, byId }) {
     if (clickGuard.current) { clickGuard.current = false; return; }
     onSelect(null);
   };
-  const zoomBy = (f) => zoomAt(size.w / 2, size.h / 2, f);
-  const resetView = () => setView({ k: 1, tx: 0, ty: 0 });
 
   const isLit = (id) => {
     if (focus) return id === focus || neighbours.has(id);
@@ -427,8 +341,6 @@ function LibGraph({ selId, onSelect, onOpen, onBrowse, entries, byId }) {
   const onStageKeyDown = (ev) => {
     if (ev.key === "Escape" && selId) { ev.preventDefault(); onSelect(null); }
   };
-
-  const selKind = sel ? (sel.cat === "events" ? (sel.timeLabel || "未定时间") : sel.kind) : "";
 
   return (
     <div className={`lib2-graph ${hasEdges ? "" : "is-empty"}`}>
@@ -565,27 +477,7 @@ function LibGraph({ selId, onSelect, onOpen, onBrowse, entries, byId }) {
             </div>
 
             {sel && (
-              <div className={`graph-panel acc-${sel.accent}`}>
-                <div className="graph-panel-head">
-                  <LibEntryRow entry={sel} glyphSize="lg" sub={`${libCatLabel(sel.cat)} · ${selKind}`} className="graph-panel-row" />
-                  <IconButton icon="X" label="取消选中" onClick={() => onSelect(null)} />
-                </div>
-                <div className="graph-panel-rel">
-                  <I.Compass size={12} aria-hidden="true" /> {selDegree} 项关联
-                </div>
-                {selRelBreakdown.length > 0 && (
-                  <div className="graph-panel-types">
-                    {selRelBreakdown.map(({ t, n }) => (
-                      <span key={t.id} className={`rel-chip acc-${t.accent}`} title={t.hint}>
-                        <span className="graph-key-bar" aria-hidden="true" />{t.label}<b>{n}</b>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <button type="button" className="btn btn-primary btn-sm" onClick={() => onOpen(sel.id)}>
-                  <I.BookOpen size={13} /> 查看完整档案
-                </button>
-              </div>
+              <GraphSidePanel entry={sel} degree={selDegree} breakdown={selRelBreakdown} onClose={() => onSelect(null)} onOpen={onOpen} />
             )}
 
             {q && (

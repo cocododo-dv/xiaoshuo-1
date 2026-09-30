@@ -1,19 +1,20 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
-import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
+import { useWindowEvents } from "./lib/events.js";
+import { EmptyState, MenuButton, Spinner, Tag } from "./ws-ui.jsx";
 import {
-  SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srErrorInfo, srLandingStage, srPickLandingBook,
+  SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srLandingStage, srPickLandingBook,
   srReadUiPrefs, srRememberUi, srStageStates,
 } from "./ws-styleref-model.js";
 import {
-  srActivityEntries, srActivityStart, srBookById, srBooks, srBooksState, srDeleteBooks, srLoadProjectBinding,
+  srActivityEntries, srActivityStart, srBookById, srBooks, srBooksState, srLoadProjectBinding,
   srLoadRuntime, srRememberSession, srResumeClassification, srSessionUi, srSetViewMounted, srStartLearn, srSubscribe,
   srSyncBooks,
 } from "./ws-styleref-store.js";
-import { SrMenu, srActiveWork, srNotify, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { srRunningFor } from "./ws-styleref-activity.jsx";
-import { SrImportDialog, SrLibrary, srConfirmDeleteBooks, srPipelineFor } from "./ws-styleref-library.jsx";
+import { SrImportDialog, SrLibrary, srDeleteBooksFlow, srPipelineFor } from "./ws-styleref-library.jsx";
 import { SrOverview } from "./ws-styleref-overview.jsx";
 import { SrLearn } from "./ws-styleref-learn.jsx";
 import { SrApply } from "./ws-styleref-apply.jsx";
@@ -57,29 +58,33 @@ export function WsStyleRef({ go }) {
       const w = srActiveWork();
       srRememberSession(w ? w.id : null, { bookId: id, stage: "book" });
     });
-    const onWorkChanged = () => {
+    return () => {
+      srSetViewMounted(false);
+      offImported();
+    };
+  }, []);
+  /* 换作品时页面整页重挂（外壳按作品 id 给 key）；这里接的是书架增减（新建 / 删除作品）也会发的 ws:work-changed：
+     重读当前作品的生效绑定与书库 */
+  useWindowEvents({
+    "ws:work-changed": () => {
       setWorkTick((n) => n + 1);
       const w = srActiveWork();
       if (w) srLoadProjectBinding(w.id, { force: true });
       srSyncBooks();
-    };
-    window.addEventListener("ws:work-changed", onWorkChanged);
-    return () => {
-      srSetViewMounted(false);
-      offImported();
-      window.removeEventListener("ws:work-changed", onWorkChanged);
-    };
-  }, []);
+    },
+  });
 
-  /* 落点：本次打开应用期间刚看过的那本 → 当前作品在用的 → 这部作品上次打开的 → 上次打开的 → 第一本 */
+  /* 落点：本次打开应用期间刚看过的那本 → 当前作品在用的 → 这部作品上次打开的 → 上次打开的 → 第一本。
+     只在书库、当前的书或作品变了时判（以前每次渲染都跑，在跑作业时每秒一遍） */
+  const booksPhase = booksState.phase;
   React.useEffect(() => {
-    if (book || booksState.phase !== "ready") return;
+    if (book || booksPhase !== "ready") return;
     if (!books.length) { if (bookId) setBookId(null); return; }
     const pick = srPickLandingBook(books, { prefs: srReadUiPrefs(), workId, session: srSessionUi(workId) });
     if (!pick) return;
     setBookId(pick.bookId);
     setStage(pick.stage || null);
-  });
+  }, [book, booksPhase, books, bookId, workId]);
 
   const running = book ? srRunningFor(book.id) : {};
   const states = book ? srStageStates(book, { running, workId }) : null;
@@ -134,36 +139,23 @@ export function WsStyleRef({ go }) {
     }
   };
 
-  const onDeleteBook = async (target) => {
-    if (!target) return;
-    if (!(await srConfirmDeleteBooks([target]))) return;
-    const idx = srBooks().findIndex((x) => x.id === target.id);
-    try {
-      const result = await srDeleteBooks([target.id]);
-      const failed = (result.results || []).find((item) => !item.deleted && !(item.error && item.error.code === "STYLE_REFERENCE_BOOK_NOT_FOUND"));
-      if (failed) { srNotify(`没有删掉：${srErrorInfo(failed.error, "请稍后重试。").message}`); return; }
-      afterDeleted([target.id], idx);
-      srNotify(`已删除参考书《${target.title}》`, "neutral");
-    } catch (e) {
-      srNotifyError(e, "删除没有完成，请稍后重试。");
-    }
-  };
-  /* 删掉的是当前这本：切到原位置的邻居 */
-  const afterDeleted = (ids, idx = -1) => {
+  /* 删掉的书里有当前这本：切到它原来位置上的邻居（positions：删之前各本在书库里的位置） */
+  const afterDeleted = (ids, positions = {}) => {
     if (!bookId || !ids.includes(bookId)) return;
     const left = srBooks();
-    const at = idx >= 0 ? idx : 0;
+    const at = positions[bookId] >= 0 ? positions[bookId] : 0;
     const next = left.length ? left[Math.min(at, left.length - 1)] : null;
     setBookId(next ? next.id : null);
     setStage(null);
   };
+  const onDeleteBook = (target) => { if (target) srDeleteBooksFlow([target], { single: true, onDeleted: afterDeleted }); };
 
   const library = (
     <SrLibrary
       bookId={bookId}
       onSelect={selectBook}
       onImport={() => { setSwitcherOpen(false); setImportOpen(true); }}
-      onDeleted={(ids) => afterDeleted(ids)}
+      onDeleted={afterDeleted}
     />
   );
   const librarySwitch = <SrLibrarySwitch open={switcherOpen} onOpen={() => setSwitcherOpen(true)} count={books.length} />;
@@ -268,7 +260,8 @@ function SrStageHeader({ book, librarySwitch, onDelete }) {
         </div>
       </div>
       <div className="sr-stage-actions">
-        <SrMenu label="这本书的更多操作" items={[{ id: "delete", label: "删除这本书…", icon: "Trash", danger: true, testId: "sr-header-delete", onSelect: onDelete }]} />
+        <MenuButton label="这本书的更多操作" testId="sr-header-more"
+          items={[{ id: "delete", label: "删除这本书…", icon: "Trash", danger: true, testId: "sr-header-delete", onSelect: onDelete }]} />
       </div>
     </header>
   );

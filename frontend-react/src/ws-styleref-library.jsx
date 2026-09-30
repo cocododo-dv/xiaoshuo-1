@@ -5,7 +5,7 @@ import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { getOperatorRef } from "./lib/client.js";
 import {
-  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srBookPipeline, srDeleteBooksUsage, srErrorInfo, srFilterBooks,
+  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srBookPipeline, srDeleteBooksUsage, srErrorInfo, srFilterBooks, srModelGate,
   srPolicyNeedsSendRights, srRightsReady, srSortBooks,
 } from "./ws-styleref-model.js";
 import {
@@ -46,6 +46,38 @@ export async function srConfirmDeleteBooks(books) {
   });
 }
 
+/* 删书的整个流程（页头单本删除与书库多选删除共用）：确认 → 批量删除 → 说结果 → 只把真删掉的书交给 onDeleted，
+   连同它们删之前在书库里的位置（切到原位置的邻居用）。没删成的书不当成删掉了（审计 F05-06：以前把选中的全部
+   交出去，没删成的那本正开着时页面也跳走了）。single：页头的「删除这本书」（说法按一本书说）；书库多选即使只选了
+   一本也按「删除了 N 本」说。返回 store 的结果；没确认或请求失败返回 null。 */
+export async function srDeleteBooksFlow(books, { single = false, onStart, onDeleted } = {}) {
+  const list = (books || []).filter(Boolean);
+  if (!list.length || !(await srConfirmDeleteBooks(list))) return null;
+  if (onStart) onStart();
+  const before = srBooks();
+  const positions = Object.fromEntries(list.map((b) => [b.id, before.findIndex((x) => x.id === b.id)]));
+  let result;
+  try {
+    result = await srDeleteBooks(list.map((b) => b.id));
+  } catch (e) {
+    srNotifyError(e, "删除没有完成，请稍后重试。");
+    return null;
+  }
+  const { deletedIds, failedItems } = result;
+  const reasonOf = (item) => srErrorInfo(item.error, "请稍后重试。").message;
+  if (single) {
+    if (failedItems.length) srNotify(`没有删掉：${reasonOf(failedItems[0])}`);
+    else srNotify(`已删除参考书《${list[0].title}》`, "neutral");
+  } else if (failedItems.length) {
+    const titleOf = (id) => { const b = list.find((x) => x.id === id); return b ? `《${b.title}》` : "一本书"; };
+    srNotify(`删除了 ${deletedIds.length} 本，另有 ${failedItems.length} 本没删成。${failedItems.map((item) => `${titleOf(item.book_id)}：${reasonOf(item)}`).join("")}`);
+  } else {
+    srNotify(`已删除 ${deletedIds.length} 本参考书`, "neutral");
+  }
+  if (deletedIds.length && onDeleted) onDeleted(deletedIds, positions);
+  return result;
+}
+
 /* 左栏（和窄屏下的书库对话框）：书库标题 + 导入、参考书活动、筛选、书单；「选择」后多选删除。 */
 export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
   useSrStore("books", "activity");
@@ -76,24 +108,13 @@ export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
   const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
   const allVisibleSelected = books.length > 0 && books.every((b) => selected.has(b.id));
 
+  /* 多选删除：确认之后才进「删除中…」；删完（哪怕有几本没删成）退出选择模式，请求整个失败时留在选择里 */
   const deleteSelected = async () => {
     const chosen = all.filter((b) => selected.has(b.id));
     if (!chosen.length || busy) return;
-    if (!(await srConfirmDeleteBooks(chosen))) return;
-    setBusy(true);
     try {
-      const result = await srDeleteBooks(chosen.map((b) => b.id));
-      const failed = (result.results || []).filter((item) => !item.deleted && !(item.error && item.error.code === "STYLE_REFERENCE_BOOK_NOT_FOUND"));
-      const done = chosen.length - failed.length;
-      const titleOf = (id) => { const b = chosen.find((x) => x.id === id); return b ? `《${b.title}》` : "一本书"; };
-      if (failed.length) {
-        const reasons = failed.map((item) => `${titleOf(item.book_id)}：${srErrorInfo(item.error, "请稍后重试。").message}`).join("");
-        srNotify(`删除了 ${done} 本，另有 ${failed.length} 本没删成。${reasons}`);
-      } else srNotify(`已删除 ${done} 本参考书`, "neutral");
-      stopSelecting();
-      if (onDeleted) onDeleted(chosen.map((b) => b.id));
-    } catch (e) {
-      srNotifyError(e, "删除没有完成，请稍后重试。");
+      const result = await srDeleteBooksFlow(chosen, { onStart: () => setBusy(true), onDeleted });
+      if (result) stopSelecting();
     } finally {
       setBusy(false);
     }
@@ -225,12 +246,9 @@ function srBuildRightsDeclaration(cloudPolicy, analysis, send) {
   };
 }
 
-/* 为什么现在不能导入（有原因就锁住「导入」并把原因写在旁边） */
-function srImportBlocker({ runtime, policy, rightsReady, file, title }) {
-  if (runtime && runtime.llm_enabled === false) return "先接入模型：导入之后要用模型给每一段分类";
-  if (policy === "local_only" && runtime && runtime.llm_enabled && runtime.llm_is_local === false) {
-    return "现在给段落分类的是云端模型，「仅本机模型」的书导入不了";
-  }
+/* 为什么现在不能导入（有原因就锁住「导入」并把原因写在旁边）；模型那一条与各页同一个判断（srModelGate） */
+function srImportBlocker({ gate, rightsReady, file, title }) {
+  if (gate) return gate.text;
   if (!rightsReady) return "先确认权属声明";
   if (!file) return "还没选文件";
   if (!title.trim()) return "还没填书名";
@@ -287,7 +305,8 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
   const needsSend = srPolicyNeedsSendRights(effectivePolicy);
   const rights = { analysis_rights: analysisRights, send_rights: needsSend && sendRights };
   const rightsReady = srRightsReady(effectivePolicy, rights);
-  const blocker = srImportBlocker({ runtime, policy: effectivePolicy, rightsReady, file, title });
+  const gate = srModelGate(runtime, { purpose: "import", cloudPolicy: effectivePolicy });
+  const blocker = srImportBlocker({ gate, rightsReady, file, title });
 
   const takeFile = (f) => {
     if (!f) return;
@@ -346,7 +365,7 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
         <button type="button" className="ws-dialog-x" aria-label="关闭导入" onClick={onClose}><I.X size={16} /></button>
       </header>
       <div className="ws-dialog-body sr-import-body">
-        {runtime && runtime.llm_enabled === false && (
+        {gate && gate.kind === "no_llm" && (
           <Notice
             tone="warn"
             testId="sr-import-no-llm"
@@ -372,7 +391,7 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
             </label>
           ))}
         </fieldset>
-        {effectivePolicy === "local_only" && runtime && runtime.llm_enabled && runtime.llm_is_local === false && (
+        {gate && gate.kind === "not_local" && (
           <Notice tone="warn" testId="sr-import-local-blocked" actions={onOpenSettings ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去设置模型</button> : null}>
             现在给段落分类的是云端模型，「仅本机模型」的书会被拒绝：先在设置里把段落分类换成本机模型，或选另外两档。
           </Notice>

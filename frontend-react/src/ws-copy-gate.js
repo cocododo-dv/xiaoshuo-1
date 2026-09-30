@@ -39,7 +39,7 @@ export function copyGatePlaces(error) {
 }
 
 /* 一共几处（采用时只说计数：采用的稿子里可能带着排版标记，字位不一定对得上作者看到的正文）；named = 顺带查到的专名（不拦） */
-export function copyGateCount(error) {
+function copyGateCount(error) {
   const audit = (error && error.details && error.details.reference_copy) || {};
   const hits = Number(audit.hit_count != null ? audit.hit_count : (audit.hits || []).length) || 0;
   const named = Number(audit.protected_hit_count != null ? audit.protected_hit_count : (audit.protected_hits || []).length) || 0;
@@ -85,8 +85,8 @@ export function copyGatePromoteMessage(error) {
    · source_safety:protected_term —— 正文用了参考书的专名（带 terms、hit_count）；不拦；
    · source_safety:unavailable —— 原文重合检查这一边没做成（绑定的书已删 / 绑定解析失败）；不拦。
    其余警告（文学质量 Q3 等）有自己的去处，这里不管。 */
-export const FINAL_GATE_PROTECTED_TERM = "source_safety:protected_term";
-export const FINAL_GATE_SOURCE_UNAVAILABLE = "source_safety:unavailable";
+const FINAL_GATE_PROTECTED_TERM = "source_safety:protected_term";
+const FINAL_GATE_SOURCE_UNAVAILABLE = "source_safety:unavailable";
 
 function quotedTerms(terms) {
   const list = (Array.isArray(terms) ? terms : []).map((t) => String(t || "").trim()).filter(Boolean);
