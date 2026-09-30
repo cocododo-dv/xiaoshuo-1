@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
@@ -22,7 +23,9 @@ from novel_system.db.models import (
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.canon_continuity import CanonContinuityService
+from novel_system.services.chapter_final_flow import ProjectChapterFlowService
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
+from novel_system.services.errors import DomainError
 
 
 _sequence = 0
@@ -217,3 +220,35 @@ def test_approve_final_folds_the_read_confirmation_and_binds_the_body_hash(clien
     assert read_payload["body_hash"] == detail["body_hash"]
     assert read_payload["note"] == "通读过整章。"
     assert events[1][1]["read_confirmed_at"] == read_payload["confirmed_at"]
+
+
+def test_approve_final_refuses_a_folded_read_confirmation_without_the_read_body_hash(client, session) -> None:
+    """「已通读」随「确认定稿」一次提交时必须带上作者读到的那一份的哈希：不带就什么都没绑，等于没读过。
+
+    HTTP 层的请求模型早就 422；这里守的是服务层本身——过去 ``{"read_confirmation": {}}`` 直接调服务会
+    记一条「已通读」并把一章从没通读确认过的正文定稿。
+    """
+    seeded = _author_written_chapter(client, session, scene_texts=["林昭把旧信压回案卷最底下。"])
+    project_id, chapter_id = seeded["project_id"], seeded["chapter_id"]
+    http = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
+        json={"read_confirmation": {}},
+        headers={"X-Idempotency-Key": "final-approval-folded-without-hash"},
+    )
+    assert http.status_code == 422, http.text
+
+    service = ProjectChapterFlowService(session)
+    for folded in ({}, {"note": "读过了。"}, {"body_hash": "   ", "note": "读过了。"}, {"body_hash": None}):
+        with pytest.raises(DomainError) as refused:
+            service.approve_final(project_id, chapter_id, {"read_confirmation": folded})
+        assert (refused.value.code, refused.value.status_code) == ("CHAPTER_READ_CONFIRM_INVALID", 400), folded
+    session.flush()
+    session.expire_all()
+    assert session.get(ChapterGoal, chapter_id).state != "approved"
+    project = session.get(StoryProject, project_id)
+    assert project.current_chapter_id == chapter_id
+    assert list(project.approved_chapter_ids_json or []) == []
+    recorded = session.execute(
+        select(OperationLog.event_type).where(OperationLog.object_type == "chapter", OperationLog.object_ref == chapter_id)
+    ).scalars().all()
+    assert "chapter_final_read_confirmed" not in recorded and "chapter_final_approval" not in recorded

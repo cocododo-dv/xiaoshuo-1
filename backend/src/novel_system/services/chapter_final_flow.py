@@ -117,23 +117,34 @@ class ProjectChapterFlowService:
                 status_code=400,
             )
         read_request = body.get("read_confirmation")
-        if read_request is not None and not isinstance(read_request, dict):
-            raise DomainError(
-                "CHAPTER_READ_CONFIRM_INVALID",
-                "read_confirmation must be an object with body_hash",
-                status_code=400,
-            )
+        read_body_hash: str | None = None
+        if read_request is not None:
+            if not isinstance(read_request, dict):
+                raise DomainError(
+                    "CHAPTER_READ_CONFIRM_INVALID",
+                    "read_confirmation must be an object with body_hash",
+                    status_code=400,
+                )
+            # 一次提交的「已通读」绑定的是作者读到的那一份（成稿中心拿到的 body_hash）：没带哈希就什么都没绑，
+            # 不能当成「读过现在这一份」记下来（HTTP 的请求模型早拦成 422，这里守直接调服务的路径）
+            read_body_hash = str(read_request.get("body_hash") or "").strip()
+            if not read_body_hash:
+                raise DomainError(
+                    "CHAPTER_READ_CONFIRM_INVALID",
+                    "read_confirmation.body_hash is required",
+                    status_code=400,
+                )
         ChapterManuscriptService(self.session).require_publishable(chapter_id)
         read = ChapterManuscriptService(self.session).assembled_body(chapter_id)
         if read_request is not None:
-            # 批准 #10：「已通读」随「确认定稿」一次提交——绑定作者读到的那一份正文（成稿中心拿到的 body_hash），
-            # 服务器现算一次；读完之后正文又变了就 409，两条审计记录写在同一个事务里
+            # 批准 #10：「已通读」随「确认定稿」一次提交——服务器按各场当前终稿现算一次哈希；读完之后正文又变了
+            # 就 409，两条审计记录写在同一个事务里
             read_confirmation = self._record_read_confirmation(
                 project,
                 chapter_id,
                 read,
                 note=read_request.get("note"),
-                expected_body_hash=read_request.get("body_hash"),
+                expected_body_hash=read_body_hash,
                 actor_ref=actor_ref,
             )
         else:
@@ -278,13 +289,13 @@ class ProjectChapterFlowService:
         read: dict[str, Any],
         *,
         note: Any,
-        expected_body_hash: Any,
+        expected_body_hash: str | None,
         actor_ref: str,
     ) -> dict[str, Any]:
         """记一条「作者已通读」：绑定的是各场当前终稿现拼的整章正文（``read`` = ``assembled_body``）。
 
-        ``expected_body_hash`` 是作者读的那一份的哈希（「确认定稿」一次提交时带来）；和现在的正文对不上 →
-        409 ``CHAPTER_FINAL_BODY_CHANGED``，什么也不记。
+        ``expected_body_hash`` 是作者读的那一份的哈希（「确认定稿」一次提交时带来，调用方已验过非空；
+        两步走的「通读确认」没有它，给 None）；和现在的正文对不上 → 409 ``CHAPTER_FINAL_BODY_CHANGED``，什么也不记。
         """
         body_hash = str(read.get("body_hash") or "")
         if not body_hash:
@@ -293,21 +304,13 @@ class ProjectChapterFlowService:
                 "current chapter body is not available for read confirmation",
                 status_code=409,
             )
-        if expected_body_hash is not None:
-            expected = str(expected_body_hash or "").strip()
-            if not expected:
-                raise DomainError(
-                    "CHAPTER_READ_CONFIRM_INVALID",
-                    "read_confirmation.body_hash is required",
-                    status_code=400,
-                )
-            if expected != body_hash:
-                raise DomainError(
-                    "CHAPTER_FINAL_BODY_CHANGED",
-                    "这一章的正文在你通读之后又变了，请重新读一遍当前正文再确认定稿。",
-                    status_code=409,
-                    details={"chapter_id": chapter_id, "body_hash": body_hash, "expected_body_hash": expected},
-                )
+        if expected_body_hash is not None and expected_body_hash != body_hash:
+            raise DomainError(
+                "CHAPTER_FINAL_BODY_CHANGED",
+                "这一章的正文在你通读之后又变了，请重新读一遍当前正文再确认定稿。",
+                status_code=409,
+                details={"chapter_id": chapter_id, "body_hash": body_hash, "expected_body_hash": expected_body_hash},
+            )
         normalized_note = str(note or "").strip()
         if len(normalized_note) > 1000:
             raise DomainError(
