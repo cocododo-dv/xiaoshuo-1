@@ -466,13 +466,16 @@ def test_ready_checks_the_schema_structure_once_per_revision() -> None:
     _stamp_database_revision()
     statements = _ReadyStatements()
     with TestClient(create_app()) as client:
+        # 启动时 API 的库结构闸（B12-19）已经用同一份检查查过一次结构：之后的探测只读版本
+        startup_reads = statements.take()
         first = client.get("/ready")
         first_reads = statements.take()
         second = client.get("/ready")
         second_reads = statements.take()
 
     assert first.status_code == second.status_code == 200
-    assert first_reads[0] == 1 and first_reads[1] > len(Base.metadata.tables)
+    assert startup_reads[1] > len(Base.metadata.tables)
+    assert first_reads == (1, 0)
     assert second_reads == (1, 0)
 
 
@@ -512,6 +515,65 @@ def test_ready_does_not_remember_a_failed_structure_check() -> None:
     assert broken.json()["error"]["details"]["reason"] == "schema_columns_missing"
     assert repaired.status_code == 200
     assert broken_reads[1] > 0 and repaired_reads[1] > 0
+
+
+def test_api_answers_schema_upgrade_needed_while_the_database_is_behind_the_code(monkeypatch) -> None:
+    """B12-19（批准 #28）：代码比库新时 /api/* 统一回 503 与中文说明（带 CORS 与请求编号），不再各自报
+    「database operation failed」；升级之后不用重启就放行。/live、/ready 不受这道闸影响。"""
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    _stamp_database_revision("20260716_0072")
+    with TestClient(create_app()) as client:
+        behind = client.get("/api/v2/projects", headers={"Origin": "http://127.0.0.1:5173"})
+        ready = client.get("/ready")
+        live = client.get("/live")
+        _stamp_database_revision()
+        upgraded = client.get("/api/v2/projects")
+
+    assert behind.status_code == 503
+    payload = behind.json()
+    assert payload["error"]["code"] == "SERVICE_NOT_READY"
+    assert payload["error"]["message"] == "数据库结构需要升级：请重启后端（启动脚本会自动升级）"
+    assert payload["error"]["details"]["reason"] == "schema_revision_mismatch"
+    assert payload["error"]["details"]["current_revision"] == "20260716_0072"
+    assert payload["request_id"] == behind.headers["X-Request-Id"]
+    assert behind.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+    assert ready.status_code == 503 and ready.json()["error"]["message"] == "database schema revision is not ready"
+    assert live.status_code == 200
+    assert upgraded.status_code == 200
+    # 结构落后时不拿旧结构跑启动恢复
+    assert started == []
+
+
+def test_api_schema_gate_reports_missing_structure_at_the_current_revision() -> None:
+    _stamp_database_revision()
+    with engine().begin() as connection:
+        connection.exec_driver_sql("DROP TABLE author_preference_profiles")
+    with TestClient(create_app()) as client:
+        response = client.post("/api/v2/projects", json={"title": "雨城旧信", "outline_text": "林昭翻开旧案卷。"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["details"]["reason"] == "schema_tables_missing"
+
+
+def test_api_schema_gate_stays_open_for_databases_alembic_does_not_manage(monkeypatch) -> None:
+    """测试库用 create_all 建、没有 alembic_version：这道闸不管它（放行，也不再为每个请求查库）。"""
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    statements = _ReadyStatements()
+    with TestClient(create_app()) as client:
+        statements.take()
+        first = client.get("/api/v2/projects")
+        second = client.get("/api/v2/projects")
+        reads = statements.take()
+
+    assert first.status_code == second.status_code == 200
+    assert reads == (0, 0)
+    assert started == ["recovery"]
 
 
 def test_remote_mode_requires_token_for_loopback_proxy_peer(monkeypatch) -> None:

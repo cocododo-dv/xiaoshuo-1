@@ -11,10 +11,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from novel_system.api.errors import install_exception_handlers
-from novel_system.api.middleware import UnhandledErrorMiddleware
+from novel_system.api.middleware import SchemaGateMiddleware, UnhandledErrorMiddleware
 from novel_system.api.readiness import (  # noqa: F401 — SUPPORTED_DATABASE_REVISION 仍从这里导出
     SUPPORTED_DATABASE_REVISION,
     check_database_ready,
+    schema_gate_error,
 )
 from novel_system.api.response import error
 from novel_system.api.openapi_contract import install_api_openapi_contract
@@ -49,6 +50,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # 库结构落后于代码（``--reload`` 先于 ``alembic upgrade head`` 加载了新模型）：不拿旧结构去跑启动恢复与后台
+    # 清扫——接口统一回「数据库结构需要升级」（SchemaGateMiddleware），升级后重启就都起来了（B12-19）。
+    schema_problem = schema_gate_error()
+    if schema_problem is not None:
+        logger.error(
+            "database schema is behind the code (%s); startup recovery and background sweepers are not started "
+            "— restart the backend (the launchers run alembic upgrade head)",
+            schema_problem.details.get("reason"),
+        )
+        yield
+        return
     # Discovery is synchronous and quick; actual generation remains in the
     # existing background workers.  Every dispatched worker still has to win
     # its durable CAS, so concurrent ASGI worker startups cannot execute the
@@ -126,6 +138,8 @@ def create_app() -> FastAPI:
         UnhandledErrorMiddleware,
         expose_error_detail=app_settings.expose_error_detail,
     )
+    # 库结构落后于代码时 /api/* 统一回 503 与中文说明；同样装在 CORS 里面，浏览器读得到（B12-19，批准 #28）
+    app.add_middleware(SchemaGateMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,

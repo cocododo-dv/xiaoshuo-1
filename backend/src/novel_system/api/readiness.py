@@ -69,8 +69,8 @@ def _missing_structure(connection) -> tuple[list[str], dict[str, list[str]]]:
     return sorted(set(Base.metadata.tables) - available_tables), missing_columns
 
 
-def check_database_ready() -> None:
-    """库就绪就返回；否则抛 ``SERVICE_NOT_READY``（503）。"""
+def _readiness_error(*, log: bool) -> DomainError | None:
+    """库就绪返回 ``None``；否则返回要抛的 ``SERVICE_NOT_READY``（``log`` 时同时记日志）。"""
 
     runtime_engine = engine()
     database = str(runtime_engine.url)
@@ -87,8 +87,9 @@ def check_database_ready() -> None:
             ):
                 structure = _missing_structure(connection)
     except Exception as exc:
-        logger.exception("Readiness database probe failed")
-        raise DomainError(
+        if log:
+            logger.exception("Readiness database probe failed")
+        error = DomainError(
             "SERVICE_NOT_READY",
             "database readiness probe failed",
             status_code=503,
@@ -97,16 +98,19 @@ def check_database_ready() -> None:
                 "reason": "database_probe_failed",
                 "expected_revision": SUPPORTED_DATABASE_REVISION,
             },
-        ) from exc
+        )
+        error.__cause__ = exc
+        return error
     if revisions != (SUPPORTED_DATABASE_REVISION,):
         _remember_structure(database, None)
         current_revision = revisions[0] if len(revisions) == 1 else None
-        logger.error(
-            "Readiness schema revision mismatch expected=%s actual=%s",
-            SUPPORTED_DATABASE_REVISION,
-            revisions,
-        )
-        raise DomainError(
+        if log:
+            logger.error(
+                "Readiness schema revision mismatch expected=%s actual=%s",
+                SUPPORTED_DATABASE_REVISION,
+                revisions,
+            )
+        return DomainError(
             "SERVICE_NOT_READY",
             "database schema revision is not ready",
             status_code=503,
@@ -118,15 +122,16 @@ def check_database_ready() -> None:
             },
         )
     if structure is None:
-        return
+        return None
     missing_tables, missing_required_columns = structure
     if missing_tables:
-        logger.error(
-            "Readiness schema table check failed revision=%s missing_tables=%s",
-            SUPPORTED_DATABASE_REVISION,
-            missing_tables,
-        )
-        raise DomainError(
+        if log:
+            logger.error(
+                "Readiness schema table check failed revision=%s missing_tables=%s",
+                SUPPORTED_DATABASE_REVISION,
+                missing_tables,
+            )
+        return DomainError(
             "SERVICE_NOT_READY",
             "database schema is incomplete",
             status_code=503,
@@ -139,13 +144,14 @@ def check_database_ready() -> None:
         )
     if missing_required_columns:
         missing_column_count = sum(len(columns) for columns in missing_required_columns.values())
-        logger.error(
-            "Readiness schema column check failed revision=%s tables=%s columns=%s",
-            SUPPORTED_DATABASE_REVISION,
-            len(missing_required_columns),
-            missing_column_count,
-        )
-        raise DomainError(
+        if log:
+            logger.error(
+                "Readiness schema column check failed revision=%s tables=%s columns=%s",
+                SUPPORTED_DATABASE_REVISION,
+                len(missing_required_columns),
+                missing_column_count,
+            )
+        return DomainError(
             "SERVICE_NOT_READY",
             "database schema is incomplete",
             status_code=503,
@@ -158,6 +164,93 @@ def check_database_ready() -> None:
             },
         )
     _remember_structure(database, SUPPORTED_DATABASE_REVISION)
+    return None
 
 
-__all__ = ["SUPPORTED_DATABASE_REVISION", "check_database_ready"]
+def check_database_ready() -> None:
+    """库就绪就返回；否则抛 ``SERVICE_NOT_READY``（503）。"""
+
+    error = _readiness_error(log=True)
+    if error is not None:
+        raise error
+
+
+# ---------------------------------------------------------------- API 的库结构闸（B12-19，批准 #28）
+# 代码比库新（``--reload`` 在 ``alembic upgrade head`` 之前热加载了新模型）时，以前每个接口都各自报
+# 「database operation failed」。现在 ``/api/*`` 统一回 503 ``SERVICE_NOT_READY``、一句中文说明与 ``details.reason``。
+SCHEMA_NOT_READY_REASONS = frozenset({"schema_revision_mismatch", "schema_tables_missing", "schema_columns_missing"})
+SCHEMA_UPGRADE_MESSAGE = "数据库结构需要升级：请重启后端（启动脚本会自动升级）"
+
+# 库的 URL：这个进程里已经确认结构跟得上代码，或者这个库根本不归 Alembic 管（没有 alembic_version 表，
+# 例如测试用 create_all 建的库）——之后的请求不再查
+_SCHEMA_GATE_OPEN: set[str] = set()
+_SCHEMA_GATE_LOCK = threading.Lock()
+# 结构落后时每个请求都会查一次（升级之后不用重启就放行）：同一个原因每个进程只记一次日志
+_SCHEMA_GATE_LOGGED: set[tuple[str, str]] = set()
+
+
+def _forget_schema_gate() -> None:
+    with _SCHEMA_GATE_LOCK:
+        _SCHEMA_GATE_OPEN.clear()
+        _SCHEMA_GATE_LOGGED.clear()
+
+
+register_cache_reset("api.readiness.schema_gate", _forget_schema_gate)
+
+
+def schema_gate_open() -> bool:
+    """这个进程已经确认当前库的结构跟得上代码（不查库；引擎还没建时为假）。"""
+
+    with _SCHEMA_GATE_LOCK:
+        if not _SCHEMA_GATE_OPEN:
+            return False
+    return str(engine().url) in _SCHEMA_GATE_OPEN
+
+
+def schema_gate_error() -> DomainError | None:
+    """库结构落后于代码时要回给 ``/api/*`` 的 503；结构跟得上（或库读不了——那不是结构问题，照常放行，
+    让请求自己报它的错）时返回 ``None``。结构检查与 ``/ready`` 同一份（``_readiness_error``，按库与版本缓存）。"""
+
+    runtime_engine = engine()
+    database = str(runtime_engine.url)
+    with _SCHEMA_GATE_LOCK:
+        if database in _SCHEMA_GATE_OPEN:
+            return None
+    try:
+        with runtime_engine.connect() as connection:
+            managed = sqlalchemy_inspect(connection).has_table("alembic_version")
+    except Exception:  # noqa: BLE001 — 库读不了不是结构问题
+        return None
+    if not managed:
+        with _SCHEMA_GATE_LOCK:
+            _SCHEMA_GATE_OPEN.add(database)
+        return None
+    error = _readiness_error(log=False)
+    if error is None:
+        with _SCHEMA_GATE_LOCK:
+            _SCHEMA_GATE_OPEN.add(database)
+        return None
+    reason = str(error.details.get("reason") or "")
+    if reason not in SCHEMA_NOT_READY_REASONS:
+        return None
+    with _SCHEMA_GATE_LOCK:
+        first = (database, reason) not in _SCHEMA_GATE_LOGGED
+        _SCHEMA_GATE_LOGGED.add((database, reason))
+    if first:
+        logger.error("API schema gate closed: %s details=%s", reason, error.details)
+    return DomainError(
+        "SERVICE_NOT_READY",
+        SCHEMA_UPGRADE_MESSAGE,
+        status_code=503,
+        details=dict(error.details),
+    )
+
+
+__all__ = [
+    "SCHEMA_NOT_READY_REASONS",
+    "SCHEMA_UPGRADE_MESSAGE",
+    "SUPPORTED_DATABASE_REVISION",
+    "check_database_ready",
+    "schema_gate_error",
+    "schema_gate_open",
+]
