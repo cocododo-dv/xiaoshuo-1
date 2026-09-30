@@ -74,7 +74,7 @@ const WsDesignSync = {
     dsSubs.notify();
     try {
       const result = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/resync`, { scene_ids: ids });
-      await WsCatalog.__refresh(workId);
+      await WsCatalog.refresh(workId);
       await dsRefresh(workId, { force: true });
       return result;
     } catch (error) {

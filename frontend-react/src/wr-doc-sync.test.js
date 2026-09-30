@@ -1730,7 +1730,7 @@ describe("复核三 · 服务端明确拒绝的保存：不停着、不重发，
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null, conflictPending: false });
     expect(alertTexts().some((message) => message.includes("已批准锁定") && message.includes("同步与恢复"))).toBe(true);
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>起点，一</p>");
     window.dispatchEvent(new Event("focus"));
@@ -1799,7 +1799,7 @@ describe("复核三 · 服务端明确拒绝的保存：不停着、不重发，
     await expect(mod.WrDocs.save("ch01s1", "<p>起点，一，5xx 时写的</p>")).rejects.toMatchObject({ code: "DATABASE_ERROR" });
     chap.state = "approved";
     shared.locked = true;
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     // 5xx 的那一次也许其实存上了：换稿之前先读一次服务端（复核七 W1-R7A-2）——服务端上是「起点，一」，它没存上
     mod.WrDocs.load("ch01s1");
@@ -1822,7 +1822,7 @@ describe("复核三 · 章已批准锁定时交进来的字（W1-R3B-3）", () =
     await mod.WrDocs.hydrate("ch01s1");
     await mod.WrDocs.save("ch01s1", "<p>起点，一</p>");
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     const outcome = await mod.WrDocs.save("ch01s1", "<p>起点，一，最后敲下的半句</p>").then(() => "saved", (e) => e && e.code);
     expect(outcome).toBe("CHAPTER_APPROVED_LOCKED");
@@ -2291,7 +2291,7 @@ describe("复核四 · 章锁定那一刻还有一次保存在路上（W1-R4A-5 
     void mod.WrDocs.save("ch01s1", "<p>起点，一</p>").catch(() => {});  // 在路上（在批准之前就会存上）
     await vi.waitFor(() => expect(draftPatches(client)).toHaveLength(1), T);
     chap.state = "approved";                                                // 目录知道了章在别处批准
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     const half = await mod.WrDocs.save("ch01s1", "<p>起点，一，批准前敲的半句</p>").then(() => "saved", (e) => e && e.code);
     expect(half).toBe("CHAPTER_APPROVED_LOCKED");
@@ -2326,7 +2326,7 @@ describe("复核四 · 章锁定那一刻还有一次保存在路上（W1-R4A-5 
     await vi.waitFor(() => expect(draftPatches(client)).toHaveLength(1), T);
     void mod.WrDocs.save("ch01s1", "<p>起点，一，二</p>").catch(() => {});  // 排着
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     await mod.WrDocs.save("ch01s1", "<p>起点，一，二，锁定后敲的半句</p>").catch(() => {});
     shared.hooks.patch = null;
@@ -2526,8 +2526,8 @@ describe("复核五 · 采纳：作者确认覆盖的是他看过差异的那一
     const { mod, client, shared, api } = await shownX();
     await api.scnPrepareAdoption("ch01s1", AI_DRAFT);                      // 对话框：X
     const gate = deferred();
-    const backendSceneId = window.WsCatalog.__backendSceneId;
-    vi.spyOn(window.WsCatalog, "__backendSceneId").mockImplementation(async (sid) => {
+    const backendSceneId = window.WsCatalog.backendSceneId;
+    vi.spyOn(window.WsCatalog, "backendSceneId").mockImplementation(async (sid) => {
       await gate.promise;
       return backendSceneId.call(window.WsCatalog, sid);
     });
@@ -2695,13 +2695,13 @@ describe("复核五 · 章锁定那一刻还有结果没回来，回来之前本
     void mod.WrDocs.save("ch01s1", "<p>起点，一</p>").catch(() => {});      // 在路上
     await vi.waitFor(() => expect(draftPatches(client)).toHaveLength(1), T);
     chap.state = "approved";                                                 // 章在别处批准了
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     const LATEST = "<p>起点，一，二</p>";
     expect(await mod.WrDocs.save("ch01s1", LATEST).then(() => "saved", (e) => e && e.code)).toBe("CHAPTER_APPROVED_LOCKED");
     expect(recoveryHtml(mod)).toContain(LATEST);                             // 锁定那一刻交进来的：进了同步与恢复
     chap.state = "writing";                                                  // 那一次回来之前，本章又在别处重新打开了
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     return { ...ctx, shared, gate, LATEST };
   }
@@ -2759,13 +2759,13 @@ describe("复核五 · 章锁定那一刻还有结果没回来，回来之前本
     await mod.WrDocs.save("ch01s1", "<p>起点，一，二</p>").catch(() => {});    // 409 {2} → 核对（读不到）
     await tick(80);
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     const NEWEST = "<p>起点，一，二，三</p>";
     await mod.WrDocs.save("ch01s1", NEWEST).catch(() => {});                  // 锁定那一刻交进来的
     const atLock = draftPatches(client).length;
     chap.state = "writing";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     shared.hooks.ensure = null;
     window.dispatchEvent(new Event("online"));
@@ -2791,14 +2791,14 @@ describe("复核五 · 采纳在路上时章锁定、又重新打开，作者这
     const adopting = api.scnAdoptToDoc("ch01s1", AI_DRAFT, null, { mode: "overwrite", confirmed: true });
     await vi.waitFor(() => expect(adoptCalls(client)).toHaveLength(1), T);   // 采纳在路上（回包慢）
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     const LATEST = "<p>起点，锁定那一刻写的一句</p>";
     await expect(mod.WrDocs.save("ch01s1", LATEST)).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
     // 章还锁着时 WrDocs 也不替它提升
     await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: LATEST })).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
     chap.state = "writing";                                                  // 采纳还没结果，本章又重新打开了
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     const refused = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: LATEST }).catch((e) => e);
     expect(refused).toMatchObject({ code: "AUTHOR_DRAFT_LOCK_PENDING" });
@@ -2825,7 +2825,7 @@ describe("复核五 · 章锁定那一刻这一场还没水合、水合又没成
     const saving = mod.WrDocs.save("ch01s1", "<p>起点，锁定前敲的一句</p>").then(() => "saved", (e) => e && e.code);
     await tick(50);
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(true), T);
     await mod.WrDocs.save("ch01s1", "<p>起点，锁定前敲的一句，锁定后才交出的半句</p>").catch(() => {});
     first.reject(busyError());                                               // 水合 503
@@ -2871,14 +2871,14 @@ describe("复核五 · 章锁定那一刻这一场还没水合、水合又没成
     await tick(80);
     expect(mod.WrDocs.state("ch01s2")).toMatchObject({ draftId: null });
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s2")).toBe(true), T);
     const HALF = "<p>第二场，锁定那一刻交出的半句</p>";
     await expect(mod.WrDocs.save("ch01s2", HALF)).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
     expect(recoveryHtml(mod)).toContain(HALF);
     s2.down = false;
     chap.state = "writing";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s2")).toBe(false), T);
     const TYPED = "<p>第二场，重新打开之后接着写的一句</p>";
     const saving = within(mod.WrDocs.save("ch01s2", TYPED), 3000);
@@ -3125,7 +3125,7 @@ describe("复核六 · 两个标签页：章锁定时 A 页的保存在路上、
     void A.WrDocs.save("ch01s1", "<p>起点，一</p>").catch(() => {});        // A 页：在路上（随后 500）
     await vi.waitFor(() => expect(draftPatches(tabA.client)).toHaveLength(1), T);
     chap.state = "approved";                                                 // 章在别处批准了，A 页的目录知道了
-    await catA.__refresh();
+    await catA.refresh();
     await vi.waitFor(() => expect(A.WrDocs.locked("ch01s1")).toBe(true), T);
     const LATEST = "<p>起点，一，二</p>";
     expect(await A.WrDocs.save("ch01s1", LATEST).then(() => "saved", (e) => e && e.code)).toBe("CHAPTER_APPROVED_LOCKED");
@@ -3135,7 +3135,7 @@ describe("复核六 · 两个标签页：章锁定时 A 页的保存在路上、
     tabB.mod.WrDocs.load("ch01s1");
     await tabB.mod.WrDocs.hydrate("ch01s1");
     chap.state = "writing";                                                  // 本章在别处重新打开了，A 页的目录知道了
-    await catA.__refresh();
+    await catA.refresh();
     await vi.waitFor(() => expect(A.WrDocs.locked("ch01s1")).toBe(false), T);
     const atReopen = draftPatches(tabA.client).length;
     gate.resolve();                                                          // A 页那一次：500
@@ -3216,7 +3216,7 @@ describe("复核六 · 一场一台状态机：目录把乐观新建时的临时
     await mod.WrDocs.save(R6_TMP, FIRST).catch(() => {});
     const record = mod.WrRecovery.create({ sid: R6_TMP, html: "<p>一份记录</p>", type: "conflict", reason: "409", label: `场景 ${R6_TMP} · 冲突本地稿` });
     chap.scenes[0].slug = "s9";                                              // 目录重拉：后端场景 s9 换成了稳定的名字
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(window.WsCatalog.sceneById("s9")).toBeTruthy(), T);
     expect(window.localStorage.getItem(storageKey("wr-doc:", "s9"))).toBe(FIRST);
     expect(window.localStorage.getItem(storageKey("wr-doc-pending:", "s9"))).not.toBeNull();
@@ -3265,7 +3265,7 @@ describe("复核六 · 这一场不在目录里了：没同步上的字不留在
     shared.hooks.patch = () => Promise.reject(offlineError());
     await mod.WrDocs.save(R6_TMP, GONE).catch(() => {});
     catalog.splice(1, 1);                                                    // 目录退回服务端的版本：没有这一章
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(recoveryHtml(mod)).toContain(GONE), T);
     // 乐观新建的场：新建也许没成、也许建好了只是这里认不出——照实说是新建时写下的字，不说「不在目录里了」（复核七 W1-R7B-1）
     expect(alertTexts().filter((message) => message.includes("新建这一场时写下"))).toHaveLength(1);
@@ -3319,7 +3319,7 @@ describe("复核七 · 「恢复」等水合时，目录把乐观新建的这一
     const restoring = mod.WrRecovery.restore(entry.id).then(() => ({ ok: true }), (e) => ({ ok: false, code: e && e.code }));
     await tick(30);
     chap.scenes[0].slug = "s1";                                              // 后端建好了：目录重拉，这一场换成稳定的 scene_id
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(window.WsCatalog.sceneById("s1")).toBeTruthy(), T);
     shared.hooks.ensure = null;
     shared.hooks.patch = () => Promise.reject(offlineError());               // 这之后后端一时连不上
@@ -3379,7 +3379,7 @@ describe("复核七 · 自己那一稿存上了、回包丢了，之后才知道
     expect(shared).toMatchObject({ revision: 2, content: ONE });              // 存上了，回包丢了
     shared.locked = true;
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(tab.mod.WrDocs.locked("ch01s1")).toBe(true), T);
     return tab;
   }
@@ -3418,7 +3418,7 @@ describe("复核七 · 自己那一稿存上了、回包丢了，之后才知道
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null });
     shared.locked = false;                                                   // 本章在别处重新打开
     chap.state = "writing";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     shared.hooks.ensure = null;                                              // 连上了
     const seen = events.length;
@@ -3438,7 +3438,7 @@ describe("复核七 · 自己那一稿存上了、回包丢了，之后才知道
     await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点</p>"), T);
     shared.locked = false;
     chap.state = "writing";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     const shown = mod.WrDocs.cachedHTML("ch01s1");
     const promoted = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: shown })
@@ -3457,7 +3457,7 @@ describe("复核七 · 自己那一稿存上了、回包丢了，之后才知道
     await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点</p>"), T);
     shared.locked = false;
     chap.state = "writing";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     const promoted = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: asked })
       .then(() => "promoted", (e) => e && e.code);
@@ -3512,7 +3512,7 @@ describe("复核 I3-2 · 回包未明的一稿停着、之后才知道章已批�
     shared.content = OTHER;
     shared.locked = true;
     chap.state = "approved";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(tab.mod.WrDocs.locked("ch01s1")).toBe(true), T);
     return tab;
   }
@@ -3528,7 +3528,7 @@ describe("复核 I3-2 · 回包未明的一稿停着、之后才知道章已批�
     await tick(50);
     shared.locked = false;                                                   // 读取回来之前，本章在别处重新打开了
     chap.state = "writing";
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     shared.hooks.ensure = null;
     read.resolve();                                                          // 读到的是另一台设备存上的 rev 5
@@ -3675,12 +3675,12 @@ describe("复核七 · 这一场被当成孤儿收下之后又从回收站回来
     await mod.WrDocs.save("ch01s1", T1).catch(() => {});
     shared.hooks.patch = null;
     catalog[0] = { ...chapterCopy(), scenes: [] };                           // 另一台设备把这一场移到了回收站
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(recoveryHtml(mod)).toContain(T1), T);
     const held = deferred();
     shared.hooks.ensure = (current) => held.promise.then(current);          // 回来之后的水合慢
     catalog[0] = chapterCopy();                                              // 从回收站还原（服务端上的正文没动过）
-    await window.WsCatalog.__refresh();
+    await window.WsCatalog.refresh();
     await vi.waitFor(() => expect(window.WsCatalog.sceneById("ch01s1")).toBeTruthy(), T);
     const before = alertTexts().length;
     expect(mod.WrDocs.load("ch01s1")).toBe(T0);

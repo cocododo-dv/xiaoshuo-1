@@ -126,8 +126,8 @@ function WsAuthor({ go }) {
   };
 
   if (!WsCatalog.ready()) {
-    const refetch = () => WsCatalog.__refresh && WsCatalog.__refresh();
-    return <ArrLoadingState error={WsCatalog.loadError && WsCatalog.loadError()} onRetry={refetch}>{planPanel}</ArrLoadingState>;
+    const refetch = () => WsCatalog.refresh();
+    return <ArrLoadingState error={WsCatalog.loadError()} onRetry={refetch}>{planPanel}</ArrLoadingState>;
   }
 
   /* 空白作品：服务端已确认没有任何章节，先引导建立结构 */
@@ -163,9 +163,8 @@ function WsAuthor({ go }) {
   });
 
   const refreshData = async () => {
-    if (!WsCatalog.__refresh) return;
-    await WsCatalog.__refresh();
-    const failure = WsCatalog.loadError && WsCatalog.loadError();
+    await WsCatalog.refresh();
+    const failure = WsCatalog.loadError();
     if (failure) {
       notifyError((failure && failure.message) || "章节目录刷新失败；当前视图仍保留上一次服务端版本。");
       return;

@@ -147,7 +147,7 @@ function afterApproveCatalogSync(workId, res) {
   if (!workId || !sync) return;
   if (res.workspace) captureResync(workId, res.workspace);
   if (sync.synced_count > 0) {
-    try { WsCatalog.__refresh(workId); } catch (e) {}
+    try { WsCatalog.refresh(workId); } catch (e) {}
   }
   if (sync.synced_count > 0 || sync.held_count > 0) {
     snowNotify("catalog-synced", { workId, ...sync });

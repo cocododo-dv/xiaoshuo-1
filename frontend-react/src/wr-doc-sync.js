@@ -795,7 +795,7 @@ async function sceneIdOf(m) {
   if (m.sceneId) return m.sceneId;
   if (!isActiveWork(m)) return null; // 目录只认当前作品
   let sceneId = null;
-  try { sceneId = await WsCatalog.__backendSceneId(m.sid); } catch (e) { sceneId = null; }
+  try { sceneId = await WsCatalog.backendSceneId(m.sid); } catch (e) { sceneId = null; }
   if (sceneId) {
     m.sceneId = sceneId;
     // 未同步标记写下时还不知道它（乐观新建的场，建场的回包那时还没回来）：补进去，刷新之后凭它还能找到这一场（复核七 W1-R7A-3）
@@ -1261,7 +1261,7 @@ function onSaved(m, flight, data) {
     m.lastSaveError = null;
     clearPendingIfMine(m, toDocHTML(m.serverContent || ""));
   }
-  if (data && data.words_rollup && isActiveWork(m)) WsCatalog.__applyWordsRollup(m.sid, data.words_rollup);
+  if (data && data.words_rollup && isActiveWork(m)) WsCatalog.applyWordsRollup(m.sid, data.words_rollup);
   /* 2026-09-22 场景诊断第三轮：正文一存，服务端把这一场 / 这一章开着的发现数带回来，角标随之更新 */
   if (data && data.diagnosis_rollup) {
     try { WsDiagnosis.applyRollup(data.diagnosis_rollup); } catch (e) {}
@@ -1421,7 +1421,7 @@ function refuseLocal(m, error, texts, { locked = false, unconfirmed = false } = 
   if (staleDraft) hydrateMeta(m).catch(() => {});
   else revalidate(m);
   if (!locked && error.code === "CHAPTER_APPROVED_LOCKED" && isActiveWork(m)) {
-    try { void Promise.resolve(WsCatalog.__refresh(m.workId)).catch(() => {}); } catch (e) { /* 目录下次装载时再知道 */ }
+    try { void Promise.resolve(WsCatalog.refresh(m.workId)).catch(() => {}); } catch (e) { /* 目录下次装载时再知道 */ }
   }
 }
 

@@ -193,7 +193,7 @@ const SnowSync = {
     const body = Array.isArray(scenePlanIds) && scenePlanIds.length ? { scene_plan_ids: scenePlanIds } : {};
     const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/resync`, body);
     if (data && data.workspace) captureResync(id, data.workspace);
-    try { await WsCatalog.__refresh(id); } catch (e) {}
+    try { await WsCatalog.refresh(id); } catch (e) {}
     const results = (data && data.results) || [];
     return {
       synced: results.filter(r => r && r.synced).length,

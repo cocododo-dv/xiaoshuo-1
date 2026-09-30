@@ -442,7 +442,7 @@ const WsCatalog = {
      锚点 / 只建空壳章），雪花做得越完整反而掉进越差的那条。分章算法搬到后端、作者在预览
      面板里确认之后，两者都没有了调用方，留着只会让人以为还有第二条路。 */
   /* —— 字数（写作器自动保存时调用）：本地即时更新；
-     权威 rollup 由正文保存响应经 __applyWordsRollup 注入，统计走服务端 —— */
+     权威 rollup 由正文保存响应经 applyWordsRollup 注入，统计走服务端 —— */
   recordSceneWords(sid, count) {
     const hit = this.sceneById(sid);
     if (!hit) return;
@@ -472,9 +472,17 @@ const WsCatalog = {
   /* 反向依赖的登记口（见 catLoadedHooks）：返回注销函数 */
   onLoaded(fn) { return catRegister(catLoadedHooks, fn); },
   onPlanTitlesSynced(fn) { return catRegister(catPlanTitleHooks, fn); },
-  /* —— FE-ALIGN 内部接缝（非契约面）—— */
-  __backendSceneId: catBackendSceneId,
-  __applyWordsRollup(sid, rollup) {
+  /* 以服务端为准重读一部作品的目录（省略 = 当前作品）：在飞的那一次作废，结束后恰好再读一次。
+     服务端在别处改了目录（送审 / 批准、回流、章任务跑完、雪花物化）之后调它。 */
+  refresh(workId) { return catRefetch(workId || catActiveId()); },
+  /* 旧名：还有写作台 / AI 起草台 / 构思视图的几处在用（ws-writer-room、ws-chapter-run-state、ws-scene-api、
+     ws-snow-editors-story），它们的包换成 refresh 之后删掉 */
+  __refresh(workId) { return catRefetch(workId || catActiveId()); },
+  /* 场景 sid → 后端 scene_id（async：乐观新建的场等它建好）；没有后端 id（还没同步到后端、不在目录里）是 undefined。
+     写作台、AI 起草台、正文 store 按后端 id 发请求都经它（视图一侧的唯一入口是 ws-scene-id.js 的 sceneApiId） */
+  backendSceneId: catBackendSceneId,
+  /* 正文保存回包的 words_rollup → 这一场 / 这一章的字数与书架统计（服务端算的数为准） */
+  applyWordsRollup(sid, rollup) {
     if (!rollup) return;
     const hit = this.sceneById(sid);
     const id = catActiveId();
@@ -488,7 +496,6 @@ const WsCatalog = {
     }
     if (!catApplyRollupStats(rollup)) catPushTotalsSoon();
   },
-  __refresh(workId) { return catRefetch(workId || catActiveId()); },
 };
 
 /* hook：订阅目录 + 作品切换 */

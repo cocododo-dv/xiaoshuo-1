@@ -122,7 +122,7 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
   useEffect(() => { setDialog(null); }, [pickedId]);
 
   const refreshSources = async () => {
-    await WsCatalog.__refresh(projectId);
+    await WsCatalog.refresh(projectId);
     await WsWorks.retry("projects");
     if (backendId) await WsManuStore.refresh(backendId);
     bump();

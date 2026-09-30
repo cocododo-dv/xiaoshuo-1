@@ -111,7 +111,7 @@ describe("目录 store：设计卡、幕、场景身份、落点", () => {
     expect(WsCatalog.sceneById("ch02s1").scene.sid).toBe("P_SC_c");
     expect(WsCatalog.sceneById("ch09s9")).toBeNull();
     expect(WsCatalog.sidForBackendId("P_SC_c")).toBe("P_SC_c");
-    await expect(WsCatalog.__backendSceneId("ch01s2")).resolves.toBe("P_SC_b");
+    await expect(WsCatalog.backendSceneId("ch01s2")).resolves.toBe("P_SC_b");
   });
 
   it("现在该写哪一场：当前章里在写的 → 第一场没写完的 → 末场；写作台与主页共用", async () => {

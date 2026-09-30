@@ -108,7 +108,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
         : route(url)
     ));
 
-    await mod.WsCatalog.__refresh();
+    await mod.WsCatalog.refresh();
 
     expect(mod.WsCatalog.get()).toHaveLength(1);
     expect(mod.WsCatalog.loadError()).toBeInstanceOf(Error);
@@ -426,8 +426,8 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     await vi.waitFor(() => expect(window.WsWorks.active().wordsTotal).toBe(38000), T);
     const before = statsGets();
 
-    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
-    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
+    mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
+    mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
     expect(window.WsWorks.active().wordsTotal).toBe(38180);
     expect(mod.WsCatalog.sceneById("ch01s1").scene.words).toBe(180);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -435,7 +435,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(statsGets()).toBeLessThanOrEqual(before + 1);
     const afterBurst = statsGets();
 
-    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
+    mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
     expect(window.WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
     expect(statsGets()).toBe(afterBurst);
   });
@@ -453,7 +453,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
       // 第一次：改名之前发出的那次后台刷新（回来的是改名前的服务端状态）；之后：服务端已经是新标题
       return catalogGets === 1 ? stale : Promise.resolve(scene("第二次改名"));
     });
-    mod.WsCatalog.__refresh();
+    mod.WsCatalog.refresh();
     await vi.waitFor(() => expect(catalogGets).toBe(1), T);
 
     mod.WsCatalog.renameScene("ch01", "ch01s1", "第二次改名");

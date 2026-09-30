@@ -1,7 +1,7 @@
 // WrDocs / WrDocVersions store 层单测：save(ensure+PATCH 带 base_revision_no) +
 // words_rollup 回流 + 409 冲突重水合 + 非409只留底 + 跨作品 sid 前缀防污染 + 修订映射 + 句级 diff。
 //
-// 依赖链：WrDocs 经 window.WsCatalog.__backendSceneId(slug)→scene_id、
+// 依赖链：WrDocs 经 window.WsCatalog.backendSceneId(slug)→scene_id、
 //        缓存键经 window.wsKey 加 ::<activeId> 后缀、docMeta 经 metaKeyOf 加作品前缀。
 // 故先 import ws-catalog（装 window.WsCatalog + 间接装 ws-works），settle 后再 import wr-doc-store。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -82,9 +82,9 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
       { content: "<p>正文</p>", base_revision_no: 1 }), T);
   });
 
-  it("save 成功把 words_rollup 经 WsCatalog.__applyWordsRollup 回流", async () => {
+  it("save 成功把 words_rollup 经 WsCatalog.applyWordsRollup 回流", async () => {
     const { mod } = await loadDocs();
-    const spy = vi.spyOn(window.WsCatalog, "__applyWordsRollup");
+    const spy = vi.spyOn(window.WsCatalog, "applyWordsRollup");
     await mod.WrDocs.save("ch01s1", "<p>x</p>");
     await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(
       "ch01s1", { chapter_words: 120, scene_words: 120 }), T);

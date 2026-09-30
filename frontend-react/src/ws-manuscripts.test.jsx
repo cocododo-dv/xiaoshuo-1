@@ -240,7 +240,7 @@ describe("成稿中心的「对比」只载入写作台的版本模块", () => {
     await vi.waitFor(() => expect(WsCatalog.get().length).toBeGreaterThan(0), T);
     await import("./ws-manuscripts-diff.jsx");
 
-    await WsCatalog.__refresh();
+    await WsCatalog.refresh();
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     const ensures = client.apiPost.mock.calls.filter(([url]) => /\/author-drafts\/scene\/[^/]+\/ensure$/.test(url));

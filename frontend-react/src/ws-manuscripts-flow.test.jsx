@@ -27,7 +27,7 @@ vi.mock("./ws-catalog.jsx", () => ({
     loadError: () => fixture.catalogError,
     reset: vi.fn(),
     removeScenes: (...args) => fixture.removeScenes(...args),
-    __refresh: catalogRefresh,
+    refresh: catalogRefresh,
   },
   useCatalogChapters: () => fixture.catalog,
 }));
