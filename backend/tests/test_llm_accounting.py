@@ -313,36 +313,16 @@ def test_real_client_missing_raw_usage_is_estimated_and_never_charged_as_zero(se
     assert attempt.total_tokens > 0
 
 
-def test_retired_offline_context_is_rejected_before_any_provider_work(session) -> None:
-    """B09-04:离线确定性执行模式退役了——带着它的上下文在派发之前被拒,客户端一次都不调,父行记 rejected。"""
+def test_retired_offline_context_cannot_even_be_constructed(session) -> None:
+    """B09-04:离线确定性执行模式退役了——上下文的类型只剩 online，带着离线模式的上下文在构造时就被拒，
+    到不了派发，账本里不会多出一行。"""
     accounting = _accounting_module()
 
-    class OfflineShapedClient:
-        called = 0
+    with pytest.raises(ValueError, match="must be online"):
+        replace(_context(accounting), provider_execution_mode="offline_deterministic")
 
-        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
-            self.called += 1
-            raise AssertionError("retired offline execution must not run")
-
-        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
-            self.called += 1
-            raise AssertionError("an offline context must not reach a provider either")
-
-    client = OfflineShapedClient()
-    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
-        accounting.execute_accounted_call(
-            session,
-            client,
-            _request(),
-            replace(_context(accounting), provider_execution_mode="offline_deterministic"),
-        )
-
-    assert exc_info.value.code == "LLM_ACCOUNTING_CONTEXT_INVALID"
-    assert client.called == 0
+    assert session.query(LlmCall).count() == 0
     assert session.query(LlmCallAttempt).count() == 0
-    parent = session.query(LlmCall).one()
-    assert parent.accounting_status == "rejected"
-    assert parent.request_payload_summary["_accounting_provider_execution_mode"] == "offline_deterministic"
 
 
 def test_historical_offline_product_no_longer_validates(session) -> None:

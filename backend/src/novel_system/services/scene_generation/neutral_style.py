@@ -11,7 +11,7 @@ import hashlib
 import time
 import uuid
 from copy import deepcopy
-from typing import Any, Callable
+from typing import Any
 
 import novel_system.services.scene_generation.fidelity_probe as fidelity_probe
 import novel_system.services.scene_generation.text_gates as text_gates
@@ -28,7 +28,9 @@ from novel_system.services.scene_generation.briefs import (
 from novel_system.services.scene_generation.contracts import (
     STYLE_STEP_VERSION,
     GenerationHost,
+    ProductCallback,
     SceneGenerationPostprocessError,
+    StepReconciler,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
@@ -112,10 +114,8 @@ def run_style_generation(
     product_slot_key: str | None = None,
     product_slot_order: int | None = None,
     resume_base: StyleGenerationResult | None = None,
-    product_callback: (
-        Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
-    ) = None,
-    step_reconciler: Callable[[str], None] | None = None,
+    product_callback: ProductCallback | None = None,
+    step_reconciler: StepReconciler | None = None,
     render_role: str | None = None,
 ) -> StyleGenerationResult:
     # 长度带按 bundle 的 StylePolicy（与场景的呈现方式）放宽，这一遍里的验收、指引与补丁都用它

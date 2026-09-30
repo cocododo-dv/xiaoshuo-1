@@ -61,10 +61,8 @@ class LLMCallContext:
     run_job_id: str | None = None
     execution_id: str | None = None
     execution_step_key: str | None = None
-    # 只有 online 会执行（B09-04：离线确定性执行模式已退役，没有任何生产客户端实现它）。类型里暂留这个旧字面值，
-    # 是为了让自动批评 / 事件抽取 / 检查点校验里还没删的旧分支（归别的包）照旧能构造上下文——带着它进账本的调用在
-    # 派发前被拒（LLM_ACCOUNTING_CONTEXT_INVALID），账本里历史的离线行过不了产品校验。
-    provider_execution_mode: Literal["online", "offline_deterministic"] = "online"
+    # 只有 online（B09-04：离线确定性执行模式已退役，没有任何生产客户端实现它）；账本里历史的离线行过不了产品校验。
+    provider_execution_mode: Literal["online"] = "online"
 
     def __post_init__(self) -> None:
         required = {
@@ -107,10 +105,8 @@ class LLMCallContext:
             raise ValueError(
                 "LLMCallContext run_job_id requires execution_id and execution_step_key"
             )
-        if self.provider_execution_mode not in {"online", "offline_deterministic"}:
-            raise ValueError(
-                "LLMCallContext.provider_execution_mode must be online or offline_deterministic"
-            )
+        if self.provider_execution_mode != "online":
+            raise ValueError("LLMCallContext.provider_execution_mode must be online")
 
 
 @dataclass(frozen=True, slots=True)

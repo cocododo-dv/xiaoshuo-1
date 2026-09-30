@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -230,7 +231,7 @@ def test_archive_prose_checkpoint_is_durable_and_tamper_blocks_before_next_step(
         )
 
     first = orchestrator()
-    first._index_scene_to_vector_store = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    first._run_archive_vector_index = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         RuntimeError("stop after prose checkpoint")
     )
     with pytest.raises(RuntimeError, match="stop after prose checkpoint"):
@@ -245,8 +246,8 @@ def test_archive_prose_checkpoint_is_durable_and_tamper_blocks_before_next_step(
     session.commit()
 
     resumed = orchestrator()
-    resumed._index_scene_to_vector_store = lambda *_args, **_kwargs: pytest.fail(
-        "tampered prose prefix must block before vector indexing"
+    resumed._run_archive_vector_index = lambda *_args, **_kwargs: pytest.fail(
+        "tampered prose prefix must block before the vector slot"
     )
     with pytest.raises(DomainError) as corrupt:
         resumed.run_scene("CH_RESUME_SC01", execution_id=execution_id)
@@ -493,9 +494,11 @@ def test_chapter_evaluation_settled_parent_without_row_blocks_resend_and_budget_
     assert state.scene_tokens_used == tokens_before
 
 
-def test_archive_vector_external_write_is_reused_after_cursor_crash(session) -> None:
+def test_archive_stage_seven_is_a_retired_slot_that_resumes_and_is_tamper_checked(session) -> None:
+    """[批准#1]（重评 R1）：归档第 7 步的向量索引已退役——槽位还在（sub_index 7、清单条目），记一份 retired 空产品；
+    停在它之后的检查点照样续跑，产品被改动照样拦。"""
     _seed_resume_scene(session)
-    execution_id = "idempotency:archive-vector-crash"
+    execution_id = "idempotency:archive-vector-retired"
     generation_client = _CountingGenerationClient()
 
     def orchestrator() -> Orchestrator:
@@ -506,64 +509,38 @@ def test_archive_vector_external_write_is_reused_after_cursor_crash(session) -> 
         )
 
     first = orchestrator()
-    original = first._index_scene_to_vector_store
-
-    def _write_then_crash(scene, content, **kwargs):  # noqa: ANN001, ANN003, ANN202
-        result = original(scene, content, **kwargs)
-        assert result["outcome"] in {"indexed", "already_present", "non_persistent"}
-        raise RuntimeError("crash after vector write")
-
-    first._index_scene_to_vector_store = _write_then_crash
-    with pytest.raises(RuntimeError, match="crash after vector write"):
+    first._run_archive_chapter_aggregate = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("stop after the retired vector slot")
+    )
+    with pytest.raises(RuntimeError, match="stop after the retired vector slot"):
         first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
     state = session.get(SceneRunState, "CH_RESUME_SC01")
-    assert state.run_checkpoint_json["sub_index"] == 6
-    assert state.scene_status != "archived"
-
-    resumed = orchestrator()
-    resumed._run_archive_chapter_aggregate = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        RuntimeError("stop after vector cursor")
-    )
-    with pytest.raises(RuntimeError, match="stop after vector cursor"):
-        resumed.run_scene("CH_RESUME_SC01", execution_id=execution_id)
-    session.refresh(state)
     assert state.run_checkpoint_json["sub_index"] == 7
-    vector_product = state.run_checkpoint_json["artifact_refs"]["archive_vector_product"]
-    assert vector_product["outcome"] == "non_persistent"
-    assert vector_product["write_status"] == "already_present"
-
-
-@pytest.mark.parametrize("external_change", ["cleared", "rebuilt_by_other_scene"])
-def test_memory_vector_product_is_non_persistent_and_fast_path_ignores_external_reset(
-    session, external_change
-) -> None:
-    _seed_resume_scene(session)
-    execution_id = f"idempotency:memory-vector-{external_change}"
-
-    def orchestrator() -> Orchestrator:
-        return Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-        )
-
-    assert orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)["scene_status"] == "archived"
-    state = session.get(SceneRunState, "CH_RESUME_SC01")
     product = state.run_checkpoint_json["artifact_refs"]["archive_vector_product"]
-    assert product["backend"] == "memory"
-    assert product["outcome"] == "non_persistent"
-    from novel_system.services.vector_store import get_vector_store
+    assert product["kind"] == "vector_index"
+    assert product["outcome"] == "retired"
+    assert product["step_key"] == "archive:vector_index:0"
+    assert not {"backend", "collection_name", "write_status"} & set(product)
 
-    store = get_vector_store(backend="memory")
-    if external_change == "cleared":
-        store.delete_collection(product["collection_name"])
-    else:
-        store.write_collection(
-            product["collection_name"],
-            [{"id": "another-scene", "text": "rebuilt elsewhere"}],
-        )
+    tampered = deepcopy(state.run_checkpoint_json)
+    tampered["artifact_refs"]["archive_vector_product"]["reason"] = "tampered"
+    original = state.run_checkpoint_json
+    state.run_checkpoint_json = tampered
+    session.commit()
+    with pytest.raises(DomainError) as corrupt:
+        orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
 
-    assert orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)["scene_status"] == "archived"
+    session.refresh(state)
+    state.run_checkpoint_json = original
+    state.run_execution_status = "failed"
+    session.commit()
+    provider_calls = len(generation_client.requests)
+    result = orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    assert result["scene_status"] == "archived"
+    assert len(generation_client.requests) == provider_calls
+    manifest = session.get(SceneRunState, "CH_RESUME_SC01").run_checkpoint_json["artifact_refs"]["archive_manifest"]
+    assert [(entry["sub_index"], entry["kind"]) for entry in manifest][3] == (7, "vector_index")
 
 
 def test_non_chapter_last_writes_fixed_archive_products_and_ordered_manifest(session) -> None:
@@ -610,7 +587,11 @@ def test_archived_fast_path_revalidates_full_manifest_before_return(session) -> 
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
 
 
-def test_archive_core_checkpoint_contains_full_independently_hashed_snapshots(session) -> None:
+def test_archive_core_checkpoint_keeps_independent_snapshot_hashes_not_the_bodies(session) -> None:
+    """检查点格式 v2：第 4 步的四份行快照（终稿、场景记忆、章滚动笔记、归档尝试）各记一个独立的哈希，快照本身
+    不进检查点——以前产品里存一份、另外每份再单独存一遍，整场正文在这一步就出现六次，之后每次存检查点都整份重写；
+    准终稿评审的修订候选快照（带整份来源稿）也只记哈希。续跑时按库里的行重算快照核对哈希（改了任何一行都判损坏，
+    见下一条）。"""
     _seed_resume_scene(session)
     execution_id = "idempotency:archive-core-snapshots"
     Orchestrator(
@@ -622,21 +603,27 @@ def test_archive_core_checkpoint_contains_full_independently_hashed_snapshots(se
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     refs = state.run_checkpoint_json["artifact_refs"]
     hashes = state.run_checkpoint_json["artifact_hashes"]
-    assert {
+    snapshot_keys = {
         "archive_final_scene_snapshot",
         "archive_scene_memory_snapshot",
         "archive_rolling_note_snapshot",
         "archive_attempt_snapshot",
-    }.issubset(refs)
+    }
+    assert snapshot_keys.issubset(hashes)
+    assert not snapshot_keys & set(refs)
+    core = refs["archive_core"]
+    assert core["schema_version"] == 2
     assert {
-        "archive_final_scene_snapshot",
-        "archive_scene_memory_snapshot",
-        "archive_rolling_note_snapshot",
-        "archive_attempt_snapshot",
-    }.issubset(hashes)
-    assert refs["archive_scene_memory_snapshot"]["runtime_eligibility_basis"] == "direct_read"
-    assert refs["archive_rolling_note_snapshot"]["revision_no"] == 1
-    assert "qc_report_id" in refs["archive_attempt_snapshot"]["details_json"]
+        core["final_scene_snapshot_hash"],
+        core["scene_memory_snapshot_hash"],
+        core["rolling_note_snapshot_hash"],
+        core["archive_attempt_snapshot_hash"],
+    } == {hashes[key] for key in snapshot_keys}
+    final_text = session.get(FinalScene, refs["final_scene_row_id"]).content
+    assert final_text and final_text not in json.dumps(core, ensure_ascii=False)
+    # 准终稿评审的修订候选同理：只记哈希，不再存带整份来源稿的快照
+    assert not {"near_eval0_candidate_snapshot", "near_eval1_candidate_snapshot"} & set(refs)
+    assert {"near_eval0_candidate", "near_eval1_candidate"} & set(hashes)
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.aggregator import Aggregator
+from novel_system.services.archive_effects_plan import aggregate_volume_after_chapter
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
@@ -413,6 +414,8 @@ class CanonicalSceneService:
                 status_code=409,
                 details={"scene_id": scene.scene_id, "aggregate_result": aggregate_result or {}},
             )
+        # 与流水线同样的确定性收尾（[批准#22]，三条归档路径的差别见 archive_effects_plan 的说明）：章汇总之后接着卷汇总
+        volume_result = aggregate_volume_after_chapter(self.session, scene.chapter_id)
 
         self.session.add(
             OperationLog(
@@ -434,6 +437,7 @@ class CanonicalSceneService:
                     "accepted_warning_codes": request.accepted_warning_codes,
                     "source_safety_scan": safety_scan,
                     "final_text_gate": final_text_gate,
+                    "volume_aggregate": volume_result.get("status"),
                     "actor_ref": actor_ref or "operator",
                 },
             )

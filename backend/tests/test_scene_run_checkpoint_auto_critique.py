@@ -1494,10 +1494,13 @@ def test_auto_critique_provider_success_without_sub0_blocks_resend(session, monk
     assert _total_llm_budget_charged(session) == charged_before_resume
 
 
-def test_auto_critique_released_online_tombstone_blocks_current_offline_no_call(
+def test_auto_critique_released_online_tombstone_blocks_a_no_call_resume(
     session,
     monkeypatch,
 ) -> None:
+    """首跑为自动批评预留了一次在线调用、还没派发就崩了（续跑时它成了 released 墓碑）；续跑时自动批评已关
+    （没有批评节点），就不能用「没调用」的产品顶替那次调用。离线确定性执行模式退役之前，这里用一个离线替身
+    制造「没调用」；现在没有离线模式，关掉批评节点是唯一的「没调用」。"""
     from dataclasses import replace
 
     from novel_system.services.auto_critique import (
@@ -1508,16 +1511,6 @@ def test_auto_critique_released_online_tombstone_blocks_current_offline_no_call(
     class _CrashAfterCritiqueReservation(BaseException):
         pass
 
-    class _OfflineCritiqueMustNotRun:
-        provider_execution_mode = "offline_deterministic"
-
-        def __init__(self) -> None:
-            self.calls: list[str] = []
-
-        def run_task(self, **_kwargs):
-            self.calls.append("provider")
-            raise AssertionError("offline critique must remain a no-call path")
-
     _seed_resume_scene(session)
     monkeypatch.setattr(
         "novel_system.services.scene_criticality.classify_scene",
@@ -1526,7 +1519,7 @@ def test_auto_critique_released_online_tombstone_blocks_current_offline_no_call(
             skip_critique=False,
         ),
     )
-    execution_id = "idempotency:auto-critique-released-online-to-offline"
+    execution_id = "idempotency:auto-critique-released-online-to-no-call"
     call_id = "llmcall_auto_critique_released_before_sub0"
 
     def reserve_then_crash(*_args, **kwargs):
@@ -1611,11 +1604,10 @@ def test_auto_critique_released_online_tombstone_blocks_current_offline_no_call(
         "novel_system.services.auto_critique.llm_auto_critique",
         real_llm_auto_critique,
     )
-    offline_runner = _OfflineCritiqueMustNotRun()
     monkeypatch.setattr(
         Orchestrator,
         "_resolve_auto_critique_runner",
-        lambda _self: offline_runner,
+        lambda _self: None,
     )
 
     with pytest.raises(DomainError) as corrupt:
@@ -1627,7 +1619,6 @@ def test_auto_critique_released_online_tombstone_blocks_current_offline_no_call(
     assert "released accounting tombstone" in corrupt.value.message
     assert parent.accounting_status == "released"
     assert state.scene_tokens_reserved == 0
-    assert offline_runner.calls == []
     assert len(generation_client.requests) == provider_calls
     assert session.scalar(select(func.count()).select_from(LlmCall)) == parent_count
     assert _total_llm_budget_charged(session) == charged_before_resume

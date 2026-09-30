@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 import novel_system.services.scene_generation.fidelity_probe as fidelity_probe
 from novel_system.db.models import SceneCard, SceneRunState
@@ -21,6 +21,7 @@ from novel_system.services.scene_generation.contracts import (
     LINEAGE_FIRST_DRAFT_ACCEPTED,
     GenerationHost,
     ProductCallback,
+    StepReconciler,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
@@ -40,7 +41,7 @@ def generate_candidates(
     neutral_content: str,
     author_note: str | None = None,
     n_candidates: int = 3,
-    step_reconciler: Callable[[str], None] | None = None,
+    step_reconciler: StepReconciler | None = None,
     resume_bases: dict[str, StyleGenerationResult] | None = None,
     resume_products: dict[str, StyleGenerationResult] | None = None,
     product_callback: ProductCallback | None = None,
@@ -92,10 +93,10 @@ def style_first_candidates(
     first_content: str,
     author_note: str | None,
     n_candidates: int,
-    step_reconciler: Callable[[str], None] | None,
+    step_reconciler: StepReconciler | None,
     resume_bases: dict[str, StyleGenerationResult],
     resume_products: dict[str, StyleGenerationResult],
-    product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    product_callback: ProductCallback | None,
 ) -> list[StyleGenerationResult]:
     """Best-of-N（作者手笔直起）：候选 = 首稿 + (N−1) 个定向修改，按读数 distance 排序（最像的在前）。
 

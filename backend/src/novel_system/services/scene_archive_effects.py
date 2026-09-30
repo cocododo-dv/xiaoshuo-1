@@ -2,10 +2,11 @@
 
 This module owns the post-approval archival effect cluster: narrative event
 recording (prose-grounded candidates only — the plan-based rule events were never
-read and are no longer written, B11-02), vector indexing of the final scene
-text, and the archive-time slot for the style fidelity reading (风格参考 v3:
-the old style-drift steering was removed; the slot keeps its checkpoint step
-key so persisted checkpoints still resume). The methods here were moved from
+read and are no longer written, B11-02) and the archive-time slot for the style
+fidelity reading (风格参考 v3: the old style-drift steering was removed; the slot
+keeps its checkpoint step key so persisted checkpoints still resume). The
+archive-time vector index of the final text was retired with the similar-scene
+prompt section ([批准#1], 重评 R1); its checkpoint slot records a ``retired`` product. The methods here were moved from
 ``Orchestrator`` — checkpoint step keys, event payload fields, and every
 product/degraded return value are unchanged.
 
@@ -32,7 +33,6 @@ from novel_system.db.models import (
     SceneCard,
     SceneDraft,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import (
     LLMAccountingError,
     LLMCallContext,
@@ -204,11 +204,6 @@ class SceneArchiveEffects:
                 extract_step_key if self._execution_id is not None else None
             ),
             run_job_id=self._run_job_id,
-            provider_execution_mode=getattr(
-                self.llm_runner,
-                "provider_execution_mode",
-                "online",
-            ),
         )
         result = extract_events_from_prose(
             content,
@@ -304,104 +299,3 @@ class SceneArchiveEffects:
             "within_range": bool((row.reading_json or {}).get("within_range")),
             "reading_source": source,
         }
-
-    @staticmethod
-    def _index_scene_to_vector_store(
-        scene: SceneCard,
-        content: str,
-        *,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        from novel_system.services.vector_store import get_vector_store
-        from novel_system.settings import get_settings
-
-        backend = get_settings().vector_backend.lower()
-        validation_scope = "process_local" if backend == "memory" else "persistent"
-        resolved_project_id = project_id or scene.project_id
-        if not resolved_project_id:
-            raise DomainError(
-                "PROJECT_OWNERSHIP_UNRESOLVED",
-                "scene vector indexing requires authoritative project ownership",
-                status_code=409,
-                details={"scene_id": scene.scene_id, "chapter_id": scene.chapter_id},
-            )
-        if project_id and scene.project_id and project_id != scene.project_id:
-            raise DomainError(
-                "PROJECT_OWNERSHIP_CONFLICT",
-                "scene vector indexing project disagrees with scene ownership",
-                status_code=409,
-                details={
-                    "scene_id": scene.scene_id,
-                    "scene_project_id": scene.project_id,
-                    "explicit_project_id": project_id,
-                },
-            )
-        collection_name = f"scenes_{resolved_project_id}"
-        expected_text = (content or "")[:600]
-        text_hash = SceneArchiveEffects._text_hash(expected_text)
-        base = {
-            "backend": backend,
-            "validation_scope": validation_scope,
-            "collection_name": collection_name,
-            "vector_id": scene.scene_id,
-            "text_hash": text_hash,
-        }
-        try:
-            store = get_vector_store()
-            existing = (
-                store.load_collection(collection_name)
-                if store.collection_exists(collection_name)
-                else []
-            )
-            matches = [row for row in existing if row.get("id") == scene.scene_id]
-            if len(matches) > 1:
-                return {
-                    **base,
-                    "outcome": "failed",
-                    "write_status": "failed",
-                    "error_code": "VECTOR_INDEX_DUPLICATE_ID",
-                }
-            if matches:
-                if str(matches[0].get("text") or "") != expected_text:
-                    return {
-                        **base,
-                        "outcome": "failed",
-                        "write_status": "failed",
-                        "error_code": "VECTOR_INDEX_STALE_CONTENT",
-                    }
-                return {
-                    **base,
-                    "outcome": (
-                        "non_persistent" if backend == "memory" else "already_present"
-                    ),
-                    "write_status": "already_present",
-                    "error_code": None,
-                }
-            store.write_collection(
-                collection_name,
-                [*existing, {"id": scene.scene_id, "text": expected_text}],
-            )
-            written = store.load_collection(collection_name)
-            matches = [row for row in written if row.get("id") == scene.scene_id]
-            if len(matches) != 1 or str(matches[0].get("text") or "") != expected_text:
-                raise RuntimeError("vector write verification failed")
-            return {
-                **base,
-                "outcome": ("non_persistent" if backend == "memory" else "indexed"),
-                "write_status": "indexed",
-                "error_code": None,
-            }
-        except Exception as exc:
-            _LOGGER.warning(
-                "vector store indexing degraded for scene %s",
-                scene.scene_id,
-                exc_info=True,
-            )
-            return {
-                **base,
-                "outcome": "failed",
-                "write_status": "failed",
-                "error_code": exc.__class__.__name__,
-            }
-
-

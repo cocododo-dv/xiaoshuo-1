@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 from copy import deepcopy
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 from sqlalchemy import select
 
@@ -31,7 +31,9 @@ from novel_system.services.scene_generation.contracts import (
     REASON_COPY_UNCHECKED,
     STYLE_STEP_VERSION,
     GenerationHost,
+    ProductCallback,
     SceneGenerationPostprocessError,
+    StepReconciler,
     StyleGenerationResult,
 )
 from novel_system.services.scene_generation.ledger import (
@@ -94,10 +96,8 @@ def style_first_step(
     slot_order: int,
     execution_step_key: str,
     resume_base: StyleGenerationResult | None = None,
-    product_callback: (
-        Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
-    ) = None,
-    step_reconciler: Callable[[str], None] | None = None,
+    product_callback: ProductCallback | None = None,
+    step_reconciler: StepReconciler | None = None,
     first_reading: Any = None,
     first_reading_id: str | None = None,
     first_reading_done: bool = False,
@@ -198,7 +198,7 @@ def emit_products(
     first_row_id: str,
     slot_key: str,
     slot_order: int,
-    product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    product_callback: ProductCallback | None,
     decision: Mapping[str, Any],
     emit_base: bool = True,
 ) -> None:
@@ -240,7 +240,7 @@ def finish_resume(
     slot_key: str,
     slot_order: int,
     execution_step_key: str,
-    product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    product_callback: ProductCallback | None,
 ) -> StyleGenerationResult:
     """检查点里只有基稿（进程在基稿与终稿回调之间停了）：风格步基稿即终稿，补一次终稿回调。"""
     if resume_base.bundle_id != bundle["bundle_id"] or resume_base.bundle_hash != bundle["bundle_snapshot_hash"]:
@@ -292,7 +292,7 @@ def accept_first_draft(
     row_id: str,
     slot_key: str,
     slot_order: int,
-    product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    product_callback: ProductCallback | None,
     attempt_details_extra: dict[str, Any] | None = None,
     notice_severity: str = "info",
 ) -> StyleGenerationResult:
@@ -398,7 +398,7 @@ def run_targeted_revision(
     slot_key: str,
     slot_order: int,
     execution_step_key: str,
-    product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None,
+    product_callback: ProductCallback | None,
     candidate_mode: bool = False,
     temperature_override: float | None = None,
     attempt_details_extra: dict[str, Any] | None = None,
