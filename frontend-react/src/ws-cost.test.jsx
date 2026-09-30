@@ -26,7 +26,21 @@ vi.mock("./ws-works.jsx", () => ({
 
 async function loadStore() {
   const client = await import("./lib/client.js");
-  return { client, mod: await import("./ws-cost.jsx") };
+  return { client, mod: await import("./ws-cost-store.js") };
+}
+
+async function loadView() {
+  const client = await import("./lib/client.js");
+  const store = await import("./ws-cost-store.js");
+  const view = await import("./ws-cost.jsx");
+  return { client, mod: { ...store, WsCost: view.WsCost } };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 const DASH = {
@@ -157,6 +171,86 @@ describe("WsCost store（成本看板）", () => {
     expect(r).toBeNull();
     expect(client.apiGet).not.toHaveBeenCalled();
   });
+
+  /* 审计 F05-03：迟到的响应不能盖掉新的；换作品时上一部的看板不能留在屏上 */
+  it("换作品：B 先回来、A 的响应迟到，看板仍是 B 的", async () => {
+    const { client, mod } = await loadStore();
+    const a = deferred();
+    client.apiGet.mockImplementation((url) => {
+      if (url.startsWith("/api/v2/projects/A/")) return a.promise;
+      if (url.startsWith("/api/v2/projects/B/")) return Promise.resolve({ ...DASH, project_id: "B", summary: { ...DASH.summary, total_tokens: 222 } });
+      return Promise.resolve(null);
+    });
+    const loadA = mod.costLoad("A");
+    await mod.costLoad("B");
+    a.resolve({ ...DASH, project_id: "A", summary: { ...DASH.summary, total_tokens: 111 } });
+    await loadA;
+    const st = mod.csSnapshot();
+    expect(st.projectId).toBe("B");
+    expect(st.dashboard.project_id).toBe("B");
+    expect(st.summary.total_tokens).toBe(222);
+    expect(st.loading).toBe(false);
+  });
+
+  it("换作品：新作品的请求在飞时不显示上一部作品的看板", async () => {
+    const { client, mod } = await loadStore();
+    client.apiGet.mockResolvedValueOnce(DASH);
+    await mod.costLoad("A");
+    const b = deferred();
+    client.apiGet.mockReturnValueOnce(b.promise);
+    const loadB = mod.costLoad("B");
+    const st = mod.csSnapshot();
+    expect(st.projectId).toBe("B");
+    expect(st.dashboard).toBeNull();
+    expect(st.summary).toBeNull();
+    expect(st.quota).toBeNull();
+    expect(st.loading).toBe(true);
+    b.resolve({ ...DASH, project_id: "B" });
+    await loadB;
+    expect(mod.csSnapshot().dashboard.project_id).toBe("B");
+  });
+
+  it("快速切换统计窗口：后发的那次说了算，先发的迟到不覆盖", async () => {
+    const { client, mod } = await loadStore();
+    const d7 = deferred();
+    client.apiGet.mockImplementation((url) => (url.endsWith("days=7")
+      ? d7.promise
+      : Promise.resolve({ ...DASH, trend: { ...DASH.trend, days: 30, window_tokens: 3030 } })));
+    const first = mod.costLoad("P1", { days: 7 });
+    await mod.costLoad("P1", { days: 30 });
+    d7.resolve({ ...DASH, trend: { ...DASH.trend, days: 7, window_tokens: 707 } });
+    await first;
+    expect(mod.csSnapshot().days).toBe(30);
+    expect(mod.csSnapshot().dashboard.trend.window_tokens).toBe(3030);
+  });
+
+  it("返回全书之后，迟到的章节下钻响应不再把页面翻回下钻", async () => {
+    const { client, mod } = await loadStore();
+    client.apiGet.mockResolvedValueOnce(DASH);
+    await mod.costLoad("P1");
+    const drill = deferred();
+    client.apiGet.mockReturnValueOnce(drill.promise);
+    const loadDrill = mod.costLoad("P1", { chapterId: "C1" });
+    mod.costBack();
+    expect(mod.csSnapshot().level).toBe("project");
+    expect(mod.csSnapshot().loading).toBe(false);
+    drill.resolve({ level: "chapter", summary: { chapter_id: "C1" } });
+    await loadDrill;
+    expect(mod.csSnapshot().level).toBe("project");
+    expect(mod.csSnapshot().summary.total_cost).toBe(1.23);
+  });
+
+  it("迟到的失败也不盖掉新结果：A 失败回来时看板仍是 B 的、不报错", async () => {
+    const { client, mod } = await loadStore();
+    const a = deferred();
+    client.apiGet.mockImplementation((url) => (url.startsWith("/api/v2/projects/A/") ? a.promise : Promise.resolve({ ...DASH, project_id: "B" })));
+    const loadA = mod.costLoad("A");
+    await mod.costLoad("B");
+    a.reject(new Error("A 超时"));
+    await loadA;
+    expect(mod.csSnapshot().error).toBeNull();
+    expect(mod.csSnapshot().dashboard.project_id).toBe("B");
+  });
 });
 
 /* ---------- 视图：章 / 场用目录里的叫法，金额与状态是给作者看的 ---------- */
@@ -185,7 +279,7 @@ describe("WsCost 视图", () => {
   });
 
   it("按章节用后端 id 找到目录章名；调用明细里场景、状态、金额都是作者读得懂的样子", async () => {
-    const { client, mod } = await loadStore();
+    const { client, mod } = await loadView();
     client.apiGet.mockResolvedValue({
       ...DASH,
       summary: { ...DASH.summary, total_cost: 402.7712 },
@@ -215,7 +309,7 @@ describe("WsCost 视图", () => {
   });
 
   it("场景预算解除武装时显示「不限」，而不是悄悄丢掉预算卡", async () => {
-    const { client, mod } = await loadStore();
+    const { client, mod } = await loadView();
     client.apiGet.mockResolvedValueOnce(DASH);
     await mod.costLoad("P1");
     client.apiGet.mockResolvedValueOnce({
@@ -234,7 +328,7 @@ describe("WsCost 视图", () => {
 
   it("作品列表还没到（__loading__）时不拉账本；当前作品落定后按它的 id 拉", async () => {
     works.id = "__loading__";
-    const { client, mod } = await loadStore();
+    const { client, mod } = await loadView();
     client.apiGet.mockResolvedValue(DASH);
     host = document.createElement("div");
     document.body.appendChild(host);
