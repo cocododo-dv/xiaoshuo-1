@@ -12,7 +12,10 @@
 from __future__ import annotations
 
 import hashlib
+from itertools import permutations
 import logging
+
+import pytest
 
 from novel_system.db.models import (
     AuthorDraft,
@@ -26,7 +29,7 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
 )
-from novel_system.services.aggregator import Aggregator
+from novel_system.services.aggregator import Aggregator, is_chapter_aggregate_of
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
@@ -446,3 +449,54 @@ def test_same_revision_replay_does_not_require_an_exact_chapter_aggregate(client
             event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
         ).count(),
     } == counts_before
+
+
+# ------------------------------------------------------------ 章汇总的复验：恰好是这几场各一次、用换行拼起来（复核 A1-R1）
+
+
+@pytest.mark.parametrize(
+    ("content", "parts"),
+    [
+        pytest.param("林昭先读了旧信。\n雨城的钟敲过三下。", ["雨城的钟敲过三下。", "林昭先读了旧信。"], id="order-differs"),
+        pytest.param(
+            "林昭说：走吧。雨停了。\n第二场，她把旧信收进案卷。\n雨停了。",
+            ["林昭说：走吧。雨停了。", "第二场，她把旧信收进案卷。", "雨停了。"],
+            id="later-scene-inside-earlier",
+        ),
+        pytest.param("林昭拆开旧信。雨一直下。\n林昭拆开旧信。", ["林昭拆开旧信。", "林昭拆开旧信。雨一直下。"], id="later-scene-opens-earlier"),
+        pytest.param("第一段。\n第二段。\n第一段。", ["第一段。", "第一段。\n第二段。"], id="multi-line-prefix"),
+        pytest.param("旧信。\n旧信。", ["旧信。", "旧信。"], id="identical-scenes"),
+        # 先试最长的一段会走进死路，得退回来换一段
+        pytest.param("甲\n乙\n丙\n甲\n乙", ["甲", "甲\n乙", "乙\n丙"], id="backtracks"),
+    ],
+)
+def test_the_aggregate_check_accepts_every_exact_join_of_its_inputs(content: str, parts: list[str]) -> None:
+    assert is_chapter_aggregate_of(content, parts)
+
+
+@pytest.mark.parametrize(
+    ("content", "parts"),
+    [
+        pytest.param(
+            "林昭先读了旧信。\n雨城的钟敲过三下。\n案卷里没有的一段。",
+            ["雨城的钟敲过三下。", "林昭先读了旧信。"],
+            id="extra-text",
+        ),
+        pytest.param("林昭先读了旧信。", ["雨城的钟敲过三下。", "林昭先读了旧信。"], id="missing-scene"),
+        pytest.param("林昭先读了旧信。\n雨城的钟敲过四下。", ["雨城的钟敲过三下。", "林昭先读了旧信。"], id="same-length-edit"),
+        pytest.param("林昭先读了旧信。 雨城的钟敲过三下。", ["雨城的钟敲过三下。", "林昭先读了旧信。"], id="wrong-separator"),
+        pytest.param("旧信。\n旧信。", ["旧信。", "案卷。"], id="one-scene-twice"),
+        pytest.param("甲\n甲\n甲\n丁", ["甲", "甲\n甲", "乙"], id="dead-end-everywhere"),
+    ],
+)
+def test_the_aggregate_check_rejects_anything_else(content: str, parts: list[str]) -> None:
+    assert not is_chapter_aggregate_of(content, parts)
+
+
+def test_the_aggregate_check_is_order_free_even_when_scenes_contain_each_other() -> None:
+    """同一组场（互相含着、互为开头、有一场重复）按任何次序拼都认；改掉最后一个字就不认。"""
+    parts = ["雨停了。", "林昭说：走吧。雨停了。", "雨停了。\n她把旧信收进案卷。", "雨停了。"]
+    for order in permutations(parts):
+        joined = "\n".join(order)
+        assert is_chapter_aggregate_of(joined, parts), order
+        assert not is_chapter_aggregate_of(f"{joined[:-1]}！", parts), order

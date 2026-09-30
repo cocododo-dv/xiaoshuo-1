@@ -34,7 +34,7 @@ from novel_system.services.scene_generation import SceneGenerationService
 
 # Importing the autouse fixture runs every test here against the accounted online fake provider.
 from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
-from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _seed_resume_scene
+from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _response, _seed_resume_scene
 
 
 def test_post_archive_failure_retries_missing_side_effects_before_archived_checkpoint(session) -> None:
@@ -1070,11 +1070,27 @@ def _archived_sibling(session, scene_id: str, *, scene_seq: int, text: str) -> N
     session.commit()
 
 
-def _stop_after_sub9(session, execution_id: str) -> dict:
+class _FixedTextGenerationClient(_CountingGenerationClient):
+    """起草的每个节点都交回同一段正文：章末那一场的终稿就是它，测试才好让别的场含着它。"""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    def generate(self, request):  # noqa: ANN001, ANN201
+        self.requests.append(request)
+        return _response({"scene_text": self.text}, f"generation-{len(self.requests)}")
+
+
+def _stop_after_sub9(
+    session, execution_id: str, *, generation_client: _CountingGenerationClient | None = None
+) -> dict:
     """章末那一场跑到归档第 10 步（章级准终稿评审）前停下；返回检查点里的章汇总产品。"""
     first = Orchestrator(
         session,
-        scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
+        scene_generation_service=SceneGenerationService(
+            session, llm_client=generation_client or _CountingGenerationClient()
+        ),
         hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
     )
     first._run_archive_chapter_evaluation = lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -1137,6 +1153,60 @@ def test_chapter_last_resume_accepts_an_aggregate_whose_scene_order_differs_from
     memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
     assert memory.content.startswith("林昭先读了旧信。\n")
     assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+_CHAPTER_LAST_TEXT = "林昭拆开旧信，雨一直下，她把最后一页压回案卷底下才起身。"
+
+
+def test_chapter_last_archives_when_its_whole_text_also_occurs_in_an_earlier_scene(session) -> None:
+    """复核 A1-R1：章末那一场的全文也出现在前面某一场里（短短的收尾场、重复的正文）。按「在汇总里第一次出现的位置」
+    排，它就排到了中间那一场前面，对的汇总反被判损坏——新跑的第 8 步自检就失败，续跑、重放也一样，这一场永远归档
+    不了。这一章 row_id 序正是场序，按 row_id 序重拼的旧自检是认的。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 3
+    session.commit()
+    first_text = f"林昭说：走吧。{_CHAPTER_LAST_TEXT}"
+    _archived_sibling(session, "CH_RESUME_SC00A", scene_seq=1, text=first_text)
+    _archived_sibling(session, "CH_RESUME_SC00B", scene_seq=2, text="第二场，她把旧信收进案卷。")
+    execution_id = "idempotency:chapter-last-text-inside-an-earlier-scene"
+
+    product = _stop_after_sub9(
+        session, execution_id, generation_client=_FixedTextGenerationClient(_CHAPTER_LAST_TEXT)
+    )
+
+    assert product["outcome"] == "aggregated"
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content == f"{first_text}\n第二场，她把旧信收进案卷。\n{_CHAPTER_LAST_TEXT}"
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+    # 已归档的重放（同一执行键再跑）走快路径，第 8 步照样复验
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+@pytest.mark.parametrize("tail", ["门外有人敲了三下。", "\n门外有人敲了三下。"], ids=["same-line", "next-line"])
+def test_chapter_last_archives_when_its_whole_text_opens_an_earlier_scene(session, tail: str) -> None:
+    """复核 A1-R1：前一场正以章末那一场的全文开头（同一行接着写，或另起一行）。两段在汇总里第一次出现的位置都是
+    开头，只能靠 row_id 分先后，章末那一场的 row_id 在前，对的汇总又被判损坏。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    # 场序在前、row_id 在后的一场，以章末那一场的全文开头
+    earlier_text = f"{_CHAPTER_LAST_TEXT}{tail}"
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text=earlier_text)
+    execution_id = "idempotency:chapter-last-text-opens-an-earlier-scene"
+
+    product = _stop_after_sub9(
+        session, execution_id, generation_client=_FixedTextGenerationClient(_CHAPTER_LAST_TEXT)
+    )
+
+    assert product["outcome"] == "aggregated"
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content == f"{earlier_text}\n{_CHAPTER_LAST_TEXT}"
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+    assert _resume(session, execution_id)["scene_status"] == "archived"  # 已归档的重放
 
 
 def test_chapter_last_resume_still_rejects_an_aggregate_that_is_not_exactly_its_inputs(session) -> None:

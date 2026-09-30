@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -27,6 +27,9 @@ from novel_system.services.chapter_state import ensure_chapter_state
 # §2 summary tower: roll chapters up into a volume every N chapters so long books
 # (50+ scenes) have a far-horizon ATMOSPHERE context the chapter layer is too fine for.
 VOLUME_CHAPTER_SPAN = 5
+
+# 章汇总里场与场之间的分隔：拼（ChapterAggregateDerivation.content）与复验（is_chapter_aggregate_of）同一个
+_SEPARATOR = "\n"
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,7 @@ class ChapterAggregateDerivation:
 
     @property
     def content(self) -> str:
-        return "\n".join(memory.content for memory in self.memories)
+        return _SEPARATOR.join(memory.content for memory in self.memories)
 
 
 def derive_chapter_aggregate(
@@ -101,6 +104,45 @@ def derive_chapter_aggregate(
 
 def _in_trash(card: SceneCard | None) -> bool:
     return card is not None and bool(card.trashed_flag)
+
+
+def is_chapter_aggregate_of(content: str, parts: Sequence[str]) -> bool:
+    """``content`` 是不是 ``parts`` 各用一次、按某个次序拼成的章汇总（拼法同 :attr:`ChapterAggregateDerivation.content`）。
+
+    流水线第 8 步的产品只记输入清单（``row_id`` 序），不记拼的次序（场序，归档之后还可能再改），复验就只认这一点。
+    一场的全文可能也出现在别的场里、或正是另一场的开头（短短的收尾场、重复的正文），所以不能按「在汇总里第一次出现的
+    位置」排——那样对的汇总反被判损坏。这里从头逐段对，一段接不上就退回去换一段；走不通的「位置 + 还剩哪几段」记下来
+    不再重走，几段互为开头时也不会一路试遍所有次序。
+    """
+    if len(content) != sum(map(len, parts)) + len(_SEPARATOR) * max(len(parts) - 1, 0):
+        return False
+    remaining = Counter(parts)
+    candidates = sorted(remaining, key=len, reverse=True)
+    dead_ends: set[tuple[int, tuple[int, ...]]] = set()
+
+    def walk(pos: int, left: int) -> bool:
+        if not left:
+            return pos == len(content)
+        state = (pos, tuple(remaining[text] for text in candidates))
+        if state in dead_ends:
+            return False
+        for text in candidates:
+            if not remaining[text] or not content.startswith(text, pos):
+                continue
+            end = pos + len(text)
+            if left > 1:
+                if not content.startswith(_SEPARATOR, end):
+                    continue
+                end += len(_SEPARATOR)
+            remaining[text] -= 1
+            found = walk(end, left - 1)
+            remaining[text] += 1
+            if found:
+                return True
+        dead_ends.add(state)
+        return False
+
+    return walk(0, len(parts))
 
 
 class Aggregator:
