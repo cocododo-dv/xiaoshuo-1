@@ -5,7 +5,7 @@
 却导入主检出的 ``database_runtime``——默认库就成了作者的实库。现在 ``alembic/env.py`` 与每个 ``tools/*`` 命令行入口
 在碰任何库之前先核对，不一致就拒跑。
 
-子进程用例从不导入作者的检出：「另一个检出」是临时目录里的假包，它的 ``database_runtime`` 一被导入就留下记号文件。
+子进程用例从不导入作者的检出：「另一个检出」是临时目录里的假包，它的 ``env_config`` 一被导入就留下记号文件。
 """
 
 from __future__ import annotations
@@ -28,17 +28,17 @@ TOOLS_DIR = SRC_PACKAGE / "tools"
 
 
 def _other_checkout(tmp_path: Path) -> tuple[Path, Path]:
-    """另一个检出的 ``backend/``：``src/novel_system`` 是个假包，导入它的 ``database_runtime`` 会写下记号文件。"""
+    """另一个检出的 ``backend/``：``src/novel_system`` 是个假包，导入它的 ``env_config`` 会写下记号文件。"""
 
     backend = tmp_path / "other_checkout" / "backend"
     package = backend / "src" / "novel_system"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     canary = tmp_path / "foreign_code_ran.txt"
-    (package / "database_runtime.py").write_text(
+    (package / "env_config.py").write_text(
         "from pathlib import Path\n"
         f"Path({str(canary)!r}).write_text('imported', encoding='utf-8')\n"
-        "raise RuntimeError('foreign database_runtime imported')\n",
+        "raise RuntimeError('foreign env_config imported')\n",
         encoding="utf-8",
     )
     return backend, canary
@@ -84,7 +84,7 @@ def test_alembic_refuses_novel_system_from_another_checkout(tmp_path: Path) -> N
     assert "checkout mismatch" in output, output
     assert str(other_backend / "src" / "novel_system") in output, output
     assert f"PYTHONPATH={BACKEND_DIR / 'src'}" in output, output
-    # 在导入外来的 database_runtime 之前就拒绝了：外来代码一行没跑，库文件也没建
+    # 在导入外来的 env_config 之前就拒绝了：外来代码一行没跑，库文件也没建
     assert not canary.exists()
     assert not database.exists()
 

@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
-from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_runtime
+from novel_system.env_config import DEFAULT_DATABASE_PATH, load_database_runtime
 
 _ENGINE = None
 _SESSION_FACTORY = None

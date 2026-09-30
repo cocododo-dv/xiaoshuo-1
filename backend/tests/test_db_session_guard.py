@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from novel_system.database_runtime import DEFAULT_DATABASE_PATH
+from novel_system.env_config import DEFAULT_DATABASE_PATH
 from novel_system.db import session as db_session
 
 

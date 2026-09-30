@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex
 
-from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.base import Base
 from novel_system.db.models import (
     ChapterGoal,

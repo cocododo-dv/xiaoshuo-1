@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, UniqueConstraint
 
-from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db import models  # noqa: F401 - register every mapped table
 from novel_system.db.base import Base
 

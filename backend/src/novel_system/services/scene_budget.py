@@ -28,7 +28,7 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from novel_system.accounting_contract import (
+from novel_system.env_config import (
     DEFAULT_PROVIDER_ATTEMPT_BUDGET,
     PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
 )

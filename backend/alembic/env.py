@@ -47,7 +47,7 @@ def _refuse_foreign_novel_system() -> None:
 
 _refuse_foreign_novel_system()
 
-from novel_system.database_runtime import load_database_runtime  # noqa: E402
+from novel_system.env_config import load_database_runtime  # noqa: E402
 from novel_system.db.base import Base  # noqa: E402
 from novel_system.db import models  # noqa: E402,F401
 

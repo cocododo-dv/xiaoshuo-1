@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
+from novel_system.env_config import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.base import Base
 
 
