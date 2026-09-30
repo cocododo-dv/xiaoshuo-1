@@ -23,7 +23,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archive_effects_plan import aggregate_volume_after_chapter
-from novel_system.services.archiver import Archiver
+from novel_system.services.archiver import Archiver, gate_audit_summary
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
@@ -100,6 +100,19 @@ def canonicalize_author_text(content: str) -> str:
 
 def canonical_content_hash(content: str) -> str:
     return sha256_text(content)
+
+
+def _promotion_gate_record(final_text_gate: dict[str, Any]) -> dict[str, Any]:
+    """成稿门结果里晋升留下、回给前端的那一份（B04-24）：归档摘要（与归档尝试记录里的同一份）+ 不拦的警告。
+
+    警告前端要读（``validation.final_text_gate.warnings``：用了参考书的专名 / 原文重合这次没查成，提升之后告诉作者
+    一声，ws-copy-gate.js）；整份结果（每一维的信号与全部发现、连续性与内容安全的明细）没有人读，不再进审计与回包。
+    """
+    return {
+        **gate_audit_summary(final_text_gate),
+        "warning_codes": list(final_text_gate.get("warning_codes") or []),
+        "warnings": list(final_text_gate.get("warnings") or []),
+    }
 
 
 class CanonicalSceneService:
@@ -424,6 +437,7 @@ class CanonicalSceneService:
             )
             # 卷汇总从各章的章汇总卷起：这一章的没重建，就不拿旧的那份去卷
             volume_result = {"status": "skipped", "reason": "chapter_aggregate_not_created"}
+        gate_record = _promotion_gate_record(final_text_gate)
 
         self.session.add(
             OperationLog(
@@ -444,7 +458,7 @@ class CanonicalSceneService:
                     "narrative_sync_status": state.narrative_sync_status,
                     "accepted_warning_codes": request.accepted_warning_codes,
                     "source_safety_scan": safety_scan,
-                    "final_text_gate": final_text_gate,
+                    "final_text_gate": gate_record,
                     "chapter_aggregate": aggregate_result.get("status"),
                     "volume_aggregate": volume_result.get("status"),
                     "actor_ref": actor_ref or "operator",
@@ -474,7 +488,7 @@ class CanonicalSceneService:
             "validation": {
                 "canonical_char_count": len(canonical_text),
                 "source_safety_scan": safety_scan,
-                "final_text_gate": final_text_gate,
+                "final_text_gate": gate_record,
                 "accepted_warning_codes": request.accepted_warning_codes,
             },
         }

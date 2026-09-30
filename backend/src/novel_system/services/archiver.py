@@ -205,7 +205,7 @@ class Archiver:
                     "final_scene_row_id": final_scene_row_id,
                     "qc_report_id": qc_report_id,
                     "execution_id": execution_id,
-                    "final_text_gate": _gate_audit_summary(final_text_gate),
+                    "final_text_gate": gate_audit_summary(final_text_gate),
                 },
             )
             self.session.add(archive_attempt)
@@ -269,7 +269,8 @@ def _scene_memory_row_id(scene_id: str, final_scene_row_id: str) -> str:
     return f"scene_memory_{scene_id}_{final_scene_row_id}"
 
 
-def _gate_audit_summary(result: dict[str, Any]) -> dict[str, Any]:
+def gate_audit_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """成稿门结果留作审计的那一份（归档尝试记录、成稿中心晋升的审计都存它，不存整份结果——B04-24）。"""
     literary = result.get("literary_quality") or {}
     content_safety = result.get("content_safety") or {}
     return {

@@ -756,3 +756,44 @@ def test_promote_rejects_approved_chapter_and_non_scene_scope(client, session) -
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "AUTHOR_DRAFT_PROMOTION_SCOPE_UNSUPPORTED"
+
+
+def test_promotion_keeps_the_gate_summary_and_warnings_not_the_whole_gate_result(client, session) -> None:
+    """B04-24：晋升的审计与回包存成稿门的归档摘要（与归档尝试记录同一份）+ 不拦的警告（前端提升之后要说一句），
+    不再存整份结果——每一维的信号、全部发现、连续性明细没有人读。"""
+    seeded = _seed_scene(session, "GATE_RECORD")
+
+    response = _promote(client, seeded, key="gate-record")
+
+    assert response.status_code == 200, response.text
+    gate = response.json()["data"]["validation"]["final_text_gate"]
+    session.expire_all()
+    log = session.query(OperationLog).filter_by(
+        event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+    ).one()
+    assert log.payload_json["final_text_gate"] == gate
+    new_final_id = response.json()["data"]["final_scene_row_id"]
+    attempt = next(
+        row
+        for row in session.execute(
+            select(AttemptTracker).where(AttemptTracker.scene_id == seeded["scene_id"], AttemptTracker.step == "archive")
+        ).scalars()
+        if row.details_json["final_scene_row_id"] == new_final_id
+    )
+    summary = attempt.details_json["final_text_gate"]
+    assert set(gate) == set(summary) | {"warnings", "warning_codes"}
+    assert gate["content_hash"] == summary["content_hash"] == response.json()["data"]["content_hash"]
+    assert isinstance(gate["warnings"], list) and isinstance(gate["warning_codes"], list)
+    for heavy in ("literary_quality", "continuity", "source_safety", "bundle_integrity"):
+        assert heavy not in gate
+
+    # 同一修订的重放（换一个幂等键）原样回报审计里的那一份
+    again = _promote(
+        client,
+        seeded,
+        key="gate-record-replay",
+        expected_current_final_scene_row_id=new_final_id,
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["data"]["derivation_reused"] is True
+    assert again.json()["data"]["validation"]["final_text_gate"] == gate
