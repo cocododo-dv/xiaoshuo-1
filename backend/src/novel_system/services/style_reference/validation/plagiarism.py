@@ -33,18 +33,6 @@ def _is_ignorable(ch: str) -> bool:
     return cat.startswith("P") or cat.startswith("S")
 
 
-def _normalize_with_map(text: str) -> tuple[str, list[int]]:
-    """返回 (规范化文本, 每个规范化字符在原文中的下标)。"""
-    chars: list[str] = []
-    index_map: list[int] = []
-    for i, ch in enumerate(text):
-        if _is_ignorable(ch):
-            continue
-        chars.append(ch.lower())
-        index_map.append(i)
-    return "".join(chars), index_map
-
-
 def normalize_text_for_matching(text: str) -> str:
     """Normalize by lowering and stripping whitespace/punctuation for comparison."""
     return "".join(ch.lower() for ch in text if not _is_ignorable(ch))
@@ -52,8 +40,19 @@ def normalize_text_for_matching(text: str) -> str:
 
 def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
     """与 :func:`normalize_text_for_matching` 同一规则，另返回每个规范化字符在原文里的下标
-    （风格参考 v3 的抄袭门据此把命中区间映射回被检查的文字）。"""
-    return _normalize_with_map(text)
+    （:func:`check_plagiarism` 与风格参考 v3 的抄袭门据此把命中区间映射回被检查的文字）。
+
+    两个列表逐位对齐：一个原文字符小写后可能不止一个码位（``"İ"`` → ``"i"`` + U+0307），每个码位记同一个原文
+    下标——只记一个的话规范化文本比下标表长，命中映射回原文时位置错开，命中延伸到末尾还会越界。"""
+    chars: list[str] = []
+    offsets: list[int] = []
+    for index, ch in enumerate(text):
+        if _is_ignorable(ch):
+            continue
+        for lowered in ch.lower():
+            chars.append(lowered)
+            offsets.append(index)
+    return "".join(chars), offsets
 
 
 _normalize = normalize_text_for_matching
@@ -92,7 +91,7 @@ def check_plagiarism(
     if not generated_text or not corpus_texts:
         return empty
 
-    gen_norm, gen_map = _normalize_with_map(generated_text)
+    gen_norm, gen_map = normalize_with_offsets(generated_text)
     if len(gen_norm) < ngram_size:
         return empty
 

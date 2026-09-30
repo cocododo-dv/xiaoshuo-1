@@ -10,11 +10,14 @@ import time
 
 import pytest
 
+from novel_system.services.reference_copy_gate import check_reference_copy
 from novel_system.services.style_reference.validation.plagiarism import (
     BookNgramIndex,
     check_plagiarism,
     normalize_text_for_matching,
+    normalize_with_offsets,
 )
+from tests.style_reference_factories import make_book
 
 
 def test_plagiarism_hit_long_overlap() -> None:
@@ -145,3 +148,47 @@ def test_book_ngram_index_edges() -> None:
     # 抄袭门按书标命中：book_id 只是标签，缺省为空
     assert index.book_id is None
     assert BookNgramIndex(["甲乙丙丁戊己庚辛壬癸子丑"], book_id="book-1").book_id == "book-1"
+
+
+# ---------------------------------------------------------------- 小写后变长的字符（复核 P07-R4）
+
+# 书里的一行（14 字）与几种把「İ」（U+0130，小写成 i + U+0307 两个码位）放在命中前 / 后 / 里面的检查文字；
+# 第三项是命中映射回原文后应得的那一段。
+_OLD_LETTER = "他在雨城的案卷里找到一封旧信"
+_DOTTED_I_CASES = [
+    # 「İ」在前、重合一直延伸到末尾：下标表短一截时越界（IndexError）
+    pytest.param(_OLD_LETTER, "İ" + _OLD_LETTER, _OLD_LETTER, id="before-to-end"),
+    # 「İ」在前、重合在中间：下标表短一截时命中整体错后一个字
+    pytest.param(_OLD_LETTER, "İstanbul来信：" + _OLD_LETTER + "，信纸已经发黄", _OLD_LETTER, id="before-middle"),
+    pytest.param(_OLD_LETTER, _OLD_LETTER + "İstanbul", _OLD_LETTER, id="after"),
+    # 书里与检查文字都有「İ」：命中跨过它，映射回原文仍是完整的一段
+    pytest.param("林昭在İzmir的案卷里找到一封旧信", "那天林昭在İzmir的案卷里找到一封旧信。", "林昭在İzmir的案卷里找到一封旧信", id="inside"),
+]
+
+
+def test_normalize_with_offsets_stays_aligned_when_lowercasing_adds_a_code_point() -> None:
+    text = "İ他在 雨城，İzmir"
+    normalized, offsets = normalize_with_offsets(text)
+    assert normalized == normalize_text_for_matching(text)
+    assert len(offsets) == len(normalized)
+    # 每个规范化码位都指回它来自的那个原文字符
+    assert all(char in text[offset].lower() for char, offset in zip(normalized, offsets, strict=True))
+    assert offsets[:3] == [0, 0, 1]
+
+
+@pytest.mark.parametrize("book_line, text, expected", _DOTTED_I_CASES)
+def test_check_plagiarism_maps_hits_back_across_a_lowercase_expansion(book_line, text, expected) -> None:
+    report = check_plagiarism(text, [book_line])
+    assert not report.passed
+    assert [hit.matched_text for hit in report.hits] == [expected]
+    assert report.hits[0].position == text.index(expected)
+
+
+@pytest.mark.parametrize("book_line, text, expected", _DOTTED_I_CASES)
+def test_copy_gate_maps_hits_back_across_a_lowercase_expansion(session, book_line, text, expected) -> None:
+    """抄袭门用同一个规范化与下标表：命中位置指回被检查文字里的原样一段，不越界（越界是归档 / 采纳 / 成稿门的 500）。"""
+    book_id = make_book(session, "sr_book_dotted_i", paragraphs=[book_line, "灯下的人把信折好又打开，终于没有寄出去。"])
+    session.commit()
+    check = check_reference_copy(session, text, book_ids=[book_id])
+    assert check.blocked
+    assert [text[hit.start : hit.end] for hit in check.hits] == [expected]
