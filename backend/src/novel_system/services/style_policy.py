@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -239,42 +239,91 @@ def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -
     选层与冻结路径是同一份排序（``inject.bindings.rank_bindings``：scene > character（POV 在前）> project >
     global，同层取最新），同样只在指向 active 画像的绑定里选；命中的绑定**全部**指向非 active 画像时不再回答
     「未绑定」，而是降级（C7）——冻结路径在这种情形下冻不出契约，这里给出同样的降级形状。"""
+    return live_policies_without_contract(session, [scope], task_type=task_type)[0]
+
+
+def live_policies_without_contract(
+    session: Any,
+    scopes: Sequence[Any],
+    *,
+    task_type: str = "scene_generation",
+) -> list[StylePolicy]:
+    """一批作用域各自的 ``style_policy_live(..., freeze_contract=False)``（逐个等价），查询数与作用域多少无关：
+    活动绑定、所指画像、书的云策略各一条（整本 / 整章逐场判定时用，B04-21 / S1 19a）。
+
+    共用的查询出错 → 每个作用域都降级（与逐个解析时每个都出同一个错一样）；某一场自己的绑定配置解析出错只降级那一场。"""
+    policies: list[StylePolicy] = [UNBOUND for _ in scopes]
+    live = [index for index, scope in enumerate(scopes) if scope is not None]
+    if not live:
+        return policies
     try:
         from sqlalchemy import select
 
         from novel_system.db.models import StyleReferenceBook
-        from novel_system.services.style_reference.inject.bindings import ordered_character_ids, rank_bindings
-        from novel_system.services.style_reference.runtime_contract import resolve_draft_mode
+        from novel_system.services.style_reference.inject.bindings import ordered_character_ids, rank_bindings_for_scopes
 
-        ranked = rank_bindings(
+        ranked_lists = rank_bindings_for_scopes(
             session,
-            getattr(scope, "project_id", None),
             task_type,
-            character_ids=ordered_character_ids(
-                getattr(scope, "pov_character_id", None), getattr(scope, "onstage_chars_json", None)
-            ),
-            scene_id=getattr(scope, "scene_id", None),
+            [
+                (
+                    getattr(scopes[index], "project_id", None),
+                    ordered_character_ids(
+                        getattr(scopes[index], "pov_character_id", None),
+                        getattr(scopes[index], "onstage_chars_json", None),
+                    ),
+                    getattr(scopes[index], "scene_id", None),
+                )
+                for index in live
+            ],
         )
+        chosen_by_index = {
+            index: next((entry for entry in ranked if entry.usable), None) if ranked else None
+            for index, ranked in zip(live, ranked_lists)
+        }
+        book_ids = sorted({entry.book_id for entry in chosen_by_index.values() if entry is not None and entry.book_id})
+        cloud_policies = (
+            dict(
+                session.execute(
+                    select(StyleReferenceBook.book_id, StyleReferenceBook.cloud_policy).where(
+                        StyleReferenceBook.book_id.in_(book_ids)
+                    )
+                ).all()
+            )
+            if book_ids
+            else {}
+        )
+    except Exception as exc:  # noqa: BLE001 — 实时解析失败：未绑定 + 错误码（不阻断调用方）
+        logger.warning("light live style policy resolution failed: %s", exc)
+        degraded = StylePolicy(mode=MODE_DEGRADED, error_code=getattr(exc, "code", type(exc).__name__))
+        for index in live:
+            policies[index] = degraded
+        return policies
+    for index, ranked in zip(live, ranked_lists):
         if not ranked:
-            return UNBOUND
-        chosen = next((entry for entry in ranked if entry.usable), None)
+            continue  # 未绑定
+        chosen = chosen_by_index[index]
         if chosen is None:
             # 绑了、但画像都不是 active（归档 / 草稿 / 已删）：降级，不是未绑定
             stuck = ranked[0]
-            return StylePolicy(
+            policies[index] = StylePolicy(
                 mode=MODE_DEGRADED,
                 error_code=PROFILE_NOT_ACTIVE_CODE,
                 profile_id=str(stuck.binding.profile_id),
                 binding_id=str(stuck.binding.binding_id),
                 book_id=stuck.book_id,
             )
+            continue
+        policies[index] = _live_policy_from_binding(chosen, cloud_policy=cloud_policies.get(chosen.book_id))
+    return policies
+
+
+def _live_policy_from_binding(chosen: Any, *, cloud_policy: Any) -> StylePolicy:
+    """生效的那条绑定（``RankedBinding``）→ 不冻结契约的现解析策略；绑定配置读不出 → 降级（只这一场）。"""
+    try:
+        from novel_system.services.style_reference.runtime_contract import resolve_draft_mode
+
         best = chosen.binding
-        book_id = chosen.book_id
-        cloud_policy = None
-        if book_id:
-            cloud_policy = session.execute(
-                select(StyleReferenceBook.cloud_policy).where(StyleReferenceBook.book_id == book_id)
-            ).scalar_one_or_none()
         raw_config = best.config_json if isinstance(best.config_json, Mapping) else {}
         config = normalize_binding_config(raw_config)
         draft_mode = resolve_draft_mode(raw_config)
@@ -289,7 +338,7 @@ def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -
         contract_hash=None,
         profile_id=str(best.profile_id),
         binding_id=str(best.binding_id),
-        book_id=book_id,
+        book_id=chosen.book_id,
         reference_mode=effective_reference_mode(config["reference_mode"], cloud_policy=cloud_policy),
         sample_windows=int(config["sample_windows"]),
         dimension_states=normalize_dimension_states(config["dimension_states"]),
@@ -347,6 +396,7 @@ __all__ = [
     "PROFILE_NOT_ACTIVE_CODE",
     "StylePolicy",
     "UNBOUND",
+    "live_policies_without_contract",
     "policy_from_contract",
     "reset_style_policy_cache",
     "style_policy_for_bundle",
