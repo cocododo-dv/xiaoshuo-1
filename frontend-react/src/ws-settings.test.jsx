@@ -4,8 +4,6 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(() => Promise.resolve({})),
@@ -88,8 +86,6 @@ const click = async (el) => { await act(async () => { el.dispatchEvent(new Mouse
 describe("设置页", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
-    window.sessionStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 
