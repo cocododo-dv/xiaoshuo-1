@@ -4,7 +4,9 @@
 - ``run_policy="auto"`` 不再接收（B01-09）；
 - 准终稿第一轮评审 / 软 QC 第一轮之后的分支表存与读共用一份（B01-04）；
 - 终选后续跑停在严格模式的待接受稿上算完成，与首跑同一张终态表（B01-05）；
-- 终选后续跑交给后半程的选中稿是 ``StyleGenerationResult``（B01-18）。
+- 终选后续跑交给后半程的选中稿是 ``StyleGenerationResult``（B01-18）；
+- 严格停点的结果以 ``base_result`` 的五个键开头，``recommended_actions`` 只是作者状态投影给的那一条（B01-15 的
+  待定问题定为不追加 ``author_review_optional_fix``；这一条钉住决定，不是修正）。
 """
 
 from __future__ import annotations
@@ -28,6 +30,10 @@ from tests.test_candidate_selection_gate import SCENE_ID as GATE_SCENE_ID
 from tests.test_candidate_selection_gate import _make_orchestrator as _make_gate_orchestrator
 from tests.test_candidate_selection_gate import _seed_scene as _seed_gate_scene
 from tests.test_candidate_selection_gate import _selection_gate
+from tests.test_qc_grading_reliable_mode import SCENE_ID as STRICT_SCENE_ID
+from tests.test_qc_grading_reliable_mode import FakeSequenceQcClient, _near_final_fail
+from tests.test_qc_grading_reliable_mode import _make_orchestrator as _make_strict_orchestrator
+from tests.test_qc_grading_reliable_mode import _seed_scene as _seed_strict_scene
 
 SCENE_ID = "CH_RESUME_SC01"
 
@@ -194,6 +200,49 @@ def test_strict_stop_after_selection_resume_completes_the_execution(session, mon
     state = session.get(SceneRunState, SCENE_ID)
     assert state.active_execution_id == "idempotency:strict-selection-resume"
     assert state.run_execution_status == "completed"
+
+
+# ---------------------------------------------------------------------------------------------- B01-15
+
+
+def test_strict_stop_starts_with_the_base_result_and_keeps_only_the_projection_action(session, monkeypatch) -> None:
+    """严格停点（准终稿两轮都没过、留下 Q2 警告）：结果以 base_result 的五个键开头；recommended_actions 就是作者状态
+    投影给的 adopt_or_patch——不追加归档结果才有的 author_review_optional_fix（稿子没归档，作者本来就要读完警告再
+    采纳或改；每条准终稿警告自己写着 recommended_action）。同样的两轮不过在 reliable 下会归档并追加那一条。"""
+    install_online_pipeline(monkeypatch)
+    _seed_strict_scene(session, must_include="")
+    orchestrator = _make_strict_orchestrator(
+        session,
+        near_final_client=FakeSequenceQcClient([_near_final_fail(), _near_final_fail("重写后仍结构不足")]),
+    )
+
+    result = orchestrator.run_scene(STRICT_SCENE_ID, run_policy="strict")
+    session.commit()
+
+    state = session.get(SceneRunState, STRICT_SCENE_ID)
+    bundle = session.get(SceneBundle, state.current_bundle_id)
+    assert {
+        key: result[key]
+        for key in (
+            "scene_status",
+            "current_bundle_id",
+            "current_bundle_hash",
+            "current_qc_report_id",
+            "current_human_review_event_id",
+        )
+    } == {
+        "scene_status": "quality_warning_pending_acceptance",
+        "current_bundle_id": bundle.bundle_id,
+        "current_bundle_hash": bundle.bundle_snapshot_hash,
+        "current_qc_report_id": state.current_qc_report_id,
+        "current_human_review_event_id": state.current_human_review_event_id,
+    }
+    assert result["recommended_actions"] == ["adopt_or_patch"]
+    near_final_warnings = [
+        item for item in result["quality_warnings"] if str(item.get("issue_key") or "").startswith("near_final_")
+    ]
+    assert near_final_warnings
+    assert all(item["recommended_action"] == "author_review_optional_fix" for item in near_final_warnings)
 
 
 # ---------------------------------------------------------------------------------------------- B01-18
