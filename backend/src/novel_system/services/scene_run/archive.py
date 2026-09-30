@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -55,6 +56,71 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ArchiveStage:
+    """归档尾段的一步（``near_final_ready`` 的子游标）。归档清单、驱动与前缀复验都照 :data:`ARCHIVE_STAGES` 走。
+
+    ``kind`` / ``hash_key`` 是产品种类与它在 ``artifact_refs`` / ``artifact_hashes`` 里的键（清单记的就是这两样，
+    都已持久化，不能改）。第 7..11 步只存一份产品：``run`` 是产出它的方法名（``(scene, final_scene) -> product``，
+    测试在实例或类上覆盖它来注入故障），``validate`` 是复验它的方法名。第 4..6 步连着别的行一起写，驱动里各有
+    一个方法（``_archive_stage_core`` / ``_archive_stage_rule_events`` / ``_archive_stage_prose``）。
+    """
+
+    sub_index: int
+    kind: str
+    hash_key: str
+    run: str | None = None
+    validate: str | None = None
+    validate_takes_final_scene: bool = False
+
+
+ARCHIVE_STAGES: tuple[ArchiveStage, ...] = (
+    ArchiveStage(4, "core_archive", "archive_core"),
+    ArchiveStage(5, "rule_events", "archive_rule_product"),
+    ArchiveStage(6, "prose_extraction", "archive_prose_product"),
+    ArchiveStage(
+        7,
+        "vector_index",
+        "archive_vector_product",
+        run="_run_archive_vector_index",
+        validate="_validate_archive_vector_product",
+        validate_takes_final_scene=True,
+    ),
+    ArchiveStage(
+        8,
+        "chapter_aggregate",
+        "archive_chapter_product",
+        run="_run_archive_chapter_aggregate",
+        validate="_validate_archive_chapter_product",
+    ),
+    ArchiveStage(
+        9,
+        "volume_aggregate",
+        "archive_volume_product",
+        run="_run_archive_volume_aggregate",
+        validate="_validate_archive_volume_product",
+    ),
+    ArchiveStage(
+        10,
+        "chapter_near_final",
+        "archive_chapter_evaluation_product",
+        run="_run_archive_chapter_evaluation",
+        validate="_validate_archive_chapter_evaluation_product",
+    ),
+    ArchiveStage(
+        11,
+        "style_drift",
+        "archive_drift_product",
+        run="_run_archive_style_reading",
+        validate="_validate_archive_drift_product",
+    ),
+)
+# 只存一份产品、驱动按表逐步走的那几步（7..11）
+ARCHIVE_PRODUCT_STAGES: tuple[ArchiveStage, ...] = tuple(
+    stage for stage in ARCHIVE_STAGES if stage.run is not None
+)
+
+
 class ArchiveCheckpointMixin:
     def _archive_near_final_checkpoint(
         self,
@@ -68,6 +134,8 @@ class ArchiveCheckpointMixin:
         candidate_summaries: list[dict[str, Any]] | None,
         run_policy: str,
     ) -> dict[str, Any]:
+        """归档尾段的驱动：从子游标停下的地方接着做 4..11，每步「产出 → 自检 → 存检查点」，再复验到这一步为止的
+        全部产品；最后写 ``archived`` 与归档清单，装配运行结果。"""
         scene_id = scene.scene_id
         selected_style = self._load_selected_style_checkpoint(scene_id)
         soft_qc, soft_generation = self._load_soft_qc_checkpoint(
@@ -84,88 +152,16 @@ class ArchiveCheckpointMixin:
         carry_notes = list(refs.get("carry_notes") or [])
         if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
             raise checkpoint_corrupt("near-final carry notes hash mismatch")
+        prefix = {
+            "scene": scene,
+            "contract": contract,
+            "final_scene": final_scene,
+            "carry_notes": carry_notes,
+        }
         progress = self._near_final_checkpoint_progress()
         if progress < 4:
-            archive_result = self.archiver.archive_final_scene(
-                scene_id,
-                final_scene.row_id,
-                qc_report_id=soft_qc.qc_report_id,
-                carry_notes_json=carry_notes,
-                execution_id=self._execution_id,
-                finalize_scene_status=False,
-                # 检查点在 progress < 11 时自己在 archive:style_drift:0 槽位里记读数
-                record_fidelity_reading=False,
-            )
-            archive_core_product = self._archive_product(
-                scene=scene,
-                kind="core_archive",
-                outcome="completed",
-                step_key="archive:core:0",
-                input_hash=self._text_hash(final_scene.content),
-                final_scene_row_id=final_scene.row_id,
-                scene_memory_row_id=archive_result["scene_memory_row_id"],
-                chapter_rolling_note_row_id=archive_result[
-                    "chapter_rolling_note_row_id"
-                ],
-                archive_attempt_id=archive_result["archive_attempt_id"],
-                final_scene_snapshot=archive_final_scene_snapshot(final_scene),
-                scene_memory_snapshot=archive_scene_memory_snapshot(
-                    self.session.get(SceneMemory, archive_result["scene_memory_row_id"])
-                ),
-                rolling_note_snapshot=archive_rolling_note_snapshot(
-                    self.session.get(
-                        ChapterRollingNote,
-                        archive_result["chapter_rolling_note_row_id"],
-                    )
-                ),
-                archive_attempt_snapshot=archive_attempt_snapshot(
-                    self.session.get(
-                        AttemptTracker,
-                        archive_result["archive_attempt_id"],
-                    )
-                ),
-            )
-            self._validate_archive_core_checkpoint(
-                scene=scene,
-                final_scene=final_scene,
-                carry_notes=carry_notes,
-                product=archive_core_product,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=4,
-                artifact_refs={
-                    "scene_memory_row_id": archive_result["scene_memory_row_id"],
-                    "archive_core": archive_core_product,
-                    "archive_final_scene_snapshot": archive_core_product[
-                        "final_scene_snapshot"
-                    ],
-                    "archive_scene_memory_snapshot": archive_core_product[
-                        "scene_memory_snapshot"
-                    ],
-                    "archive_rolling_note_snapshot": archive_core_product[
-                        "rolling_note_snapshot"
-                    ],
-                    "archive_attempt_snapshot": archive_core_product[
-                        "archive_attempt_snapshot"
-                    ],
-                },
-                artifact_hashes={
-                    "archive_core": self._json_hash(archive_core_product),
-                    "archive_final_scene_snapshot": self._json_hash(
-                        archive_core_product["final_scene_snapshot"]
-                    ),
-                    "archive_scene_memory_snapshot": self._json_hash(
-                        archive_core_product["scene_memory_snapshot"]
-                    ),
-                    "archive_rolling_note_snapshot": self._json_hash(
-                        archive_core_product["rolling_note_snapshot"]
-                    ),
-                    "archive_attempt_snapshot": self._json_hash(
-                        archive_core_product["archive_attempt_snapshot"]
-                    ),
-                },
+            self._archive_stage_core(
+                scene, final_scene, soft_qc=soft_qc, carry_notes=carry_notes
             )
             progress = 4
         archive_result = self._validate_archive_core_checkpoint(
@@ -174,309 +170,35 @@ class ArchiveCheckpointMixin:
             carry_notes=carry_notes,
         )
         if progress < 5:
-            rule_event_ids = (
-                self._record_narrative_events(
-                    scene,
-                    contract,
-                    final_scene.content,
-                    include_prose=False,
-                    degrade_errors=False,
-                    final_scene_row_id=final_scene.row_id,
-                )
-                or []
-            )
-            for ordinal, event_id in enumerate(rule_event_ids):
-                event = self.session.get(NarrativeEvent, event_id)
-                event.payload_json = {
-                    **dict(event.payload_json or {}),
-                    "archive_execution_id": self._execution_id,
-                    "archive_step_key": "archive:rule_events:0",
-                    "archive_ordinal": ordinal,
-                }
-            self.session.flush()
-            rule_events = self._narrative_event_snapshots(rule_event_ids)
-            rule_product = self._archive_product(
-                scene=scene,
-                kind="rule_events",
-                outcome="recorded",
-                step_key="archive:rule_events:0",
-                input_hash=self._text_hash(final_scene.content),
-                event_ids=rule_event_ids,
-                events=rule_events,
-            )
-            self._validate_archive_rule_events_checkpoint(
-                scene,
-                product=rule_product,
-                event_ids=rule_event_ids,
-                events=rule_events,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=5,
-                artifact_refs={
-                    "archive_rule_event_ids": rule_event_ids,
-                    "archive_rule_events": rule_events,
-                    "archive_rule_product": rule_product,
-                },
-                artifact_hashes={
-                    "archive_rule_events": self._json_hash(rule_events),
-                    "archive_rule_product": self._json_hash(rule_product),
-                },
-            )
+            self._archive_stage_rule_events(scene, contract, final_scene)
             progress = 5
         self._validate_archive_rule_events_checkpoint(scene)
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=5,
-        )
+        self._validate_archive_prefix(**prefix, through=5)
         if progress < 6:
-            from novel_system.services.narrative_event_log import NarrativeEventLog
-
-            self._reconcile_execution_step("archive:prose_event_extract:0")
-            recovered_prose = self._recover_archive_prose_rejection()
-            if recovered_prose is None:
-                prose_result, prose_event_ids = self._record_prose_events(
-                    NarrativeEventLog(self.session),
-                    scene,
-                    self._archive_event_base(scene, contract),
-                    final_scene.content,
-                    final_scene_row_id=final_scene.row_id,
-                    return_event_ids=True,
-                )
-            else:
-                prose_result, prose_event_ids = recovered_prose, []
-            self.session.flush()
-            prose_events = self._narrative_event_snapshots(prose_event_ids)
-            extraction_snapshot = prose_result.product_snapshot()
-            prose_product = self._archive_product(
-                scene=scene,
-                kind="prose_extraction",
-                outcome=extraction_snapshot["outcome"],
-                step_key="archive:prose_event_extract:0",
-                input_hash=self._text_hash(final_scene.content),
-                extraction=extraction_snapshot,
-                event_ids=prose_event_ids,
-                events=prose_events,
-            )
-            if prose_result.llm_call_id is not None:
-                prose_parent = self.session.get(LlmCall, prose_result.llm_call_id)
-                if prose_parent is None:
-                    raise LLMAccountingError(
-                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                        "prose extraction product parent disappeared before archive checkpoint",
-                    )
-                prose_parent.response_payload_summary = sanitize_audit_summary(
-                    {
-                        **dict(prose_parent.response_payload_summary or {}),
-                        "archive_prose_product_hash": self._json_hash(prose_product),
-                    }
-                )
-            self.session.flush()
-            self._validate_archive_prose_checkpoint(
-                scene,
-                contract,
-                product=prose_product,
-                event_ids=prose_event_ids,
-                events=prose_events,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=6,
-                artifact_refs={
-                    "archive_prose_product": prose_product,
-                    "archive_prose_event_ids": prose_event_ids,
-                    "archive_prose_events": prose_events,
-                },
-                artifact_hashes={
-                    "archive_prose_product": self._json_hash(prose_product),
-                    "archive_prose_events": self._json_hash(prose_events),
-                },
-            )
+            self._archive_stage_prose(scene, contract, final_scene)
             progress = 6
         self._validate_archive_prose_checkpoint(scene, contract)
-        # Checkpointed extractor output is only a candidate product.  Stage it into
-        # the accepted-canon review ledger; pending rows are invisible to replay.
-        prose_checkpoint = dict(
-            ((state.run_checkpoint_json or {}).get("artifact_refs") or {}).get(
-                "archive_prose_product"
-            )
-            or {}
-        )
-        extraction_checkpoint = dict(prose_checkpoint.get("extraction") or {})
-        from novel_system.services.canon_continuity import CanonContinuityService
-
-        CanonContinuityService(self.session).stage_extraction(
-            final_scene.row_id,
-            outcome=str(extraction_checkpoint.get("outcome") or "not_invoked"),
-            event_ids=list(prose_checkpoint.get("event_ids") or []),
-            reason=extraction_checkpoint.get("reason"),
-            error_code=extraction_checkpoint.get("error_code"),
-        )
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=6,
-        )
-        if progress < 7:
-            vector_product = self._run_archive_vector_index(scene, final_scene)
-            self._validate_archive_vector_product(
-                scene,
-                final_scene,
-                vector_product,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=7,
-                artifact_refs={"archive_vector_product": vector_product},
-                artifact_hashes={
-                    "archive_vector_product": self._json_hash(vector_product)
-                },
-            )
-            progress = 7
-        self._validate_archive_vector_product(scene, final_scene)
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=7,
-        )
-
-        if progress < 8:
-            chapter_product = self._run_archive_chapter_aggregate(scene, final_scene)
-            self._validate_archive_chapter_product(
-                scene,
-                chapter_product,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=8,
-                artifact_refs={"archive_chapter_product": chapter_product},
-                artifact_hashes={
-                    "archive_chapter_product": self._json_hash(chapter_product)
-                },
-            )
-            progress = 8
-        self._validate_archive_chapter_product(scene)
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=8,
-        )
-
-        if progress < 9:
-            volume_product = self._run_archive_volume_aggregate(scene, final_scene)
-            self._validate_archive_volume_product(
-                scene,
-                volume_product,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=9,
-                artifact_refs={"archive_volume_product": volume_product},
-                artifact_hashes={
-                    "archive_volume_product": self._json_hash(volume_product)
-                },
-            )
-            progress = 9
-        self._validate_archive_volume_product(scene)
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=9,
-        )
+        self._stage_archive_prose_extraction(state, final_scene)
+        self._validate_archive_prefix(**prefix, through=6)
 
         chapter_near_final = None
-        if progress < 10:
-            chapter_evaluation_product = self._run_archive_chapter_evaluation(
-                scene,
-                final_scene,
-            )
-            self._validate_archive_chapter_evaluation_product(
-                scene,
-                chapter_evaluation_product,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=10,
-                artifact_refs={
-                    "archive_chapter_evaluation_product": chapter_evaluation_product,
-                },
-                artifact_hashes={
-                    "archive_chapter_evaluation_product": self._json_hash(
-                        chapter_evaluation_product
-                    ),
-                },
-            )
-            progress = 10
-        chapter_evaluation_product = self._validate_archive_chapter_evaluation_product(
-            scene
-        )
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=10,
-        )
-        if chapter_evaluation_product.get("outcome") == "evaluated":
-            chapter_near_final = chapter_evaluation_product.get("evaluation")
-
-        if progress < 11:
-            drift_result = (
-                # 风格参考 v3：漂移驾驶已删；这个槽位（kind / step_key / 哈希键保持原名，已持久化的
-                # 检查点照常续跑）记归档终稿的「像不像」读数。
-                self._record_archive_fidelity_reading(scene)
-            )
-            drift_product = self._archive_product(
-                scene=scene,
-                kind="style_drift",
-                outcome=drift_result["outcome"],
-                step_key="archive:style_drift:0",
-                input_hash=self._text_hash(final_scene.content),
-                **{
-                    key: value
-                    for key, value in drift_result.items()
-                    if key != "outcome"
-                },
-            )
-            self._validate_archive_drift_product(
-                scene,
-                drift_product,
-                require_checkpoint_hash=False,
-            )
-            self._save_run_checkpoint(
-                "near_final_ready",
-                sub_index=11,
-                artifact_refs={"archive_drift_product": drift_product},
-                artifact_hashes={
-                    "archive_drift_product": self._json_hash(drift_product)
-                },
-            )
-            progress = 11
-        self._validate_archive_drift_product(scene)
-        self._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=11,
-        )
+        for stage in ARCHIVE_PRODUCT_STAGES:
+            if progress < stage.sub_index:
+                product = getattr(self, stage.run)(scene, final_scene)
+                self._validate_archive_stage_product(
+                    stage, scene, final_scene, product, require_checkpoint_hash=False
+                )
+                self._save_run_checkpoint(
+                    "near_final_ready",
+                    sub_index=stage.sub_index,
+                    artifact_refs={stage.hash_key: product},
+                    artifact_hashes={stage.hash_key: self._json_hash(product)},
+                )
+                progress = stage.sub_index
+            product = self._validate_archive_stage_product(stage, scene, final_scene)
+            if stage.kind == "chapter_near_final" and product.get("outcome") == "evaluated":
+                chapter_near_final = product.get("evaluation")
+            self._validate_archive_prefix(**prefix, through=stage.sub_index)
 
         manifest = self._archive_manifest()
         state.scene_status = "archived"
@@ -535,6 +257,276 @@ class ArchiveCheckpointMixin:
                 "author_review_optional_fix",
             ]
         return result
+
+    def _archive_stage_core(
+        self,
+        scene: SceneCard,
+        final_scene: FinalScene,
+        *,
+        soft_qc,
+        carry_notes: list[dict[str, Any]],
+    ) -> None:
+        """归档第 4 步：终稿归档（SceneMemory / 章滚动笔记 / 归档尝试），四份行快照随产品一起存。"""
+        archive_result = self.archiver.archive_final_scene(
+            scene.scene_id,
+            final_scene.row_id,
+            qc_report_id=soft_qc.qc_report_id,
+            carry_notes_json=carry_notes,
+            execution_id=self._execution_id,
+            finalize_scene_status=False,
+            # 检查点在 progress < 11 时自己在 archive:style_drift:0 槽位里记读数
+            record_fidelity_reading=False,
+        )
+        archive_core_product = self._archive_product(
+            scene=scene,
+            kind="core_archive",
+            outcome="completed",
+            step_key="archive:core:0",
+            input_hash=self._text_hash(final_scene.content),
+            final_scene_row_id=final_scene.row_id,
+            scene_memory_row_id=archive_result["scene_memory_row_id"],
+            chapter_rolling_note_row_id=archive_result[
+                "chapter_rolling_note_row_id"
+            ],
+            archive_attempt_id=archive_result["archive_attempt_id"],
+            final_scene_snapshot=archive_final_scene_snapshot(final_scene),
+            scene_memory_snapshot=archive_scene_memory_snapshot(
+                self.session.get(SceneMemory, archive_result["scene_memory_row_id"])
+            ),
+            rolling_note_snapshot=archive_rolling_note_snapshot(
+                self.session.get(
+                    ChapterRollingNote,
+                    archive_result["chapter_rolling_note_row_id"],
+                )
+            ),
+            archive_attempt_snapshot=archive_attempt_snapshot(
+                self.session.get(
+                    AttemptTracker,
+                    archive_result["archive_attempt_id"],
+                )
+            ),
+        )
+        self._validate_archive_core_checkpoint(
+            scene=scene,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            product=archive_core_product,
+            require_checkpoint_hash=False,
+        )
+        self._save_run_checkpoint(
+            "near_final_ready",
+            sub_index=4,
+            artifact_refs={
+                "scene_memory_row_id": archive_result["scene_memory_row_id"],
+                "archive_core": archive_core_product,
+                "archive_final_scene_snapshot": archive_core_product[
+                    "final_scene_snapshot"
+                ],
+                "archive_scene_memory_snapshot": archive_core_product[
+                    "scene_memory_snapshot"
+                ],
+                "archive_rolling_note_snapshot": archive_core_product[
+                    "rolling_note_snapshot"
+                ],
+                "archive_attempt_snapshot": archive_core_product[
+                    "archive_attempt_snapshot"
+                ],
+            },
+            artifact_hashes={
+                "archive_core": self._json_hash(archive_core_product),
+                "archive_final_scene_snapshot": self._json_hash(
+                    archive_core_product["final_scene_snapshot"]
+                ),
+                "archive_scene_memory_snapshot": self._json_hash(
+                    archive_core_product["scene_memory_snapshot"]
+                ),
+                "archive_rolling_note_snapshot": self._json_hash(
+                    archive_core_product["rolling_note_snapshot"]
+                ),
+                "archive_attempt_snapshot": self._json_hash(
+                    archive_core_product["archive_attempt_snapshot"]
+                ),
+            },
+        )
+
+    def _archive_stage_rule_events(
+        self, scene: SceneCard, contract, final_scene: FinalScene
+    ) -> None:
+        """归档第 5 步：规则事件（每条事件的 payload 记上归档执行 id / 步位 / 序号）。"""
+        rule_event_ids = (
+            self._record_narrative_events(
+                scene,
+                contract,
+                final_scene.content,
+                include_prose=False,
+                degrade_errors=False,
+                final_scene_row_id=final_scene.row_id,
+            )
+            or []
+        )
+        for ordinal, event_id in enumerate(rule_event_ids):
+            event = self.session.get(NarrativeEvent, event_id)
+            event.payload_json = {
+                **dict(event.payload_json or {}),
+                "archive_execution_id": self._execution_id,
+                "archive_step_key": "archive:rule_events:0",
+                "archive_ordinal": ordinal,
+            }
+        self.session.flush()
+        rule_events = self._narrative_event_snapshots(rule_event_ids)
+        rule_product = self._archive_product(
+            scene=scene,
+            kind="rule_events",
+            outcome="recorded",
+            step_key="archive:rule_events:0",
+            input_hash=self._text_hash(final_scene.content),
+            event_ids=rule_event_ids,
+            events=rule_events,
+        )
+        self._validate_archive_rule_events_checkpoint(
+            scene,
+            product=rule_product,
+            event_ids=rule_event_ids,
+            events=rule_events,
+            require_checkpoint_hash=False,
+        )
+        self._save_run_checkpoint(
+            "near_final_ready",
+            sub_index=5,
+            artifact_refs={
+                "archive_rule_event_ids": rule_event_ids,
+                "archive_rule_events": rule_events,
+                "archive_rule_product": rule_product,
+            },
+            artifact_hashes={
+                "archive_rule_events": self._json_hash(rule_events),
+                "archive_rule_product": self._json_hash(rule_product),
+            },
+        )
+
+    def _archive_stage_prose(
+        self, scene: SceneCard, contract, final_scene: FinalScene
+    ) -> None:
+        """归档第 6 步：正文事件抽取（可选的 LLM 节点；上次被本地拒掉的抽取从账本恢复，不再调一次）。"""
+        from novel_system.services.narrative_event_log import NarrativeEventLog
+
+        self._reconcile_execution_step("archive:prose_event_extract:0")
+        recovered_prose = self._recover_archive_prose_rejection()
+        if recovered_prose is None:
+            prose_result, prose_event_ids = self._record_prose_events(
+                NarrativeEventLog(self.session),
+                scene,
+                self._archive_event_base(scene, contract),
+                final_scene.content,
+                final_scene_row_id=final_scene.row_id,
+                return_event_ids=True,
+            )
+        else:
+            prose_result, prose_event_ids = recovered_prose, []
+        self.session.flush()
+        prose_events = self._narrative_event_snapshots(prose_event_ids)
+        extraction_snapshot = prose_result.product_snapshot()
+        prose_product = self._archive_product(
+            scene=scene,
+            kind="prose_extraction",
+            outcome=extraction_snapshot["outcome"],
+            step_key="archive:prose_event_extract:0",
+            input_hash=self._text_hash(final_scene.content),
+            extraction=extraction_snapshot,
+            event_ids=prose_event_ids,
+            events=prose_events,
+        )
+        if prose_result.llm_call_id is not None:
+            prose_parent = self.session.get(LlmCall, prose_result.llm_call_id)
+            if prose_parent is None:
+                raise LLMAccountingError(
+                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                    "prose extraction product parent disappeared before archive checkpoint",
+                )
+            prose_parent.response_payload_summary = sanitize_audit_summary(
+                {
+                    **dict(prose_parent.response_payload_summary or {}),
+                    "archive_prose_product_hash": self._json_hash(prose_product),
+                }
+            )
+        self.session.flush()
+        self._validate_archive_prose_checkpoint(
+            scene,
+            contract,
+            product=prose_product,
+            event_ids=prose_event_ids,
+            events=prose_events,
+            require_checkpoint_hash=False,
+        )
+        self._save_run_checkpoint(
+            "near_final_ready",
+            sub_index=6,
+            artifact_refs={
+                "archive_prose_product": prose_product,
+                "archive_prose_event_ids": prose_event_ids,
+                "archive_prose_events": prose_events,
+            },
+            artifact_hashes={
+                "archive_prose_product": self._json_hash(prose_product),
+                "archive_prose_events": self._json_hash(prose_events),
+            },
+        )
+
+    def _stage_archive_prose_extraction(
+        self, state: SceneRunState, final_scene: FinalScene
+    ) -> None:
+        """检查点里的抽取结果只是候选：交给正史复核台账（待定的行在重放里看不见）。每次走过第 6 步都做（幂等）。"""
+        prose_checkpoint = dict(
+            ((state.run_checkpoint_json or {}).get("artifact_refs") or {}).get(
+                "archive_prose_product"
+            )
+            or {}
+        )
+        extraction_checkpoint = dict(prose_checkpoint.get("extraction") or {})
+        from novel_system.services.canon_continuity import CanonContinuityService
+
+        CanonContinuityService(self.session).stage_extraction(
+            final_scene.row_id,
+            outcome=str(extraction_checkpoint.get("outcome") or "not_invoked"),
+            event_ids=list(prose_checkpoint.get("event_ids") or []),
+            reason=extraction_checkpoint.get("reason"),
+            error_code=extraction_checkpoint.get("error_code"),
+        )
+
+    def _validate_archive_stage_product(
+        self,
+        stage: ArchiveStage,
+        scene: SceneCard,
+        final_scene: FinalScene,
+        product: dict[str, Any] | None = None,
+        *,
+        require_checkpoint_hash: bool = True,
+    ) -> dict[str, Any]:
+        """按表复验第 7..11 步的一份产品（``product`` 为空就读检查点里的那份）。"""
+        validate = getattr(self, stage.validate)
+        if stage.validate_takes_final_scene:
+            return validate(
+                scene,
+                final_scene,
+                product,
+                require_checkpoint_hash=require_checkpoint_hash,
+            )
+        return validate(scene, product, require_checkpoint_hash=require_checkpoint_hash)
+
+    def _run_archive_style_reading(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
+        """归档第 11 步：归档终稿的「像不像」读数。风格参考 v3 删了漂移驾驶；这个槽位的 kind / 步位键 / 哈希键保持原名，
+        已持久化的检查点照常续跑。"""
+        drift_result = self._record_archive_fidelity_reading(scene)
+        return self._archive_product(
+            scene=scene,
+            kind="style_drift",
+            outcome=drift_result["outcome"],
+            step_key="archive:style_drift:0",
+            input_hash=self._text_hash(final_scene.content),
+            **{key: value for key, value in drift_result.items() if key != "outcome"},
+        )
 
     def _near_final_checkpoint_progress(self) -> int:
         if self._execution_id is None or self._checkpoint_service is None:
@@ -1690,27 +1682,17 @@ class ArchiveCheckpointMixin:
         return product
 
     def _archive_manifest(self) -> list[dict[str, Any]]:
-        entries = [
-            (4, "core_archive", "archive_core"),
-            (5, "rule_events", "archive_rule_product"),
-            (6, "prose_extraction", "archive_prose_product"),
-            (7, "vector_index", "archive_vector_product"),
-            (8, "chapter_aggregate", "archive_chapter_product"),
-            (9, "volume_aggregate", "archive_volume_product"),
-            (10, "chapter_near_final", "archive_chapter_evaluation_product"),
-            (11, "style_drift", "archive_drift_product"),
-        ]
         hashes = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
             "artifact_hashes", {}
         )
         manifest = [
             {
-                "sub_index": sub_index,
-                "kind": kind,
-                "hash_key": hash_key,
-                "product_hash": hashes.get(hash_key),
+                "sub_index": stage.sub_index,
+                "kind": stage.kind,
+                "hash_key": stage.hash_key,
+                "product_hash": hashes.get(stage.hash_key),
             }
-            for sub_index, kind, hash_key in entries
+            for stage in ARCHIVE_STAGES
         ]
         if any(not isinstance(entry["product_hash"], str) for entry in manifest):
             raise checkpoint_corrupt("archive manifest is incomplete")
@@ -1737,13 +1719,6 @@ class ArchiveCheckpointMixin:
             self._validate_archive_rule_events_checkpoint(scene)
         if through >= 6:
             self._validate_archive_prose_checkpoint(scene, contract)
-        if through >= 7:
-            self._validate_archive_vector_product(scene, final_scene)
-        if through >= 8:
-            self._validate_archive_chapter_product(scene)
-        if through >= 9:
-            self._validate_archive_volume_product(scene)
-        if through >= 10:
-            self._validate_archive_chapter_evaluation_product(scene)
-        if through >= 11:
-            self._validate_archive_drift_product(scene)
+        for stage in ARCHIVE_PRODUCT_STAGES:
+            if through >= stage.sub_index:
+                self._validate_archive_stage_product(stage, scene, final_scene)
