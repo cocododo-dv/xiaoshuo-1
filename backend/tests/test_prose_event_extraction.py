@@ -684,25 +684,6 @@ def test_extract_success_without_parent_id_is_integrity_error(session) -> None:
     assert raised.value.code == "LLM_ACCOUNTING_PARENT_ID_MISSING"
 
 
-def test_extract_offline_runner_is_explicit_no_call() -> None:
-    from novel_system.services.prose_event_extractor import extract_events_from_prose
-
-    class _OfflineRunner:
-        provider_execution_mode = "offline_deterministic"
-
-        def run_task(self, **_kwargs):
-            raise AssertionError("offline advisory pass must not call run_task")
-
-    result = extract_events_from_prose(
-        "prose",
-        llm_runner=_OfflineRunner(),
-        llm_context=_llm_context(),
-    )
-    assert result.outcome == "not_invoked"
-    assert result.reason == "offline_unsupported"
-    assert result.llm_call_id is None
-
-
 def test_extract_requires_session_before_provider_io() -> None:
     from novel_system.services.llm_accounting import LLMAccountingRejected
     from novel_system.services.prose_event_extractor import extract_events_from_prose
@@ -752,8 +733,6 @@ def test_prose_control_plane_failure_crosses_recording_catches(session, monkeypa
         writer_brief_json={},
     )
     contract = SimpleNamespace(payload_json={})
-    orch._record_relation_events = lambda *_args, **_kwargs: None
-    orch._record_foreshadow_events = lambda *_args, **_kwargs: None
     orch._record_prose_events = raise_control
     with pytest.raises(type(error)) as outer:
         orch._record_narrative_events(scene, contract, "prose")

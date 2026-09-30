@@ -1,7 +1,3 @@
-param(
-    [string]$Distro = "Ubuntu-24.04"
-)
-
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -47,7 +43,6 @@ function Invoke-NativeStep {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $windowsScript = Join-Path $repoRoot "scripts\verify_windows.ps1"
-$repoRootForWslPath = $repoRoot -replace "\\", "/"
 
 $windowsArgs = @("-ExecutionPolicy", "Bypass", "-File", $windowsScript)
 Invoke-NativeCommand -Label "Windows verification lane" -FilePath "powershell" -ArgumentList $windowsArgs
@@ -58,12 +53,3 @@ Invoke-NativeCommand -Label "Windows verification lane" -FilePath "powershell" -
 # everything down. Needs Playwright installed in frontend-react/ (cd frontend-react; npm ci).
 $reactE2eScript = Join-Path $repoRoot "scripts\verify_react_e2e.ps1"
 Invoke-NativeCommand -Label "React mainline contract E2E (run-smokes)" -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $reactE2eScript)
-
-$repoRootWsl = (& wsl.exe -d $Distro wslpath -a "$repoRootForWslPath" | Out-String).Trim()
-if (-not $repoRootWsl) {
-    throw "Could not resolve the repository path inside WSL."
-}
-
-$bashCommand = "cd '$repoRootWsl' && bash scripts/verify_wsl_strict.sh"
-
-Invoke-NativeCommand -Label "WSL strict Chroma verification lane" -FilePath "wsl.exe" -ArgumentList @("-d", $Distro, "bash", "-lc", $bashCommand)

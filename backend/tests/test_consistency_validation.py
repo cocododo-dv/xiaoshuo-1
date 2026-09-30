@@ -97,7 +97,7 @@ def _seed_project(session) -> None:
 def _seed_character_state(log: NarrativeEventLog) -> None:
     """Establish the known character/entity truth table via event log.
 
-    After these events, the projected state (up to scene_seq=4) is:
+    After these events, the projected state (up to the fourth setup scene) is:
 
     林远:
       alive        = alive
@@ -481,17 +481,17 @@ class TestConsistencyValidation:
         """Verify the seeded events produce the expected character states."""
         log = self._setup(session)
 
-        lin_state = log.project_character_state("林远", PROJECT_ID, up_to_scene_seq=4)
+        lin_state = log.project_character_state("林远", PROJECT_ID, up_to_scene_id=SETUP_SCENE_IDS[-1])
         assert lin_state.get("alive") == "alive"
         assert lin_state.get("location") == "北境"
         assert lin_state.get("missing_limb") == "right_arm"
         assert lin_state.get("has_item") == "lost:断剑"
 
-        su_state = log.project_character_state("苏晚", PROJECT_ID, up_to_scene_seq=4)
+        su_state = log.project_character_state("苏晚", PROJECT_ID, up_to_scene_id=SETUP_SCENE_IDS[-1])
         assert su_state.get("alive") == "alive"
         assert su_state.get("location") == "沧澜城"
 
-        mayor_state = log.project_character_state("沧澜城城主", PROJECT_ID, up_to_scene_seq=4)
+        mayor_state = log.project_character_state("沧澜城城主", PROJECT_ID, up_to_scene_id=SETUP_SCENE_IDS[-1])
         assert mayor_state.get("alive") == "dead"
 
     def test_facts_checked_count(self, session) -> None:

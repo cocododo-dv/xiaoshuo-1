@@ -62,7 +62,7 @@ def test_projection_suppresses_non_pov_secret_content(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
-        PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["X", "Y"],
+        PROJECT, scene_id=f"{CHAPTER}_SC02", pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert "X杀了市长" not in out            # 秘密正文不得泄漏
     assert "码头" in out                     # 公共事实照旧注入
@@ -77,7 +77,7 @@ def test_projection_keeps_pov_owned_secret(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
-        PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["X", "Y"],
+        PROJECT, scene_id=f"{CHAPTER}_SC02", pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert "Y藏了钥匙" in out
 
@@ -93,7 +93,7 @@ def test_projection_keeps_secret_revealed_to_pov(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
-        PROJECT, scene_seq=3, pov_character_id="Y", onstage_character_ids=["X", "Y"],
+        PROJECT, scene_id=f"{CHAPTER}_SC03", pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert "地图在钟楼" in out
 
@@ -107,7 +107,7 @@ def test_projection_pov_false_belief_injected_others_suppressed(session) -> None
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
-        PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["X", "Y"],
+        PROJECT, scene_id=f"{CHAPTER}_SC02", pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert "Y以为盟友还活着" in out          # POV 自己的错误信念
     assert "X以为自己没暴露" not in out       # 他人错误信念内容抑制
@@ -123,7 +123,7 @@ def test_projection_suspected_marked_not_as_fact(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
-        PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["Y"],
+        PROJECT, scene_id=f"{CHAPTER}_SC02", pov_character_id="Y", onstage_character_ids=["Y"],
     )
     assert "怀疑" in out or "尚未确证" in out or "suspect" in out.lower()
 
@@ -135,7 +135,7 @@ def test_projection_onstage_derivation_feeds_pov_known(session) -> None:
     session.commit()
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
-    known = proj.pov_known_fact_values(PROJECT, scene_seq=2, pov_character_id="Y")
+    known = proj.pov_known_fact_values(PROJECT, None, "Y", scene_id=f"{CHAPTER}_SC02")
     assert "旧仓库" in known
 
 
@@ -149,10 +149,10 @@ def test_projection_no_secrets_public_facts_identical_to_full(session) -> None:
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     log = NarrativeEventLog(session)
     pov_out = proj.format_state_for_prompt(
-        PROJECT, scene_seq=2, pov_character_id="A", onstage_character_ids=["A"],
+        PROJECT, scene_id=f"{CHAPTER}_SC02", pov_character_id="A", onstage_character_ids=["A"],
     )
     full_out = log.format_state_for_prompt(
-        PROJECT, scene_seq=2, onstage_character_ids=["A"],   # pov=None → 全量
+        PROJECT, scene_id=f"{CHAPTER}_SC02", onstage_character_ids=["A"],   # pov=None → 全量
     )
     # 公共事实逐条保留（无秘密可减 → 角色状态段等价）
     assert "location: 北境" in pov_out
@@ -174,7 +174,7 @@ def test_asymmetry_digest_pov_hides_other_secret(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.information_asymmetry_digest(
-        PROJECT, 2, ["X", "Y"], pov_character_id="Y",
+        PROJECT, None, ["X", "Y"], scene_id=f"{CHAPTER}_SC02", pov_character_id="Y",
     )
     assert "X毒了酒" not in out
     assert "Secrets held by X" not in out
@@ -199,7 +199,7 @@ def test_asymmetry_digest_pov_shows_own_exclusive_knowledge(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.information_asymmetry_digest(
-        PROJECT, 2, ["X", "Y"], pov_character_id="Y",
+        PROJECT, None, ["X", "Y"], scene_id=f"{CHAPTER}_SC02", pov_character_id="Y",
     )
     assert "密道在西墙" in out          # POV 独有认知可见
     assert "内奸是Y" not in out         # 他人独有认知（POV 未知）内容不可见

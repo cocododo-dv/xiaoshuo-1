@@ -48,7 +48,7 @@ if (-not $FrontendOnly) {
     for ($shardIndex = 0; $shardIndex -lt $BackendShardCount; $shardIndex++) {
         $junitPath = Join-Path $backendResultsDir ("backend-windows-shard-{0}.xml" -f $shardIndex)
         Invoke-NativeStep `
-            -Label ("Backend pytest non-Chroma shard {0}/{1}" -f ($shardIndex + 1), $BackendShardCount) `
+            -Label ("Backend pytest shard {0}/{1}" -f ($shardIndex + 1), $BackendShardCount) `
             -WorkingDirectory $backendDir `
             -FilePath $backendPython `
             -ArgumentList @(
@@ -57,7 +57,6 @@ if (-not $FrontendOnly) {
                 "--shard-count", "$BackendShardCount",
                 "--",
                 "-q",
-                "-m", "not chroma_integration",
                 "--junitxml=$junitPath"
             )
     }

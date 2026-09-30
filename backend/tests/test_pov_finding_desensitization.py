@@ -66,7 +66,7 @@ def test_finding_referencing_non_pov_secret_excluded_from_auto_patch(session) ->
     }
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     safe, redacted = proj.desensitize_findings(
-        [finding_secret, finding_public], PROJECT, scene_seq=2,
+        [finding_secret, finding_public], PROJECT, None, scene_id=f"{CHAPTER}_SC02",
         pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert finding_public in safe
@@ -83,7 +83,7 @@ def test_finding_on_public_fact_passes_through(session) -> None:
     }
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     safe, redacted = proj.desensitize_findings(
-        [finding_public], PROJECT, scene_seq=2,
+        [finding_public], PROJECT, None, scene_id=f"{CHAPTER}_SC02",
         pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert safe == [finding_public]
@@ -100,7 +100,7 @@ def test_pov_owned_secret_finding_passes_through(session) -> None:
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     # POV=X 本人 → 该秘密对 X 不是"非 POV 秘密" → 放行。
     safe, redacted = proj.desensitize_findings(
-        [finding_pov_secret], PROJECT, scene_seq=2,
+        [finding_pov_secret], PROJECT, None, scene_id=f"{CHAPTER}_SC02",
         pov_character_id="X", onstage_character_ids=["X", "Y"],
     )
     assert safe == [finding_pov_secret]
@@ -116,7 +116,7 @@ def test_redact_brief_drops_secret_lines(session) -> None:
         "加强场景的节奏与钩子。",                          # 纯软性 → 保留
     ]
     kept = proj.redact_brief(
-        brief, PROJECT, scene_seq=2,
+        brief, PROJECT, None, scene_id=f"{CHAPTER}_SC02",
         pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
     assert "加强场景的节奏与钩子。" in kept
@@ -129,7 +129,7 @@ def test_desensitize_noop_without_pov(session) -> None:
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     findings = [{"expected": "X是幕后凶手"}]
     safe, redacted = proj.desensitize_findings(
-        findings, PROJECT, scene_seq=2, pov_character_id=None,
+        findings, PROJECT, None, scene_id=f"{CHAPTER}_SC02", pov_character_id=None,
     )
     assert safe == findings
     assert redacted == []

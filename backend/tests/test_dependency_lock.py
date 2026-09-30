@@ -79,26 +79,17 @@ def test_hashed_default_requirements_export_matches_uv_resolution() -> None:
     assert "--hash=sha256:" in text
 
 
-def test_chroma_is_an_explicit_optional_dependency() -> None:
+def test_chroma_is_gone_from_the_dependency_graph() -> None:
+    """Chroma 后端已删除（批准 #1，重评 R1）：没有 chroma 附加依赖、没有它的哈希锁，uv 的解析里也没有 chromadb。"""
     project = tomllib.loads((BACKEND_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    core_names = {
-        canonicalize_name(Requirement(value).name)
-        for value in project["project"]["dependencies"]
-    }
-    chroma_names = {
-        canonicalize_name(Requirement(value).name)
-        for value in project["project"]["optional-dependencies"]["chroma"]
-    }
+    lock = tomllib.loads((BACKEND_ROOT / "uv.lock").read_text(encoding="utf-8"))
 
-    assert "chromadb" not in core_names
-    assert chroma_names == {"chromadb"}
-
-
-def test_hashed_chroma_requirements_export_is_committed() -> None:
-    text = (BACKEND_ROOT / "requirements-chroma.lock").read_text(encoding="utf-8")
-    assert "--extra chroma" in text
-    assert "chromadb==1.5.9" in text
-    assert "--hash=sha256:" in text
+    assert "chroma" not in project["project"]["optional-dependencies"]
+    assert not (BACKEND_ROOT / "requirements-chroma.lock").exists()
+    resolved_names = {canonicalize_name(package["name"]) for package in lock["package"]}
+    assert "chromadb" not in resolved_names
+    markers = project["tool"]["pytest"]["ini_options"]["markers"]
+    assert not any(marker.startswith("chroma_integration") for marker in markers)
 
 
 def test_runtime_timezone_and_node_lock_ownership_are_explicit() -> None:

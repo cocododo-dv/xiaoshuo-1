@@ -7435,18 +7435,6 @@ class Orchestrator:
             return_event_ids=return_event_ids,
         )
 
-    def _record_relation_events(
-        self,
-        log,
-        scene: SceneCard,
-        base: dict,
-        pov: str | None,
-        all_chars: list[str],
-    ) -> None:
-        return self._archive_effects()._record_relation_events(
-            log, scene, base, pov, all_chars
-        )
-
 
     @staticmethod
     def _index_scene_to_vector_store(

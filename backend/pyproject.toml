@@ -28,9 +28,6 @@ dev = [
   "pytest>=9.0.3,<10",
   "ruff>=0.16,<1"
 ]
-chroma = [
-  "chromadb==1.5.9"
-]
 
 [tool.setuptools.package-dir]
 "" = "src"
@@ -47,7 +44,6 @@ testpaths = ["tests"]
 addopts = "--strict-markers --strict-config"
 faulthandler_timeout = 300
 markers = [
-  "chroma_integration: requires a real Chroma runtime in Linux or WSL",
   "consistency_validation: blueprint §17 Action B recall/precision tests",
 ]
 
