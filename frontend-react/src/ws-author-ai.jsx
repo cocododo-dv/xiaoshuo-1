@@ -1,29 +1,29 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { WsChapterPlan, cpFieldLabel, cpPatchRows, cpRowsToPatch } from "./ws-chapter-plan.jsx";
+import { WsAuthorAi, cpFieldLabel, cpPatchRows, cpRowsToPatch } from "./ws-author-ai-store.js";
 import { Notice, Tabs, Tag } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 
 /* ==========================================================
-   章节编排 · AI 编排 UI（docs/chapter-arrangement-llm-design-2026-07-16.md §7）
-   「计划」在章节编排里有三种意思，名字分开：这里是 AI 编排（store 是 WsChapterPlan）；
-   「整理章节结构」是构思的分章面板（WsChapterPlanPanel）；构思条（ArrPlanStrip）说这一章在构思里是什么。
+   章节编排 · AI 编排 UI（docs/chapter-arrangement-llm-design-2026-07-16.md §7；store 是 ws-author-ai-store.js 的 WsAuthorAi）
    两个挂点：
    · ArrAiArrange —— 章节详情里唯一的「AI 编排」卡，三个页签：
        蓝图（ArrAiBlueprint：读 / 改 / 重生成）· 方向（三个编排方向）· 补全（一键补全 + 逐条确认的补丁 → plan/apply）
    · ArrAiHealth —— 右栏「章节体检」里的 AI 体检（规则体检免费兜底，AI 补结构性判断）
    所有 LLM 产物都是咨询式补丁：必须经作者逐条确认，没有静默改卡。
+   没有可用模型时后端拒绝（409 + author_action），这里只给「去系统配置」——不拿规则算的东西冒充 AI 结果；
+   一键补全碰上没有模型时另列一份待补清单（按空槽算的，明说不是 AI）。
    失败不弹浏览器对话框：store 把错误挂在 action.error 上，这里就地说清是哪一步没成。
    ========================================================== */
 
 const { useState: useStP, useEffect: useEfP, useRef: useRefP, useSyncExternalStore: useSyncP } = React;
 
-function useChapterPlan(chapterId) {
-  useSyncP(WsChapterPlan.subscribe, () => WsChapterPlan.version());
-  return WsChapterPlan.snapshot(chapterId);
+function useAuthorAi(chapterId) {
+  useSyncP(WsAuthorAi.subscribe, () => WsAuthorAi.version());
+  return WsAuthorAi.snapshot(chapterId);
 }
 
-/* LLM 未配置时后端给的 author_action：引导而非阻断（去系统配置由宿主的 goView 决定怎么走） */
+/* 没有可用模型时后端给的 author_action：引导而非阻断（去系统配置由宿主的 goView 决定怎么走） */
 function ArrAiActionHint({ action, onConfigureModel }) {
   if (!action) return null;
   return (
@@ -61,7 +61,6 @@ const ARR_AI_DEGRADED = {
   chapter_architecture: "未生成章节蓝图",
   snowflake_canon: "无雪花构思可用",
   narrative_state: "无叙事事件账本",
-  author_preferences: "无作者偏好档案",
 };
 function ArrAiDegraded({ slots }) {
   const items = (slots || []).map((s) => ARR_AI_DEGRADED[s]).filter(Boolean);
@@ -97,14 +96,14 @@ const ARR_BP_FIELDS = [
 
 function ArrAiBlueprint({ ch, locked, active, draft, setDraft }) {
   const chapterId = ch && ch.backendId;
-  const snap = useChapterPlan(chapterId);
+  const snap = useAuthorAi(chapterId);
   const busy = snap.action.busy;
   const status = snap.arch.status;
 
   /* 打开蓝图页签时读一次；上次读失败就再读一次（以前只在 idle 时读，失败后要刷新整页才会重试） */
   useEfP(() => {
     if (active && chapterId && (status === "idle" || status === "error")) {
-      WsChapterPlan.loadArchitecture(chapterId).catch(() => {});
+      WsAuthorAi.loadArchitecture(chapterId).catch(() => {});
     }
     // status 变化不重新触发：失败后等作者再次打开页签，不在后台反复重试
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -118,7 +117,7 @@ function ArrAiBlueprint({ ch, locked, active, draft, setDraft }) {
 
   const save = async () => {
     if (!draft) return;
-    try { await WsChapterPlan.saveArchitecture(chapterId, draft); setDraft(null); } catch (e) { /* 错误在下方就地显示 */ }
+    try { await WsAuthorAi.saveArchitecture(chapterId, draft); setDraft(null); } catch (e) { /* 错误在下方就地显示 */ }
   };
   const regenerate = async () => {
     if (arch && !(await wsConfirm({
@@ -126,7 +125,7 @@ function ArrAiBlueprint({ ch, locked, active, draft, setDraft }) {
       body: "新蓝图会取代现在这一版（旧版留档，但这里不能再切回去）。",
       confirmLabel: "重新生成",
     }))) return;
-    try { const next = await WsChapterPlan.generateArchitecture(chapterId); if (next) setDraft(null); } catch (e) { /* 同上 */ }
+    try { const next = await WsAuthorAi.generateArchitecture(chapterId); if (next) setDraft(null); } catch (e) { /* 同上 */ }
   };
 
   return (
@@ -137,6 +136,11 @@ function ArrAiBlueprint({ ch, locked, active, draft, setDraft }) {
         {draft ? <Tag tone="warn" className="arr-ai-unsaved">有未保存的改动</Tag> : null}
       </p>
       {status === "loading" && <p className="arr-sync" role="status">正在读取章节蓝图…</p>}
+      {arch && arch.designChanged && (
+        <Notice tone="warn" className="arr-ai-note" title="设计改过，蓝图可能过时" testId="arr-ai-design-changed">
+          {arch.designChanged.message || "这份蓝图写好之后，构思或参考书又改过：蓝图照旧保留、照旧用于起草；需要时改写或重新生成。"}
+        </Notice>
+      )}
       {status === "error" && (
         <Notice tone="danger" className="arr-ai-note">章节蓝图读取失败：{(snap.arch.error && snap.arch.error.message) || "请稍后再打开这个页签"}</Notice>
       )}
@@ -204,7 +208,7 @@ const ARR_AI_TABS = [
    ========================================================== */
 function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
   const chapterId = ch && ch.backendId;
-  const snap = useChapterPlan(chapterId);
+  const snap = useAuthorAi(chapterId);
   const [tab, setTab] = useStP("blueprint");
   const [hint, setHint] = useStP("");
   const [checked, setChecked] = useStP({});
@@ -224,12 +228,12 @@ function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
 
   if (!chapterId) return null;
 
-  const runCandidates = () => WsChapterPlan.requestCandidates(chapterId, hint.trim() || undefined).catch(() => {});
+  const runCandidates = () => WsAuthorAi.requestCandidates(chapterId, hint.trim() || undefined).catch(() => {});
   const runFill = (candidate) => {
     setTab("fill");
-    return WsChapterPlan.requestFill(chapterId, candidate ? { candidate } : {})
+    return WsAuthorAi.requestFill(chapterId, candidate ? { candidate } : {})
       .then((fill) => {
-        if (fill && !fill.offline) {
+        if (fill) {
           const rows = cpPatchRows(fill.patch, sceneNameOf);
           setChecked(Object.fromEntries(rows.map((r) => [r.key, true])));  // 默认全选，作者按行取消
         }
@@ -237,12 +241,12 @@ function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
       .catch(() => {});
   };
   const fill = snap.fill;
-  const rows = fill && !fill.offline ? cpPatchRows(fill.patch, sceneNameOf) : [];
+  const rows = fill ? cpPatchRows(fill.patch, sceneNameOf) : [];
   const checkedCount = rows.filter((row) => checked[row.key]).length;
   const applyChecked = () => {
     const patch = cpRowsToPatch(rows, checked);
     if (!Object.keys(patch.drama).length && !patch.scenes.length && !patch.append_scenes.length) return;
-    WsChapterPlan.applyPatch(chapterId, patch).catch(() => {});
+    WsAuthorAi.applyPatch(chapterId, patch).catch(() => {});
   };
   const planOwnedScenes = (ch.scenes || []).some((s) => s.design && s.design.owner === "plan");
   const tabs = ARR_AI_TABS.map((t) => ({
@@ -322,17 +326,22 @@ function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
             <span className="arr-field-hint">只填空着的格子；写入前逐条勾选。</span>
           </div>
           <ArrAiError snap={snap} kinds={["fill", "apply"]} />
+          {!fill && snap.gaps && (
+            <div className="arr-sync" data-testid="arr-ai-gaps">
+              {snap.gaps.gaps.length ? (
+                <>
+                  还空着的格子（按空槽列出，不是 AI 的建议）：
+                  <ul className="arr-ai-bullets">
+                    {snap.gaps.gaps.map((g, i) => <li key={i}>{g}</li>)}
+                  </ul>
+                </>
+              ) : "戏剧卡与场景卡都没有空着的格子。"}
+            </div>
+          )}
           {fill && (
             <div className="arr-ai-list">
               <ArrAiDegraded slots={fill.degraded} />
-              {fill.offline ? (
-                <div className="arr-sync">
-                  AI 还没接上，先给出待补清单：
-                  <ul className="arr-ai-bullets">
-                    {fill.gaps.map((g, i) => <li key={i}>{g}</li>)}
-                  </ul>
-                </div>
-              ) : rows.length ? (
+              {rows.length ? (
                 <>
                   <ul className="arr-ai-rows">
                     {rows.map((row) => (
@@ -394,12 +403,12 @@ function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
 /* ==========================================================
    ArrAiHealth — 右栏「章节体检」里的 AI 体检
    ========================================================== */
+/* 后端 chapter_plan_llm.REVIEW_FINDING_CODES：伏笔逾期没有数据来源，已删；张力改读各场的冲突与挫败（批准 #17a） */
 const ARR_AI_FINDINGS = {
   PROMISE_UNGROUNDED: "承诺不落地",
   SCENE_FUNCTION_DUPLICATE: "场景功能重复",
   REACTIVE_MISSING: "缺反应场",
-  TENSION_FLAT: "张力不升级",
-  FORESHADOW_OVERDUE: "伏笔逾期",
+  TENSION_FLAT: "压力没有升级",
   POV_FATIGUE: "视角疲劳",
   HANDOFF_MISMATCH: "承接错位",
   EXIT_NO_CHANGE: "结尾无变化",
@@ -409,13 +418,13 @@ const ARR_AI_FINDINGS = {
 
 function ArrAiHealth({ ch, locked, onConfigureModel }) {
   const chapterId = ch && ch.backendId;
-  const snap = useChapterPlan(chapterId);
+  const snap = useAuthorAi(chapterId);
   if (!chapterId) return null;
   const busy = snap.action.busy;
   const review = snap.review;
-  const run = () => WsChapterPlan.requestReview(chapterId).catch(() => {});
+  const run = () => WsAuthorAi.requestReview(chapterId).catch(() => {});
   const applySuggestion = (finding) => {
-    WsChapterPlan.applyPatch(chapterId, finding.suggestion_patch).catch(() => {});
+    WsAuthorAi.applyPatch(chapterId, finding.suggestion_patch).catch(() => {});
   };
 
   return (
@@ -433,10 +442,7 @@ function ArrAiHealth({ ch, locked, onConfigureModel }) {
               <li key={i} className={`arr-check ${f.severity === "warn" ? "is-warn" : ""}`}>
                 {f.severity === "warn" ? <I.AlertTriangle size={13} /> : <I.Circle size={13} />}
                 <span className="arr-ai-finding">
-                  <span className="arr-check-label">
-                    {ARR_AI_FINDINGS[f.code] || ARR_AI_FINDINGS.OTHER}
-                    {review.source === "fallback" ? "" : " · AI"}
-                  </span>
+                  <span className="arr-check-label">{ARR_AI_FINDINGS[f.code] || ARR_AI_FINDINGS.OTHER} · AI</span>
                   <span className="arr-ai-finding-text">{f.summary || f.evidence}</span>
                   {f.suggestion_patch && !locked && (
                     <button type="button" className="btn btn-quiet btn-xs arr-ai-finding-apply" disabled={busy}
@@ -458,4 +464,4 @@ function ArrAiHealth({ ch, locked, onConfigureModel }) {
   );
 }
 
-export { ArrAiArrange, ArrAiBlueprint, ArrAiHealth };
+export { ArrAiArrange, ArrAiHealth };
