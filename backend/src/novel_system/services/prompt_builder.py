@@ -161,7 +161,6 @@ HARD_QC_TEMPLATE_NAMES = {
     "near_final_acceptance_review",
 }
 CHAPTER_REVIEW_TEMPLATE_NAMES = {
-    "chapter_summary",
     "chapter_near_final_review",
     "writer_deep_review",
 }

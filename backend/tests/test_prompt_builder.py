@@ -239,12 +239,6 @@ def test_prompt_builder_injects_literary_freshness_budget() -> None:
     assert "literary_freshness_budget" in payload["token_budget"]["included_sections"]
 
 
-def test_chapter_summary_schema_requires_carry_forward() -> None:
-    payload = PromptBuilder().build(_bundle_snapshot(), "chapter_summary")
-
-    assert payload["structured_schema"]["required"] == ["summary", "carry_forward"]
-
-
 def test_writer_passage_patch_schema_is_manual_only_and_targeted() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "writer_passage_patch")
 
@@ -319,7 +313,7 @@ def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
     hard_qc = builder.build(_bundle_snapshot(), "hard_qc", max_input_tokens=120)
     drafting = builder.build(_bundle_snapshot(), "style_draft", max_input_tokens=120)
     chapter_review = builder.build(
-        _bundle_snapshot(), "chapter_summary", max_input_tokens=120
+        _bundle_snapshot(), "chapter_near_final_review", max_input_tokens=120
     )
 
     assert hard_qc["token_budget"]["task_kind"] == "hard_qc"
