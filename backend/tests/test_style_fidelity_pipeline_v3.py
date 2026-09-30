@@ -444,7 +444,7 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
     fake = _JudgeLLM()
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (fake, True))
     dispatched: list[str] = []
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", dispatched.append)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", dispatched.append)
     text = "他把灯芯拨小了些，屋里的影子便大了一圈。门外的雨还没停。" * 30
 
     response = _post_check(client, {"text": text, "profile_id": profile_id}, "fid-check-text")
@@ -497,7 +497,7 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
     session.commit()
     fake = _JudgeLLM()
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (fake, True))
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", lambda _job_id: None)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", lambda _job_id: None)
 
     response = _post_check(client, {"scene_id": scene.scene_id}, "fid-check-scene")
     assert response.status_code == 200, response.text
@@ -539,7 +539,7 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
 
 def test_check_job_fails_loudly_when_the_judge_fails(client, session, monkeypatch) -> None:
     _book, profile_id = _check_profile(session)
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", lambda _job_id: None)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", lambda _job_id: None)
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_JudgeLLM(fail=True), True))
     text = "他把灯芯拨小了些，屋里的影子便大了一圈。" * 30
     failing = _post_check(client, {"text": text, "profile_id": profile_id}, "fid-check-fail")
@@ -571,7 +571,7 @@ def test_check_job_keeps_control_plane_failures_distinct(client, session, monkey
     """控制面失败（记账 / 用量不变式）原样上抛：作业按它自己的错误码失败，不包成「评审失败」、不降级成只有读数的检查
     （取代旧回测工人的同名边界测试）。"""
     _book, profile_id = _check_profile(session)
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", lambda _job_id: None)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", lambda _job_id: None)
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_JudgeLLM(), True))
     seen: list[BaseException] = []
 
