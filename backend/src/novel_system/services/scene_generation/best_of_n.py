@@ -21,6 +21,7 @@ from novel_system.services.scene_generation.contracts import (
     LINEAGE_FIRST_DRAFT_ACCEPTED,
     GenerationHost,
     ProductCallback,
+    StepKeys,
     StepReconciler,
     StyleGenerationResult,
     versioned_scene_artifact_id,
@@ -52,7 +53,7 @@ def generate_candidates(
     if not policy.style_first:
         bases = dict(resume_bases or {})
         if step_reconciler is not None and "initial:0" not in bases:
-            step_reconciler("style_draft:0")
+            step_reconciler(StepKeys.style_draft(0))
         return [
             svc.generate_style_draft(
                 scene_id,
@@ -142,7 +143,7 @@ def style_first_candidates(
             row_id=row_id,
             slot_key=slot_key,
             slot_order=idx,
-            execution_step_key=f"style_draft:{idx}",
+            execution_step_key=StepKeys.style_draft(idx),
             resume_base=resume_bases.get(slot_key),
             product_callback=product_callback,
             step_reconciler=step_reconciler,

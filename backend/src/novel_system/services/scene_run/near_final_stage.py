@@ -22,7 +22,12 @@ from novel_system.db.models import (
     SceneRunState,
     WriterEvaluation,
 )
-from novel_system.services.scene_generation import StyleGenerationResult, assess_rewrite_regressions, fidelity_probe
+from novel_system.services.scene_generation import (
+    StepKeys,
+    StyleGenerationResult,
+    assess_rewrite_regressions,
+    fidelity_probe,
+)
 from novel_system.services.scene_run.branch_control import is_derivable_control, near_final_eval0_control
 from novel_system.services.scene_run.constants import NEAR_FINAL_REWRITE_GATE_STAGE
 from novel_system.services.scene_run.near_final_gate import (
@@ -207,7 +212,7 @@ class NearFinalCheckpointMixin:
 
         if bool(control["rewrite_allowed"]):
             if progress < 1:
-                self._reconcile_execution_step("near_final_rewrite:0")
+                self._reconcile_execution_step(StepKeys.NEAR_FINAL_REWRITE)
                 rewrite_generation = (
                     self.scene_generation_service.generate_near_final_rewrite(
                         scene.scene_id,
@@ -216,7 +221,7 @@ class NearFinalCheckpointMixin:
                         source_content=source_generation.content,
                         revision_brief=self._near_final_rewrite_brief(eval0),
                         source_evaluation_id=str(eval0.get("evaluation_id") or ""),
-                        execution_step_key="near_final_rewrite:0",
+                        execution_step_key=StepKeys.NEAR_FINAL_REWRITE,
                     )
                 )
                 rewrite_gate = _near_final_rewrite_gate_summary(rewrite_generation)
@@ -663,7 +668,7 @@ class NearFinalCheckpointMixin:
             or refs.get("near_rewrite_source_evaluation_id") != source_evaluation_id
             or refs.get("near_rewrite_bundle_id") != bundle["bundle_id"]
             or refs.get("near_rewrite_bundle_hash") != bundle["bundle_snapshot_hash"]
-            or step_key != "near_final_rewrite:0"
+            or step_key != StepKeys.NEAR_FINAL_REWRITE
             or self._text_hash(draft.content)
             != self._checkpoint_hash("near_rewrite_draft")
         ):

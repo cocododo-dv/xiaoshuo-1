@@ -30,6 +30,7 @@ from novel_system.services.scene_generation import (
     ProductCallback,
     ProductMetadata,
     RankingAudit,
+    StepKeys,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
@@ -445,7 +446,7 @@ class PipelineMixin:
                 )
             else:
                 if "initial:0" not in resume_bases:
-                    self._reconcile_execution_step("style_draft:0")
+                    self._reconcile_execution_step(StepKeys.style_draft(0))
                 candidates = [
                     self.scene_generation_service.generate_style_draft(
                         scene_id,

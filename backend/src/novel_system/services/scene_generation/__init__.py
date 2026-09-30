@@ -51,6 +51,7 @@ from novel_system.services.scene_generation.contracts import (
     ProductMetadata,
     RankingAudit,
     SceneGenerationPostprocessError,
+    StepKeys,
     StepReconciler,
     StyleGenerationResult,
     versioned_scene_artifact_id,
@@ -145,6 +146,7 @@ __all__ = [
     "StepReconciler",
     "ConstraintSnapshot",
     "SceneGenerationService",
+    "StepKeys",
     "StyleGenerationResult",
     "_anti_template_quality_gate",
     "_apply_style_length_patch",
@@ -243,7 +245,7 @@ class SceneGenerationService:
                 row_id=versioned_scene_artifact_id("draft_style", scene_id, bundle),
                 slot_key="initial:0",
                 slot_order=0,
-                execution_step_key="style_draft:0",
+                execution_step_key=StepKeys.style_draft(0),
                 resume_base=resume_base,
                 product_callback=product_callback,
                 step_reconciler=None,
@@ -267,7 +269,7 @@ class SceneGenerationService:
             source_draft_row_id=neutral_draft_row_id,
             source_draft_content=neutral_content,
             client_kind="style",
-            execution_step_key="style_draft:0",
+            execution_step_key=StepKeys.style_draft(0),
             attempt_details_extra={"source_neutral_draft_row_id": neutral_draft_row_id},
             product_slot_key="initial:0",
             product_slot_order=0,
@@ -314,7 +316,7 @@ class SceneGenerationService:
         source_style_content: str,
         rewrite_brief: list[str],
         source_qc_report_id: str,
-        execution_step_key: str = "soft_patch:0",
+        execution_step_key: str = StepKeys.SOFT_PATCH,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -367,7 +369,7 @@ class SceneGenerationService:
         source_content: str,
         revision_brief: list[str],
         source_evaluation_id: str,
-        execution_step_key: str = "near_final_rewrite:0",
+        execution_step_key: str = StepKeys.NEAR_FINAL_REWRITE,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)

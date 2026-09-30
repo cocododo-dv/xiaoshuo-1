@@ -21,7 +21,7 @@ from novel_system.db.models import (
     LlmCallAttempt,
     SceneDraft,
 )
-from novel_system.services.scene_generation import LINEAGE_FIRST_DRAFT_ACCEPTED, StyleGenerationResult
+from novel_system.services.scene_generation import LINEAGE_FIRST_DRAFT_ACCEPTED, StepKeys, StyleGenerationResult
 from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
 from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.settings import get_settings
@@ -324,7 +324,7 @@ class StyleCandidatesMixin:
                 or item.get("slot_index") != order
             ):
                 raise checkpoint_corrupt("style work-item prefix/slot identity is invalid")
-            base_step_key = f"style_draft:{order}"
+            base_step_key = StepKeys.style_draft(order)
             base = self._validate_style_artifact_descriptor(
                 item.get("base"),
                 scene_id=scene_id,
@@ -363,7 +363,7 @@ class StyleCandidatesMixin:
                 "de_template" if outcome["status"] == "completed" else "style_draft"
             )
             final_step_key = (
-                f"{base_step_key}:de_template"
+                StepKeys.de_template(base_step_key)
                 if outcome["status"] == "completed"
                 else base_step_key
             )
@@ -397,7 +397,7 @@ class StyleCandidatesMixin:
                     outcome,
                     scene_id=scene_id,
                     bundle=bundle,
-                    execution_step_key=f"{base_step_key}:de_template",
+                    execution_step_key=StepKeys.de_template(base_step_key),
                     source_base_row_id=base.row_id,
                 )
             if outcome["status"] == "rejected":
@@ -405,7 +405,7 @@ class StyleCandidatesMixin:
                     outcome,
                     scene_id=scene_id,
                     bundle=bundle,
-                    execution_step_key=f"{base_step_key}:de_template",
+                    execution_step_key=StepKeys.de_template(base_step_key),
                     source_base_row_id=base.row_id,
                 )
             products.append((base, final))

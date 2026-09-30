@@ -13,7 +13,6 @@ from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
     HumanReviewEvent,
-    LlmCall,
     QcReport,
     SceneCard,
     SceneDraft,
@@ -24,14 +23,15 @@ from novel_system.services.llm_accounting import (
     LLMAccountingError,
     LLMCallContext,
     is_llm_control_plane_failure,
+    stamp_product_hash,
 )
-from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 from novel_system.services.qc_engine import SoftQcDecision
 from novel_system.services.scene_generation import (
     STYLE_NOTICE_PATCH_REVERTED,
     STYLE_PATCH_KEEP_STEP,
+    StepKeys,
     StyleGenerationResult,
     fidelity_probe,
     style_notice,
@@ -144,7 +144,7 @@ class SoftQcCheckpointMixin:
                 )
             critique_summary = critique.product_snapshot()
 
-            self._reconcile_execution_step("soft_patch:auto_critique:0")
+            self._reconcile_execution_step(StepKeys.soft_patch("auto_critique"))
             patch_spend_allowed = bool(
                 critique.should_rewrite and optional_spend_allowed()
             )
@@ -186,7 +186,7 @@ class SoftQcCheckpointMixin:
                                 source_style_content=style_generation.content,
                                 rewrite_brief=critique_brief,
                                 source_qc_report_id=f"auto_critique_{scene_id}",
-                                execution_step_key="soft_patch:auto_critique:0",
+                                execution_step_key=StepKeys.soft_patch("auto_critique"),
                             )
                         )
                         critique_outcome = "patched"
@@ -219,18 +219,12 @@ class SoftQcCheckpointMixin:
                 patch_outcome=critique_outcome,
             )
             critique_product_hash = self._json_hash(critique_summary)
-            if critique.llm_call_id is not None:
-                critique_parent = self.session.get(LlmCall, critique.llm_call_id)
-                if critique_parent is None:
-                    raise LLMAccountingError(
-                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                        "auto-critique product parent disappeared before checkpoint commit",
-                    )
-                critique_parent.response_payload_summary = sanitize_audit_summary(
-                    {
-                        **dict(critique_parent.response_payload_summary or {}),
-                        "auto_critique_product_hash": critique_product_hash,
-                    }
+            if critique.llm_call_id is not None and not stamp_product_hash(
+                self.session, critique.llm_call_id, "auto_critique_product_hash", critique_product_hash
+            ):
+                raise LLMAccountingError(
+                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                    "auto-critique product parent disappeared before checkpoint commit",
                 )
             # 该摘要只绑定本次事务所见的产品与父账本；不宣称抵抗可同步改写
             # checkpoint、parent summary 与 ledger 的全库特权篡改。
@@ -245,21 +239,16 @@ class SoftQcCheckpointMixin:
                 else None
             )
             if patch_failure_product is not None:
-                patch_parent = self.session.get(
-                    LlmCall,
+                if not stamp_product_hash(
+                    self.session,
                     patch_failure_product["llm_call_id"],
-                )
-                if patch_parent is None:
+                    "auto_critique_patch_failure_hash",
+                    patch_failure_hash,
+                ):
                     raise LLMAccountingError(
                         "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                         "auto-critique patch failure parent disappeared before checkpoint commit",
                     )
-                patch_parent.response_payload_summary = sanitize_audit_summary(
-                    {
-                        **dict(patch_parent.response_payload_summary or {}),
-                        "auto_critique_patch_failure_hash": patch_failure_hash,
-                    }
-                )
                 self._validate_auto_critique_patch_failure_checkpoint(
                     scene_id,
                     patch_failure_product,
@@ -353,7 +342,7 @@ class SoftQcCheckpointMixin:
                     contract,
                     self._rewrite_brief_from_report(soft_qc0.qc_report_id),
                 )
-                self._reconcile_execution_step("soft_patch:soft_qc:0")
+                self._reconcile_execution_step(StepKeys.soft_patch("soft_qc"))
                 final_generation = self.scene_generation_service.generate_style_patch(
                     scene_id,
                     bundle,
@@ -361,7 +350,7 @@ class SoftQcCheckpointMixin:
                     source_style_content=style_generation.content,
                     rewrite_brief=rewrite_brief,
                     source_qc_report_id=soft_qc0.qc_report_id,
-                    execution_step_key="soft_patch:soft_qc:0",
+                    execution_step_key=StepKeys.soft_patch("soft_qc"),
                 )
                 self._save_run_checkpoint(
                     "soft_qc_ready",

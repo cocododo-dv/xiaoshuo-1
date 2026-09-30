@@ -132,6 +132,42 @@ class GenerationHost(Protocol):
     ) -> StyleGenerationResult: ...
 
 
+class StepKeys:
+    """编排器 ↔ 场景生成两侧共用的执行步骤键（B02-17）。
+
+    这些字符串写进 ``llm_calls.execution_step_key``、生成稿行与检查点：续跑按它认「这一步已经做过」、检查点校验按它
+    认产品——两侧必须拼出同一个字符串，改一个字都会让已有的检查点对不上（检查点格式的金标准测试守着）。
+    """
+
+    SOFT_PATCH = "soft_patch:0"  # 软补丁的缺省步位（编排器实际传带来源的那一种，见 :meth:`soft_patch`）
+    NEAR_FINAL_REWRITE = "near_final_rewrite:0"
+
+    @staticmethod
+    def style_draft(index: int = 0) -> str:
+        """第 ``index`` 份风格稿（单稿路径是 0；Best-of-N 按候选序号）。"""
+        return f"style_draft:{index}"
+
+    @staticmethod
+    def soft_patch(source: str) -> str:
+        """某一轮评审（``soft_qc`` / ``auto_critique``）之后的软补丁。"""
+        return f"soft_patch:{source}:0"
+
+    @staticmethod
+    def de_template(base: str) -> str:
+        """一份风格稿之后的去模板改写。"""
+        return f"{base}:de_template"
+
+    @staticmethod
+    def style_salvage(base: str) -> str:
+        """风格稿没过基础安全门时的风格挽救（占去模板改写的步位）。"""
+        return f"{base}:style_salvage"
+
+    @staticmethod
+    def length_patch_followup(base: str) -> str:
+        """去模板 / 挽救改写之后的长度补丁。"""
+        return f"{base}:length_patch_followup"
+
+
 # 来源稿标签:作者手笔直起的定向修改看到首稿,neutral_first 的风格稿看到已批准的中性稿。
 FIRST_DRAFT_SOURCE_LABEL = "First Draft (already in the reference author's hand)"
 NEUTRAL_DRAFT_SOURCE_LABEL = "Approved Neutral Draft"

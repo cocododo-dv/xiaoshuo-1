@@ -30,6 +30,7 @@ from novel_system.services.scene_generation.contracts import (
     GenerationHost,
     ProductCallback,
     SceneGenerationPostprocessError,
+    StepKeys,
     StepReconciler,
     StyleGenerationResult,
     versioned_scene_artifact_id,
@@ -430,9 +431,9 @@ def run_style_generation(
             )
             de_template_step_key = (
                 (
-                    f"{execution_step_key}:style_salvage"
+                    StepKeys.style_salvage(execution_step_key)
                     if use_style_salvage
-                    else f"{execution_step_key}:de_template"
+                    else StepKeys.de_template(execution_step_key)
                 )
                 if execution_step_key
                 else None
@@ -507,7 +508,7 @@ def run_style_generation(
                 )
                 if followup_source is not None:
                     followup_step_key = (
-                        f"{de_template_step_key}:length_patch_followup"
+                        StepKeys.length_patch_followup(de_template_step_key)
                         if de_template_step_key
                         else None
                     )

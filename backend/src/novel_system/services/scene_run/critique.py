@@ -19,7 +19,7 @@ from novel_system.db.models import (
 )
 from novel_system.services import auto_critique as _auto_critique
 from novel_system.services.llm_accounting import LLMAccountingError, LLMCallContext, validate_product_call
-from novel_system.services.scene_generation import SceneGenerationPostprocessError
+from novel_system.services.scene_generation import SceneGenerationPostprocessError, StepKeys
 from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
 from novel_system.settings import get_settings
 
@@ -53,7 +53,7 @@ class AutoCritiqueCheckpointMixin:
             node_id="style_patch",
             step="soft_patch",
             execution_id=execution_id or self._execution_id,
-            execution_step_key="soft_patch:auto_critique:0",
+            execution_step_key=StepKeys.soft_patch("auto_critique"),
             run_job_id=run_job_id if execution_id is not None else self._run_job_id,
         )
 
@@ -275,7 +275,7 @@ class AutoCritiqueCheckpointMixin:
             or not self._checkpoint_execution_owner_matches(
                 product.get("execution_id"), product.get("run_job_id")
             )
-            or product.get("execution_step_key") != "soft_patch:auto_critique:0"
+            or product.get("execution_step_key") != StepKeys.soft_patch("auto_critique")
             or product.get("provider_execution_mode") != "online"
             or not isinstance(product.get("reason"), str)
             or not isinstance(product.get("error_code"), str)
