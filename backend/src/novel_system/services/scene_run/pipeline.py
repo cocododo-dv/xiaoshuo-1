@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass, field
+from functools import partial
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -25,8 +27,13 @@ from novel_system.services import scene_budget
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.literary_quality import adversarial_rank_score
+from novel_system.services.qc_engine import HardQcDecision
 from novel_system.services.scene_criticality import classify_scene_with_context
-from novel_system.services.scene_generation import StyleGenerationResult, versioned_scene_artifact_id
+from novel_system.services.scene_generation import (
+    NeutralGenerationResult,
+    StyleGenerationResult,
+    versioned_scene_artifact_id,
+)
 from novel_system.services.scene_lookup import get_scene_or_404
 from novel_system.services.scene_run.constants import STYLE_PATCH_REVERTED_STOP_REASON
 from novel_system.services.scene_run.results import (
@@ -43,6 +50,30 @@ from novel_system.services.style_policy import style_policy_for_bundle
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass
+class SceneRunContext:
+    """一次 ``_run_scene_pipeline`` 在各 ``_phase_*`` 之间传的东西（阶段按顺序往里填）。"""
+
+    scene: SceneCard
+    state: SceneRunState
+    contract: Any
+    author_note: str | None
+    run_policy: str
+    planning: dict[str, Any] | None = None
+    bundle: dict[str, Any] | None = None
+    criticality: Any = None
+    neutral_generation: NeutralGenerationResult | None = None
+    hard_qc: HardQcDecision | None = None
+    n_candidates: int = 1
+    candidates: list[StyleGenerationResult] = field(default_factory=list)
+    style_generation: StyleGenerationResult | None = None
+    candidate_summaries: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def scene_id(self) -> str:
+        return self.scene.scene_id
+
+
 class PipelineMixin:
     def _run_scene_pipeline(
         self,
@@ -53,6 +84,49 @@ class PipelineMixin:
         # Wave 2/3（治理 §5.4/§5.5）：run_policy 现已落列（Wave 3 迁移 0062）。
         # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
         # quality_warning，由作者经 adopt-current 显式接受。Q0/Q1 阻断与模式无关。
+        ctx = self._phase_prelude(scene_id, author_note=author_note, run_policy=run_policy)
+        self._phase_budget(ctx)
+        self._phase_planning(ctx)
+        self._phase_bundle(ctx)
+        self._phase_criticality(ctx)
+        self._phase_first_draft(ctx)
+        self._phase_hard_qc(ctx)
+        if not ctx.hard_qc.should_continue:
+            self.session.flush()
+            # Wave 2 项 5：所有早退结果都携带 author_state 契约（含 latest_valid 指针）
+            return self._with_author_projection(
+                scene_id,
+                ctx.state,
+                {
+                    "scene_status": ctx.state.scene_status,
+                    "current_bundle_id": ctx.bundle["bundle_id"],
+                    "current_bundle_hash": ctx.bundle["bundle_snapshot_hash"],
+                    "current_qc_report_id": ctx.state.current_qc_report_id,
+                    "current_human_review_event_id": ctx.state.current_human_review_event_id,
+                    "hard_qc": qc_decision_payload(ctx.hard_qc),
+                },
+            )
+        self._phase_style_candidates(ctx)
+        paused = self._phase_selection_gate(ctx)
+        if paused is not None:
+            return paused
+        return self._finalize_after_style(
+            scene=ctx.scene,
+            state=ctx.state,
+            contract=ctx.contract,
+            bundle=ctx.bundle,
+            criticality=ctx.criticality,
+            planning=ctx.planning,
+            hard_qc_payload=qc_decision_payload(ctx.hard_qc),
+            style_generation=ctx.style_generation,
+            candidate_summaries=ctx.candidate_summaries if ctx.candidate_summaries else None,
+            run_policy=ctx.run_policy,
+        )
+
+    def _phase_prelude(
+        self, scene_id: str, *, author_note: str | None, run_policy: str
+    ) -> SceneRunContext:
+        """场景与运行状态（没有就按同一约定补建）、执行合同闸、落本次运行的生效策略。"""
         scene = get_scene_or_404(self.session, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
@@ -64,21 +138,11 @@ class PipelineMixin:
             scene_id, actor_ref="orchestrator"
         )
         if contract.status != "active":
-            detail_reason = "scene execution contract is not ready for drafting"
-            if contract.status == "blocked":
-                missing_fields = list(contract.missing_fields_json or [])
-                detail_reason = "scene execution contract is missing required fields"
-                raise DomainError(
-                    "SCENE_EXECUTION_CONTRACT_BLOCKED",
-                    detail_reason,
-                    status_code=409,
-                    details={
-                        "scene_id": scene_id,
-                        "execution_contract_id": contract.contract_id,
-                        "status": contract.status,
-                        "missing_fields": missing_fields,
-                    },
-                )
+            detail_reason = (
+                "scene execution contract is missing required fields"
+                if contract.status == "blocked"
+                else "scene execution contract is not ready for drafting"
+            )
             raise DomainError(
                 "SCENE_EXECUTION_CONTRACT_BLOCKED",
                 detail_reason,
@@ -92,280 +156,297 @@ class PipelineMixin:
             )
         # Wave 3（§6.1）：本次运行的生效策略落列（预算/使用量不在 _prepare 重置，§7.12）
         state.run_policy = run_policy
+        return SceneRunContext(
+            scene=scene,
+            state=state,
+            contract=contract,
+            author_note=author_note,
+            run_policy=run_policy,
+        )
 
-        # Wave 3（§4.6/§5.5）：确立场景 token 预算（N × 单发基线，N 取 NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER，
-        # 默认 0 = 不设上限；已设不覆盖）
+    def _phase_budget(self, ctx: SceneRunContext) -> None:
+        """``budget_ready``：确立场景 token 预算（N × 单发基线，N 取 NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER，
+        默认 0 = 不设上限；已设不覆盖）；续跑时复验预算基线。"""
         if not self._checkpoint_reached("budget_ready"):
-            state = scene_budget.ensure_scene_budget_initialized(self.session, scene_id)
+            ctx.state = scene_budget.ensure_scene_budget_initialized(self.session, ctx.scene_id)
             self._save_run_checkpoint(
                 "budget_ready",
-                artifact_refs={"scene_token_budget": state.scene_token_budget},
+                artifact_refs={"scene_token_budget": ctx.state.scene_token_budget},
                 artifact_hashes={
-                    "budget_basis": self._json_hash(state.scene_budget_basis_json or {})
+                    "budget_basis": self._json_hash(ctx.state.scene_budget_basis_json or {})
                 },
             )
         else:
-            self._validate_budget_checkpoint(state)
+            self._validate_budget_checkpoint(ctx.state)
 
+    def _phase_planning(self, ctx: SceneRunContext) -> None:
+        """``planning_ready`` 子游标 0..3：场景蓝图 → 章架构 → 人物压力 → 规划完成（每件产品一落库就存子检查点）。"""
+        scene_id = ctx.scene_id
         planning_progress = self._planning_checkpoint_progress()
-        if planning_progress < 3:
-            resume_planning_artifacts: dict[str, GenerationPlanningArtifact] = {}
-            if planning_progress >= 0:
-                self._validate_planning_prefix(scene_id, through=planning_progress)
-                blueprint = self._load_planning_blueprint_checkpoint(scene_id)
-                if planning_progress >= 1:
-                    resume_planning_artifacts["chapter_architecture"] = (
-                        self._load_planning_artifact_checkpoint(
-                            scene_id,
-                            prefix="planning_chapter_architecture",
-                            expected_step_key="planning:chapter_architecture",
-                            expected_kind="chapter_architecture",
-                        )
-                    )
-                if planning_progress >= 2:
-                    resume_planning_artifacts["character_pressure"] = (
-                        self._load_planning_artifact_checkpoint(
-                            scene_id,
-                            prefix="planning_character_pressure",
-                            expected_step_key="planning:character_pressure",
-                            expected_kind="character_pressure",
-                        )
-                    )
-            else:
-                # 风格参考 v3：蓝图版式要与这一场现在的风格策略相符（让位 → 事实版），否则重生成
-                existing_blueprint = self.scene_blueprint_service.reusable(scene_id)
-                blueprint_reused = existing_blueprint is not None
-                if existing_blueprint is None:
-                    self._reconcile_execution_step("scene_blueprint")
-                blueprint = self.scene_blueprint_service.ensure_for_scene(
-                    scene_id,
-                    execution_step_key="scene_blueprint",
-                )
-                blueprint_payload = self.scene_blueprint_service.serialize(blueprint)
-                assert blueprint_payload is not None
-                blueprint_refs = self._planning_artifact_refs(
-                    prefix="planning_scene_blueprint",
-                    serialized=blueprint_payload,
-                    execution_step_key="scene_blueprint",
-                    reused=blueprint_reused,
-                )
-                self._save_run_checkpoint(
-                    "planning_ready",
-                    sub_index=0,
-                    artifact_refs=blueprint_refs
-                    | {"scene_blueprint": blueprint_payload},
-                    artifact_hashes={
-                        "planning_scene_blueprint": self._json_hash(blueprint_payload),
-                        "planning_scene_blueprint_provenance": self._json_hash(
-                            planning_provenance(
-                                blueprint_refs, "planning_scene_blueprint"
-                            )
-                        ),
-                        "scene_blueprint": self._json_hash(blueprint_payload),
-                    },
-                    strategy="planning_in_progress",
-                )
-
-            def _planning_artifact_committed(
-                kind: str,
-                serialized: dict[str, Any],
-                reused: bool,
-            ) -> None:
-                substeps = {
-                    "chapter_architecture": (
-                        1,
-                        "planning_chapter_architecture",
-                        "planning:chapter_architecture",
-                    ),
-                    "character_pressure": (
-                        2,
-                        "planning_character_pressure",
-                        "planning:character_pressure",
-                    ),
-                }
-                if kind not in substeps:
-                    raise checkpoint_corrupt(f"unknown planning artifact callback: {kind}")
-                sub_index, prefix, step_key = substeps[kind]
-                current_progress = self._planning_checkpoint_progress()
-                if current_progress >= sub_index:
-                    checkpoint_row = self._load_planning_artifact_checkpoint(
+        if planning_progress >= 3:
+            ctx.planning = self._load_planning_checkpoint(scene_id)
+            return
+        resume_planning_artifacts: dict[str, GenerationPlanningArtifact] = {}
+        if planning_progress >= 0:
+            self._validate_planning_prefix(scene_id, through=planning_progress)
+            blueprint = self._load_planning_blueprint_checkpoint(scene_id)
+            if planning_progress >= 1:
+                resume_planning_artifacts["chapter_architecture"] = (
+                    self._load_planning_artifact_checkpoint(
                         scene_id,
-                        prefix=prefix,
-                        expected_step_key=step_key,
-                        expected_kind=kind,
+                        prefix="planning_chapter_architecture",
+                        expected_step_key="planning:chapter_architecture",
+                        expected_kind="chapter_architecture",
                     )
-                    if checkpoint_row.row_id != serialized.get("row_id"):
-                        raise checkpoint_corrupt(f"{kind} callback differs from durable planning checkpoint")
-                    return
-                artifact_refs = self._planning_artifact_refs(
-                    prefix=prefix,
-                    serialized=serialized,
-                    execution_step_key=step_key,
-                    reused=reused,
                 )
-                self._save_run_checkpoint(
-                    "planning_ready",
-                    sub_index=sub_index,
-                    artifact_refs=artifact_refs | {prefix: serialized},
-                    artifact_hashes={
-                        prefix: self._json_hash(serialized),
-                        f"{prefix}_provenance": self._json_hash(
-                            planning_provenance(artifact_refs, prefix)
-                        ),
-                    },
-                    strategy="planning_in_progress",
+            if planning_progress >= 2:
+                resume_planning_artifacts["character_pressure"] = (
+                    self._load_planning_artifact_checkpoint(
+                        scene_id,
+                        prefix="planning_character_pressure",
+                        expected_step_key="planning:character_pressure",
+                        expected_kind="character_pressure",
+                    )
                 )
-
-            planning = self.planning_service.ensure_scene_planning(
+        else:
+            # 风格参考 v3：蓝图版式要与这一场现在的风格策略相符（让位 → 事实版），否则重生成
+            existing_blueprint = self.scene_blueprint_service.reusable(scene_id)
+            blueprint_reused = existing_blueprint is not None
+            if existing_blueprint is None:
+                self._reconcile_execution_step("scene_blueprint")
+            blueprint = self.scene_blueprint_service.ensure_for_scene(
                 scene_id,
-                step_reconciler=self._reconcile_execution_step,
-                artifact_committed=_planning_artifact_committed,
-                resume_artifacts=resume_planning_artifacts,
+                execution_step_key="scene_blueprint",
             )
             blueprint_payload = self.scene_blueprint_service.serialize(blueprint)
             assert blueprint_payload is not None
+            blueprint_refs = self._planning_artifact_refs(
+                prefix="planning_scene_blueprint",
+                serialized=blueprint_payload,
+                execution_step_key="scene_blueprint",
+                reused=blueprint_reused,
+            )
             self._save_run_checkpoint(
                 "planning_ready",
-                sub_index=3,
-                artifact_refs={
-                    "planning": planning,
-                    "scene_blueprint": blueprint_payload,
-                },
+                sub_index=0,
+                artifact_refs=blueprint_refs
+                | {"scene_blueprint": blueprint_payload},
                 artifact_hashes={
-                    "planning": self._json_hash(planning),
+                    "planning_scene_blueprint": self._json_hash(blueprint_payload),
+                    "planning_scene_blueprint_provenance": self._json_hash(
+                        planning_provenance(
+                            blueprint_refs, "planning_scene_blueprint"
+                        )
+                    ),
                     "scene_blueprint": self._json_hash(blueprint_payload),
                 },
-                strategy="planning_complete",
+                strategy="planning_in_progress",
             )
-        else:
-            planning = self._load_planning_checkpoint(scene_id)
 
+        planning = self.planning_service.ensure_scene_planning(
+            scene_id,
+            step_reconciler=self._reconcile_execution_step,
+            artifact_committed=partial(self._planning_artifact_committed, scene_id),
+            resume_artifacts=resume_planning_artifacts,
+        )
+        blueprint_payload = self.scene_blueprint_service.serialize(blueprint)
+        assert blueprint_payload is not None
+        self._save_run_checkpoint(
+            "planning_ready",
+            sub_index=3,
+            artifact_refs={
+                "planning": planning,
+                "scene_blueprint": blueprint_payload,
+            },
+            artifact_hashes={
+                "planning": self._json_hash(planning),
+                "scene_blueprint": self._json_hash(blueprint_payload),
+            },
+            strategy="planning_complete",
+        )
+        ctx.planning = planning
+
+    def _planning_artifact_committed(
+        self,
+        scene_id: str,
+        kind: str,
+        serialized: dict[str, Any],
+        reused: bool,
+    ) -> None:
+        """规划服务每落一件产品（章架构 / 人物压力）回调一次：存它的子检查点；续跑时已存过的只核对是同一行。"""
+        substeps = {
+            "chapter_architecture": (
+                1,
+                "planning_chapter_architecture",
+                "planning:chapter_architecture",
+            ),
+            "character_pressure": (
+                2,
+                "planning_character_pressure",
+                "planning:character_pressure",
+            ),
+        }
+        if kind not in substeps:
+            raise checkpoint_corrupt(f"unknown planning artifact callback: {kind}")
+        sub_index, prefix, step_key = substeps[kind]
+        current_progress = self._planning_checkpoint_progress()
+        if current_progress >= sub_index:
+            checkpoint_row = self._load_planning_artifact_checkpoint(
+                scene_id,
+                prefix=prefix,
+                expected_step_key=step_key,
+                expected_kind=kind,
+            )
+            if checkpoint_row.row_id != serialized.get("row_id"):
+                raise checkpoint_corrupt(f"{kind} callback differs from durable planning checkpoint")
+            return
+        artifact_refs = self._planning_artifact_refs(
+            prefix=prefix,
+            serialized=serialized,
+            execution_step_key=step_key,
+            reused=reused,
+        )
+        self._save_run_checkpoint(
+            "planning_ready",
+            sub_index=sub_index,
+            artifact_refs=artifact_refs | {prefix: serialized},
+            artifact_hashes={
+                prefix: self._json_hash(serialized),
+                f"{prefix}_provenance": self._json_hash(
+                    planning_provenance(artifact_refs, prefix)
+                ),
+            },
+            strategy="planning_in_progress",
+        )
+
+    def _phase_bundle(self, ctx: SceneRunContext) -> None:
+        """``bundle_ready``：冻结这一场的 bundle；续跑时读回并核对作者附言没变。"""
         if not self._checkpoint_reached("bundle_ready"):
-            bundle = self.bundle_builder.build(scene_id, author_note=author_note)
+            ctx.bundle = self.bundle_builder.build(ctx.scene_id, author_note=ctx.author_note)
             self._save_run_checkpoint(
                 "bundle_ready",
-                artifact_refs={"bundle_id": bundle["bundle_id"]},
-                artifact_hashes={"bundle": bundle["bundle_snapshot_hash"]},
+                artifact_refs={"bundle_id": ctx.bundle["bundle_id"]},
+                artifact_hashes={"bundle": ctx.bundle["bundle_snapshot_hash"]},
             )
         else:
-            bundle = self._load_checkpoint_bundle(scene_id)
+            ctx.bundle = self._load_checkpoint_bundle(ctx.scene_id)
             self._assert_author_note_matches_bundle(
-                bundle, author_note, scene_id=scene_id
+                ctx.bundle, ctx.author_note, scene_id=ctx.scene_id
             )
 
+    def _phase_criticality(self, ctx: SceneRunContext) -> None:
+        """关键度（每次运行重算，不进检查点）：落到运行状态上供接口展示。"""
         # §6.4 / §16：chapter_seq、连续过渡计数、constraint_intensity 的上下文推导
         # 统一收敛在 classify_scene_with_context——与崩溃续跑同一入口，判定不得分叉。
-        criticality = classify_scene_with_context(self.session, scene)
+        criticality = classify_scene_with_context(self.session, ctx.scene)
         _LOGGER.info(
             "scene %s criticality=%s reasons=%s best_of_n=%d",
-            scene_id,
+            ctx.scene_id,
             criticality.level,
             criticality.reasons,
             criticality.best_of_n,
         )
         # §6 Defect D: persist criticality classification for API exposure
-        state.criticality_level = criticality.level
-        state.criticality_reasons_json = criticality.reasons
+        ctx.state.criticality_level = criticality.level
+        ctx.state.criticality_reasons_json = criticality.reasons
+        ctx.criticality = criticality
 
+    def _phase_first_draft(self, ctx: SceneRunContext) -> None:
+        """``neutral_ready``：首稿（中性或作者手笔直起，由 scene_generation 按起草方式定）。"""
+        scene_id = ctx.scene_id
         if self._checkpoint_reached("neutral_ready"):
-            neutral_generation = self._load_checkpoint_draft(
+            ctx.neutral_generation = self._load_checkpoint_draft(
                 scene_id,
                 ref_key="neutral_draft_row_id",
                 expected_stage="neutral_draft",
                 expected_node_at_least="neutral_ready",
                 result_type="neutral",
             )
-        else:
-            self._reconcile_execution_step("neutral_draft")
-            neutral_generation = self.scene_generation_service.generate_neutral_draft(
-                scene_id,
-                bundle,
-                author_note=author_note,
-            )
-            self._save_run_checkpoint(
-                "neutral_ready",
-                artifact_refs={
-                    "neutral_draft_row_id": neutral_generation.row_id,
-                    "neutral_llm_call_id": neutral_generation.llm_call_id,
-                    "neutral_execution_step_key": neutral_generation.execution_step_key
-                    or "neutral_draft",
-                    "neutral_artifact_execution_id": self._execution_id,
-                    "bundle_id": neutral_generation.bundle_id,
-                },
-                artifact_hashes={
-                    "draft": self._text_hash(neutral_generation.content),
-                    "bundle": neutral_generation.bundle_hash,
-                },
-            )
-        neutral_content = neutral_generation.content
+            return
+        self._reconcile_execution_step("neutral_draft")
+        neutral_generation = self.scene_generation_service.generate_neutral_draft(
+            scene_id,
+            ctx.bundle,
+            author_note=ctx.author_note,
+        )
+        self._save_run_checkpoint(
+            "neutral_ready",
+            artifact_refs={
+                "neutral_draft_row_id": neutral_generation.row_id,
+                "neutral_llm_call_id": neutral_generation.llm_call_id,
+                "neutral_execution_step_key": neutral_generation.execution_step_key
+                or "neutral_draft",
+                "neutral_artifact_execution_id": self._execution_id,
+                "bundle_id": neutral_generation.bundle_id,
+            },
+            artifact_hashes={
+                "draft": self._text_hash(neutral_generation.content),
+                "bundle": neutral_generation.bundle_hash,
+            },
+        )
+        ctx.neutral_generation = neutral_generation
 
+    def _phase_hard_qc(self, ctx: SceneRunContext) -> None:
+        """``hard_qc_ready``：首稿过硬 QC（没过就停在这里，``hard_qc.should_continue`` 为假）。"""
+        scene_id = ctx.scene_id
         if self._checkpoint_reached("hard_qc_ready"):
-            hard_qc = self._load_hard_qc_checkpoint(scene_id)
-        else:
-            self._reconcile_execution_step("hard_qc:0")
-            hard_qc = self.hard_qc_engine.evaluate(
-                scene_id=scene_id,
-                bundle=bundle,
-                neutral_draft_row_id=neutral_generation.row_id,
-                neutral_content=neutral_content,
-                execution_step_key="hard_qc:0",
-            )
-            # 前六键与 _hard_qc_result_payload 同源；哈希按排好序的键算（_json_hash），键序不影响哈希。
-            hard_decision = {
-                **qc_decision_payload(hard_qc),
-                "should_continue": hard_qc.should_continue,
-                "llm_call_id": hard_qc.llm_call_id,
-                "execution_step_key": hard_qc.execution_step_key,
-            }
-            self.session.flush()
-            hard_report = self.session.get(QcReport, hard_qc.qc_report_id)
-            if hard_report is None:
-                self._raise_checkpoint_output_missing(row_id=hard_qc.qc_report_id)
-            self._save_run_checkpoint(
-                "hard_qc_ready",
-                artifact_refs={
-                    **hard_decision,
-                    "hard_qc_source_draft_row_id": neutral_generation.row_id,
-                    "hard_qc_bundle_id": bundle["bundle_id"],
-                    "hard_qc_llm_call_id": hard_qc.llm_call_id,
-                    "hard_qc_execution_step_key": hard_qc.execution_step_key,
-                    "hard_qc_artifact_execution_id": self._execution_id,
-                },
-                artifact_hashes={
-                    "hard_qc_decision": self._json_hash(hard_decision),
-                    "hard_qc_report": self._json_hash(
-                        qc_report_snapshot(hard_report)
-                    ),
-                },
-                strategy=hard_qc.resolution_code,
-                branch=hard_qc.branch,
-            )
-        if not hard_qc.should_continue:
-            self.session.flush()
-            # Wave 2 项 5：所有早退结果都携带 author_state 契约（含 latest_valid 指针）
-            return self._with_author_projection(
-                scene_id,
-                state,
-                {
-                    "scene_status": state.scene_status,
-                    "current_bundle_id": bundle["bundle_id"],
-                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                    "current_qc_report_id": state.current_qc_report_id,
-                    "current_human_review_event_id": state.current_human_review_event_id,
-                    "hard_qc": qc_decision_payload(hard_qc),
-                },
-            )
+            ctx.hard_qc = self._load_hard_qc_checkpoint(scene_id)
+            return
+        neutral_generation = ctx.neutral_generation
+        self._reconcile_execution_step("hard_qc:0")
+        hard_qc = self.hard_qc_engine.evaluate(
+            scene_id=scene_id,
+            bundle=ctx.bundle,
+            neutral_draft_row_id=neutral_generation.row_id,
+            neutral_content=neutral_generation.content,
+            execution_step_key="hard_qc:0",
+        )
+        # 前六键与运行结果的 hard_qc 同源；哈希按排好序的键算（_json_hash），键序不影响哈希。
+        hard_decision = {
+            **qc_decision_payload(hard_qc),
+            "should_continue": hard_qc.should_continue,
+            "llm_call_id": hard_qc.llm_call_id,
+            "execution_step_key": hard_qc.execution_step_key,
+        }
+        self.session.flush()
+        hard_report = self.session.get(QcReport, hard_qc.qc_report_id)
+        if hard_report is None:
+            self._raise_checkpoint_output_missing(row_id=hard_qc.qc_report_id)
+        self._save_run_checkpoint(
+            "hard_qc_ready",
+            artifact_refs={
+                **hard_decision,
+                "hard_qc_source_draft_row_id": neutral_generation.row_id,
+                "hard_qc_bundle_id": ctx.bundle["bundle_id"],
+                "hard_qc_llm_call_id": hard_qc.llm_call_id,
+                "hard_qc_execution_step_key": hard_qc.execution_step_key,
+                "hard_qc_artifact_execution_id": self._execution_id,
+            },
+            artifact_hashes={
+                "hard_qc_decision": self._json_hash(hard_decision),
+                "hard_qc_report": self._json_hash(
+                    qc_report_snapshot(hard_report)
+                ),
+            },
+            strategy=hard_qc.resolution_code,
+            branch=hard_qc.branch,
+        )
+        ctx.hard_qc = hard_qc
 
+    def _phase_style_candidates(self, ctx: SceneRunContext) -> None:
+        """风格稿（``hard_qc_ready`` 子游标 = 每个槽位的底稿 / 成稿）→ ``style_ready``：候选与它们的排序审计。"""
+        scene_id = ctx.scene_id
+        bundle = ctx.bundle
         # Wave 3（§5.5 成本分配）：候选数 N 由开关与关键度定（关键 3 / 标准 2 / 过渡 1）。
         # [批准#2] 只有作者手笔直起才出多稿：其余起草方式即使开关打开也只起一稿（检查点如实记 single）。
-        n_candidates = self._best_of_n_count(contract, criticality=criticality)
+        n_candidates = self._best_of_n_count(ctx.contract, criticality=ctx.criticality)
         if n_candidates > 1 and not style_policy_for_bundle(bundle).style_first:
             n_candidates = 1
-        candidate_summaries: list[dict[str, Any]] = []
-        if self._checkpoint_reached("style_ready"):
+        style_ready = self._checkpoint_reached("style_ready")
+        if style_ready:
             candidates = self._load_style_checkpoint_candidates(scene_id)
-            style_generation = candidates[0]
         else:
+            neutral_generation = ctx.neutral_generation
             style_work_items = self._load_partial_style_work_items(
                 scene_id,
                 expected_initial_count=n_candidates,
@@ -373,91 +454,154 @@ class PipelineMixin:
             resume_bases, resume_products = self._style_resume_products(
                 style_work_items, scene_id=scene_id
             )
-
-            def _style_product_checkpoint(
-                slot_key: str,
-                phase: str,
-                product: StyleGenerationResult,
-                metadata: dict[str, Any],
-            ) -> None:
-                self._update_style_work_item(
-                    style_work_items,
-                    slot_key=slot_key,
-                    phase=phase,
-                    product=product,
-                    metadata=metadata,
-                    neutral_draft_row_id=neutral_generation.row_id,
-                )
-                completed = [
-                    item["final"]
-                    for item in style_work_items
-                    if item.get("final") is not None
-                ]
-                slot_order = metadata.get("slot_order")
-                if not isinstance(slot_order, int):
-                    raise checkpoint_corrupt("style product slot order is invalid")
-                self._save_run_checkpoint(
-                    "hard_qc_ready",
-                    sub_index=slot_order * 2 + (1 if phase == "final" else 0),
-                    artifact_refs={
-                        "style_work_items": deepcopy(style_work_items),
-                        "style_initial_candidate_count": n_candidates,
-                        "style_candidate_row_ids": [
-                            item["row_id"] for item in completed
-                        ],
-                        "style_candidate_llm_call_ids": [
-                            item["llm_call_id"] for item in completed
-                        ],
-                        "style_candidate_step_keys": [
-                            item["execution_step_key"] for item in completed
-                        ],
-                        "style_candidate_execution_ids": [
-                            item["artifact_execution_id"] for item in completed
-                        ],
-                    },
-                    artifact_hashes={
-                        "style_work_items": self._json_hash(style_work_items)
-                    },
-                    strategy=(
-                        "best_of_n_in_progress"
-                        if n_candidates > 1
-                        else "single_in_progress"
-                    ),
-                )
-
+            product_callback = partial(
+                self._save_style_product_checkpoint,
+                style_work_items,
+                neutral_draft_row_id=neutral_generation.row_id,
+                n_candidates=n_candidates,
+            )
             if n_candidates > 1:
                 candidates = (
                     self.scene_generation_service.generate_style_draft_candidates(
                         scene_id,
                         bundle,
                         neutral_draft_row_id=neutral_generation.row_id,
-                        neutral_content=neutral_content,
-                        author_note=author_note,
+                        neutral_content=neutral_generation.content,
+                        author_note=ctx.author_note,
                         n_candidates=n_candidates,
                         step_reconciler=self._reconcile_execution_step,
                         resume_bases=resume_bases,
                         resume_products=resume_products,
-                        product_callback=_style_product_checkpoint,
+                        product_callback=product_callback,
                     )
                 )
             else:
                 if "initial:0" not in resume_bases:
                     self._reconcile_execution_step("style_draft:0")
-                style_generation = self.scene_generation_service.generate_style_draft(
-                    scene_id,
-                    bundle,
-                    neutral_draft_row_id=neutral_generation.row_id,
-                    neutral_content=neutral_content,
-                    author_note=author_note,
-                    resume_base=resume_bases.get("initial:0"),
-                    product_callback=_style_product_checkpoint,
-                    step_reconciler=self._reconcile_execution_step,
-                )
-                candidates = [style_generation]
-            style_generation = candidates[0]
-
-        # 标准场景：机器下限 + 受约束风格信号继续管线；关键场景在下方暂停终选。
+                candidates = [
+                    self.scene_generation_service.generate_style_draft(
+                        scene_id,
+                        bundle,
+                        neutral_draft_row_id=neutral_generation.row_id,
+                        neutral_content=neutral_generation.content,
+                        author_note=ctx.author_note,
+                        resume_base=resume_bases.get("initial:0"),
+                        product_callback=product_callback,
+                        step_reconciler=self._reconcile_execution_step,
+                    )
+                ]
+        style_generation = candidates[0]
+        ctx.n_candidates = n_candidates
+        ctx.candidates = candidates
+        ctx.style_generation = style_generation
+        # 标准场景：机器下限 + 受约束风格信号继续管线；关键场景在下一阶段暂停终选。
         # 从 checkpoint 恢复时也重建同一摘要，避免审计信息因一次进程中断消失。
+        ctx.candidate_summaries = self._candidate_summaries(candidates)
+        if style_ready:
+            return
+        style_candidate_rankings = [
+            candidate.ranking_audit for candidate in candidates
+        ]
+        self._save_run_checkpoint(
+            "style_ready",
+            artifact_refs={
+                "style_draft_row_id": style_generation.row_id,
+                "candidate_row_ids": [candidate.row_id for candidate in candidates],
+                "llm_call_ids": [candidate.llm_call_id for candidate in candidates],
+                "style_execution_step_keys": [
+                    candidate.execution_step_key for candidate in candidates
+                ],
+                "style_artifact_execution_ids": [
+                    candidate.artifact_execution_id or self._execution_id
+                    for candidate in candidates
+                ],
+                "style_llm_call_id": style_generation.llm_call_id,
+                "style_execution_step_key": style_generation.execution_step_key,
+                "style_artifact_execution_id": style_generation.artifact_execution_id
+                or self._execution_id,
+                "bundle_id": style_generation.bundle_id,
+                "style_candidate_rankings": style_candidate_rankings,
+            },
+            artifact_hashes={
+                "selected_draft": self._text_hash(style_generation.content),
+                "bundle": style_generation.bundle_hash,
+                "style_candidate_rankings": self._json_hash(
+                    style_candidate_rankings
+                ),
+                **{
+                    f"style_ready_candidate_{index}": self._text_hash(
+                        candidate.content
+                    )
+                    for index, candidate in enumerate(candidates)
+                },
+            },
+            strategy="best_of_n" if n_candidates > 1 else "single",
+        )
+
+    def _save_style_product_checkpoint(
+        self,
+        style_work_items: list[dict[str, Any]],
+        slot_key: str,
+        phase: str,
+        product: StyleGenerationResult,
+        metadata: dict[str, Any],
+        *,
+        neutral_draft_row_id: str,
+        n_candidates: int,
+    ) -> None:
+        """风格稿每落一件产品（某个槽位的底稿 / 成稿）回调一次：更新工作项，存 ``hard_qc_ready`` 的子检查点
+        （子游标 = 槽位序 × 2 + 是否成稿）。"""
+        self._update_style_work_item(
+            style_work_items,
+            slot_key=slot_key,
+            phase=phase,
+            product=product,
+            metadata=metadata,
+            neutral_draft_row_id=neutral_draft_row_id,
+        )
+        completed = [
+            item["final"]
+            for item in style_work_items
+            if item.get("final") is not None
+        ]
+        slot_order = metadata.get("slot_order")
+        if not isinstance(slot_order, int):
+            raise checkpoint_corrupt("style product slot order is invalid")
+        self._save_run_checkpoint(
+            "hard_qc_ready",
+            sub_index=slot_order * 2 + (1 if phase == "final" else 0),
+            artifact_refs={
+                "style_work_items": deepcopy(style_work_items),
+                "style_initial_candidate_count": n_candidates,
+                "style_candidate_row_ids": [
+                    item["row_id"] for item in completed
+                ],
+                "style_candidate_llm_call_ids": [
+                    item["llm_call_id"] for item in completed
+                ],
+                "style_candidate_step_keys": [
+                    item["execution_step_key"] for item in completed
+                ],
+                "style_candidate_execution_ids": [
+                    item["artifact_execution_id"] for item in completed
+                ],
+            },
+            artifact_hashes={
+                "style_work_items": self._json_hash(style_work_items)
+            },
+            strategy=(
+                "best_of_n_in_progress"
+                if n_candidates > 1
+                else "single_in_progress"
+            ),
+        )
+
+    @staticmethod
+    def _candidate_summaries(
+        candidates: list[StyleGenerationResult],
+    ) -> list[dict[str, Any]]:
+        """运行结果的 ``style_candidates``：每份候选的排名、分数与排序审计（第一份是选中的）。"""
+        summaries: list[dict[str, Any]] = []
         for idx, cand in enumerate(candidates):
             ranking = cand.ranking_audit or {}
             cand_score = ranking.get("quality_score")
@@ -484,105 +628,58 @@ class PipelineMixin:
                 # 风格参考 v3（P5b）：作者手笔直起时候选按读数排序（distance 越小越像）
                 summary["fidelity_distance"] = ranking.get("fidelity_distance")
                 summary["fidelity_percentile"] = ranking.get("fidelity_percentile")
-            candidate_summaries.append(summary)
-        if not self._checkpoint_reached("style_ready"):
-            style_candidate_rankings = [
-                candidate.ranking_audit for candidate in candidates
-            ]
-            self._save_run_checkpoint(
-                "style_ready",
-                artifact_refs={
-                    "style_draft_row_id": style_generation.row_id,
-                    "candidate_row_ids": [candidate.row_id for candidate in candidates],
-                    "llm_call_ids": [candidate.llm_call_id for candidate in candidates],
-                    "style_execution_step_keys": [
-                        candidate.execution_step_key for candidate in candidates
-                    ],
-                    "style_artifact_execution_ids": [
-                        candidate.artifact_execution_id or self._execution_id
-                        for candidate in candidates
-                    ],
-                    "style_llm_call_id": style_generation.llm_call_id,
-                    "style_execution_step_key": style_generation.execution_step_key,
-                    "style_artifact_execution_id": style_generation.artifact_execution_id
-                    or self._execution_id,
-                    "bundle_id": style_generation.bundle_id,
-                    "style_candidate_rankings": style_candidate_rankings,
-                },
-                artifact_hashes={
-                    "selected_draft": self._text_hash(style_generation.content),
-                    "bundle": style_generation.bundle_hash,
-                    "style_candidate_rankings": self._json_hash(
-                        style_candidate_rankings
-                    ),
-                    **{
-                        f"style_ready_candidate_{index}": self._text_hash(
-                            candidate.content
-                        )
-                        for index, candidate in enumerate(candidates)
-                    },
-                },
-                strategy="best_of_n" if n_candidates > 1 else "single",
-            )
+            summaries.append(summary)
+        return summaries
 
-        hard_qc_payload = qc_decision_payload(hard_qc)
-
+    def _phase_selection_gate(self, ctx: SceneRunContext) -> dict[str, Any] | None:
+        """关键场景在候选之后暂停，等作者匿名终选（``selection_wait``）；暂停就返回运行结果，否则 None。"""
         # Wave 3（§5.5）：关键场景在候选生成后暂停编排——确定性坏稿淘汰 →
         # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
         # 「§6.3 终选决定质量上界，归人」从推荐信号升级为强制暂停。
         # 风格参考 v3（L2）：按正文去重之后才数候选——作者手笔直起时没过门的修改槽位保留首稿原文，几个槽位可能
         # 是同一段字；只剩一份不同的正文就没有可选的，不能让作者对着一份稿子「终选」，管线照常往下走
-        if criticality.human_gate and self._distinct_candidate_count(candidates) > 1:
-            offered_row_ids = self._offer_candidates_for_selection(
-                scene, state, bundle, candidates
-            )
-            if offered_row_ids is not None:
-                content_by_row_id = {
-                    candidate.row_id: candidate.content for candidate in candidates
-                }
-                self._save_run_checkpoint(
-                    "selection_wait",
-                    artifact_refs={
-                        "selection_event_id": state.current_human_review_event_id,
-                        "selection_candidate_row_ids": offered_row_ids,
-                    },
-                    artifact_hashes={
-                        f"selection_candidate_{index}": self._text_hash(
-                            content_by_row_id[row_id]
-                        )
-                        for index, row_id in enumerate(offered_row_ids)
-                    },
-                    strategy="human_selection",
+        candidates = ctx.candidates
+        if not (ctx.criticality.human_gate and self._distinct_candidate_count(candidates) > 1):
+            return None
+        state = ctx.state
+        offered_row_ids = self._offer_candidates_for_selection(
+            ctx.scene, state, ctx.bundle, candidates
+        )
+        if offered_row_ids is None:
+            return None
+        content_by_row_id = {
+            candidate.row_id: candidate.content for candidate in candidates
+        }
+        self._save_run_checkpoint(
+            "selection_wait",
+            artifact_refs={
+                "selection_event_id": state.current_human_review_event_id,
+                "selection_candidate_row_ids": offered_row_ids,
+            },
+            artifact_hashes={
+                f"selection_candidate_{index}": self._text_hash(
+                    content_by_row_id[row_id]
                 )
-                return self._with_author_projection(
-                    scene_id,
-                    state,
-                    {
-                        "scene_status": state.scene_status,
-                        "current_bundle_id": bundle["bundle_id"],
-                        "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                        "current_qc_report_id": state.current_qc_report_id,
-                        "current_human_review_event_id": state.current_human_review_event_id,
-                        "hard_qc": hard_qc_payload,
-                        "planning": planning,
-                        "run_policy": run_policy,
-                        # 盲化：暂停响应只报数量，不带分数/预览（候选经盲化视图取用）
-                        "candidate_count": len(offered_row_ids),
-                        "candidate_selection_required": True,
-                    },
-                )
-
-        return self._finalize_after_style(
-            scene=scene,
-            state=state,
-            contract=contract,
-            bundle=bundle,
-            criticality=criticality,
-            planning=planning,
-            hard_qc_payload=hard_qc_payload,
-            style_generation=style_generation,
-            candidate_summaries=candidate_summaries if candidate_summaries else None,
-            run_policy=run_policy,
+                for index, row_id in enumerate(offered_row_ids)
+            },
+            strategy="human_selection",
+        )
+        return self._with_author_projection(
+            ctx.scene_id,
+            state,
+            {
+                "scene_status": state.scene_status,
+                "current_bundle_id": ctx.bundle["bundle_id"],
+                "current_bundle_hash": ctx.bundle["bundle_snapshot_hash"],
+                "current_qc_report_id": state.current_qc_report_id,
+                "current_human_review_event_id": state.current_human_review_event_id,
+                "hard_qc": qc_decision_payload(ctx.hard_qc),
+                "planning": ctx.planning,
+                "run_policy": ctx.run_policy,
+                # 盲化：暂停响应只报数量，不带分数/预览（候选经盲化视图取用）
+                "candidate_count": len(offered_row_ids),
+                "candidate_selection_required": True,
+            },
         )
 
     def _finalize_after_style(
