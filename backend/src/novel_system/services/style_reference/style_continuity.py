@@ -1,6 +1,6 @@
 """风格参考 — 从冻结的运行时契约里读跨场景声音参照（纯函数，不写库、不调 LLM）。
 
-- :func:`contract_deliberate_repetition`：任一层画像标了刻意复沓（新鲜度预算据此不把作者的复沓当重复）。
+- :func:`contract_deliberate_repetition`：生效的那一层画像标了刻意复沓（新鲜度预算据此不把作者的复沓当重复）。
 
 风格参考 v3（2026-09-23）删掉了这里的「漂移驾驶」两端：归档期的 ``observe_style_drift``（写
 ``style_drift_observed`` 事件，以「一般中文小说」基线为尺度，对作者自己的书 95–98% 报警）与
@@ -11,25 +11,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
-from novel_system.services.value_coercion import finite_or_none_accepting_bool
-
-
-def _contract_layers(contract: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    """契约层按 ``order`` 升序（泛 → 具体）；坏形状退化为空。"""
-    if not isinstance(contract, Mapping):
-        return []
-    raw_layers = contract.get("layers")
-    if not isinstance(raw_layers, Sequence) or isinstance(raw_layers, (str, bytes)):
-        return []
-    layers = [layer for layer in raw_layers if isinstance(layer, Mapping)]
-
-    def order_of(layer: Mapping[str, Any]) -> int:
-        value = finite_or_none_accepting_bool(layer.get("order"))
-        return int(value) if value is not None else 0
-
-    return [dict(layer) for layer in sorted(layers, key=order_of)]
+from novel_system.services.style_reference.runtime_contract import contract_layer
 
 
 def _layer_profile_json(layer: Mapping[str, Any]) -> dict[str, Any]:
@@ -41,12 +25,13 @@ def _layer_profile_json(layer: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def contract_deliberate_repetition(contract: Mapping[str, Any] | None) -> bool:
-    """任一层画像标记 ``voice_signature.deliberate_repetition=true`` → True。"""
-    for layer in _contract_layers(contract):
-        voice = _layer_profile_json(layer).get("voice_signature")
-        if isinstance(voice, Mapping) and voice.get("deliberate_repetition") is True:
-            return True
-    return False
+    """契约里生效的那一层（``runtime_contract.contract_layer``：最具体的一层，J7——与渲染、策略读的是同一层）的画像
+    标了 ``voice_signature.deliberate_repetition=true`` → True。
+
+    原来读「任一层」：多层的 v1 契约里，一个泛一些的层（作品层）标了复沓、真正生效的场景层没标，新鲜度预算照样
+    把这一场的重复当成作者的复沓放过（B10-24）。v2 契约只有一层，不受影响。"""
+    voice = _layer_profile_json(contract_layer(contract)).get("voice_signature")
+    return isinstance(voice, Mapping) and voice.get("deliberate_repetition") is True
 
 
 __all__ = ["contract_deliberate_repetition"]

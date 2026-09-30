@@ -151,17 +151,28 @@ def _add_final_scene(session, *, scene_id: str, content: str, status: str = "arc
     return row_id
 
 
-def test_contract_deliberate_repetition_any_layer() -> None:
-    off = {"layers": [{"profile": {"profile_json": {"voice_signature": {"deliberate_repetition": False}}}}]}
-    on = {
-        "layers": [
-            {"profile": {"profile_json": {"voice_signature": {"deliberate_repetition": False}}}},
-            {"profile": {"profile_json": {"voice_signature": {"deliberate_repetition": True}}}},
-        ]
-    }
-    assert sc.contract_deliberate_repetition(off) is False
-    assert sc.contract_deliberate_repetition(on) is True
-    assert sc.contract_deliberate_repetition({"layers": [{"profile": {"profile_json": {}}}]}) is False
+def _layer(scope: str, deliberate: bool | None, order: int = 0) -> dict:
+    voice = {} if deliberate is None else {"voice_signature": {"deliberate_repetition": deliberate}}
+    return {"order": order, "binding": {"scope": scope}, "profile": {"profile_json": voice}}
+
+
+def test_contract_deliberate_repetition_reads_the_layer_that_takes_effect() -> None:
+    """刻意复沓看生效的那一层（最具体的一层，J7——渲染与策略读的也是它），不是「任一层」（B10-24）：旧的多层 v1
+    契约里作品层标了复沓、场景层没标，这一场的重复不能当成作者的复沓放过。"""
+    single_on = {"layers": [_layer("project", True)]}
+    single_off = {"layers": [_layer("project", False)]}
+    assert sc.contract_deliberate_repetition(single_on) is True
+    assert sc.contract_deliberate_repetition(single_off) is False
+    # v1 多层（按层序由泛到具体）：场景层生效
+    generic_marks_it = {"layers": [_layer("project", True, 0), _layer("scene", False, 1)]}
+    assert sc.contract_deliberate_repetition(generic_marks_it) is False
+    specific_marks_it = {"layers": [_layer("global", False, 0), _layer("character", True, 1)]}
+    assert sc.contract_deliberate_repetition(specific_marks_it) is True
+    # 角色层之间 POV 在前（层序靠前的那个）
+    pov_first = {"layers": [_layer("character", True, 0), _layer("character", False, 1)]}
+    assert sc.contract_deliberate_repetition(pov_first) is True
+    assert sc.contract_deliberate_repetition({"layers": [_layer("project", None)]}) is False
+    assert sc.contract_deliberate_repetition({"layers": []}) is False
     assert sc.contract_deliberate_repetition(None) is False
 
 
