@@ -5,7 +5,7 @@ import { arrIsPlanScene, arrPovCandidates } from "./ws-author-derive.js";
 import { ArrGrip, ArrSceneStateTag, blurOnEnter } from "./ws-author-ui.jsx";
 import { KIND_FIELDS_GCS, KIND_FIELDS_RDD } from "./ws-catalog-adapt.js";
 import { sceneDesignModel } from "./ws-scene-design.jsx";
-import { LIB_ENTRIES, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
+import { useLibraryLive } from "./ws-library-store.js";
 import { EmptyState, IconButton, Tag } from "./ws-ui.jsx";
 import { sceneNoLabel } from "./labels/catalog.js";
 
@@ -17,15 +17,14 @@ import { sceneNoLabel } from "./labels/catalog.js";
    就在这里改（ArrDeskBeats）。题名、状态、删除、分流执行两种场都照常。
    ========================================================== */
 
-const { useEffect, useMemo, useRef, useState, useSyncExternalStore } = React;
+const { useEffect, useMemo, useRef, useState } = React;
 
-/* 视角候选：资料库的人物（ES 导入资料库的读取：挂上就会读一次；以前读 window.LIB_ENTRIES，只有这次会话打开过
-   资料库才有，冷启动进章节编排时下拉是空的）+ 目录里各场已经用过的视角名。资料库读回来 / 改了就跟着变。
-   候选只是建议，仍可自由输入新名。 */
+/* 视角候选：资料库的人物（资料库 store 的只读快照 useLibraryLive：挂上就按需读一次；以前读 window.LIB_ENTRIES，
+   只有这次会话打开过资料库才有，冷启动进章节编排时下拉是空的）+ 目录里各场已经用过的视角名。快照不可变，
+   资料库读回来 / 改了就换一份，候选跟着变。候选只是建议，仍可自由输入新名。 */
 function useArrPovOptions(chapters) {
-  const revision = useSyncExternalStore(libSubscribe, libSnapshot, libSnapshot);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(() => arrPovCandidates(LIB_ENTRIES, chapters), [revision, chapters]);
+  const { entries } = useLibraryLive();
+  return useMemo(() => arrPovCandidates(entries, chapters), [entries, chapters]);
 }
 
 const ARR_PLAN_OWNED_TIP = "这一场是雪花整理出来的：形态、三拍、视角在构思第 10 步改，确认后自动同步到这里";

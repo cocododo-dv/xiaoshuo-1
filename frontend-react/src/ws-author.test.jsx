@@ -42,13 +42,16 @@ const baseSnowSync = () => ({
   feStepKey: () => "",
   resync: vi.fn(async () => ({ synced: 0 })),
 });
-/* 资料库的读取（章节编排的视角候选读它的人物）：用例自己往 lib.entries 里放人，改完 bump 一下 */
-const lib = vi.hoisted(() => ({ entries: [], rev: 0, subs: new Set() }));
-vi.mock("./ws-library-data.jsx", () => ({
-  LIB_ENTRIES: lib.entries,
-  libSnapshot: () => lib.rev,
-  libSubscribe: (fn) => { lib.subs.add(fn); return () => lib.subs.delete(fn); },
-}));
+/* 资料库 store 的只读快照（章节编排的视角候选读它的人物）：快照不可变，用例换一份新的 lib.snap 再通知订阅者。
+   真 store 的「第一个订阅者到来时按需读一次」在 ws-library.test.jsx 里测；这里只管视图订阅了、跟着快照变。 */
+const LIB_EMPTY_SNAP = { entries: [], byId: {} };
+const lib = vi.hoisted(() => ({ snap: null, subs: new Set() }));
+vi.mock("./ws-library-store.js", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (fn) => { lib.subs.add(fn); return () => lib.subs.delete(fn); };
+  const snapshot = () => lib.snap;
+  return { useLibraryLive: () => useSyncExternalStore(subscribe, snapshot, snapshot) };
+});
 vi.mock("./ws-chapter-run.jsx", () => ({
   ArrChapterRunAction: () => <button type="button">运行本章</button>,
 }));
@@ -83,7 +86,7 @@ const byText = (selector, text) => [...host.querySelectorAll(selector)].find((no
 
 beforeEach(() => {
   snow.current = baseSnowSync();
-  lib.entries.length = 0;
+  lib.snap = LIB_EMPTY_SNAP;
   catalogState.ready = false;
   catalogState.chapters = [];
   catalogState.error = null;
@@ -232,7 +235,7 @@ describe("章节编排 · 服务端目录真相", () => {
   });
 
   it("手加的场：视角候选取自资料库的人物与各场用过的视角——不必先打开资料库；资料库读回来就跟着变", async () => {
-    lib.entries.push({ cat: "people", name: "林昭" }, { cat: "places", name: "雨城" });
+    lib.snap = { entries: [{ cat: "people", name: "林昭" }, { cat: "places", name: "雨城" }], byId: {} };
     localStorage.setItem("arr.mode", JSON.stringify("detail"));
     localStorage.setItem("arr.picked", JSON.stringify("ch01"));
     catalogState.ready = true;
@@ -249,9 +252,10 @@ describe("章节编排 · 服务端目录真相", () => {
     const input = host.querySelector('input[aria-label="开场 · 视角"]');
     const options = () => [...document.getElementById(input.getAttribute("list")).querySelectorAll("option")].map((o) => o.value);
     expect(options()).toEqual(["林昭", "顾行"]);
+    // 视图自己订阅了资料库的快照（store 在第一个订阅者到来时按需读），不靠别处先打开资料库
+    expect(lib.subs.size).toBeGreaterThan(0);
 
-    lib.entries.push({ cat: "people", name: "周川" });
-    lib.rev += 1;
+    lib.snap = { entries: [...lib.snap.entries, { cat: "people", name: "周川" }], byId: {} };
     await act(async () => { lib.subs.forEach((fn) => fn()); });
     expect(options()).toEqual(["林昭", "周川", "顾行"]);
   });
