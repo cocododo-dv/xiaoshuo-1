@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -222,10 +222,8 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         resume_base: StyleGenerationResult | None = None,
-        product_callback: (
-            Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
-        ) = None,
-        step_reconciler: Callable[[str], None] | None = None,
+        product_callback: ProductCallback | None = None,
+        step_reconciler: StepReconciler | None = None,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -287,7 +285,7 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         n_candidates: int = 3,
-        step_reconciler: Callable[[str], None] | None = None,
+        step_reconciler: StepReconciler | None = None,
         resume_bases: dict[str, StyleGenerationResult] | None = None,
         resume_products: dict[str, StyleGenerationResult] | None = None,
         product_callback: ProductCallback | None = None,
