@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 from sqlalchemy.orm import Session
 
@@ -50,7 +50,7 @@ class StyleGenerationResult:
     bundle_hash: str
     execution_step_key: str | None = None
     artifact_execution_id: str | None = None
-    ranking_audit: dict[str, Any] | None = None
+    ranking_audit: RankingAudit | None = None
     # 2026-09 风格模仿 v2（W5，规格 §2.W5.6）：风格链路的非静默提示。每项
     # ``{"code", "message", "severity", ...}``；code 见 STYLE_NOTICE_*。同一份也写进
     # AttemptTracker.details_json["notices"]，供场景运行 / 工作台响应回读。
@@ -65,8 +65,40 @@ class StyleGenerationResult:
     style_step: dict[str, Any] | None = None
 
 
+class ProductMetadata(TypedDict, total=False):
+    """产品回调的元数据（编排器写进风格稿工作项、续跑时逐项核对；键名即检查点契约）。"""
+
+    slot_order: int  # 槽位序：子游标 = 槽位序 × 2 + 是否成稿
+    source_neutral_draft_row_id: str  # 这一槽位的来源稿（首稿 / 已批准的中性稿）
+    gate_decision: dict[str, Any] | None  # 成稿过 styled-draft gate 的裁决（底稿为 None）
+    source_base_row_id: str | None  # 成稿所依的底稿行（底稿为 None）
+    de_template_outcome: dict[str, Any]  # 去模板化的结局（只有成稿带）
+
+
 # 产品回调（编排器据此写检查点）：(槽位键, "base" | "final", 结果, 元数据)。
-ProductCallback = Callable[[str, str, StyleGenerationResult, dict[str, Any]], None]
+ProductCallback = Callable[[str, str, "StyleGenerationResult", ProductMetadata], None]
+# 步位对账（编排器的 _reconcile_execution_step）：调模型之前按步位键对一次账本
+StepReconciler = Callable[[str], None]
+
+
+class RankingAudit(TypedDict, total=False):
+    """``StyleGenerationResult.ranking_audit``：候选排序的审计（编排器据此装配 ``style_candidates``，并存进检查点）。"""
+
+    row_id: str
+    rank: int
+    selected: bool
+    selection_reason: str
+    slot_index: int
+    quality_score: float
+    style_score: float | None
+    style_confidence: float | None
+    fidelity_distance: float | None
+    fidelity_percentile: float | None
+    within_range: bool | None
+    duplicate_of_row_id: str | None
+    plagiarism_checked: bool
+    plagiarism_passed: bool | None
+    rerank: dict[str, Any]
 
 
 class GenerationHost(Protocol):

@@ -27,6 +27,9 @@ from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.literary_quality import adversarial_rank_score
 from novel_system.services.scene_criticality import classify_scene_with_context
 from novel_system.services.scene_generation import (
+    ProductCallback,
+    ProductMetadata,
+    RankingAudit,
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
@@ -427,7 +430,7 @@ class PipelineMixin:
             resume_bases, resume_products = self._style_resume_products(
                 style_work_items, scene_id=scene_id
             )
-            product_callback = partial(
+            product_callback: ProductCallback = partial(
                 self._save_style_product_checkpoint,
                 style_work_items,
                 neutral_draft_row_id=neutral_generation.row_id,
@@ -517,7 +520,7 @@ class PipelineMixin:
         slot_key: str,
         phase: str,
         product: StyleGenerationResult,
-        metadata: dict[str, Any],
+        metadata: ProductMetadata,
         *,
         neutral_draft_row_id: str,
         n_candidates: int,
@@ -576,7 +579,7 @@ class PipelineMixin:
         """运行结果的 ``style_candidates``：每份候选的排名、分数与排序审计（第一份是选中的）。"""
         summaries: list[dict[str, Any]] = []
         for idx, cand in enumerate(candidates):
-            ranking = cand.ranking_audit or {}
+            ranking: RankingAudit = cand.ranking_audit or {}
             cand_score = ranking.get("quality_score")
             if not isinstance(cand_score, (int, float)):
                 cand_score = adversarial_rank_score(cand.content)
