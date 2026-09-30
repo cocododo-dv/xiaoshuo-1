@@ -5,6 +5,7 @@ import { adoptModuleListeners, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
 import { readyWorkId } from "./lib/ready-work.js";
 import { WsWorks } from "./ws-works.jsx";
+import { LIB_CATS, LIB_KIND_LABEL, LIB_KIND_OPTIONS } from "./labels/library.js";
 
 /* ==========================================================
    资料库的 store（2026-09-30 从 ws-library-data.jsx / ws-library-edit.jsx 收拢，审计 F05-08 / F01-18）
@@ -24,17 +25,8 @@ import { WsWorks } from "./ws-works.jsx";
    纯 ESM，不写 window（窗口接缝在门面 ws-library-data.jsx / ws-library-edit.jsx 里）。
    ========================================================== */
 
-/* 2026-09-21：原型里还有「参考 / 风格 / 知识」三类，适配层从来不产出它们（风格参考有自己的页面，
-   知识簇已在 2026-09 减法里删除），在这些类别里新建会以「概念」落进世界。只保留真有数据的三类。 */
-export const LIB_CATS = [
-  { id: "people", label: "人物",   icon: "Users",  accent: "crimson", noun: "位角色" },
-  { id: "world",  label: "世界",   icon: "MapPin", accent: "gold",    noun: "处设定" },
-  { id: "events", label: "大事记", icon: "Clock",  accent: "slate",   noun: "起事件" },
-];
-
-/* 世界条目的类型：后端枚举 ↔ 中文。编辑时反查，写回 entity.kind。 */
-export const LIB_KIND_LABEL = { location: "地点", item: "物品", faction: "机构", concept: "概念" };
-export const LIB_KIND_OPTIONS = Object.keys(LIB_KIND_LABEL).map(value => ({ value, label: LIB_KIND_LABEL[value] }));
+/* 类别与世界条目类型的表住在叶子模块 labels/library.js；这里照旧转出（门面与旧 import 路径用） */
+export { LIB_CATS, LIB_KIND_LABEL, LIB_KIND_OPTIONS };
 const LIB_CAT_ACCENT = { people: "crimson", world: "gold", events: "slate" };
 
 /* 过渡容器（原地更新，身份不变）：window.LIB_ENTRIES / LIB_BY_ID 接缝与门面的旧导出指着它们 */

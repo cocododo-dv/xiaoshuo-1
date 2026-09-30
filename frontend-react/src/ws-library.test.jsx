@@ -795,6 +795,16 @@ describe("WsLibrary 视图：图谱与时间线", () => {
       expect(view.host.querySelector(".graph-edge.rel-conflict")).toBeNull();
       const off = Array.from(view.host.querySelectorAll(".graph-legend-item.is-off")).map(li => li.textContent);
       expect(off).toContain("对立");
+      // 弹层是共享的 Popover：Esc 收起并把焦点还给「筛选」按钮
+      const filterBtn = buttonByText(view.host, "筛选");
+      expect(filterBtn.getAttribute("aria-expanded")).toBe("true");
+      await act(async () => {
+        (document.activeElement || document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      });
+      expect(view.host.querySelector(".graph-pop")).toBeNull();
+      expect(filterBtn.getAttribute("aria-expanded")).toBe("false");
+      await act(async () => { await Promise.resolve(); });
+      expect(document.activeElement).toBe(filterBtn);
     } finally {
       await view.unmount();
     }

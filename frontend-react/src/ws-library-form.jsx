@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_CATS, LIB_KIND_OPTIONS } from "./ws-library-store.js";
+import { LIB_CATS, LIB_KIND_OPTIONS } from "./labels/library.js";
 import { LIB_REL_TYPES, LIB_chapterLabel, LIB_relType } from "./ws-library-derive.js";
 import { isImeComposing } from "./lib/keyboard.js";
 import { LibGlyph, libAccClass, libCatLabel } from "./ws-library-parts.jsx";

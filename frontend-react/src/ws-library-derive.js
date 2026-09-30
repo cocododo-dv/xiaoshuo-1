@@ -1,4 +1,4 @@
-import { LIB_CATS } from "./ws-library-store.js";
+import { LIB_CATS } from "./labels/library.js";
 import { chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
