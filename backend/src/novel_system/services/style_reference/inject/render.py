@@ -337,8 +337,8 @@ def render_stats(
     blocks: Mapping[str, Any],
     k: int,
 ) -> dict[str, int]:
-    """读数（审计的 ``render_stats``；本场预览的 ``sizes`` 由它换算）：卡的正向条数 / 「作者不这么写」条数、声音行数、样例窗数与字数、
-    前缀总字数、卡的字数、窗数上限。"""
+    """读数（审计的 ``render_stats``；本场预览的 ``sizes`` 由它换算）：卡的正向条数 / 「作者不这么写」条数、
+    声音行数、样例窗数与字数、前缀总字数、卡的字数、窗数上限。"""
     positive, avoid = count_card_lines(str(blocks.get("card") or ""))
     windows = list(blocks.get("windows") or [])
     card = str(blocks.get("card") or "")
