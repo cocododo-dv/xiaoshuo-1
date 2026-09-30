@@ -32,7 +32,6 @@ export const CANON_EXTRACTION_REASONS = {
   awaiting_extraction: "等待提取",
   runner_disabled: "自动提取没有开启",
   feature_disabled: "自动提取没有开启",
-  offline_unsupported: "当前没有可用的模型",
   pre_dispatch_rejection: "额度或预算拦下了请求",
   provider_call_failed: "模型服务报错",
   invalid_llm_response: "回复格式不对",

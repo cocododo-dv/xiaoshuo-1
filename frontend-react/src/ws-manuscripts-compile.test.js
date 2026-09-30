@@ -8,7 +8,7 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CANON_EVENT_LABELS } from "./labels/canon.js";
+import { CANON_EVENT_LABELS, CANON_EXTRACTION_OUTCOMES, CANON_EXTRACTION_REASONS } from "./labels/canon.js";
 
 const CANON_DONE = { complete: true, missing_final_scene_ids: [], pending_scene_ids: [], pending_candidate_count: 0 };
 
@@ -166,5 +166,22 @@ describe("正史审核台的词表", () => {
     const backend = [...source.slice(start, source.indexOf(")", start)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
     expect(Object.keys(CANON_EVENT_LABELS)).toEqual(backend);
     expect(Object.values(CANON_EVENT_LABELS).every((label) => /[\u4e00-\u9fff]/.test(label))).toBe(true);
+  });
+
+  it("\u63d0\u53d6\u7ed3\u679c / \u539f\u56e0\u7684\u53eb\u6cd5\u53ea\u6536\u540e\u7aef\u8fd8\u4f1a\u5199\u7684\u503c\uff08\u540e\u7aef\u65e9\u4e0d\u518d\u5199\u7684\u952e\u662f\u6b7b\u53eb\u6cd5\uff0c\u6bd4\u5982\u79bb\u7ebf\u6a21\u5f0f\u9000\u5f79\u540e\u7684 offline_unsupported\uff09", () => {
+    const servicesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../backend/src/novel_system/services");
+    const sources = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(abs);
+        else if (entry.name.endsWith(".py")) sources.push(fs.readFileSync(abs, "utf8"));
+      }
+    };
+    walk(servicesDir);
+    const backend = sources.join("\n");
+    const keys = [...Object.keys(CANON_EXTRACTION_OUTCOMES), ...Object.keys(CANON_EXTRACTION_REASONS)];
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.filter((key) => !backend.includes(`"${key}"`))).toEqual([]);
   });
 });
