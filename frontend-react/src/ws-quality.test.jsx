@@ -2,6 +2,9 @@
 // 临时文本扫描 analyze 的端点/载荷；失败路径 error/alert（可证伪）。
 // 视图不依赖 active project（端点不收 project_id），故无需 installApiRouter/settleActive。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -130,14 +133,26 @@ describe("WsQuality 维度标签完整性", () => {
   beforeEach(() => { vi.resetModules(); });
   afterEach(() => vi.restoreAllMocks());
 
-  it("21 维齐全且含蓝图 v2 新增三维中文标签", async () => {
+  it("20 维齐全（有效留白这个空壳维度已删）且含蓝图 v2 新增三维中文标签", async () => {
     const { mod } = await loadStore();
-    expect(mod.QUALITY_DIM_KEYS.length).toBe(21);
+    expect(mod.QUALITY_DIM_KEYS.length).toBe(20);
+    expect(mod.QUALITY_DIMS.valid_ambiguity).toBeUndefined();
     expect(mod.QUALITY_DIMS.perception_filter).toBe("感知过滤");
     expect(mod.QUALITY_DIMS.self_repetition).toBe("自我重复");
     expect(mod.QUALITY_DIMS.conflict_too_clean).toBe("冲突过净");
     // 无 undefined 标签
     expect(mod.QUALITY_DIM_KEYS.every((k) => typeof mod.QUALITY_DIMS[k] === "string")).toBe(true);
+  });
+
+  it("维度的键、顺序与中文名和后端 literary_quality/dimensions.py 的 DIMENSION_LABELS 逐字相同", async () => {
+    const { mod } = await loadStore();
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../backend/src/novel_system/services/literary_quality/dimensions.py"), "utf8");
+    const start = source.indexOf("DIMENSION_LABELS: dict[str, str] = {");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = source.slice(start, source.indexOf("}", start));
+    const backend = [...block.matchAll(/"([a-z_]+)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+    expect(Object.entries(mod.QUALITY_DIMS)).toEqual(backend);
   });
 });
 
@@ -327,6 +342,27 @@ describe("WsQuality 视图", () => {
     const overviewCalls = second.client.apiGet.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/literary-quality/overview"));
     expect(overviewCalls.at(-1)).not.toContain("project_id");
     works.id = null;
+  });
+
+  it("「风险维度」的选项跟着巡检回包里服务端的维度表走；还没巡检到时用本地那一份", async () => {
+    const { client, mod } = await loadStore();
+    let resolveOverview;
+    client.apiGet.mockImplementation((u) => (String(u).includes("/literary-quality/overview")
+      ? new Promise((resolve) => { resolveOverview = resolve; })
+      : Promise.resolve({})));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsQuality go={vi.fn()} />));
+    const riskOptions = () => [...[...host.querySelectorAll(".q-field")].find((f) => f.textContent.includes("风险维度")).querySelectorAll("option")]
+      .map((o) => [o.value, o.textContent]);
+    expect(riskOptions()).toHaveLength(21);               // 「全部」+ 本地 20 维
+    expect(riskOptions()).not.toContainEqual(["valid_ambiguity", "有效留白"]);
+    await act(async () => {
+      resolveOverview({ ...overviewPayload(), dimensions: [{ dimension: "model_voice", label: "模型腔" }, { dimension: "new_rule", label: "新规则" }] });
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(riskOptions()).toEqual([["", "全部"], ["model_voice", "模型腔"], ["new_rule", "新规则"]]);
   });
 
   it("章组复审的章来自目录，不必先巡检", async () => {
