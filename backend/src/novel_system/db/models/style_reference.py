@@ -203,7 +203,6 @@ class StyleReferenceEvidence(Base):
     finding_id: Mapped[str] = mapped_column(ForeignKey("style_reference_findings.finding_id"))
     quote_id: Mapped[str] = mapped_column(ForeignKey("style_reference_quotes.quote_id"))
     anchor_kind: Mapped[str] = mapped_column(String)
-    is_synthetic: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 

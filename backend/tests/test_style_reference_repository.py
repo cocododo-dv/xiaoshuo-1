@@ -216,7 +216,6 @@ def test_evidence_unique_finding_quote(repo: StyleReferenceRepository) -> None:
         finding_id="sr_find_1",
         quote_id="sr_quote_1",
         anchor_kind="paragraph_quote",
-        is_synthetic=0,
     )
     repo.session.commit()
     with pytest.raises(IntegrityError):
@@ -226,7 +225,6 @@ def test_evidence_unique_finding_quote(repo: StyleReferenceRepository) -> None:
                 finding_id="sr_find_1",
                 quote_id="sr_quote_1",
                 anchor_kind="paragraph_quote",
-                is_synthetic=0,
             )
 
 

@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     FinalScene,
-    RelationProfile,
     SceneBundle,
     SceneDraft,
     SceneMemory,
     SceneRunState,
-    VoiceProfile,
 )
 from novel_system.services.llm_task_runner import LLMNodeRunner
 from tests.real_llm_fakes import ScenePipelineOnlineFake
@@ -32,7 +28,7 @@ def _online_pipeline(monkeypatch) -> None:
     )
 
 
-def seed_story(client, session: Session | None = None) -> None:
+def seed_story(client) -> None:
     project_response = client.post(
         "/api/v1/projects",
         json={
@@ -77,66 +73,12 @@ def seed_story(client, session: Session | None = None) -> None:
         },
         headers={"X-Idempotency-Key": "scene-seed-1"},
     )
-    if session is not None:
-        seed_traceable_bundle_sources(session)
-
-
-def seed_traceable_bundle_sources(session) -> None:
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_VOICE_CHAR_A_v1",
-            voice_profile_id="VOICE_CHAR_A",
-            version=1,
-            character_id="CHAR_A",
-            content="short clipped lines; pressure makes the tone harder",
-            active_flag=1,
-            source_note="test baseline",
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_REL_CHAR_A_CHAR_B_v1",
-            relation_profile_id="REL_CHAR_A_CHAR_B",
-            left_character_id="CHAR_A",
-            right_character_id="CHAR_B",
-            version=1,
-            content="reunion tension; B knows slightly more than A",
-            active_flag=1,
-            source_note="test baseline",
-        )
-    )
-    session.commit()
-
-
-def test_run_full_scene_bundle_carries_no_voice_or_relation_card_even_when_rows_exist(client, session) -> None:
-    """批准#15（重评 R8）：声线卡 / 关系卡不再进 bundle——库里即便还留着这两类行，起草上下文里也既没有这两节，
-    也没有它们的出处，卡的内容不会从任何一节（包括角色身份契约）漏进去。"""
-    seed_story(client, session=session)
-
-    response = client.post(
-        "/api/v1/scenes/CH001_SC01/run/full",
-        headers={"X-Idempotency-Key": "scene-run-provenance"},
-    )
-
-    assert response.status_code == 200
-    bundle_id = response.json()["data"]["current_bundle_id"]
-    from novel_system.db.models import SceneBundle
-
-    bundle = session.get(SceneBundle, bundle_id)
-    assert bundle is not None
-    snapshot = bundle.frozen_snapshot_json
-    source_refs = snapshot["source_version_refs"]
-    assert not [key for key in source_refs if key.startswith(("voice_profile", "relation_profile"))]
-    assert "voice_card" not in snapshot["inline_digests"]
-    assert "relation_card" not in snapshot["inline_digests"]
-    assert "short clipped lines" not in json.dumps(snapshot, ensure_ascii=False)
-    assert "reunion tension" not in json.dumps(snapshot, ensure_ascii=False)
 
 
 def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -> None:
     """2026-09-20：声线 / 关系卡是可选注入。过去缺卡在这里 409 BUNDLE_SOURCE_MISSING——可产品里早已没有
-
-    地方能写这两类卡，真实作品的场永远过不了这一关。缺卡照常起草，bundle 里只是没有这两节的出处。
+    地方能写这两类卡，真实作品的场永远过不了这一关。批准 #15（重评 R8）之后卡不再进 bundle，两张表随迁移 0098
+    删掉：起草照常，bundle 里既没有这两节，也没有它们的出处。
     """
     seed_story(client)
 
@@ -151,14 +93,13 @@ def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -
     bundle = session.get(SceneBundle, response.json()["data"]["current_bundle_id"])
     assert bundle is not None
     snapshot = bundle.frozen_snapshot_json
-    assert "voice_profile_id" not in snapshot["source_version_refs"]
-    assert "relation_profile_id" not in snapshot["source_version_refs"]
+    assert not [key for key in snapshot["source_version_refs"] if key.startswith(("voice_profile", "relation_profile"))]
     assert "voice_card" not in snapshot["inline_digests"]
     assert "relation_card" not in snapshot["inline_digests"]
 
 
 def test_run_full_scene_archives_memory_and_updates_status(client, session) -> None:
-    seed_story(client, session=session)
+    seed_story(client)
 
     response = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
@@ -231,7 +172,7 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
 
 
 def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(client, session) -> None:
-    seed_story(client, session=session)
+    seed_story(client)
 
     first_run = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
@@ -301,7 +242,7 @@ def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(c
 
 
 def test_workbench_generation_summary_can_resolve_from_current_final_scene_provenance(client, session) -> None:
-    seed_story(client, session=session)
+    seed_story(client)
 
     response = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",

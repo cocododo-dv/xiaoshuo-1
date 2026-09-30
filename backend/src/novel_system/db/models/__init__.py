@@ -33,9 +33,7 @@ from novel_system.db.models.library import (
 )
 from novel_system.db.models.catalog import (
     ChapterGoal,
-    RelationProfile,
     SceneCard,
-    VoiceProfile,
 )
 from novel_system.db.models.run import (
     AttemptTracker,
@@ -136,7 +134,6 @@ __all__ = [
     "PassagePatchCandidate",
     "ProjectWritingStats",
     "QcReport",
-    "RelationProfile",
     "ReviewDerivedSnooze",
     "ReviewItem",
     "RevisionCandidate",
@@ -176,7 +173,6 @@ __all__ = [
     "SystemConfigSnapshot",
     "SystemSecret",
     "TimelineEvent",
-    "VoiceProfile",
     "VolumeSummary",
     "WriterEvaluation",
     "utcnow",

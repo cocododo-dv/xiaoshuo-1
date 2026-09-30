@@ -64,7 +64,7 @@ def _seed_chapter(session, key: str, scene_count: int) -> tuple[str, str, list[s
         )
     )
     session.flush()
-    session.add(ChapterState(chapter_id=chapter_id, aggregate_block_reason="none"))
+    session.add(ChapterState(chapter_id=chapter_id))
     scene_ids = [f"{chapter_id}_SC0{seq}" for seq in range(1, scene_count + 1)]
     for seq, scene_id in enumerate(scene_ids, start=1):
         session.add(
@@ -394,25 +394,6 @@ def test_promotion_logs_a_chapter_aggregate_it_cannot_rebuild_instead_of_refusin
     ).one()
     assert log.payload_json["chapter_aggregate"] == "blocked"
     assert log.payload_json["volume_aggregate"] == "skipped"
-
-
-def test_a_legacy_aggregate_gate_value_no_longer_blocks_the_chapter_aggregate(client, session) -> None:
-    """B03-18：章汇总的回填闸门（aggregate_block_reason / chapter_backfill_pending_count）随 2026-09 减法里的
-    章回填 / 手动挂起一起没了写端，库里全是 none / 0；旧行上残留的值不再挡汇总、也不再挡晋升。"""
-    seeded = _seed_promotable_scene(session, "LEGACY_GATE")
-    chapter_state = session.get(ChapterState, seeded["chapter_id"])
-    chapter_state.aggregate_block_reason = "project_backtrack"
-    chapter_state.chapter_backfill_pending_count = 2
-    session.commit()
-
-    response = _promote(client, seeded, "r13-legacy-gate")
-
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    session.expire_all()
-    aggregate = _stored_aggregate(session, seeded["chapter_id"])
-    assert aggregate is not None and aggregate.row_id == data["chapter_memory_row_id"]
-    assert aggregate.content == "林昭在雨城的案卷里夹了一张便条。"
 
 
 def test_same_revision_replay_does_not_require_an_exact_chapter_aggregate(client, session) -> None:

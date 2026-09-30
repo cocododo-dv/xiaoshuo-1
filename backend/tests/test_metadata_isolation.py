@@ -98,8 +98,6 @@ _KNOWN_NULLABLE_DRIFT: frozenset[tuple[str, str]] = frozenset(
         ("snowflake_assistant_turns", "suggestions_json"),
         ("snowflake_direction_briefs", "lines_json"),
         ("snowflake_scene_plans", "beats_json"),
-        ("snowflake_scene_plans", "downstream_obligations_json"),
-        ("snowflake_scene_plans", "involved_foreshadowing_json"),
         ("snowflake_scene_plans", "onstage_chars_json"),
         ("snowflake_scene_plans", "orphaned_flag"),
         ("snowflake_scene_triage_items", "fix_steps_json"),

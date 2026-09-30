@@ -226,10 +226,8 @@ class SnowflakeScenePlan(Base):
     hook: Mapped[str | None] = mapped_column(Text, nullable=True)
     tension_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
     function_tag: Mapped[str | None] = mapped_column(String, nullable=True)
-    involved_foreshadowing_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     causal_prerequisite_scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
     cost_requirement: Mapped[str | None] = mapped_column(Text, nullable=True)
-    downstream_obligations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     target_length_band: Mapped[str | None] = mapped_column(String, nullable=True)
     # 2026-09-13 阶段 C：反应场的呈现方式——full（整场戏剧化）/ summary（两段概述，200–500 字）。
     # Ingermanson：反应场可以整场写、缩成两段概述、或干脆略过；第一版只做前两档，主动场恒为 full。
@@ -297,7 +295,6 @@ class SnowflakeRevisionLink(Base):
     reason: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String, default="open")
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
-    resolved_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 __all__ = [

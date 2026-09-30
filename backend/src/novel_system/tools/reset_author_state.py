@@ -91,9 +91,6 @@ PRESERVED_TABLES = frozenset(
         "style_reference_jobs",
         "style_reference_windows",
         "style_reference_metric_events",
-        # 声线卡 / 关系卡：没有写入者、一行没有，迁移 0098 删表（重评 R8）——重置不再碰它们
-        "voice_profiles",
-        "relation_profiles",
     }
 )
 

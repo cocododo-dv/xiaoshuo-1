@@ -98,7 +98,6 @@ class AuthorLifecycleService:
             "notes": chapter.notes,
             "current_phase": chapter_state.current_phase if chapter_state else "planning",
             "chapter_passed_scene_count": chapter_state.chapter_passed_scene_count if chapter_state else 0,
-            "chapter_backfill_pending_count": chapter_state.chapter_backfill_pending_count if chapter_state else 0,
             "active_scene_count": active_scene_count,
             "trashed_scene_count": trashed_scene_count,
             "trash_allowed": 0 if trash_block_reason else 1,
@@ -391,13 +390,11 @@ class AuthorLifecycleService:
                 "chapter_id": chapter_id,
                 "current_phase": "planning",
                 "chapter_passed_scene_count": 0,
-                "chapter_backfill_pending_count": 0,
             }
         return {
             "chapter_id": chapter_state.chapter_id,
             "current_phase": chapter_state.current_phase,
             "chapter_passed_scene_count": chapter_state.chapter_passed_scene_count,
-            "chapter_backfill_pending_count": chapter_state.chapter_backfill_pending_count,
         }
 
     def serialize_author_scene(self, scene: SceneCard, scene_state: SceneRunState | None) -> dict:

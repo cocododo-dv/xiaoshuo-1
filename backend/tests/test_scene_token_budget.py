@@ -23,11 +23,9 @@ from novel_system.db.models import (
     ChapterState,
     LlmCall,
     OperationLog,
-    RelationProfile,
     SceneCard,
     SceneRunState,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
@@ -156,27 +154,6 @@ def _seed_scene(session) -> None:
         )
     )
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready"))
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_VOICE_CHAR_A_v1",
-            voice_profile_id="VOICE_CHAR_A",
-            version=1,
-            character_id="CHAR_A",
-            content="tight internal narration",
-            active_flag=1,
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_REL_CHAR_A_CHAR_B_v1",
-            relation_profile_id="REL_CHAR_A_CHAR_B",
-            left_character_id="CHAR_A",
-            right_character_id="CHAR_B",
-            version=1,
-            content="they mistrust each other but still care",
-            active_flag=1,
-        )
-    )
     session.commit()
 
 

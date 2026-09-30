@@ -17,10 +17,8 @@ from novel_system.db.models import (
     ChapterGoal,
     SceneCard,
     SceneRunState,
-    RelationProfile,
     StoryCharacter,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.context_budget import apply_context_budget, collect_prompt_sections
@@ -92,31 +90,6 @@ def _seed(session) -> None:
             )
         )
     # bundle 构建要求 POV 角色有活动声线档、两名同场角色有活动关系档；只为让 BundleBuilder 走通。
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_p_ssb_char01_v1",
-            voice_profile_id=f"VOICE_{POV_ID}",
-            version=1,
-            character_id=POV_ID,
-            content="林一鸣的叙述声线克制、冷静，选择代价时会显出迟疑。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_p_ssb_v1",
-            relation_profile_id=f"REL_{POV_ID}_{FOE_ID}",
-            left_character_id=POV_ID,
-            right_character_id=FOE_ID,
-            version=1,
-            content="警探周慎握着伪造的截图，林一鸣知道对方在等他犯程序错误。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
-        )
-    )
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,

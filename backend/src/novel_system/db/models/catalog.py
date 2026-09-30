@@ -1,4 +1,4 @@
-"""目录：章与场景卡（物化后的生产单元），以及声线卡 / 关系卡两张旧表。"""
+"""目录：章与场景卡（物化后的生产单元）。"""
 
 from __future__ import annotations
 
@@ -139,46 +139,7 @@ class SceneCard(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
-class VoiceProfile(Base):
-    __tablename__ = "voice_profiles"
-
-    row_id: Mapped[str] = mapped_column(String, primary_key=True)
-    voice_profile_id: Mapped[str] = mapped_column(String)
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    character_id: Mapped[str] = mapped_column(String)
-    content: Mapped[str] = mapped_column(Text)
-    active_flag: Mapped[int] = mapped_column(Integer, default=0)
-    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
-    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
-    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
-
-
-class RelationProfile(Base):
-    __tablename__ = "relation_profiles"
-
-    row_id: Mapped[str] = mapped_column(String, primary_key=True)
-    relation_profile_id: Mapped[str] = mapped_column(String)
-    left_character_id: Mapped[str] = mapped_column(String)
-    right_character_id: Mapped[str] = mapped_column(String)
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    content: Mapped[str] = mapped_column(Text)
-    active_flag: Mapped[int] = mapped_column(Integer, default=0)
-    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
-    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="stage_blocked")
-    effective_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_review_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
-
-
 __all__ = [
     "ChapterGoal",
-    "RelationProfile",
     "SceneCard",
-    "VoiceProfile",
 ]

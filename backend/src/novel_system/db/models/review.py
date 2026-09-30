@@ -174,8 +174,6 @@ class ReviewItem(Base):
     candidate_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     active_on_approve: Mapped[int] = mapped_column(Integer, default=1)
     materialize_status: Mapped[str] = mapped_column(String, default="pending")
-    retry_count: Mapped[int] = mapped_column(Integer, default=0)
-    max_retry: Mapped[int] = mapped_column(Integer, default=3)
     approved_item_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # FE-ALIGN P5: 待办收件箱卡片模型（原型 ws-review 五类卡；legacy 行这些列为 NULL，
@@ -188,7 +186,6 @@ class ReviewItem(Base):
     card_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     actions_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)
-    snooze_until: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_action_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
@@ -202,7 +199,6 @@ class ReviewDerivedSnooze(Base):
 
     project_id: Mapped[str] = mapped_column(String, primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String, primary_key=True)
-    snooze_until: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 

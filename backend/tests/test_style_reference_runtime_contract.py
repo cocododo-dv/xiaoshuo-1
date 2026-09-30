@@ -417,7 +417,6 @@ def test_qc_gate_validates_the_frozen_contract_profiles(session, monkeypatch) ->
                 bundle_id="contract_bundle_qc",
                 scene_id=scene.scene_id,
                 chapter_id=chapter.chapter_id,
-                execution_mode="P2",
                 bundle_snapshot_hash="qc-hash",
                 frozen_snapshot_json={
                     "inline_digests": {

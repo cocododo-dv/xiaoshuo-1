@@ -387,11 +387,9 @@ class ProjectRuntimeInvalidationService:
                     chapter_id=chapter_id,
                     current_phase="planning",
                     mid_aggregate_enabled_effective=0,
-                    aggregate_block_reason="none",
                 )
                 self.session.add(state)
             state.current_phase = "planning"
-            state.aggregate_block_reason = "none"
 
         self.session.flush()
 

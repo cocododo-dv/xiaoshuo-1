@@ -289,10 +289,7 @@ def test_fe_scene_with_pov_is_not_blocked_by_a_missing_voice_card(client, sessio
     声线 / 关系卡在产品里没有地方能写；过去唯一的出路是 Fix C 的 preflight/create-cards——让预检自己铸一句
     占位套话当事实喂给起草模型。闸门与这条铸卡支路一起退役：不铸卡，也不拦。
     """
-    from sqlalchemy import select
-    from novel_system.db.models import VoiceProfile
-
-    scene_id, char_id = _seed_scene_with_pov(session)
+    scene_id, _char_id = _seed_scene_with_pov(session)
 
     wb = client.get(f"/api/v1/scenes/{scene_id}/workbench?include=diagnostics").json()["data"]
     pf = wb["run_preflight"]
@@ -306,10 +303,6 @@ def test_fe_scene_with_pov_is_not_blocked_by_a_missing_voice_card(client, sessio
 
     gone = client.post(f"/api/v1/scenes/{scene_id}/preflight/create-cards", headers={"X-Idempotency-Key": "fc-cards"})
     assert gone.status_code == 404
-    session.expire_all()
-    assert session.execute(
-        select(VoiceProfile).where(VoiceProfile.voice_profile_id == f"VOICE_{char_id}")
-    ).scalars().first() is None
 
 
 def test_passage_patch_candidate_for_fe_scene_uses_online_llm(client, session, monkeypatch) -> None:

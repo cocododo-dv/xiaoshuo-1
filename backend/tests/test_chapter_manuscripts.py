@@ -294,11 +294,6 @@ def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(c
     )
     assert trash_scene.status_code == 200
 
-    state = session.get(ChapterState, "CHM300")
-    assert state is not None
-    state.chapter_backfill_pending_count = 2
-    session.commit()
-
     response = client.get("/api/v1/chapter-manuscripts")
 
     assert response.status_code == 200
@@ -309,7 +304,6 @@ def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(c
     assert items[0]["missing_scene_ids"] == ["CHM300_SC02"]
     assert items[0]["completion_status"] == "partial"
     assert items[0]["comparison_status"] == "aggregate_missing"
-    assert items[0]["chapter_backfill_pending_count"] == 2
 
 
 def test_chapter_manuscript_empty_chapter_and_active_aggregate_fallback(client, session) -> None:

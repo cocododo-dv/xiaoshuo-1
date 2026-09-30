@@ -17,7 +17,6 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
     StyleReferenceMetricEvent,
-    VoiceProfile,
     WriterEvaluation,
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
@@ -147,18 +146,6 @@ def _seed_scene(session, *, is_chapter_last: int = 0) -> None:
         )
     )
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready"))
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_lincen_v1",
-            voice_profile_id="VOICE_林岑",
-            version=1,
-            character_id="林岑",
-            content="林岑的叙述声线克制、冷静，但在选择代价时会显出迟疑。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
-        )
-    )
     session.commit()
 
 

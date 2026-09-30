@@ -133,14 +133,12 @@ def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
             finding_id=finding_id,
             quote_id=f"sr_quote_route_a_{book_id[-6:]}",
             anchor_kind="paragraph_quote",
-            is_synthetic=0,
         )
         repo.create_evidence(
             evidence_id=f"sr_ev_route_b_{book_id[-6:]}",
             finding_id=finding_id,
             quote_id=f"sr_quote_route_b_{book_id[-6:]}",
             anchor_kind="counter_example",
-            is_synthetic=1,
         )
         profile_id = f"sr_profile_route_{book_id[-6:]}"
         repo.create_profile(

@@ -7,12 +7,10 @@ from novel_system.db.models import (
     HumanReviewEvent,
     LlmCall,
     QcReport,
-    RelationProfile,
     SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneRunState,
-    VoiceProfile,
 )
 
 
@@ -81,43 +79,6 @@ def create_scene(
         headers={"X-Idempotency-Key": f"scene-{scene_id}"},
     )
     assert response.status_code == 200
-
-
-def seed_voice_profile(session: Session, voice_profile_id: str = "VOICE_CHAR_A") -> None:
-    session.add(
-        VoiceProfile(
-            row_id=f"voice_profile_{voice_profile_id}_v1",
-            voice_profile_id=voice_profile_id,
-            version=1,
-            character_id=voice_profile_id.removeprefix("VOICE_"),
-            content="short clipped lines; pressure makes the tone harder",
-            active_flag=1,
-            source_note="test baseline",
-        )
-    )
-    session.commit()
-
-
-def seed_relation_profile(
-    session: Session,
-    relation_profile_id: str = "REL_CHAR_A_CHAR_B",
-    *,
-    left_character_id: str = "CHAR_A",
-    right_character_id: str = "CHAR_B",
-) -> None:
-    session.add(
-        RelationProfile(
-            row_id=f"relation_profile_{relation_profile_id}_v1",
-            relation_profile_id=relation_profile_id,
-            left_character_id=left_character_id,
-            right_character_id=right_character_id,
-            version=1,
-            content="reunion tension; B knows slightly more than A",
-            active_flag=1,
-            source_note="test baseline",
-        )
-    )
-    session.commit()
 
 
 def seed_literary_ready_state(session: Session, scene_id: str = "CH910_SC01", chapter_id: str = "CH910") -> None:
@@ -200,8 +161,6 @@ def test_workbench_default_payload_carries_only_what_the_drafting_desk_reads(cli
 def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields(client, session: Session) -> None:
     create_chapter(client)
     create_scene(client)
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     seed_literary_ready_state(session)
 
     response = client.get("/api/v1/scenes/CH910_SC01/workbench?include=diagnostics")
@@ -240,8 +199,6 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
 def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_run(client, session: Session) -> None:
     create_chapter(client, "CH915")
     create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     response = client.get("/api/v1/scenes/CH915_SC01/workbench?include=diagnostics")
 
@@ -272,8 +229,6 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     )
     create_chapter(client, "CH921")
     create_scene(client, chapter_id="CH921", scene_id="CH921_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     bundle = SceneBundle(
         bundle_id="bundle_CH921_SC01_v1",
         scene_id="CH921_SC01",
@@ -322,8 +277,6 @@ def test_workbench_payload_scans_final_scene_against_the_bound_reference(client,
 
     create_chapter(client, "CH921D")
     create_scene(client, chapter_id="CH921D", scene_id="CH921D_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     refs = seed_bound_reference(
         session,
         seed="workbench",
@@ -398,8 +351,6 @@ def test_bundle_builds_without_voice_or_relation_cards_and_ignores_leftover_ones
     # 角色身份契约不依赖这两张卡
     assert "CHAR_A" in bare_snapshot["inline_digests"]["character_contract"]
 
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     carded = BundleBuilder(session).build("CH912_SC01")
     carded_snapshot = carded["snapshot"]
     assert "voice_card" not in carded_snapshot["inline_digests"]
@@ -446,8 +397,6 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
 def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Session) -> None:
     create_chapter(client, "CH919")
     create_scene(client, chapter_id="CH919", scene_id="CH919_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     scene = session.get(SceneCard, "CH919_SC01")
     scene.hook = "以死亡证明作为雨夜钩子。"
     scene.forbidden_text = "死亡证明"
@@ -501,8 +450,6 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
 ) -> None:
     create_chapter(client, "CH915")
     create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     state = session.get(SceneRunState, "CH915_SC01")
     state.current_human_review_event_id = None
@@ -536,8 +483,6 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
 def test_workbench_soft_qc_summary_only_uses_reports_from_the_active_run(client, session: Session) -> None:
     create_chapter(client, "CH916")
     create_scene(client, chapter_id="CH916", scene_id="CH916_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     state = session.get(SceneRunState, "CH916_SC01")
     state.current_bundle_id = "bundle_current_CH916_SC01"
@@ -591,8 +536,6 @@ def test_workbench_generation_summary_stays_empty_when_current_run_has_no_genera
 ) -> None:
     create_chapter(client, "CH917")
     create_scene(client, chapter_id="CH917", scene_id="CH917_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     session.add(
         LlmCall(

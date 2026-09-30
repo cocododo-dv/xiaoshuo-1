@@ -13,14 +13,12 @@ from novel_system.db.models import (
     FinalScene,
     GenerationPlanningArtifact,
     LlmCall,
-    RelationProfile,
     SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneDraft,
     SceneRunState,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.errors import DomainError
@@ -470,27 +468,6 @@ def _seed_scene(
         )
     )
     session.add(SceneRunState(scene_id="CH100_SC01", scene_status="ready"))
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_VOICE_CHAR_A_v1",
-            voice_profile_id="VOICE_CHAR_A",
-            version=1,
-            character_id="CHAR_A",
-            content="tight internal narration",
-            active_flag=1,
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_REL_CHAR_A_CHAR_B_v1",
-            relation_profile_id="REL_CHAR_A_CHAR_B",
-            left_character_id="CHAR_A",
-            right_character_id="CHAR_B",
-            version=1,
-            content="they mistrust each other but still care",
-            active_flag=1,
-        )
-    )
     session.commit()
 
 
@@ -1980,7 +1957,6 @@ def test_best_of_n_without_style_first_drafts_one_candidate(session) -> None:
     assert "candidate_index" not in (attempts[0].details_json or {})
     state = session.get(SceneRunState, "CH100_SC01")
     assert state.current_style_draft_row_id == candidates[0].row_id
-    assert state.candidate_dispersion_score is None
 
 
 def test_adversarial_rank_score_lower_for_ai_heavy_text() -> None:

@@ -321,7 +321,7 @@ class Aggregator:
         """重建这一章存下来的章汇总：拼得出来就落一版新的、旧的标为被取代；拼不出来原样回报（``no_op`` / ``blocked``）。"""
         # 目录冷启动章可能没有状态行（审计 P-1）：缺行补建。
         # 以前这里还有一道「回填 / 回溯中」闸门（aggregate_block_reason、chapter_backfill_pending_count）：写它们的
-        # 章回填 / 手动挂起在 2026-09 减法里删了，库里只剩默认值 none / 0，闸门随之删掉（B03-18）。
+        # 章回填 / 手动挂起在 2026-09 减法里删了，库里只剩默认值 none / 0，闸门随之删掉（B03-18），列由迁移 0098 删掉。
         chapter_state = ensure_chapter_state(self.session, chapter_id)
         derivation = self.derive_final_aggregate(chapter_id)
         if derivation.status != "derived":

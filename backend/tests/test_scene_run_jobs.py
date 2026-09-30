@@ -371,7 +371,6 @@ def test_polling_a_running_scene_job_reads_its_frozen_bundle_once(session, monke
             bundle_id="bundle_SC_DRAFT_MODE_v1",
             scene_id="SC_DRAFT_MODE",
             chapter_id="CH_SCENE_JOB",
-            execution_mode="P2",
             bundle_snapshot_hash="hash",
             frozen_snapshot_json={"inline_digests": {}, "source_version_refs": {}},
         )

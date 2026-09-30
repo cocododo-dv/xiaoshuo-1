@@ -348,9 +348,7 @@ def _seed_author_state(session) -> None:
                 chapter_id="CH_RESET_SNOW",
                 current_phase="drafting",
                 chapter_passed_scene_count=0,
-                chapter_backfill_pending_count=1,
                 mid_aggregate_enabled_effective=0,
-                aggregate_block_reason="none",
             ),
             SceneCard(
                 scene_id="SC_RESET_SNOW_01",
@@ -393,7 +391,6 @@ def _seed_author_state(session) -> None:
                 bundle_id="bundle_reset_scene",
                 scene_id="SC_RESET_SNOW_01",
                 chapter_id="CH_RESET_SNOW",
-                execution_mode="P2",
                 bundle_snapshot_hash="hash-reset",
                 frozen_snapshot_json={"bundle": True},
             ),

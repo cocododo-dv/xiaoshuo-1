@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     CheckConstraint,
-    Float,
     ForeignKey,
     Index,
     Integer,
@@ -58,8 +57,6 @@ class SceneRunState(Base):
     attempt_budget: Mapped[int] = mapped_column(Integer, default=4)
     repeat_issue_key: Mapped[str | None] = mapped_column(String, nullable=True)
     repeat_issue_count: Mapped[int] = mapped_column(Integer, default=0)
-    # §6 dispersion signal — last Best-of-N candidate Jaccard dispersion (0.0–1.0)
-    candidate_dispersion_score: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     # §6 criticality classification result for this run
     criticality_level: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     criticality_reasons_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
@@ -107,10 +104,7 @@ class ChapterState(Base):
     chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"), primary_key=True)
     current_phase: Mapped[str] = mapped_column(String, default="planning")
     chapter_passed_scene_count: Mapped[int] = mapped_column(Integer, default=0)
-    chapter_backfill_pending_count: Mapped[int] = mapped_column(Integer, default=0)
     mid_aggregate_enabled_effective: Mapped[int] = mapped_column(Integer, default=0)
-    aggregate_block_reason: Mapped[str] = mapped_column(String, default="none")
-    manual_hold_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_interim_memory_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     last_final_memory_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
@@ -128,7 +122,6 @@ class SceneBundle(Base):
             name="fk_scene_bundles_chapter_id",
         )
     )
-    execution_mode: Mapped[str] = mapped_column(String, default="P2")
     bundle_snapshot_hash: Mapped[str] = mapped_column(String)
     frozen_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
