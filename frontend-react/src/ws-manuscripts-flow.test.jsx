@@ -9,7 +9,6 @@ const flow = vi.hoisted(() => ({
   body: vi.fn(() => null),
   snapshot: vi.fn(),
   setReviewState: vi.fn().mockResolvedValue({}),
-  confirmRead: vi.fn().mockResolvedValue({ body_hash: "hash-1" }),
   approveFinal: vi.fn().mockResolvedValue({ approved_chapter_id: "c1" }),
   reopenFinal: vi.fn().mockResolvedValue({ reopened_chapter_id: "c1" }),
   decideCanonCandidate: vi.fn().mockResolvedValue({}),
@@ -142,7 +141,6 @@ beforeEach(() => {
   flow.body.mockReturnValue(COMPLETE_BODY);
   flow.snapshot.mockReturnValue(readySnapshot());
   flow.setReviewState.mockResolvedValue({});
-  flow.confirmRead.mockResolvedValue({ body_hash: "hash-1" });
   flow.approveFinal.mockResolvedValue({ approved_chapter_id: "c1" });
   flow.reopenFinal.mockResolvedValue({ reopened_chapter_id: "c1" });
   flow.decideCanonCandidate.mockResolvedValue({});
@@ -166,7 +164,7 @@ afterEach(async () => {
 });
 
 describe("成稿中心权威章节流", () => {
-  it("批准按钮先要求逐项通读确认，再按 read-confirm → approve-final 顺序提交", async () => {
+  it("批准按钮先要求逐项通读确认，「已通读」随「确认定稿」一次提交（批准 #10）", async () => {
     const host = await renderPage("review");
     await click(host.querySelector('[data-testid="approve-final-open"]'));
 
@@ -181,9 +179,8 @@ describe("成稿中心权威章节流", () => {
     expect(confirm.disabled).toBe(false);
     await click(confirm);
 
-    expect(flow.confirmRead).toHaveBeenCalledWith("p1", "c1", "");
-    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", "");
-    expect(flow.confirmRead.mock.invocationCallOrder[0]).toBeLessThan(flow.approveFinal.mock.invocationCallOrder[0]);
+    expect(flow.approveFinal).toHaveBeenCalledTimes(1);
+    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", { readNote: "", revisionNotes: "" });
     expect(catalogRefresh).toHaveBeenCalledWith("p1");
   });
 
@@ -621,7 +618,7 @@ describe("成稿中心 · 拆分后的页头、状态行与对话框", () => {
     expect(dialog()).toBeNull();
 
     let resolveRead;
-    flow.confirmRead.mockReturnValueOnce(new Promise((resolve) => { resolveRead = resolve; }));
+    flow.approveFinal.mockReturnValueOnce(new Promise((resolve) => { resolveRead = resolve; }));
     await click(host.querySelector('[data-testid="approve-final-open"]'));
     await click(document.querySelector('[data-testid="approve-read-confirm"]'));
     await click(document.querySelector('[data-testid="approve-final-confirm"]'));
@@ -766,7 +763,7 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
   });
 
   it("批准失败后关掉再打开批准对话框，不先看到上一次的错误", async () => {
-    flow.confirmRead.mockRejectedValueOnce(new Error("通读确认没有通过"));
+    flow.approveFinal.mockRejectedValueOnce(new Error("通读确认没有通过"));
     const host = await renderPage("review");
     await click(host.querySelector('[data-testid="approve-final-open"]'));
     await click(document.querySelector('[data-testid="approve-read-confirm"]'));

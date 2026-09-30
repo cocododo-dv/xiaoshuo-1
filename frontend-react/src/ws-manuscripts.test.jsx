@@ -172,6 +172,36 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     expect(mod.manuscriptDisplayState("planned")).toBe("plan");
   });
 
+  it("「规划中」的章动了笔（有一场在写、场上记着字）也进左栏——与页头读作写作中同一条规则（复核 Q4-R2）", async () => {
+    const { mod } = await loadStore();
+    expect(mod.manuscriptChapterEligible({ state: "planned", words: { cur: 0 }, scenes: [{ state: "writing", words: 0 }] })).toBe(true);
+    expect(mod.manuscriptChapterEligible({ state: "planned", words: { cur: 0 }, scenes: [{ state: "todo", words: 120 }] })).toBe(true);
+    expect(mod.manuscriptChapterEligible({ state: "planned", words: { cur: 0 }, scenes: [{ state: "todo", words: 0 }] })).toBe(false);
+    expect(mod.manuscriptChapterEligible(null)).toBe(false);
+  });
+
+  it("读取的新鲜度（审计 F04-08）：maxAgeMs 内、目录也没变过就用已读到的快照；目录一变就重读；不给 maxAgeMs 总是重读", async () => {
+    const { mod, client } = await loadStore();
+    await mod.WsManuStore.refresh("c1");
+    const reads = () => client.apiGet.mock.calls.filter(([url]) => url === "/api/v1/chapter-manuscripts/c1").length;
+    expect(reads()).toBe(1);
+    await mod.WsManuStore.refresh("c1", { maxAgeMs: 30_000 });
+    expect(reads()).toBe(1);
+    expect(mod.WsManuStore.snapshot("c1").status).toBe("ready");
+    // 别处归档 / 采纳 / 提升之后目录会变：快照照旧显示，但下一次读取不再拿它充数
+    window.dispatchEvent(new CustomEvent("ws:catalog-changed"));
+    expect(mod.WsManuStore.snapshot("c1").status).toBe("ready");
+    await mod.WsManuStore.refresh("c1", { maxAgeMs: 30_000 });
+    expect(reads()).toBe(2);
+    await mod.WsManuStore.refresh("c1");
+    expect(reads()).toBe(3);
+    // 失败的读取不算新鲜
+    routeDetail(client, {});
+    await mod.WsManuStore.refresh("c1");
+    await mod.WsManuStore.refresh("c1", { maxAgeMs: 30_000 });
+    expect(reads()).toBe(5);
+  });
+
   it("送审与退回等待目录服务端确认，不做本地假流转", async () => {
     const { mod, client } = await loadStore();
 
@@ -183,15 +213,25 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     await expect(mod.WsManuStore.setReviewState("p1", "c1", "approved")).rejects.toThrow("审阅状态无效");
   });
 
-  it("批准终稿严格按通读确认 → 项目批准两步调用", async () => {
-    const { mod, client } = await loadStore();
+  it("批准终稿：「已通读」随「确认定稿」一次提交，绑定读到的那一份正文的哈希（批准 #10）", async () => {
+    const { mod, client } = await loadStore({ c1: { ...ARCHIVED_DETAIL, body_hash: "hash-read" } });
     client.apiPost.mockResolvedValue({ project: { status: "chapter_ready" }, approved_chapter_id: "c1" });
+    // 还没读到这一章的聚合：没有哈希可绑，不提交
+    await expect(mod.WsManuStore.approveFinal("p1", "c1", { readNote: "x" })).rejects.toThrow("还没读到");
+    expect(client.apiPost).not.toHaveBeenCalled();
 
-    await mod.WsManuStore.confirmRead("p1", "c1", "已核对人物与时间线");
-    await mod.WsManuStore.approveFinal("p1", "c1", "下一章承接盐钟线索");
+    await mod.WsManuStore.refresh("c1");
+    await mod.WsManuStore.approveFinal("p1", "c1", { readNote: "已核对人物与时间线", revisionNotes: "下一章承接盐钟线索" });
 
-    expect(client.apiPost).toHaveBeenNthCalledWith(1, "/api/v1/projects/p1/chapters/c1/read-confirm", { note: "已核对人物与时间线" });
-    expect(client.apiPost).toHaveBeenNthCalledWith(2, "/api/v1/projects/p1/chapters/c1/approve-final", { revision_notes: "下一章承接盐钟线索" });
+    expect(client.apiPost).toHaveBeenCalledTimes(1);
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/projects/p1/chapters/c1/approve-final", {
+      revision_notes: "下一章承接盐钟线索",
+      read_confirmation: { body_hash: "hash-read", note: "已核对人物与时间线" },
+    });
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/read-confirm"))).toBe(false);
+    expect(mod.WsManuStore).not.toHaveProperty("confirmRead");
+    // 批准之后这一章的快照作废，下次读取重读
+    expect(mod.WsManuStore.snapshot("c1").status).toBe("idle");
   });
 
   it("正史候选裁决后刷新同章权威状态", async () => {
