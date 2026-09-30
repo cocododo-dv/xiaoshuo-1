@@ -6,10 +6,13 @@
 - ``rules``：规则维度与 ``analyze_literary_quality``；
 - ``fingerprint``：质量指纹；``candidates``：候选稿的对抗排名分与离散度；
 - ``report``：视图的报告层（统一形状的发现、定位、风险簇、跨场复用、推荐动作、整维已忽略）；
-- ``chapter_set``：章组复审；``service``：``LiteraryQualityService``（包里唯一读库的模块）。
+- ``chapter_set``：章组复审；``service``：``LiteraryQualityService``（读库的视图服务）；
+- ``calibration_source``：参考书那一侧的校准读数（读参考书的段落表与绑定的画像），不从这里再导出——
+  要用的地方按模块导入，导入这个包不拉起它。
 
 依赖只朝下：text / lexicons ← dimensions / calibration ← scoring ← rules ← candidates / report ← service
-（fingerprint、chapter_set 只靠词表与文本助手）。调用方从旧模块路径取的名字在这里原样再导出。
+（fingerprint、chapter_set 只靠词表与文本助手；calibration_source 在 rules 之上）。调用方从旧模块路径取的名字
+在这里原样再导出。
 """
 
 from novel_system.services.literary_quality.calibration import (
