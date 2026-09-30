@@ -8,6 +8,6 @@
   "integrity": "ok",
   "page_count": 52913,
   "page_size": 4096,
-  "source": "/home/ubuntu/xiaoshuo/backend/novel_system.db",
+  "source": "novel_system.db",
   "tool": "db_backup.v2"
 }

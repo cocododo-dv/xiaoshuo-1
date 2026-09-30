@@ -8,6 +8,6 @@
   "integrity": "ok",
   "page_count": 528,
   "page_size": 4096,
-  "source": "E:\\codex\\xiaoshuo\\codex\\backend\\novel_system.db",
+  "source": "novel_system.db",
   "tool": "db_backup.v2"
 }

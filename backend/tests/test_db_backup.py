@@ -48,6 +48,8 @@ def test_backup_produces_verifiable_snapshot(tmp_path):
     assert (tmp_path / "backup.db.meta.json").exists()
     assert meta["checksum"]
     assert meta["page_count"] > 0
+    # 清单随备份入库（公开仓库）：只记库文件名，不记本机绝对路径（B12-22）
+    assert meta["source"] == "src.db"
     v = db_backup.verify_backup(dst)
     assert v["ok"] is True
     assert v["integrity"] == "ok"
