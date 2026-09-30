@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fidBadgeView, fidCopyView, fidDimensionGroups, fidErrorInfo, fidExplain, fidFinalsSummary, fidGaps, fidGapsByDimension,
-  fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingLine, fidReadingStates, fidReadingView, fidScoreTone,
+  fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingStates, fidReadingView, fidScoreTone,
   fidStyleStepView, fidTrendPoints, fidUnreliableText, fidVerdict, fidWeakestDims,
 } from "./ws-fidelity-model.js";
 
@@ -35,7 +35,7 @@ describe("一条读数的说法", () => {
     expect(view.verdict).toEqual({ key: "within", tone: "ok", label: "在作者的正常范围内" });
     expect(view.explain).toContain("从 1 排到 100（第 1 位最像）");
     expect(view.explain).toContain("这段排在第 72 位，前 90 位都算作者的正常范围");
-    expect(fidReadingLine(reading())).toBe("第 72 位 · 在作者的正常范围内");
+    expect(`${view.rankText} · ${view.verdict.label}`).toBe("第 72 位 · 在作者的正常范围内");
   });
 
   it("范围外；位次在前面但重点维越界——说清楚为什么不算在范围内", () => {
@@ -127,6 +127,9 @@ describe("成稿中心 / 文风画像 / 走势", () => {
     expect(fidBadgeView({ percentile: 96, within_range: false, reliable: true })).toMatchObject({ tone: "warn", text: "超出范围 · 第 96 位" });
     expect(fidBadgeView({ percentile: 50, within_range: true, reliable: false })).toMatchObject({ tone: "neutral", text: "量不准 · 第 50 位" });
     expect(fidBadgeView(null)).toBeNull();
+    // 「前 N 位」按读数记下的范围说：后端的范围设成 85 时不再说「前 90 位」；读数没带才用默认的 90
+    expect(fidBadgeView({ percentile: 41.6, within_range: true, reliable: true, max_percentile: 85 }).title).toContain("前 85 位");
+    expect(fidBadgeView({ percentile: 41.6, within_range: true, reliable: true }).title).toContain("前 90 位");
     expect(fidFinalsSummary({ a: { percentile: 30, within_range: true, reliable: true }, b: { percentile: 97, within_range: false, reliable: true }, c: { percentile: 40, within_range: true, reliable: false } }))
       .toEqual({ total: 3, within: 1, text: "3 场终稿里 1 场在作者范围内" });
     expect(fidFinalsSummary({})).toBeNull();

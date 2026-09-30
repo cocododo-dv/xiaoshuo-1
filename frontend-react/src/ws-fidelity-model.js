@@ -136,13 +136,6 @@ export function fidReadingView(reading) {
   };
 }
 
-/* 一行短话：「第 72 位 · 在作者的正常范围内」 */
-export function fidReadingLine(reading) {
-  if (!reading) return "";
-  const verdict = fidVerdict(reading);
-  return `${fidRankText(reading.percentile)} · ${verdict ? verdict.label : ""}`;
-}
-
 /* 读数记下的维度状态（重点 / 不学）→ { dim: "emphasize" | "exclude" }（按维的表据此标出） */
 export function fidReadingStates(reading) {
   const states = {};
@@ -278,16 +271,19 @@ export function fidPatchView(patch) {
 
 /* ---------- 成稿中心：按场的角标 ---------- */
 
-/* 一场最新的终稿读数（作品汇总的 scene_finals[sceneId]）→ { tone, text, title } 或 null */
+/* 一场最新的终稿读数（作品汇总的 scene_finals[sceneId]）→ { tone, text, title } 或 null。
+   「前 N 位」按这条读数记下的范围说（final.max_percentile，后端的 style_step_max_percentile），
+   读数没带时才用默认的 90。 */
 export function fidBadgeView(final, { maxPercentile = DEFAULT_MAX_PERCENTILE } = {}) {
   if (!final || fidRank(final.percentile) == null) return null;
   const rank = fidRank(final.percentile);
+  const threshold = Math.round(num(final.max_percentile) || maxPercentile);
   const ruler = `终稿像不像这位参考作者：把作者自己书里的段落从最像到最不像排成 100 位，这一场排第 ${rank} 位`;
   if (final.reliable === false) {
     return { tone: "neutral", text: `量不准 · 第 ${rank} 位`, title: `${ruler}；这一场太短（或参考书能比的片段太少），只能参考。` };
   }
   if (final.within_range) {
-    return { tone: "ok", text: `作者范围内 · 第 ${rank} 位`, title: `${ruler}，在作者的正常范围内（前 ${maxPercentile} 位）。` };
+    return { tone: "ok", text: `作者范围内 · 第 ${rank} 位`, title: `${ruler}，在作者的正常范围内（前 ${threshold} 位）。` };
   }
   return { tone: "warn", text: `超出范围 · 第 ${rank} 位`, title: `${ruler}，超出作者的正常范围。` };
 }
