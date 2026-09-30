@@ -66,6 +66,28 @@ def _sqlite_file(database_url: str) -> Path | None:
         return None
 
 
+def repository_database_file(database_url: str | None = None) -> Path | None:
+    """``database_url``(默认:本进程配置的库)指向作者的实库时返回那个文件,否则返回 None。
+
+    实库 = 本检出的 ``backend/novel_system.db``;或别的检出的实库(同名 novel_system.db,不在临时目录里)——
+    在 git worktree 里把 NOVEL_SYSTEM_DATABASE_URL 指到主检出的实库,比较「本检出的路径」拦不住。
+    内存库 / 非 SQLite / 解析不了的 URL 都不算。测试进程的引擎守卫与 ``tests/fixture_runtime.py`` 的命令行
+    (夹具只进一次性的库)共用这一条规则。
+    """
+    if database_url is None:
+        database_url = load_database_runtime().database_url
+    target = _sqlite_file(database_url)
+    if target is None:
+        return None
+    try:
+        live = DEFAULT_DATABASE_PATH.resolve()
+    except OSError:
+        return None
+    if target == live or (target.name == live.name and not _inside_temp_dir(target)):
+        return target
+    return None
+
+
 def refuse_repository_database_under_pytest(database_url: str) -> None:
     """测试进程里拒绝连仓库自己的 ``backend/novel_system.db``(作者的实库)。
 
@@ -75,16 +97,7 @@ def refuse_repository_database_under_pytest(database_url: str) -> None:
     """
     if not _running_under_pytest():
         return
-    target = _sqlite_file(database_url)
-    if target is None:
-        return
-    try:
-        live = DEFAULT_DATABASE_PATH.resolve()
-    except OSError:
-        return
-    # 本检出的实库;或别的检出的实库(同名 novel_system.db,不在临时目录里)——在 git worktree 里跑测试时
-    # 把 NOVEL_SYSTEM_DATABASE_URL 指到主检出的实库,比较「本检出的路径」拦不住
-    if target == live or (target.name == live.name and not _inside_temp_dir(target)):
+    if repository_database_file(database_url) is not None:
         raise RuntimeError(
             "refusing to open the repository database backend/novel_system.db from a pytest run; "
             "tests must use the per-test temporary database (tests/conftest.py isolated_database)"

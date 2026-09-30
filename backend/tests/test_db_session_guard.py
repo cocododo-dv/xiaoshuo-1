@@ -62,3 +62,19 @@ def test_other_databases_are_fine_under_pytest(tmp_path) -> None:
 def test_the_guard_is_inactive_outside_pytest(monkeypatch) -> None:
     monkeypatch.setattr(db_session, "_running_under_pytest", lambda: False)
     db_session.refuse_repository_database_under_pytest(f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}")
+
+
+def test_repository_database_file_names_the_live_database_in_any_process(monkeypatch, tmp_path) -> None:
+    """同一条规则也给 tests/fixture_runtime.py 的命令行用(那不是 pytest 进程):实库返回那个文件、别的都是 None;
+    不给 URL 就看本进程配置的库。"""
+    monkeypatch.setattr(db_session, "_running_under_pytest", lambda: False)
+    live = DEFAULT_DATABASE_PATH.resolve()
+    assert db_session.repository_database_file(f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}") == live
+    elsewhere = Path.home() / "some-other-checkout" / "backend" / "novel_system.db"
+    assert db_session.repository_database_file(f"sqlite:///{elsewhere.as_posix()}") == elsewhere.resolve()
+    assert db_session.repository_database_file(f"sqlite:///{(tmp_path / 'novel_system.db').as_posix()}") is None
+    assert db_session.repository_database_file("sqlite:///:memory:") is None
+    assert db_session.repository_database_file("postgresql://user@localhost/db") is None
+    assert db_session.repository_database_file() is None  # conftest 给的临时库
+    monkeypatch.delenv("NOVEL_SYSTEM_DATABASE_URL")
+    assert db_session.repository_database_file() == live  # 没设 URL:默认就是本检出的实库
