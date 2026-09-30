@@ -653,20 +653,48 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("list 把 revision_no/created_at 映射为 revisionNo/at", async () => {
+  it("list 只读当前作者稿（GET current）、分页取版本：revision_no/created_at 映射为 revisionNo/at，带下一页的游标", async () => {
     const { mod, client } = await loadDocs();
+    stopWarmHydrate(mod);
+    client.apiPost.mockClear();
+    const gets = [];
     client.apiGet.mockImplementation((url) => {
+      gets.push(url);
       if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
-      if (/\/author-drafts\/d1\/revisions$/.test(url)) {
-        return Promise.resolve({ items: [{ revision_no: 2, words: 10, origin: "edited", created_at: "2026-06-01" }] });
+      if (url === "/api/v1/author-drafts/scene/s1/current") return Promise.resolve({ draft: { draft_id: "d1", revision_no: 3 } });
+      if (/\/author-drafts\/d1\/revisions\?/.test(url)) {
+        return Promise.resolve(url.includes("cursor=")
+          ? { items: [{ revision_no: 1, words: 5, origin: "edited", created_at: "2026-05-31" }], pagination: { has_next: false, next_cursor: null } }
+          : { items: [{ revision_no: 2, words: 10, origin: "edited", created_at: "2026-06-01" }], pagination: { has_next: true, next_cursor: "c-2" } });
       }
       return Promise.resolve({});
     });
-    const list = await mod.WrDocVersions.list("ch01s1");
-    expect(list).toEqual([{ revisionNo: 2, words: 10, origin: "edited", at: "2026-06-01" }]);
+    const first = await mod.WrDocVersions.list("ch01s1");
+    expect(first).toEqual({ items: [{ revisionNo: 2, words: 10, origin: "edited", at: "2026-06-01" }], nextCursor: "c-2" });
+    expect(gets).toContain("/api/v1/author-drafts/d1/revisions?limit=50");
+    const older = await mod.WrDocVersions.list("ch01s1", { cursor: "c-2" });
+    expect(older).toEqual({ items: [{ revisionNo: 1, words: 5, origin: "edited", at: "2026-05-31" }], nextCursor: null });
+    expect(gets).toContain("/api/v1/author-drafts/d1/revisions?limit=50&cursor=c-2");
+    // 只读：看版本历史不替这一场建作者稿
+    expect(client.apiPost.mock.calls.filter(([url]) => /\/author-drafts\//.test(url))).toEqual([]);
   });
 
-  it("同一场并发读版本 / 正文 / draftId 只发一次 ensure（开发模式 effect 连跑两遍）", async () => {
+  it("没有作者稿的一场打开「对比」：版本是空的，一个 POST 都不发（重评 R15a）", async () => {
+    const { mod, client } = await loadDocs();
+    stopWarmHydrate(mod);
+    client.apiPost.mockClear();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
+      if (url === "/api/v1/author-drafts/scene/s1/current") return Promise.resolve({ draft: null });
+      return Promise.resolve({});
+    });
+    await expect(mod.WrDocVersions.list("ch01s1")).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(mod.WrDocVersions.paras("ch01s1", 1)).resolves.toEqual([]);
+    expect(client.apiPost).not.toHaveBeenCalled();
+    expect(client.apiGet.mock.calls.some(([url]) => /\/revisions/.test(url))).toBe(false);
+  });
+
+  it("同一场并发读 draftId 只发一次 ensure（开发模式 effect 连跑两遍）；读版本 / 正文不再 ensure", async () => {
     const { mod, client } = await loadDocs();
     // 目录装载后的预热水合另有自己的一次读取（水合总是读服务端，W1 复核四 W1-R4B-6；前一个用例留下的旧实例在它退役之前
     // 也可能预热一次）：这里只数被测的版本 / 正文 / draftId 这几个调用发出的 ensure
@@ -682,7 +710,8 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     });
     client.apiGet.mockImplementation((url) => {
       if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
-      if (/\/author-drafts\/d1\/revisions$/.test(url)) return Promise.resolve({ items: [] });
+      if (url === "/api/v1/author-drafts/scene/s1/current") return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1 } });
+      if (/\/author-drafts\/d1\/revisions\?/.test(url)) return Promise.resolve({ items: [] });
       if (/\/author-drafts\/d1\/revisions\/\d+$/.test(url)) return Promise.resolve({ revision: { content: "<p>旧版一句。</p>" } });
       return Promise.resolve({});
     });
@@ -691,14 +720,15 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     const second = mod.WrDocVersions.list("ch01s1");
     const third = mod.WrDocVersions.paras("ch01s1", 1);
     const fourth = mod.WrDocs.draftId("ch01s1");
+    const fifth = mod.WrDocs.draftId("ch01s1");
     await vi.waitFor(() => expect(ensures).toBe(1), T);
-    ensure.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
-
-    await expect(first).resolves.toEqual([]);
-    await expect(second).resolves.toEqual([]);
+    await expect(first).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(second).resolves.toEqual({ items: [], nextCursor: null });
     await expect(third).resolves.toEqual(["旧版一句。"]);
+    ensure.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
     await expect(fourth).resolves.toBe("d1");
-    // 可证伪：去掉 in-flight 共享，四个调用各发一次 ensure
+    await expect(fifth).resolves.toBe("d1");
+    // 可证伪：去掉 in-flight 共享，两个 draftId 各发一次 ensure
     expect(ensures).toBe(1);
   });
 

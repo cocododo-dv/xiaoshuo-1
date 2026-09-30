@@ -13,11 +13,10 @@ import { WrDocVersions } from "./wr-doc-versions.js";
    那是写作台 store 的事，成稿中心不带进来。
    ========================================================== */
 
-const { useEffect, useState } = React;
+const { useEffect, useRef, useState } = React;
 
-/* 同一场的版本列表同一时刻只拉一次。list 第一次会先 POST ensure（没有作者稿就建一份空稿），
-   开发模式下 React 会把挂载 effect 连跑两遍：两个 ensure 带着同一个幂等键撞在一起，后一个拿到
-   409 IDEMPOTENCY_REQUEST_IN_PROGRESS，作者第一次点开「对比」就看到一句英文报错。 */
+/* 同一场的版本列表（第一页）同一时刻只拉一次：开发模式下 React 会把挂载 effect 连跑两遍。
+   列表只读——没有作者稿就是没有版本，不会替这一场建一份（重评 R15a）；版本多时分页，「更早的版本」接着往下取（批准 #8）。 */
 const listInflight = new Map();
 function listVersions(versions, sid) {
   if (!listInflight.has(sid)) {
@@ -44,6 +43,8 @@ function ManuDiff({ picked, chapter }) {
   const scenes = (chapter && chapter.scenes) || [];
   const [sid, setSid] = useState(() => (scenes[0] ? scenes[0].sid : null));
   const [vers, setVers] = useState(null);   // null = 列表加载中
+  const [nextCursor, setNextCursor] = useState(null);   // 还有更早的版本时是下一页的游标
+  const [moreBusy, setMoreBusy] = useState(false);
   const [selNew, setSelNew] = useState(null);
   const [selOld, setSelOld] = useState(null);
   const [diff, setDiff] = useState(null);
@@ -51,6 +52,8 @@ function ManuDiff({ picked, chapter }) {
   const [diffError, setDiffError] = useState("");
   const [historyRetry, setHistoryRetry] = useState(0);
   const [diffRetry, setDiffRetry] = useState(0);
+  const sidRef = useRef(sid);
+  sidRef.current = sid;
 
   useEffect(() => {
     if (scenes.length && !scenes.some((s) => s.sid === sid)) setSid(scenes[0].sid);
@@ -58,11 +61,13 @@ function ManuDiff({ picked, chapter }) {
 
   useEffect(() => {
     let on = true;
-    setVers(null); setDiff(null); setSelNew(null); setSelOld(null); setHistoryError(""); setDiffError("");
+    setVers(null); setNextCursor(null); setDiff(null); setSelNew(null); setSelOld(null); setHistoryError(""); setDiffError("");
     if (!sid) { setVers([]); return undefined; }
-    listVersions(WrDocVersions, sid).then((items) => {
+    listVersions(WrDocVersions, sid).then((page) => {
       if (!on) return;
+      const items = (page && page.items) || [];
       setVers(items);
+      setNextCursor((page && page.nextCursor) || null);
       if (items.length >= 2) { setSelNew(items[0].revisionNo); setSelOld(items[1].revisionNo); }
     }).catch((error) => {
       if (!on) return;
@@ -85,6 +90,24 @@ function ManuDiff({ picked, chapter }) {
       });
     return () => { on = false; };
   }, [sid, selNew, selOld, diffRetry]);
+
+  /* 接着取更早的一页，接在列表后面（已选的两版不动） */
+  const loadMore = () => {
+    if (!sid || !nextCursor || moreBusy) return;
+    const forSid = sid;
+    setMoreBusy(true);
+    WrDocVersions.list(forSid, { cursor: nextCursor }).then((page) => {
+      if (forSid !== sidRef.current) return;
+      const older = (page && page.items) || [];
+      setVers((prev) => {
+        const seen = new Set((prev || []).map((v) => v.revisionNo));
+        return (prev || []).concat(older.filter((v) => !seen.has(v.revisionNo)));
+      });
+      setNextCursor((page && page.nextCursor) || null);
+    }).catch((error) => {
+      if (forSid === sidRef.current) setHistoryError(versionErrorText(error, "更早的版本加载失败。"));
+    }).finally(() => { if (forSid === sidRef.current) setMoreBusy(false); });
+  };
 
   const ready = vers && vers.length >= 2;
   const pickNew = (n) => {
@@ -118,6 +141,11 @@ function ManuDiff({ picked, chapter }) {
                 <option key={v.revisionNo} value={v.revisionNo}>{versionLabel(v)}</option>
               ))}
             </select>
+            {nextCursor && (
+              <button type="button" className="btn btn-ghost btn-sm" data-testid="manuscript-diff-more" disabled={moreBusy} onClick={loadMore}>
+                {moreBusy ? "读取中…" : "更早的版本"}
+              </button>
+            )}
             {diff && <span className="ms-diff-stat"><span className="d-add-dot" />+{diff.adds} 句</span>}
             {diff && <span className="ms-diff-stat"><span className="d-del-dot" />−{diff.dels} 句</span>}
           </>

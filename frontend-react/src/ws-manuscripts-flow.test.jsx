@@ -149,7 +149,7 @@ beforeEach(() => {
   flow.extractSceneCanon.mockResolvedValue({});
   catalogRefresh.mockResolvedValue({});
   worksRefresh.mockResolvedValue({});
-  versionsFx.list.mockResolvedValue([]);
+  versionsFx.list.mockResolvedValue({ items: [], nextCursor: null });
   versionsFx.paras.mockResolvedValue([]);
   versionsFx.diff.mockReturnValue({ paras: [], adds: 0, dels: 0 });
   fidFx.project = null;
@@ -324,10 +324,10 @@ describe("成稿中心权威章节流", () => {
   });
 
   it("刷新后直接进成稿中心（写作台还没加载过）「对比」也列得出这一场的版本，并逐句比对最新两版", async () => {
-    versionsFx.list.mockResolvedValue([
+    versionsFx.list.mockResolvedValue({ items: [
       { revisionNo: 3, at: "2026-09-21T14:05:00", words: 1200 },
       { revisionNo: 2, at: "2026-09-20T10:00:00", words: 1100 },
-    ]);
+    ], nextCursor: null });
     versionsFx.paras.mockImplementation(async (sid, rev) => [rev === 3 ? "新的一句。" : "旧的一句。"]);
     versionsFx.diff.mockReturnValue({ paras: [{ segs: [{ t: "del", text: "旧的一句。" }, { t: "add", text: "新的一句。" }] }], adds: 1, dels: 1 });
     const host = await renderPage("review");
@@ -341,12 +341,35 @@ describe("成稿中心权威章节流", () => {
     expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 2);
     expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 3);
     expect(host.querySelector(".ms-diff-body .d-add").textContent).toBe("新的一句。");
+    expect(host.querySelector('[data-testid="manuscript-diff-more"]')).toBeNull();   // 一页就是全部：没有「更早的版本」
+  });
+
+  it("版本多时分页（批准 #8）：先列最新一页，「更早的版本」接着取下一页、接在旧版本下拉的后面", async () => {
+    versionsFx.list.mockImplementation(async (sid, opts) => ((opts && opts.cursor) === "cur-2"
+      ? { items: [{ revisionNo: 1, at: "2026-09-19T09:00:00", words: 900 }], nextCursor: null }
+      : { items: [
+        { revisionNo: 3, at: "2026-09-21T14:05:00", words: 1200 },
+        { revisionNo: 2, at: "2026-09-20T10:00:00", words: 1100 },
+      ], nextCursor: "cur-2" }));
+    const host = await renderPage("review");
+    await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const olderOptions = () => [...host.querySelectorAll('select[aria-label="旧版本"] option')].map((o) => o.value);
+    expect(olderOptions()).toEqual(["2"]);
+    const more = host.querySelector('[data-testid="manuscript-diff-more"]');
+    expect(more.textContent).toBe("更早的版本");
+    await click(more);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(versionsFx.list).toHaveBeenLastCalledWith("ch01s1", { cursor: "cur-2" });
+    expect(olderOptions()).toEqual(["2", "1"]);
+    expect(host.querySelector('select[aria-label="新版本"]').value).toBe("3");
+    expect(host.querySelector('[data-testid="manuscript-diff-more"]')).toBeNull();
   });
 
   it("版本历史请求失败会显示错误并可重试", async () => {
     versionsFx.list
       .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
     const host = await renderPage("review");
     const diffTab = [...host.querySelectorAll("button")].find(node => node.textContent === "对比");
     await click(diffTab);
