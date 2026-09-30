@@ -74,7 +74,8 @@ class SnowflakeImpactAnalyzer:
                 changed_scene_ids = self._scenes_referencing_characters(project_id, changed_character_ids)
 
         if changed_scene_ids is not None:
-            filtered = [scene_id for scene_id in scene_ids if scene_id in set(changed_scene_ids)]
+            changed = set(changed_scene_ids)
+            filtered = [scene_id for scene_id in scene_ids if scene_id in changed]
             return self._impact(
                 step_key,
                 filtered,
@@ -108,15 +109,17 @@ class SnowflakeImpactAnalyzer:
         current = self._scenes_by_id(current_payload)
         if previous is None or current is None:
             return None
-        if set(previous) != set(current):
-            return None
         # 阶段 G：按作者真正编辑的内容投影比对（与雪花失效同一把尺）——生成器写的第一版与前端
         # 回传的版本在派生键 / 空键上处处不同，整行比对会把每一场都判成「变了」。
-        return [
+        # B07-02：id 集合变了不再当成「说不清」退回全书——新增的场还没有运行时产物，删掉的场正好是受影响的
+        # 那张卡；两边都在的场按它们彼此之间的先后比（插进 / 删掉一行不让后面每一场都「换了位置」）。
+        changed = {
             scene_id
-            for scene_id in current
-            if scene_row_content(previous[scene_id]) != scene_row_content(current[scene_id])
-        ]
+            for scene_id, (before, after) in _relative_ranks(previous, current).items()
+            if scene_row_content({**previous[scene_id], "_ordinal": before})
+            != scene_row_content({**current[scene_id], "_ordinal": after})
+        }
+        return sorted(changed | (set(previous) ^ set(current)))
 
     def _changed_character_ids(
         self,
@@ -127,13 +130,14 @@ class SnowflakeImpactAnalyzer:
         current = self._characters_by_id(current_payload)
         if previous is None or current is None:
             return None
-        if set(previous) != set(current):
-            return None
-        return {
+        # 与场同一条规则（B07-02）：加 / 删一个角色只影响引用它的场，其余角色按彼此之间的先后比
+        changed = {
             character_id
-            for character_id in current
-            if self._stable_json(previous[character_id]) != self._stable_json(current[character_id])
+            for character_id, (before, after) in _relative_ranks(previous, current).items()
+            if self._stable_json({**previous[character_id], "_ordinal": before})
+            != self._stable_json({**current[character_id], "_ordinal": after})
         }
+        return changed | (set(previous) ^ set(current))
 
     def _changed_chapter_row_uids(
         self,
@@ -251,6 +255,20 @@ class SnowflakeImpactAnalyzer:
             "affected_scene_ids": scene_ids,
             "summary": summary,
         }
+
+
+def _relative_ranks(
+    previous: dict[str, dict[str, Any]],
+    current: dict[str, dict[str, Any]],
+) -> dict[str, tuple[int, int]]:
+    """两边都在的成员 → （它在旧表里、新表里各排第几），只数两边都在的成员。
+
+    按绝对行号比的话，在第 2 行插进一场，后面每一场的行号都挪一格，全被当成「改了」。
+    """
+    before = [key for key in sorted(previous, key=lambda key: previous[key]["_ordinal"]) if key in current]
+    after = [key for key in sorted(current, key=lambda key: current[key]["_ordinal"]) if key in previous]
+    before_rank = {key: rank for rank, key in enumerate(before, start=1)}
+    return {key: (before_rank[key], rank) for rank, key in enumerate(after, start=1)}
 
 
 def _run_state_is_pristine(state: SceneRunState) -> bool:
