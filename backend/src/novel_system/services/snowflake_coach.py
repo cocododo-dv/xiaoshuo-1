@@ -57,7 +57,13 @@ class SnowflakeCoachMixin:
             step_key=step_key,
             target_chars=target_chars,
             latest_by_step=latest_by_step,
-            draft_override=self._merged_draft_override(project.project_id, latest_by_step, step_key, body.get("draft_override")),
+            draft_override=self._merged_draft_override(
+                project.project_id,
+                latest_by_step,
+                step_key,
+                body.get("draft_override"),
+                roster=self._character_roster(project.project_id, latest_by_step),
+            ),
             author_ask=ask or None,
             focus_scene_id=focus_scene_id,
             author_direction_brief=(
@@ -97,7 +103,13 @@ class SnowflakeCoachMixin:
         workspace = self._workspace_payload(project.project_id, lean=True)
         step_key = str(body.get("step_key") or workspace.get("current_step_key") or "book_brief").strip() or "book_brief"
         step = self._step_from_workspace(workspace, step_key)
-        step = self._step_with_override(project.project_id, step, body.get("draft_override"), latest_by_step=latest_by_step)
+        step = self._step_with_override(
+            project.project_id,
+            step,
+            body.get("draft_override"),
+            latest_by_step=latest_by_step,
+            roster=self._character_roster(project.project_id, latest_by_step),
+        )
         approved_context = self._approved_context(workspace)
         focus_scene_id = str(body.get("focus_scene_id") or "").strip() or None
         # 阶段 T：教练有记忆——当前要点（含作者撤下的）、继承的全书级要点、本步最近几轮问答

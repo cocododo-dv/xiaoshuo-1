@@ -1,7 +1,7 @@
 """雪花一步的版本（``snowflake_step_runs`` 表）：最新版、下一版号、造一版、原位改写待审版、确认时让位、历史与抹空保护。
 
 生成、保存、恢复三处以前各自拼一遍 ``SnowflakeStepRun(step_run_id=…, version=…)``，保存又自己写一遍「原位改写
-待审版要清掉哪些失效留痕」。现在都经 :class:`StepRunStore`（B06-17）。叶子模块：只依赖模型与两个只读叶子。
+待审版要清掉哪些失效留痕」。现在都经 :class:`StepRunStore`（B06-17）。叶子模块：只依赖模型与三个只读叶子。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import OperationLog, SnowflakeStepRun
+from novel_system.services.snowflake_character_ids import present_draft
 from novel_system.services.snowflake_queries import latest_by_step, next_step_version
 from novel_system.services.snowflake_staleness import semantic_payload
 
@@ -103,7 +104,9 @@ def step_run_payload(run: SnowflakeStepRun | None, *, include_diagnosis: bool = 
 
 
 def step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = False) -> dict[str, Any]:
-    """历史列表里的一版（草稿只在预览某一版时带）。"""
+    """历史列表里的一版（草稿只在预览某一版时带）。交给前端：摘要与草稿里的角色 id 都按草稿口径
+    （剥掉服务端补的作品前缀，见 ``snowflake_character_ids``）——摘要里不该冒出库里的内部 id。"""
+    presented = present_draft(run.project_id, run.draft_json or {})
     payload = {
         "step_run_id": run.step_run_id,
         "version": run.version,
@@ -117,10 +120,10 @@ def step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = Fal
         "stale_accepted_note": run.stale_accepted_note,
         "generation_source": str((run.health_json or {}).get("generation_source") or ""),
         "trigger_source": str((run.health_json or {}).get("trigger_source") or ""),
-        "draft_summary": draft_summary(run.draft_json or {}),
+        "draft_summary": draft_summary(presented),
     }
     if include_draft:
-        payload["draft"] = deepcopy(run.draft_json or {})
+        payload["draft"] = deepcopy(presented)
     return payload
 
 

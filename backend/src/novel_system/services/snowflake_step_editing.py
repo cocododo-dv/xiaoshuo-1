@@ -1,7 +1,8 @@
 """雪花一步草稿的写侧：生成（整步 / 定向 / 略过 / 按方向）、作者保存（待审版原位改写、抹空保护、同内容不降级）、
 历史与恢复，以及它们共用的健康度、草稿覆盖（draft_override）的合并。
 
-写入即规范：角色 id 带作品前缀落库（``snowflake_character_ids``）。2026-09-30 从 ``SnowflakeWorkspaceService`` 拆出（B06-07）。
+写入即规范：角色 id 带作品前缀落库，视角 / 在场 / 全书主角的引用指着角色才补前缀（``snowflake_character_ids``）。
+2026-09-30 从 ``SnowflakeWorkspaceService`` 拆出（B06-07）。
 """
 
 from __future__ import annotations
@@ -9,12 +10,13 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm.attributes import flag_modified
 
-from novel_system.db.models import OperationLog, SnowflakeAssistantTurn, SnowflakeStepRun, utcnow
+from novel_system.db.models import OperationLog, SnowflakeAssistantTurn, SnowflakeCharacterPlan, SnowflakeStepRun, utcnow
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text
-from novel_system.services.snowflake_character_ids import canonical_character_id, canonicalize_draft, present_draft
+from novel_system.services.snowflake_character_ids import RosterSource, canonical_character_id, canonicalize_draft
 from novel_system.services.snowflake_draft_merge import overlay_keeping_members
 from novel_system.services.snowflake_staleness import semantic_payload
 from novel_system.services.snowflake_step_catalog import CHARACTER_STEPS, step_definition_view
@@ -71,7 +73,13 @@ class SnowflakeStepEditingMixin:
             )
             # draft_override：FE 带来的本地最新规范草稿（与上行 PATCH 同源），盖在
             # 存档之上作为生成底稿——消除「刚加的角色/场还没自动保存上行」的竞态。
-            draft_override = self._merged_draft_override(project.project_id, latest_by_step, step_key, body.get("draft_override"))
+            draft_override = self._merged_draft_override(
+                project.project_id,
+                latest_by_step,
+                step_key,
+                body.get("draft_override"),
+                roster=self._character_roster(project.project_id, latest_by_step),
+            )
             if body.get("require_llm") and not self._llm.llm_enabled():
                 raise DomainError(
                     "SNOWFLAKE_LLM_REQUIRED",
@@ -117,8 +125,13 @@ class SnowflakeStepEditingMixin:
                 author_direction_brief=brief_prompt,
                 direction_kind=direction_kind,
             )
-            # 模型看到的是规范口径的 id，回来的也按规范口径落库；缺 id 的新成员在这里铸号
-            draft = canonicalize_draft(project.project_id, llm_result.payload, mint_missing=True)
+            # 模型看到的是规范口径的 id，回来的也按规范口径落库；缺 id 的新成员在这里铸号（模型回的姓名引用原样）
+            draft = canonicalize_draft(
+                project.project_id,
+                llm_result.payload,
+                roster=self._character_roster(project.project_id, latest_by_step),
+                mint_missing=True,
+            )
             source = llm_result.source
             llm_call_id = llm_result.llm_call_id
             # 分批深化中途失败等「作者必须知道但不属于草稿」的事实随健康度落库
@@ -188,10 +201,12 @@ class SnowflakeStepEditingMixin:
         latest_by_step = self._latest_by_step(project.project_id)
         if self._draft_gate_mode(project) == "strict":
             self._require_previous_gates(step_key, latest_by_step)
-        # 写入即规范（B06-01）：角色 id 与视角 / 在场 / 全书主角的引用一律带作品前缀，缺 id 的角色铸号
+        # 写入即规范（B06-01）：角色 id 带作品前缀，缺 id 的角色铸号；视角 / 在场 / 全书主角的引用指着角色才补前缀，
+        # 手填的姓名原样（04 名册还空时 09 的视角是自由文本框）
         draft = canonicalize_draft(
             project.project_id,
             merge_step_draft(step_key, body.get("draft") or {}, latest_by_step=latest_by_step),
+            roster=self._character_roster(project.project_id, latest_by_step),
             mint_missing=True,
         )
         latest = latest_by_step.get(step_key)
@@ -279,9 +294,8 @@ class SnowflakeStepEditingMixin:
         preserved = self._runs.wipe_guard_preservations([row.step_run_id for row in rows])
         items = []
         for row in rows:
+            # 摘要与草稿都按前端口径（角色 id 剥掉服务端补的前缀）
             payload = step_run_history_payload(row, include_draft=include_draft)
-            if include_draft:
-                payload["draft"] = present_draft(project.project_id, payload.get("draft"))
             # 抹空保护新起的那一版：它记着被保住的是哪一版（界面可以据此一键取回）
             payload["wipe_guard_preserved_step_run_id"] = preserved.get(row.step_run_id)
             items.append(payload)
@@ -300,7 +314,12 @@ class SnowflakeStepEditingMixin:
         latest_by_step = self._latest_by_step(project.project_id)
         if self._draft_gate_mode(project) == "strict":
             self._require_previous_gates(step_key, latest_by_step)
-        draft = canonicalize_draft(project.project_id, deepcopy(source_run.draft_json or {}), mint_missing=True)
+        draft = canonicalize_draft(
+            project.project_id,
+            deepcopy(source_run.draft_json or {}),
+            roster=self._character_roster(project.project_id, latest_by_step),
+            mint_missing=True,
+        )
         refs = self._input_refs(step_key, latest_by_step)
         refs["restored_from_step_run_id"] = source_run.step_run_id
         run = self._runs.new_run(
@@ -395,12 +414,34 @@ class SnowflakeStepEditingMixin:
             health["direction"] = deepcopy(direction)
         return health
 
+    def _character_roster(self, project_id: str, latest_by_step: dict[str, SnowflakeStepRun]) -> RosterSource:
+        """本作品的角色名册（库里口径的 id）：角色计划 + 三个角色步最新草稿的成员——规范引用时据此认出哪些是角色 id。
+        返回按需取的函数：前端的编号与已带前缀的 id 不必查，只有认不出一个引用（多半是手填的姓名）时才读一次库。"""
+
+        def load() -> set[str]:
+            ids = set(
+                self.session.execute(
+                    select(SnowflakeCharacterPlan.character_id).where(SnowflakeCharacterPlan.project_id == project_id)
+                ).scalars()
+            )
+            for step_key in CHARACTER_STEPS:
+                run = latest_by_step.get(step_key)
+                members = (run.draft_json or {}).get("characters") if run is not None else None
+                for item in members if isinstance(members, list) else []:
+                    if isinstance(item, dict):
+                        ids.add(str(item.get("character_id") or "").strip())
+            return {value for value in ids if value}
+
+        return load
+
     @staticmethod
     def _merged_draft_override(
         project_id: str,
         latest_by_step: dict[str, SnowflakeStepRun],
         step_key: str,
         draft_override: Any,
+        *,
+        roster: RosterSource | None = None,
     ) -> dict[str, Any] | None:
         """FE 带来的本地最新规范草稿（与上行 PATCH 同源）盖在存档之上作为生成 / 方向的底稿——
         消除「刚加的角色 / 场还没自动保存上行」的竞态；剥 fe_* 写穿键，按成员对位合并。没带 → None。"""
@@ -413,7 +454,9 @@ class SnowflakeStepEditingMixin:
             if not str(key).startswith("fe_")
         }
         override_payload = canonicalize_draft(
-            project_id, {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+            project_id,
+            {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")},
+            roster=roster,
         )
         return overlay_keeping_members(base_payload, override_payload)
 
@@ -424,6 +467,7 @@ class SnowflakeStepEditingMixin:
         draft_override: Any,
         *,
         latest_by_step: dict[str, SnowflakeStepRun],
+        roster: RosterSource | None = None,
     ) -> dict[str, Any]:
         if not isinstance(draft_override, dict):
             return step
@@ -433,7 +477,9 @@ class SnowflakeStepEditingMixin:
         # 成员就把存档里的成员整片抹掉,教练/分类器于是只看到半截故事(与 generate 同一 bug)。
         # 先剥掉 fe_* 写透键,再按成员 id 对位。
         override_payload = canonicalize_draft(
-            project_id, {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
+            project_id,
+            {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")},
+            roster=roster,
         )
         merged_step["draft"] = overlay_keeping_members(merged_step.get("draft") or {}, override_payload)
         merged_step["draft"] = merge_step_draft(

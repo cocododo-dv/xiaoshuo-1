@@ -36,8 +36,13 @@ class SnowflakeTriageMixin:
         step = self._step_from_workspace(workspace, "scene_details")
         if not step.get("draft", {}).get("scenes"):
             raise DomainError("SNOWFLAKE_SCENE_DETAILS_REQUIRED", "需要先完成场景规划（场景细化）。", status_code=409)
+        latest_by_step = self._latest_by_step(project.project_id)
         step = self._step_with_override(
-            project.project_id, step, body.get("draft_override"), latest_by_step=self._latest_by_step(project.project_id)
+            project.project_id,
+            step,
+            body.get("draft_override"),
+            latest_by_step=latest_by_step,
+            roster=self._character_roster(project.project_id, latest_by_step),
         )
         llm_result = self._llm.scene_triage_suggestions(
             project=workspace["project"],
