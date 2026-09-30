@@ -11,7 +11,6 @@ from sqlalchemy import select
 
 from novel_system.db.models import AuthorDraft, PassagePatchCandidate
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.manuscript_html import plain_manuscript_text
 from novel_system.services.reference_copy_gate import (
     check_reference_copy_for_scope,
@@ -249,49 +248,32 @@ class PassagePatchMixin:
             instruction=instruction,
             issue_note=issue_note,
         )
-        prompt = self.prompt_builder.build(snapshot, "writer_passage_patch")
         object_type = _required_text(payload, "object_type")
         object_id = _required_text(payload, "object_id")
-        user_prompt = _passage_patch_user_prompt(
-            prompt["user_prompt"],
-            source_excerpt=source_excerpt,
-            issue_dimension=issue_dimension,
-            target_text_ref=target_text_ref,
-            source_draft=source_draft,
-            instruction=instruction,
-            issue_note=issue_note,
-        )
-        # 2026-09-14 WP6.3：局部补丁在参考作者的手笔下改句（k≤3 样例窗口，作者稿作选窗上下文）
-        prompt = self._inject_style_reference_prefix(
-            prompt,
-            object_type=object_type,
-            object_id=object_id,
-            chapter_id=_optional_text(payload, "chapter_id"),
-            scene_id=_optional_text(payload, "scene_id"),
-            context_text=(source_draft.content if source_draft is not None else source_excerpt) or None,
-            final_user_prompt=user_prompt,
-            role="revise",
-        )
-        execution_step_key = f"writer_passage_patch:{object_type}:{object_id}"
-        context = self._llm_context(
-            object_type=object_type,
-            object_id=object_id,
-            chapter_id=_optional_text(payload, "chapter_id"),
-            scene_id=_optional_text(payload, "scene_id"),
-            node_id="writer_passage_patch",
-            execution_step_key=execution_step_key,
-        )
-        node_result = self._llm_runner.run(
-            scene_id=context.scene_id,
-            chapter_id=context.chapter_id,
-            bundle_id=snapshot["source_version_refs"]["target_text_ref"] or "writer_passage_patch",
-            bundle_hash=sha256_json_normalized(snapshot),
-            node_id="writer_passage_patch",
+        node_result = self._run_writer_node(
+            "writer_passage_patch",
             step="writer_passage_patch",
-            prompt=prompt,
-            user_prompt=user_prompt,
-            execution_step_key=execution_step_key,
-            context=context,
+            template="writer_passage_patch",
+            snapshot=snapshot,
+            finish_user_prompt=lambda base: _passage_patch_user_prompt(
+                base,
+                source_excerpt=source_excerpt,
+                issue_dimension=issue_dimension,
+                target_text_ref=target_text_ref,
+                source_draft=source_draft,
+                instruction=instruction,
+                issue_note=issue_note,
+            ),
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=_optional_text(payload, "chapter_id"),
+            scene_id=_optional_text(payload, "scene_id"),
+            # 2026-09-14 WP6.3：局部补丁在参考作者的手笔下改句（k≤3 样例窗口，作者稿作选窗上下文）
+            context_text=(source_draft.content if source_draft is not None else source_excerpt) or None,
+            style_role="revise",
+            bundle_id=snapshot["source_version_refs"]["target_text_ref"] or "writer_passage_patch",
+            ids_from_context=True,
+            execution_step_key=f"writer_passage_patch:{object_type}:{object_id}",
         )
         try:
             normalized = _normalize_patch_output(

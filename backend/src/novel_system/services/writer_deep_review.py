@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
@@ -18,18 +20,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    AuthorDraft,
     ChapterGoal,
     FinalScene,
     PassagePatchCandidate,
     SceneCard,
-    SceneRunState,
     WriterEvaluation,
 )
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -38,6 +39,7 @@ from novel_system.services.llm_task_runner import (
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_diagnosis import (
+    DiagnosisText,
     LITERARY_REVISION_PASSAGE_RUBRIC_ID,
     LITERARY_REVISION_RUBRIC_ID,
     PATCH_CATEGORIES,
@@ -51,7 +53,6 @@ from novel_system.services.scene_diagnosis import (
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
-from novel_system.services.scene_text import current_author_draft
 from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
     resolve_style_scope,
@@ -104,6 +105,43 @@ __all__ = [
     "_normalize_patch_output",
     "_optional_score",
 ]
+
+
+@dataclass(frozen=True)
+class _WriterNode:
+    """一个写作台 LLM 节点失败时回给前端的码（前端按码分支，不按状态码）。"""
+
+    capability_code: str
+    failure_code: str
+    operation: str
+    next_action: str
+
+
+# 整场深评、局部深评与通读本章走同一个节点路由（writer_deep_review）；局部改写走自己的 writer_passage_patch
+_WRITER_NODES: dict[str, _WriterNode] = {
+    "writer_deep_review": _WriterNode(
+        capability_code="WRITER_DEEP_REVIEW_LLM_REQUIRED",
+        failure_code="WRITER_DEEP_REVIEW_LLM_FAILED",
+        operation="writer deep review",
+        next_action="configure_writer_deep_review_route_and_retry",
+    ),
+    "writer_passage_patch": _WriterNode(
+        capability_code="WRITER_PASSAGE_PATCH_LLM_REQUIRED",
+        failure_code="WRITER_PASSAGE_PATCH_LLM_FAILED",
+        operation="writer passage patch",
+        next_action="configure_writer_passage_patch_route_and_retry",
+    ),
+}
+
+
+def _no_text_error(object_type: str, object_id: str) -> DomainError:
+    subject = "这一场" if object_type == "scene" else "这一章的各场"
+    return DomainError(
+        "WRITER_DEEP_REVIEW_NO_TEXT",
+        f"{subject}还没有正文，没有可评的字。先写一段（或起草一稿）再跑 AI 深评。",
+        status_code=409,
+        details={"object_type": object_type, "object_id": object_id},
+    )
 
 
 class WriterDeepReviewService(PassagePatchMixin):
@@ -163,17 +201,20 @@ class WriterDeepReviewService(PassagePatchMixin):
         )
 
     def run_scene_review(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
-        """「AI 深评」：对当前作者稿跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即 409。"""
+        """「AI 深评」：对写作台看到的这一场正文跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即
+        409；这一场还没有正文也 409（不拿空提示词去花钱，模型给的「发现」只能是编的）。"""
 
+        self._require_live_llm("writer_deep_review")
         scene = require_scene(self.session, scene_id)
-        source = self._scene_source(scene)
-        self._create_deep_review(
+        text = SceneDiagnosisService(self.session).text_for_scene(scene)
+        if text.layer == "none":
+            raise _no_text_error("scene", scene.scene_id)
+        self._create_deep_review_with_llm(
             object_type="scene",
             object_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             scene_id=scene.scene_id,
-            source=source,
-            actor_ref=actor_ref,
+            source=self._scene_source(text),
         )
         return SceneDiagnosisService(self.session).payload(scene.scene_id)
 
@@ -199,6 +240,9 @@ class WriterDeepReviewService(PassagePatchMixin):
             payload = diagnosis_service.chapter_payload(chapter.chapter_id)
             payload["notice"] = {"code": "CHAPTER_REVIEW_UP_TO_DATE", "message": "上次通读之后没有场改过字，不必再通读。"}
             return payload
+        self._require_live_llm("writer_deep_review")
+        if all(text.layer == "none" for text in texts):
+            raise _no_text_error("chapter", chapter.chapter_id)
         full_scene_ids = set(changes["changed_scene_ids"]) if incremental else {scene.scene_id for scene in scenes}
         carried = _carry_previous_scene_findings(previous, scenes, texts, full_scene_ids) if incremental else []
         source = self._chapter_source(
@@ -209,13 +253,12 @@ class WriterDeepReviewService(PassagePatchMixin):
             previous=previous if incremental else None,
         )
         prompt_tail = _chapter_review_prompt_tail(scenes, texts, full_scene_ids, previous, carried) if incremental else None
-        self._create_deep_review(
+        self._create_deep_review_with_llm(
             object_type="chapter",
             object_id=chapter.chapter_id,
             chapter_id=chapter.chapter_id,
             scene_id=None,
             source=source,
-            actor_ref=actor_ref,
             prompt_tail=prompt_tail,
             extra_findings=carried,
             meta={
@@ -332,59 +375,28 @@ class WriterDeepReviewService(PassagePatchMixin):
         }
         # 段落范围与这一场的结构 / 设计背景都作为 inline digest 进用户消息（见 _create_deep_review_with_llm）
         snapshot["inline_digests"] = {"scene_summary": scope["text"], **self._scene_design_sections(scene.scene_id)}
-        prompt = self.prompt_builder.build(snapshot, "writer_passage_review")
-        user_prompt = _passage_review_user_prompt(
-            prompt["user_prompt"],
-            scope=scope,
-            about=about,
-            excerpt=excerpt,
-            question=question,
-        )
-        prompt = self._inject_style_reference_prefix(
-            prompt,
+        node_result = self._run_writer_node(
+            "writer_deep_review",
+            step="writer_passage_review",
+            template="writer_passage_review",
+            snapshot=snapshot,
+            finish_user_prompt=lambda base: _passage_review_user_prompt(
+                base,
+                scope=scope,
+                about=about,
+                excerpt=excerpt,
+                question=question,
+            ),
             object_type="scene",
             object_id=scene.scene_id,
             chapter_id=scene.chapter_id,
             scene_id=scene.scene_id,
             context_text=scope["focus_text"] or None,
-            final_user_prompt=user_prompt,
+            bundle_id=text.ref or f"writer_passage_review:{scene.scene_id}",
+            run_scene_id=scene.scene_id,
+            run_chapter_id=scene.chapter_id,
+            execution_step_key=f"writer_passage_review:{scene.scene_id}:{focus[0]}-{focus[-1]}",
         )
-        execution_step_key = f"writer_passage_review:{scene.scene_id}:{focus[0]}-{focus[-1]}"
-        context = self._llm_context(
-            object_type="scene",
-            object_id=scene.scene_id,
-            chapter_id=scene.chapter_id,
-            scene_id=scene.scene_id,
-            node_id="writer_deep_review",
-            execution_step_key=execution_step_key,
-        )
-        try:
-            node_result = self._llm_runner.run(
-                scene_id=scene.scene_id,
-                chapter_id=scene.chapter_id,
-                bundle_id=text.ref or f"writer_passage_review:{scene.scene_id}",
-                bundle_hash=sha256_json_normalized(snapshot),
-                node_id="writer_deep_review",
-                step="writer_passage_review",
-                prompt=prompt,
-                user_prompt=user_prompt,
-                execution_step_key=execution_step_key,
-                context=context,
-            )
-        except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "WRITER_DEEP_REVIEW_LLM_FAILED",
-                exc.message,
-                status_code=409,
-                details={
-                    "llm_call_id": exc.llm_call_id,
-                    "node_id": "writer_deep_review",
-                    "step": "writer_passage_review",
-                    "error_code": exc.error_code,
-                    "next_action": "configure_writer_deep_review_route_and_retry",
-                    "response_summary": exc.response_summary,
-                },
-            ) from exc
         normalized = _normalize_passage_review_output(
             node_result.response.structured_output or {},
             has_finding=about is not None,
@@ -461,37 +473,6 @@ class WriterDeepReviewService(PassagePatchMixin):
     def serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
         return _serialize_patch_candidate(row)
 
-    def _create_deep_review(
-        self,
-        *,
-        object_type: str,
-        object_id: str,
-        chapter_id: str | None,
-        scene_id: str | None,
-        source: dict[str, Any],
-        actor_ref: str,
-        prompt_tail: str | None = None,
-        extra_findings: list[dict[str, Any]] | None = None,
-        meta: dict[str, Any] | None = None,
-    ) -> None:
-        """深评是拒绝式的 LLM 节点：没有真实模型就 409 + author_action，不再有本地词表兜底。
-
-        （2026-09-22 之前这里有一条 ``_diagnose_by_lens``：按「保护 / 真相 / 公开 / 隐藏」这类
-        写死的词给出套话——那是退役演示故事的残留，对任何真实作品都在说谎。）
-        """
-
-        self._require_live_llm("writer_deep_review")
-        self._create_deep_review_with_llm(
-            object_type=object_type,
-            object_id=object_id,
-            chapter_id=chapter_id,
-            scene_id=scene_id,
-            source=source,
-            prompt_tail=prompt_tail,
-            extra_findings=extra_findings,
-            meta=meta,
-        )
-
     @staticmethod
     def _require_live_llm(step: str) -> None:
         if get_settings().llm_enabled:
@@ -520,7 +501,12 @@ class WriterDeepReviewService(PassagePatchMixin):
         extra_findings: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
     ) -> None:
-        """跑节点、写评审行（一行 aggregate + 各镜头行）；调用方随后按统一诊断回载荷，这里不另拼一份。"""
+        """跑节点、写评审行（一行 aggregate + 各镜头行）；调用方随后按统一诊断回载荷，这里不另拼一份。
+
+        深评是拒绝式的 LLM 节点：入口先查过有没有真实模型与正文，不再有本地词表兜底。（2026-09-22 之前这里有一条
+        ``_diagnose_by_lens``：按「保护 / 真相 / 公开 / 隐藏」这类写死的词给出套话——那是退役演示故事的残留，
+        对任何真实作品都在说谎。）
+        """
 
         snapshot = {
             "object_type": object_type,
@@ -547,54 +533,24 @@ class WriterDeepReviewService(PassagePatchMixin):
             # 反应场当成「压力不足」；设计背景是可压缩的 section，缺了也不影响评审本身。
             digests.update(self._scene_design_sections(scene_id or object_id))
         snapshot["inline_digests"] = digests
-        prompt = self.prompt_builder.build(snapshot, "writer_deep_review")
-        # 只通读改过的场时，用户消息尾部说明哪些场是全文、哪些只是摘要，并列出上次的章级发现
-        user_prompt = prompt["user_prompt"] + (f"\n\n{prompt_tail}" if prompt_tail else "")
-        # 2026-09-14 WP6.3：评审在参考作者的手笔下判断「复读 / 意象必要性 / 声音辨识度」
-        prompt = self._inject_style_reference_prefix(
-            prompt,
+        node_result = self._run_writer_node(
+            "writer_deep_review",
+            step="writer_deep_review",
+            template="writer_deep_review",
+            snapshot=snapshot,
+            # 只通读改过的场时，用户消息尾部说明哪些场是全文、哪些只是摘要，并列出上次的章级发现
+            finish_user_prompt=lambda base: base + (f"\n\n{prompt_tail}" if prompt_tail else ""),
             object_type=object_type,
             object_id=object_id,
             chapter_id=chapter_id,
             scene_id=scene_id,
+            # 2026-09-14 WP6.3：评审在参考作者的手笔下判断「复读 / 意象必要性 / 声音辨识度」
             context_text=str(source.get("content") or "") or None,
-            final_user_prompt=user_prompt,
+            bundle_id=source.get("source_text_ref") or f"writer_deep_review:{object_type}:{object_id}",
+            run_scene_id=scene_id or object_id,
+            run_chapter_id=chapter_id or object_id,
+            execution_step_key=f"writer_deep_review:{object_type}:{object_id}",
         )
-        execution_step_key = f"writer_deep_review:{object_type}:{object_id}"
-        context = self._llm_context(
-            object_type=object_type,
-            object_id=object_id,
-            chapter_id=chapter_id,
-            scene_id=scene_id,
-            node_id="writer_deep_review",
-            execution_step_key=execution_step_key,
-        )
-        try:
-            node_result = self._llm_runner.run(
-                scene_id=scene_id or object_id,
-                chapter_id=chapter_id or object_id,
-                bundle_id=source.get("source_text_ref") or f"writer_deep_review:{object_type}:{object_id}",
-                bundle_hash=sha256_json_normalized(snapshot),
-                node_id="writer_deep_review",
-                step="writer_deep_review",
-                prompt=prompt,
-                user_prompt=user_prompt,
-                execution_step_key=execution_step_key,
-                context=context,
-            )
-        except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "WRITER_DEEP_REVIEW_LLM_FAILED",
-                exc.message,
-                status_code=409,
-                details={
-                    "llm_call_id": exc.llm_call_id,
-                    "node_id": "writer_deep_review",
-                    "error_code": exc.error_code,
-                    "next_action": "configure_writer_deep_review_route_and_retry",
-                    "response_summary": exc.response_summary,
-                },
-            ) from exc
         normalized = _normalize_deep_review_output(node_result.response.structured_output or {})
         if extra_findings:
             # 未改的场沿用上一轮通读的发现（带 carried_from）；模型这次又说到同一处的，以模型的为准
@@ -660,6 +616,75 @@ class WriterDeepReviewService(PassagePatchMixin):
             )
             self.session.add(row)
         self.session.flush()
+
+    def _run_writer_node(
+        self,
+        node_id: str,
+        *,
+        step: str,
+        template: str,
+        snapshot: dict[str, Any],
+        finish_user_prompt: Callable[[str], str],
+        object_type: str,
+        object_id: str,
+        chapter_id: str | None,
+        scene_id: str | None,
+        context_text: str | None,
+        bundle_id: str,
+        execution_step_key: str,
+        run_scene_id: str | None = None,
+        run_chapter_id: str | None = None,
+        ids_from_context: bool = False,
+        style_role: str = "review",
+    ) -> Any:
+        """写作台三个 LLM 流程共用的一次节点调用（审计 B05-10）：装配模板 → 用户消息尾 → 参考书注入（按接收节点的
+        路由判云策略，「仅本机」的书遇云端路由整次 409）→ 计费上下文 → 运行器；运行器的失败只在这里翻译一次
+        （``llm_fail_closed``：缺模型能力 409 + ``capability_code``，上游模型失败 502 + ``failure_code``）。
+        运行器记账用的场 / 章 id 各流程照旧：深评与局部深评显式给出，局部改写（``ids_from_context``）取计费上下文里的。"""
+
+        prompt = self.prompt_builder.build(snapshot, template)
+        user_prompt = finish_user_prompt(prompt["user_prompt"])
+        prompt = self._inject_style_reference_prefix(
+            prompt,
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            context_text=context_text,
+            final_user_prompt=user_prompt,
+            role=style_role,
+        )
+        context = self._llm_context(
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+            scene_id=scene_id,
+            node_id=node_id,
+            execution_step_key=execution_step_key,
+        )
+        try:
+            return self._llm_runner.run(
+                scene_id=context.scene_id if ids_from_context else run_scene_id,
+                chapter_id=context.chapter_id if ids_from_context else run_chapter_id,
+                bundle_id=bundle_id,
+                bundle_hash=sha256_json_normalized(snapshot),
+                node_id=node_id,
+                step=step,
+                prompt=prompt,
+                user_prompt=user_prompt,
+                execution_step_key=execution_step_key,
+                context=context,
+            )
+        except LLMNodeExecutionError as exc:
+            node = _WRITER_NODES[node_id]
+            raise_llm_domain_error(
+                exc,
+                capability_code=node.capability_code,
+                failure_code=node.failure_code,
+                operation=node.operation,
+                node_id=node_id,
+                next_action=node.next_action,
+            )
 
     def _scene_design_sections(self, scene_id: str) -> dict[str, str]:
         """这一场的结构事实段 + 设计背景段（有就给，任何一段渲染失败都只是少一段）。"""
@@ -738,27 +763,14 @@ class WriterDeepReviewService(PassagePatchMixin):
             return prompt
 
 
-    def _scene_source(self, scene: SceneCard) -> dict[str, Any]:
-        author_draft = self._current_author_draft("scene", scene.scene_id)
-        if author_draft is not None:
-            return {
-                "content": author_draft.content or "",
-                "source_text_ref": f"author_draft:{author_draft.draft_id}",
-                "source_bundle_id": None,
-            }
-        state = self.session.get(SceneRunState, scene.scene_id)
-        final_row = self.session.get(FinalScene, state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
-        if final_row is None:
-            final_row = self.session.execute(
-                select(FinalScene)
-                .where(FinalScene.scene_id == scene.scene_id)
-                .order_by(FinalScene.created_at.desc(), FinalScene.row_id.desc())
-            ).scalars().first()
-        return {
-            "content": final_row.content if final_row else "",
-            "source_text_ref": f"final_scene:{final_row.row_id}" if final_row else f"scene:{scene.scene_id}",
-            "source_bundle_id": final_row.source_bundle_id if final_row else (state.current_bundle_id if state else None),
-        }
+    def _scene_source(self, text: DiagnosisText) -> dict[str, Any]:
+        """整场深评送审的正文 = 诊断看的那一份（当前作者稿，其次运行终稿）；终稿记下它的 bundle。"""
+
+        bundle_id = None
+        if text.layer == "runtime_final_scene" and text.ref:
+            final = self.session.get(FinalScene, text.ref.split(":", 1)[1])
+            bundle_id = final.source_bundle_id if final is not None else None
+        return {"content": text.content, "source_text_ref": text.ref, "source_bundle_id": bundle_id}
 
     def _chapter_source(
         self,
@@ -812,7 +824,5 @@ class WriterDeepReviewService(PassagePatchMixin):
             "source_bundle_id": None,
         }
 
-    def _current_author_draft(self, object_type: str, object_id: str) -> AuthorDraft | None:
-        return current_author_draft(self.session, object_type, object_id)
 
 

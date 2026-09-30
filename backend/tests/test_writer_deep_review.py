@@ -605,3 +605,95 @@ def test_passage_patch_prompt_carries_no_author_preference_section(session) -> N
     assert "Author Preference" not in user_prompt
     assert "更锋利的反问" not in user_prompt and "解释性对白" not in user_prompt
     assert "草稿偏好不应进入提示词" not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# 三个 LLM 流程共用一次节点调用：失败只翻译一次；没有正文不调模型（审计 B05-06 / B05-10、B09-24）
+# ---------------------------------------------------------------------------
+
+
+def _failing_runner(error_code: str, calls: list):
+    from novel_system.services.llm_task_runner import LLMNodeExecutionError
+
+    class _Runner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            raise LLMNodeExecutionError(
+                llm_call_id="llm_call_failed",
+                error_code=error_code,
+                message=f"{error_code} from the fake runner",
+                request_summary={},
+                response_summary={"error_code": error_code},
+            )
+
+    return _Runner
+
+
+def _patch_request(**overrides):
+    return {
+        "object_type": "scene",
+        "object_id": SCENE_ID,
+        "chapter_id": CHAPTER_ID,
+        "scene_id": SCENE_ID,
+        "target_text_ref": f"final_scene:{FINAL_ROW_ID}",
+        "source_excerpt": "林岑的手指再次停顿。",
+        "issue_dimension": "repetitive_expression",
+        **overrides,
+    }
+
+
+def test_a_provider_failure_is_a_502_and_a_missing_route_a_409_on_every_writer_node(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    _seed_finished_scene(session)
+    calls: list = []
+
+    # 上游模型失败（超时 / 服务报错）：502 + 节点自己的 failure 码（以前深评一律 409，局部改写整个漏成 500 INTERNAL_ERROR）
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_PROVIDER_TIMEOUT", calls))
+    deep = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+    assert deep.status_code == 502 and deep.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_FAILED"
+    passage = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 0})
+    assert passage.status_code == 502 and passage.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_FAILED"
+    patch = client.post("/api/v1/passages/patch-candidates", json=_patch_request())
+    assert patch.status_code == 502 and patch.json()["error"]["code"] == "WRITER_PASSAGE_PATCH_LLM_FAILED"
+    assert [call["node_id"] for call in calls] == ["writer_deep_review", "writer_deep_review", "writer_passage_patch"]
+    assert [call["step"] for call in calls] == ["writer_deep_review", "writer_passage_review", "writer_passage_patch"]
+
+    # 节点没有路由（作者能处理的配置问题）：409 + 能力码，next_action 指向系统设置
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_ROUTE_NOT_CONFIGURED", calls))
+    patch = client.post("/api/v1/passages/patch-candidates", json=_patch_request())
+    assert patch.status_code == 409
+    error = patch.json()["error"]
+    assert error["code"] == "WRITER_PASSAGE_PATCH_LLM_REQUIRED"
+    assert error["details"]["next_action"].startswith("configure_") and error["details"]["node_id"] == "writer_passage_patch"
+    session.expire_all()
+    assert session.query(WriterEvaluation).count() == 0 and session.query(PassagePatchCandidate).count() == 0
+
+
+def test_deep_review_without_any_text_refuses_before_calling_the_model(client: TestClient, session, monkeypatch) -> None:
+    """没有正文不调模型（审计 B05-06）：整场深评与整章通读都 409 WRITER_DEEP_REVIEW_NO_TEXT，不花一次调用。"""
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    calls: list = []
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_PROVIDER_TIMEOUT", calls))
+    _seed_finished_scene(session)
+    final = session.get(FinalScene, FINAL_ROW_ID)
+    final.content = "   "
+    session.commit()
+
+    scene = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+    assert scene.status_code == 409 and scene.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+    chapter = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+    assert chapter.status_code == 409 and chapter.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+    assert calls == []
+
+    # 没有模型时照旧先说「要模型」（与局部深评同一个先后）
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+    denied = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+    assert denied.status_code == 409 and denied.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_REQUIRED"

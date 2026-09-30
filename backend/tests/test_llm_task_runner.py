@@ -725,10 +725,11 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         RunVisitor(relative_path).visit(tree)
 
-    # 2026-09-22 场景诊断第二轮：writer_deep_review.run_passage_review（「AI 看这一处」局部深评）是第 15 个调用点，
+    # 2026-09-22 场景诊断第二轮：writer_deep_review.run_passage_review（「AI 看这一处」局部深评）加过一个调用点，
     # 带 context（scene 作用域）——与整场深评 / 段落修补同一条记账路径。
-    # 2026-09-23 风格参考 v3（P5b）：SceneGenerationService._run_targeted_revision 是第 16 个（场景运行派生 context）。
-    assert len(calls) == 16
+    # 2026-09-23 风格参考 v3（P5b）：SceneGenerationService._run_targeted_revision 又加一个（场景运行派生 context）。
+    # 2026-09-29 重构（B05-10）：写作台的整场深评 / 局部深评 / 局部改写三处合成一个 _run_writer_node（带 context）。
+    assert len(calls) == 14
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 
