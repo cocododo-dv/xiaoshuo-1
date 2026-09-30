@@ -3,11 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.chapter_requests import ChapterIdsRequest, ChapterSceneOrderRequest, ChapterUpsertRequest
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.requests.chapters import ChapterIdsRequest, ChapterSceneOrderRequest, ChapterUpsertRequest
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.response import respond
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.catalog import CatalogService
 from novel_system.services.chapter_runner import ChapterRunnerService
@@ -19,10 +19,7 @@ router = APIRouter(tags=["chapters"])
 
 @router.get("/api/v1/chapters")
 def list_chapters(request: Request, session: Session = Depends(get_session)):
-    return ok(
-        {"items": AuthorLifecycleService(session).list_active_chapters()},
-        req_id=request_id_of(request),
-    )
+    return respond(request, {"items": AuthorLifecycleService(session).list_active_chapters()})
 
 
 @router.post("/api/v1/chapters")
@@ -84,7 +81,7 @@ def run_chapter_full(
 def chapter_run_status(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     payload = ChapterRunnerService(session).run_status(chapter_id)
-    return ok(payload, req_id=request_id_of(request))
+    return respond(request, payload)
 
 
 @router.post("/api/v1/chapters/{chapter_id}/scene-order")

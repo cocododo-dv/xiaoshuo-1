@@ -3,19 +3,19 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.chapter_plan_requests import (
+from novel_system.api.requests.chapter_plan import (
     ChapterPlanPreviewRequest,
     ChapterPlanProposeRequest,
     ChapterPlanSaveRequest,
     ChapterPlanSuggestRequest,
     ChapterTitlesRequest,
 )
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.project_requests import ProjectCreateRequest
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
-from novel_system.api.response import ok
-from novel_system.api.snowflake_requests import (
+from novel_system.api.requests.projects import ProjectCreateRequest
+from novel_system.api.requests.common import BoundedJsonObject, EmptyRequest
+from novel_system.api.response import respond
+from novel_system.api.requests.snowflake import (
     SnowflakeAcceptStaleStepRequest,
     SnowflakeAssistantRequest,
     SnowflakeDirectionBriefRequest,
@@ -35,10 +35,7 @@ router = APIRouter(tags=["snowflake-workspace"])
 
 @router.get("/api/v2/projects")
 def list_snowflake_workspace_projects(request: Request, session: Session = Depends(get_session)):
-    return ok(
-        SnowflakeWorkspaceService(session).list_projects(),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SnowflakeWorkspaceService(session).list_projects())
 
 
 @router.post("/api/v2/projects")
@@ -60,10 +57,7 @@ def create_snowflake_workspace_project(
 
 @router.get("/api/v2/projects/{project_id}/snowflake-workspace")
 def get_snowflake_workspace(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(
-        SnowflakeWorkspaceService(session).workspace(project_id),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SnowflakeWorkspaceService(session).workspace(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate")
@@ -143,11 +137,11 @@ def get_workspace_step_history(
     session: Session = Depends(get_session),
 ):
     """一步的服务端版本（新的在前）；``step_run_id`` 只取那一版（预览时按版本取草稿）。"""
-    return ok(
+    return respond(
+        request,
         SnowflakeWorkspaceService(session).step_history(
             project_id, step_key, include_draft=include_draft, step_run_id=step_run_id
         ),
-        req_id=request_id_of(request),
     )
 
 
@@ -461,10 +455,7 @@ def resolve_orphaned_scene(
 @router.get("/api/v2/projects/{project_id}/snowflake-workspace/resync-status")
 def get_workspace_resync_status(project_id: str, request: Request, session: Session = Depends(get_session)):
     """阶段 X：写作台 / AI 起草台用的轻量读口——哪几场的场景卡落后于构思。"""
-    return ok(
-        SnowflakeWorkspaceService(session).resync_status(project_id),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SnowflakeWorkspaceService(session).resync_status(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/resync")

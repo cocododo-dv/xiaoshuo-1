@@ -8,13 +8,13 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
+from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.style_reference import LearnRequest
+from novel_system.api.response import respond
 from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
@@ -36,21 +36,6 @@ from novel_system.services.style_reference.policy import resolve_node_endpoint
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 router = APIRouter(tags=ROUTE_TAGS)
-
-
-class LearnRequest(BaseModel):
-    """「学习文风」:建一个学习作业(或 ``resume`` 续上最近一次失败 / 取消 / 中断的)。
-
-    ``profile_id``:要就地更新的画像(缺省:这本书有绑定的 / active 的 / 最近更新的那份;没有画像就新建);
-    ``force``:正文少到四层都被评估为 skip 时仍要学(界面上的「仍然学习」);
-    ``retag``:给全书每个窗口重打标签(缺省只补标签版本不是当前版本的窗口)。
-    """
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    profile_id: str | None = Field(default=None, max_length=128)
-    resume: bool = False
-    force: bool = False
-    retag: bool = False
 
 
 @router.post(f"{PATH_PREFIX}/books/{{book_id}}/learn")
@@ -111,13 +96,13 @@ def get_book_learning(
     if book is None:
         raise book_not_found(book_id)
     client, _enabled = llm_client_and_enabled()
-    return ok(
+    return respond(
+        request,
         {
             "learn": learn_payload(latest_learn_job(session, book_id)),
             "estimate": estimate_learning(session, book, retag=bool(retag)),
             "routes": [resolve_node_endpoint(node_id, llm_client=client).as_dict() for node_id in LEARN_NODE_IDS],
         },
-        req_id=request_id_of(request),
     )
 
 

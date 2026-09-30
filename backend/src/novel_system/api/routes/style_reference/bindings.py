@@ -17,17 +17,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
+from novel_system.api.deps import get_session
 from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.style_reference import ApplyProfileRequest, BindingPatchRequest
+from novel_system.api.response import respond
 from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS
 from novel_system.db.models import StyleReferenceBook, StyleReferenceProfile
 from novel_system.services.errors import DomainError
@@ -39,46 +39,9 @@ from novel_system.services.style_reference.binding_apply import (
     remove_binding,
     update_binding_config,
 )
-from novel_system.services.style_reference.binding_config import (
-    ALL_DIMENSIONS,
-    MAX_SAMPLE_WINDOWS,
-    MIN_SAMPLE_WINDOWS,
-)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 router = APIRouter(tags=ROUTE_TAGS)
-
-DimensionKey = Literal[ALL_DIMENSIONS]  # type: ignore[valid-type]
-
-
-class BindingConfigBody(BaseModel):
-    """v3 绑定配置(四键都可省:省掉的键保留这条绑定已有的值,新建时取默认)。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    reference_mode: Literal["full", "samples_only", "card_only"] | None = None
-    sample_windows: int | None = Field(default=None, ge=MIN_SAMPLE_WINDOWS, le=MAX_SAMPLE_WINDOWS)
-    dimension_states: dict[DimensionKey, Literal["emphasize", "normal", "exclude"]] | None = Field(
-        default=None, max_length=len(ALL_DIMENSIONS)
-    )
-    draft_mode: Literal["style_first", "neutral_first"] | None = None
-
-    def as_patch(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
-
-
-class ApplyProfileRequest(BaseModel):
-    """把画像用于一个目标:作品(``project``)/ 某一场(``scene``)/ 某个角色(``character``)。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    scope: Literal["project", "scene", "character"]
-    scope_ref_id: str = Field(min_length=1, max_length=255)
-    config: BindingConfigBody | None = None
-
-
-class BindingPatchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    config: BindingConfigBody
-
 
 def _cloud_policy_of(session: Session, profile_id: str) -> str | None:
     return session.scalar(
@@ -165,10 +128,7 @@ def list_bindings(
     """这份画像的全部绑定(含已停用的,``status`` 如实给出;按创建时间)。"""
     bindings = StyleReferenceRepository(session).list_bindings(profile_id=profile_id, task_type=task_type)
     cloud_policy = _cloud_policy_of(session, profile_id)
-    return ok(
-        {"bindings": [binding_payload(b, cloud_policy=cloud_policy) for b in bindings]},
-        req_id=request_id_of(request),
-    )
+    return respond(request, {"bindings": [binding_payload(b, cloud_policy=cloud_policy) for b in bindings]})
 
 
 @router.delete(f"{PATH_PREFIX}/bindings/{{binding_id}}")
@@ -203,4 +163,4 @@ def get_project_style_binding(
     现解析的风格策略审计(不冻结契约、不写库)。作品不存在 404 ``STYLE_REFERENCE_PROJECT_NOT_FOUND``。"""
     if not project_id or len(project_id) > 128:
         raise DomainError("STYLE_REFERENCE_PROJECT_NOT_FOUND", "project not found", status_code=404)
-    return ok(project_style_binding(session, project_id), req_id=request_id_of(request))
+    return respond(request, project_style_binding(session, project_id))

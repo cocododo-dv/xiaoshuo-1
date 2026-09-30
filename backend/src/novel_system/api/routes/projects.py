@@ -5,17 +5,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.project_requests import (
+from novel_system.api.requests.projects import (
     ProjectChapterApproveFinalRequest,
     ProjectChapterReadConfirmRequest,
     ProjectChapterReopenFinalRequest,
     ProjectChapterRunJobRequest,
     ProjectCreateRequest,
 )
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.response import respond
 from novel_system.services.projects import ProjectChapterFlowService, ProjectService, start_project_chapter_run_job_worker
 
 router = APIRouter(tags=["projects"])
@@ -36,15 +36,12 @@ def create_project(payload: ProjectCreateRequest, request: Request, session: Ses
 
 @router.get("/api/v1/projects")
 def list_projects(request: Request, session: Session = Depends(get_session)):
-    return ok(
-        ProjectService(session).list(),
-        req_id=request_id_of(request),
-    )
+    return respond(request, ProjectService(session).list())
 
 
 @router.get("/api/v1/projects/{project_id}/dashboard")
 def project_dashboard(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(ProjectService(session).dashboard(project_id), req_id=request_id_of(request))
+    return respond(request, ProjectService(session).dashboard(project_id))
 
 
 @router.post("/api/v1/projects/{project_id}/outline-plan/{plan_id}/approve")

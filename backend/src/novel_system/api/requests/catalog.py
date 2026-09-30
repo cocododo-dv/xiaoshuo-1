@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import Field
 
-from novel_system.api.request_types import BoundedJsonObject, StrictRequestModel
+from novel_system.api.requests.common import BoundedJsonObject, StrictRequestModel
 
 
 class _CatalogChapterNarrativeRequest(StrictRequestModel):
@@ -62,3 +64,8 @@ class CatalogSceneUpdateRequest(_CatalogSceneFieldsRequest):
     pov_character_id: str | None = Field(default=None, max_length=255)
     pov_character_name: str | None = Field(default=None, max_length=500)
 
+
+class ChapterOrderRequest(StrictRequestModel):
+    chapter_ids: list[
+        Annotated[str, Field(min_length=1, max_length=255)]
+    ] = Field(min_length=1, max_length=10_000)

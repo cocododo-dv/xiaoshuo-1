@@ -10,10 +10,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.response import respond
 from novel_system.services.trash import TrashService
 
 router = APIRouter(tags=["trash"])
@@ -38,7 +38,7 @@ def trash_project(
 
 @router.get("/api/v2/trash")
 def list_trash(request: Request, project_id: str | None = None, session: Session = Depends(get_session)):
-    return ok(TrashService(session).list_trash(project_id), req_id=request_id_of(request))
+    return respond(request, TrashService(session).list_trash(project_id))
 
 
 @router.post("/api/v2/trash/{entry_id}/restore")

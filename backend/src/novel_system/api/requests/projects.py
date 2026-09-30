@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
-from novel_system.api.request_types import StrictRequestModel
+from novel_system.api.requests.common import StrictRequestModel
 
 
 class _ProjectFieldsRequest(StrictRequestModel):

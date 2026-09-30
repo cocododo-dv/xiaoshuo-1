@@ -1,9 +1,17 @@
+"""请求体的共用边界：严格模型基类、空命令体、有界 JSON 对象、写作简报输入与标识符别名。"""
+
 from __future__ import annotations
 
 from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, WithJsonSchema
 
+
+# SQLite INTEGER 的上限：修订号、时长、预算这类计数的请求上限
+INT64_MAX = (1 << 63) - 1
+
+# 非空、有长度上限的标识符（章 / 场 / 书的 id 列表的元素）
+BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=255)]
 
 MAX_API_OBJECT_PROPERTIES = 256
 MAX_API_JSON_DEPTH = 24

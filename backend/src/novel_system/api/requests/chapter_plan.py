@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from novel_system.api.request_types import BoundedJsonObject, StrictRequestModel
+from novel_system.api.requests.common import BoundedJsonObject, StrictRequestModel
 
 
 class ChapterPlanCandidatesRequest(StrictRequestModel):

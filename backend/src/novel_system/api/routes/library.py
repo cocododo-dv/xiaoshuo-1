@@ -4,8 +4,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.library_requests import (
+from novel_system.api.deps import get_session
+from novel_system.api.requests.library import (
     LibraryCharacterRequest,
     LibraryEntityCreateRequest,
     LibraryEntityUpdateRequest,
@@ -13,8 +13,8 @@ from novel_system.api.library_requests import (
     LibraryTimelineEventRequest,
 )
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.response import respond
 from novel_system.services.library import LibraryService
 
 router = APIRouter(tags=["library"])
@@ -23,7 +23,7 @@ router = APIRouter(tags=["library"])
 @router.get("/api/v2/projects/{project_id}/library")
 def library_overview(project_id: str, request: Request, session: Session = Depends(get_session)):
     result = LibraryService(session).overview(project_id)
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.post("/api/v2/projects/{project_id}/library/entities")
@@ -110,7 +110,7 @@ def delete_library_relation(
 
 @router.get("/api/v2/projects/{project_id}/library/timeline")
 def list_library_timeline(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(LibraryService(session).list_timeline(project_id), req_id=request_id_of(request))
+    return respond(request, LibraryService(session).list_timeline(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/library/timeline")
@@ -174,7 +174,7 @@ def delete_library_timeline_event(
 
 @router.get("/api/v2/projects/{project_id}/library/graph")
 def library_graph(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(LibraryService(session).graph(project_id), req_id=request_id_of(request))
+    return respond(request, LibraryService(session).graph(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/library/characters")

@@ -1,48 +1,22 @@
 from __future__ import annotations
 
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, Request
-from pydantic import Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest, StrictRequestModel
-from novel_system.api.response import ok
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.review import (
+    ReviewCardCreateRequest,
+    ReviewCardProjectRequest,
+    ReviewCardResolveRequest,
+)
+from novel_system.api.response import respond
 from novel_system.services.errors import DomainError
 from novel_system.services.review_cards import ReviewCardService
 
 router = APIRouter(tags=["review"])
 
-OptionalIdentifier = Annotated[str, Field(max_length=255)]
-CardListItem = Annotated[str, Field(max_length=4000)]
-
-
-class ReviewCardCreateRequest(StrictRequestModel):
-    project_id: OptionalIdentifier | None = None
-    scene_id: OptionalIdentifier | None = None
-    chapter_id: OptionalIdentifier | None = None
-    # Values remain domain-validated for REVIEW_CARD_KIND_INVALID.
-    kind: str = Field(max_length=64)
-    priority: int | None = Field(default=None, ge=1, le=10)
-    title: str | None = Field(default=None, max_length=10_000)
-    source: str | None = Field(default=None, max_length=255)
-    where: str | None = Field(default=None, max_length=1000)
-    occurred_at: str | None = Field(default=None, max_length=128)
-    detail: str | None = Field(default=None, max_length=100_000)
-    preview: str | None = Field(default=None, max_length=100_000)
-    checklist: list[CardListItem] | None = Field(default=None, max_length=500)
-    options: list[CardListItem] | None = Field(default=None, max_length=500)
-    actions: list[BoundedJsonObject] | None = Field(default=None, max_length=100)
-    dedupe_key: str | None = Field(default=None, max_length=512)
-
-class ReviewCardResolveRequest(StrictRequestModel):
-    action_index: int | None = Field(default=None, ge=0, le=10_000)
-    project_id: OptionalIdentifier | None = None
-
-class ReviewCardProjectRequest(StrictRequestModel):
-    project_id: OptionalIdentifier | None = None
 
 @router.get("/api/v1/review-items")
 def list_review_items(
@@ -57,7 +31,7 @@ def list_review_items(
     if not project_id:
         raise DomainError("REVIEW_PROJECT_REQUIRED", "project_id is required with state filter", status_code=400)
     result = ReviewCardService(session).list_cards(project_id, state=state or "")
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.post("/api/v1/review-items")

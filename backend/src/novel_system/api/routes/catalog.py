@@ -8,36 +8,27 @@ idempotent_response 兑现幂等键（必填 + 同键重放同响应）；PATCH 
 """
 from __future__ import annotations
 
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, Request
-from pydantic import Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.catalog_requests import (
+from novel_system.api.requests.catalog import (
     CatalogChapterCreateRequest,
     CatalogChapterUpdateRequest,
     CatalogSceneCreateRequest,
     CatalogSceneUpdateRequest,
+    ChapterOrderRequest,
 )
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import StrictRequestModel
-from novel_system.api.response import ok
+from novel_system.api.response import respond
 from novel_system.services.catalog import CatalogService
 
 router = APIRouter(tags=["catalog"])
 
 
-class ChapterOrderRequest(StrictRequestModel):
-    chapter_ids: list[
-        Annotated[str, Field(min_length=1, max_length=255)]
-    ] = Field(min_length=1, max_length=10_000)
-
-
 @router.get("/api/v2/projects/{project_id}/catalog")
 def get_catalog(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(CatalogService(session).catalog(project_id), req_id=request_id_of(request))
+    return respond(request, CatalogService(session).catalog(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters")

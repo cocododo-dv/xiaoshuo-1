@@ -5,15 +5,13 @@ from typing import Annotated
 
 from pydantic import Field
 
-from novel_system.api.request_types import StrictRequestModel
+from novel_system.api.requests.common import INT64_MAX, BoundedIdentifier, StrictRequestModel
 
-INT64_MAX = (1 << 63) - 1
 MAX_DRAFT_CONTENT_CHARS = 2_000_000
 MAX_INSTRUCTION_CHARS = 8_000
 MAX_NOTE_CHARS = 4_000
 MAX_WARNING_CODES = 64
 
-Identifier = Annotated[str, Field(min_length=1, max_length=255)]
 OptionalIdentifier = Annotated[str, Field(max_length=255)]
 NoteText = Annotated[str, Field(max_length=MAX_NOTE_CHARS)]
 WarningCode = Annotated[str, Field(min_length=1, max_length=128)]
@@ -32,7 +30,7 @@ class CanonicalPromotionRequest(StrictRequestModel):
     # Keep these optional at the transport boundary so the domain service can
     # apply the fail-closed ``requires_reconcile`` default.
     base_revision_no: int | None = Field(default=None, ge=1, le=INT64_MAX)
-    expected_current_final_scene_row_id: Identifier | None = None
+    expected_current_final_scene_row_id: BoundedIdentifier | None = None
     narrative_effect: str | None = Field(default=None, max_length=64)
     accepted_warning_codes: list[WarningCode] = Field(
         default_factory=list,

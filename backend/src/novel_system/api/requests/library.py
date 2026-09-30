@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from novel_system.api.request_types import BoundedJsonObject, StrictRequestModel
+from novel_system.api.requests.common import BoundedJsonObject, StrictRequestModel
 
 
 LibraryTextItem = Annotated[str, Field(max_length=2000)]

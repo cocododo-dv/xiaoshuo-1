@@ -10,8 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.response import ok
+from novel_system.api.deps import get_session
+from novel_system.api.response import respond
 from novel_system.services import cost_aggregation
 from novel_system.services.llm_usage_readings import usage_readings
 
@@ -33,7 +33,7 @@ def project_cost_summary(
     else:
         payload = {"level": "project", "summary": cost_aggregation.project_cost(session, project_id)}
     payload["quota"] = usage_readings(session, project_id=project_id)
-    return ok(payload, req_id=request_id_of(request))
+    return respond(request, payload)
 
 
 @router.get("/api/v2/projects/{project_id}/cost-dashboard")
@@ -45,4 +45,4 @@ def project_cost_dashboard(
 ):
     payload = cost_aggregation.project_cost_dashboard(session, project_id, days=days)
     payload["quota"] = usage_readings(session, project_id=project_id)
-    return ok(payload, req_id=request_id_of(request))
+    return respond(request, payload)

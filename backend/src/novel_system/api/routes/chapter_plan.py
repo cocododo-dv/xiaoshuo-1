@@ -10,19 +10,18 @@
 """
 from __future__ import annotations
 
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.chapter_plan_requests import (
+from novel_system.api.requests.chapter_plan import (
     ChapterPlanApplyRequest,
     ChapterPlanCandidatesRequest,
     ChapterPlanFillRequest,
 )
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.requests.common import BoundedJsonObject, EmptyRequest
+from novel_system.api.response import respond
 from novel_system.services.chapter_plan_llm import ChapterPlanService
 
 router = APIRouter(tags=["chapter-plan"])
@@ -36,7 +35,7 @@ def get_chapter_architecture(
     session: Session = Depends(get_session),
 ):
     result = ChapterPlanService(session).get_architecture(project_id, chapter_id)
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.put("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture")
@@ -152,7 +151,7 @@ def chapter_plan_gaps(
 ):
     """待补清单（不是 AI）：这一章的戏剧卡与各场三拍 / 视角还空着哪些。"""
     result = ChapterPlanService(session).gaps(project_id, chapter_id)
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply")

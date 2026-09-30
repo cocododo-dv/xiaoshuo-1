@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
+from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest, WriterBriefJsonInput
-from novel_system.api.response import ok
+from novel_system.api.requests.common import INT64_MAX, EmptyRequest
+from novel_system.api.requests.scenes import (
+    AdoptCurrentRequest,
+    SceneAuthorNotesSaveRequest,
+    SceneBudgetTopupRequest,
+    SceneIdsRequest,
+    SceneRunCancelRequest,
+    SceneRunCommandRequest,
+    SceneRunJobRequest,
+    SceneUpsertRequest,
+    StyleCandidateSelectRequest,
+)
+from novel_system.api.response import respond
 from novel_system.db.models import (
     AttemptTracker,
     AuthorDraft,
@@ -67,117 +77,6 @@ from novel_system.services.writer_briefs import normalize_scene_writer_brief
 
 router = APIRouter(tags=["scenes"])
 _LOGGER = logging.getLogger(__name__)
-INT64_MAX = (1 << 63) - 1
-
-
-class SceneUpsertRequest(BaseModel):
-    """Whitelist author-editable scene-card fields.
-
-    Run state, trash state, word rollups, and timestamps remain server-owned.
-    """
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    scene_id: str = Field(min_length=1, max_length=255)
-    chapter_id: str = Field(min_length=1, max_length=255)
-    scene_goal: str = Field(max_length=100_000)
-    project_id: str | None = Field(default=None, max_length=255)
-    outline_plan_id: str | None = Field(default=None, max_length=255)
-    scene_seq: int | None = Field(default=None, ge=1, le=INT64_MAX)
-    pov_character_id: str | None = Field(default=None, max_length=255)
-    onstage_chars_json: list[Annotated[str, Field(min_length=1, max_length=255)]] = (
-        Field(default_factory=list, max_length=256)
-    )
-    resolved_relation_id: str | None = Field(default=None, max_length=255)
-    location: str | None = Field(default=None, max_length=10_000)
-    beats_json: list[Annotated[str, Field(max_length=20_000)]] = Field(
-        default_factory=list, max_length=256
-    )
-    must_include_text: str | None = Field(default=None, max_length=100_000)
-    forbidden_text: str | None = Field(default=None, max_length=100_000)
-    exit_change: str | None = Field(default=None, max_length=20_000)
-    hook: str | None = Field(default=None, max_length=20_000)
-    # Keep the established domain-error contract for malformed writer briefs:
-    # normalize_scene_writer_brief() validates the JSON shape and returns the
-    # stable WRITER_BRIEF_INVALID / HTTP 400 response used by API clients.
-    writer_brief_json: WriterBriefJsonInput = None
-    target_length_band: str | None = Field(default=None, max_length=64)
-    scene_type: str | None = Field(default=None, max_length=64)
-    is_chapter_last: int = Field(default=0, ge=0, le=1)
-    state: str = Field(default="todo", min_length=1, max_length=64)
-    constraint_intensity: float | None = Field(default=None, ge=0.0, le=1.0)
-
-
-class ExactAuthorDraftAdoptionRequest(BaseModel):
-    """One exact browser manuscript revision to save and publish atomically."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    draft_id: str = Field(min_length=1, max_length=255)
-    base_revision_no: int = Field(ge=1, le=INT64_MAX)
-    # Required but nullable: null is the CAS value when no canonical scene exists.
-    expected_current_final_scene_row_id: str | None = Field(max_length=255)
-    content: str = Field(max_length=2_000_000)
-
-
-class AdoptCurrentRequest(BaseModel):
-    """Only exact server-issued content-safety finding codes may be acknowledged."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    accepted_warning_codes: list[
-        Annotated[str, Field(min_length=1, max_length=128)]
-    ] = Field(default_factory=list, max_length=64)
-    exact_author_draft: ExactAuthorDraftAdoptionRequest | None = None
-
-
-BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=255)]
-
-
-class SceneIdsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    scene_ids: list[BoundedIdentifier] = Field(max_length=10_000)
-
-
-class SceneRunCommandRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    # These values retain their domain validators and stable error codes.
-    author_note: Any | None = None
-    run_policy: Any | None = None
-    from_step: Any | None = None
-    resume: Any | None = None
-
-
-class SceneRunJobRequest(SceneRunCommandRequest):
-    resume_budget: bool | None = None
-
-
-class SceneRunCancelRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    reason: Any | None = None
-
-
-class StyleCandidateSelectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    no_clear_difference: bool | None = None
-    duration_ms: int | None = Field(default=None, ge=0, le=INT64_MAX)
-    preference_tags: list[
-        Literal[
-            "style_match",
-            "rhythm",
-            "voice",
-            "imagery",
-            "dialogue",
-            "overall_quality",
-            "plot_fidelity",
-        ]
-    ] = Field(default_factory=list, max_length=7)
-
-
 _ALLOWED_PREFERENCE_TAGS = frozenset(
     {"style_match", "rhythm", "voice", "imagery", "dialogue", "overall_quality", "plot_fidelity"}
 )
@@ -189,24 +88,6 @@ def _normalize_preference_tags(values: Any) -> list[str]:
     return list(dict.fromkeys(tag for tag in tags if tag in _ALLOWED_PREFERENCE_TAGS))
 
 
-class SceneBudgetTopupRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    # The endpoint deliberately reports all invalid dimensions together through
-    # INVALID_BUDGET_TOPUP, so retain raw scalar types for that domain check.
-    extra_tokens: Any = 0
-    extra_attempts: Any = 0
-    extra_provider_attempts: Any = 0
-    reason: str | None = Field(default=None, max_length=300)
-
-
-class SceneAuthorNotesSaveRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    notes: str = Field(max_length=100_000)
-    base_revision_no: int = Field(ge=0, le=INT64_MAX)
-
-
 @router.get("/api/v1/scenes/{scene_id}/author-notes")
 def get_scene_author_notes(
     scene_id: str,
@@ -214,7 +95,7 @@ def get_scene_author_notes(
     session: Session = Depends(get_session),
 ):
     result = SceneNotesService(session).get(scene_id)
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.patch("/api/v1/scenes/{scene_id}/author-notes")
@@ -569,9 +450,7 @@ def create_scene_run_job(
 def get_run_job(job_id: str, request: Request, session: Session = Depends(get_session)):
     service = SceneRunJobService(session)
     job = service.get_job(job_id)
-    return ok(
-        service.serialize_job(job), req_id=request_id_of(request)
-    )
+    return respond(request, service.serialize_job(job))
 
 
 @router.post("/api/v1/run-jobs/{job_id}/cancel")
@@ -610,10 +489,7 @@ def get_latest_scene_run_job(
 ):
     AuthorLifecycleService(session).require_active_scene(scene_id)
     service = SceneRunJobService(session)
-    return ok(
-        service.serialize_job(service.latest_job(scene_id)),
-        req_id=request_id_of(request),
-    )
+    return respond(request, service.serialize_job(service.latest_job(scene_id)))
 
 
 @router.get("/api/v1/scene-run-states")
@@ -648,10 +524,7 @@ def list_scene_run_states(
         for state, card in rows
         if state.scene_status != "ready"
     ]
-    return ok(
-        {"items": items, "count": len(items)},
-        req_id=request_id_of(request),
-    )
+    return respond(request, {"items": items, "count": len(items)})
 
 
 @router.get("/api/v1/scenes/{scene_id}/status")
@@ -663,7 +536,8 @@ def scene_status(
     if state is None:
         # 经目录新建、从未 run 的有效场景没有运行态行——返回 ready 空态投影，
         # 与只读 workbench 一致；GET 不为查看动作补建持久行。
-        return ok(
+        return respond(
+            request,
             {
                 "scene_status": "ready",
                 "current_bundle_id": None,
@@ -676,9 +550,9 @@ def scene_status(
                 # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
                 **compute_author_state(session, scene_id, None),
             },
-            req_id=request_id_of(request),
         )
-    return ok(
+    return respond(
+        request,
         {
             "scene_status": state.scene_status,
             "current_bundle_id": state.current_bundle_id,
@@ -691,7 +565,6 @@ def scene_status(
             # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
             **compute_author_state(session, scene_id, state),
         },
-        req_id=request_id_of(request),
     )
 
 
@@ -769,7 +642,8 @@ def get_scene_style_candidates(
                     adversarial_rank_score(draft.content) if draft.content else 0.0, 3
                 )
             candidates.append(entry)
-        return ok(
+        return respond(
+            request,
             {
                 "scene_id": scene_id,
                 "blinded": True,
@@ -786,7 +660,6 @@ def get_scene_style_candidates(
                 },
                 "criticality": criticality_info,
             },
-            req_id=request_id_of(request),
         )
 
     # 无终选 gate：旧诊断形状（按分降序、带分数）——仅限非盲化诊断用途
@@ -817,7 +690,8 @@ def get_scene_style_candidates(
             }
         )
     candidates.sort(key=lambda c: c["adversarial_score"], reverse=True)
-    return ok(
+    return respond(
+        request,
         {
             "scene_id": scene_id,
             "blinded": False,
@@ -825,7 +699,6 @@ def get_scene_style_candidates(
             "total": len(candidates),
             "criticality": criticality_info,
         },
-        req_id=request_id_of(request),
     )
 
 
@@ -1521,7 +1394,8 @@ def scene_workbench(
     blueprint_service = SceneBlueprintService(session)
     contract_service = SceneExecutionContractService(session)
     execution_contract = contract_service.latest(scene_id)
-    response = ok(
+    response = respond(
+        request,
         {
             "chapter_goal": {
                 "chapter_id": chapter.chapter_id,
@@ -1626,7 +1500,6 @@ def scene_workbench(
             ),
             "attempts": [_serialize_attempt(item) for item in attempts],
         },
-        req_id=request_id_of(request),
     )
     return response
 

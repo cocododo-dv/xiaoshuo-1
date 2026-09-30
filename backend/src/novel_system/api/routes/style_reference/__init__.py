@@ -23,7 +23,7 @@ from novel_system.api.routes.style_reference._common import (
     ROUTE_TAGS,
     _get_llm_client_and_enabled,
 )
-from novel_system.api.routes.style_reference.bindings import ApplyProfileRequest, BindingConfigBody
+from novel_system.api.requests.style_reference import ApplyProfileRequest, BindingConfigBody
 from novel_system.services.style_reference.jobs import dispatch_job
 
 router = APIRouter()
