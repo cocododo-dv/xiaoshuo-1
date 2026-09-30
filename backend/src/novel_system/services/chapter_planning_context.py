@@ -1,31 +1,32 @@
 """章节编排 LLM 的上下文底座（chapter planning context）。
 
-与 bundle_builder 同族但面向「规划一章」而非「起草一场」：把雪花 canon、章节蓝图、
-叙事事件账本、伏笔债、张力邻域、作者约束等既有资产汇编成一份确定性的 prompt payload，
+与 bundle_builder 同族但面向「规划一章」而非「起草一场」：把雪花 canon、章节蓝图、叙事事件账本、
+邻章交接、章结构邻域、人物站位、作者约束等既有资产汇编成一份确定性的 prompt payload，
 带 source_version_refs（可审计）与 degraded_slots（缺料降级，冷启动不阻断）。
 
-设计文档：docs/chapter-arrangement-llm-design-2026-07-16.md §3。
+2026-09-30（批准 #17a，重评 R10）：章级的张力 / 线索 / 章级视角·入口·出口字段没有任何地方能填、也没有程序会写，
+它们不再进提示词；邻章交接、章结构邻域、近几章的视角分布都从**各场**的真实数据现算（上一章最后一场、下一章第一场、
+各章场数与灾难位置、前几章各场的视角）。伏笔账本早在 2026-09 减法里删除，伏笔槽随之去掉。
+作者偏好档案那一槽也去掉了（批准 #6，重评 R5：写作偏好学习整条链退役）。
+
+设计文档：docs/chapter-arrangement-llm-design-2026-07-16.md §3（其中的伏笔 / 张力 / 作者偏好输入已退役）。
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     ChapterGoal,
-    GenerationPlanningArtifact,
     SceneCard,
     SnowflakeStepRun,
     StoryCharacter,
-    StoryProject,
-)
-from novel_system.services.author_preferences import (
-    merge_preference_summaries,
-    safe_preference_summary_for_prompt,
 )
 from novel_system.services.catalog import (
     CatalogService,
@@ -35,17 +36,24 @@ from novel_system.services.catalog import (
     scene_kind,
     scene_title,
 )
+from novel_system.services.chapter_architecture import (  # noqa: F401 — 旧名：从本模块 import 的调用方
+    CHAPTER_ARCHITECTURE_ARTIFACT,
+    latest_chapter_architecture,
+)
 from novel_system.services.errors import DomainError
-from novel_system.services.scene_design_ownership import plan_owned_scene_ids
 from novel_system.services.hash_engine import canonical_json, normalize
+from novel_system.services.narrative_event_log import NarrativeEventLog
+from novel_system.services.scene_design_ownership import plan_owned_scene_ids
+from novel_system.services.scene_lookup import require_project
+from novel_system.services.snowflake_queries import latest_by_step
+from novel_system.services.snowflake_step_drafts import merge_step_draft
 from novel_system.services.style_reference.planning_context import (
     STRUCTURE_REFERENCE_HOW_TO_USE,
     resolve_project_style_reference,
 )
-from novel_system.services.scene_lookup import require_project
-from novel_system.services.planning_queries import latest_active_planning_artifact
 
-CHAPTER_ARCHITECTURE_ARTIFACT = "chapter_story_architecture"
+logger = logging.getLogger(__name__)
+
 # 2026-09-12 结构跟随：参考作者结构画像 / 场景手法的 slot 名。体量由渲染器封顶（画像 ≤1,500 字
 # + ≤6 条 ≤150 字样例 + ≤10 行手法），不走 _truncate_value——那是 canon 摘要的按槽预算，
 # 画像里的数字（章长 / 段数 / 比重）截半行就失真。
@@ -65,10 +73,10 @@ _CANON_STEP_KEYS = (
 _CANON_CHAR_BUDGET = {"long_synopsis": 5200, "character_synopses": 1200}
 _CANON_DEFAULT_BUDGET = 600
 
-# 张力邻域窗口：前 3 章 + 本章 + 后 2 章。
-_TENSION_WINDOW_BEFORE = 3
-_TENSION_WINDOW_AFTER = 2
-# POV 近期分布回看的章数。
+# 章结构邻域窗口：前 3 章 + 本章 + 后 2 章。
+_NEIGHBORHOOD_BEFORE = 3
+_NEIGHBORHOOD_AFTER = 2
+# 视角近期分布回看的章数。
 _POV_LOOKBACK = 6
 
 
@@ -147,15 +155,9 @@ class ChapterPlanningContextBuilder:
         else:
             self._slot_degraded("narrative_state")
 
-        foreshadow = None
-        if foreshadow:
-            payload["foreshadow_debts"] = foreshadow
-        else:
-            self._slot_degraded("foreshadow_debts")
-
-        payload["tension_neighborhood"] = self._tension_slot(chapters, index)
+        payload["structure_neighborhood"] = self._structure_slot(chapters, index)
         payload["character_positions"] = self._character_slot(chapters, index, scenes)
-        payload["author_constraints"] = self._constraints_slot(project, chapter, refs)
+        payload["author_constraints"] = self._constraints_slot(chapter)
         # 2026-09-12 结构跟随：project + global 作用域的风格绑定 → 结构画像与场景手法进规划
         # 提示。无绑定是常态而非降级（不进 degraded_slots）；有绑定时契约哈希进 refs 可审计。
         style_reference = self._style_reference_slot(project_id, refs)
@@ -189,13 +191,9 @@ class ChapterPlanningContextBuilder:
             "state": str(chapter.state or "planned"),
             "words_target": chapter.words_target,
             "act": narrative.get("act"),
-            "tension": narrative.get("tension"),
-            "pov": narrative.get("pov"),
-            "entry": narrative.get("entry"),
-            "exit": narrative.get("exit"),
+            "spine": narrative.get("spine"),
             "promise": narrative.get("promise"),
             "drama": dict(narrative.get("drama") or {}),
-            "threads": list(narrative.get("threads") or []),
         }
 
     def _scene_slot(self, scene: SceneCard) -> dict[str, Any]:
@@ -221,65 +219,59 @@ class ChapterPlanningContextBuilder:
         }
 
     def _neighbor_slot(self, chapters: list[ChapterGoal], index: int) -> dict[str, Any]:
-        def _chapter_edge(row: ChapterGoal, edge: str) -> dict[str, Any]:
-            narrative = dict(row.narrative_json or {})
-            info: dict[str, Any] = {
-                "chapter_id": row.chapter_id,
-                "title": chapter_title(row),
-                edge: narrative.get(edge),
-            }
-            if edge == "exit":
-                last_scene = self._catalog.scene_rows(row.chapter_id)[-1:]
-                if last_scene:
-                    info["last_scene"] = {
-                        "title": scene_title(last_scene[0]),
-                        "exit_change": str(last_scene[0].exit_change or ""),
-                        "hook": str(last_scene[0].hook or ""),
-                    }
-            return info
-
+        """上一章怎么收的（最后一场的离场变化 / 钩子）、下一章怎么开的（第一场的形态与第一拍）——都读场上的数据。"""
         prev_row = chapters[index - 1] if index > 0 else None
         next_row = chapters[index + 1] if index + 1 < len(chapters) else None
-        return {
-            "prev": _chapter_edge(prev_row, "exit") if prev_row is not None else None,
-            "next": _chapter_edge(next_row, "entry") if next_row is not None else None,
-        }
+        prev_payload: dict[str, Any] | None = None
+        if prev_row is not None:
+            prev_payload = {"chapter_id": prev_row.chapter_id, "title": chapter_title(prev_row)}
+            last_scene = self._catalog.scene_rows(prev_row.chapter_id)[-1:]
+            if last_scene:
+                prev_payload["last_scene"] = {
+                    "title": scene_title(last_scene[0]),
+                    "exit_change": str(last_scene[0].exit_change or ""),
+                    "hook": str(last_scene[0].hook or ""),
+                }
+        next_payload: dict[str, Any] | None = None
+        if next_row is not None:
+            next_payload = {"chapter_id": next_row.chapter_id, "title": chapter_title(next_row)}
+            first_scene = self._catalog.scene_rows(next_row.chapter_id)[:1]
+            if first_scene:
+                kind = scene_kind(first_scene[0])
+                brief = dict(first_scene[0].writer_brief_json or {})
+                opening_key = SCENE_BRIEF_GCS[0] if kind == "proactive" else SCENE_BRIEF_RDD[0]
+                next_payload["first_scene"] = {
+                    "title": scene_title(first_scene[0]),
+                    "kind": kind,
+                    "first_beat": str(brief.get(opening_key) or ""),
+                }
+        return {"prev": prev_payload, "next": next_payload}
 
     def _snowflake_canon_slot(self, project_id: str, refs: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            from novel_system.services.snowflake_steps import merge_step_draft
-
-            rows = self.session.execute(
-                select(SnowflakeStepRun)
-                .where(SnowflakeStepRun.project_id == project_id)
-                .order_by(SnowflakeStepRun.version.asc(), SnowflakeStepRun.created_at.asc())
-            ).scalars().all()
-            latest: dict[str, SnowflakeStepRun] = {}
-            for row in rows:
-                if row.status == "superseded":
-                    continue
-                latest[row.step_key] = row
-            items: list[dict[str, Any]] = []
-            run_ids: list[str] = []
-            for step_key in _CANON_STEP_KEYS:
-                artifact = latest.get(step_key)
-                if artifact is None or str(artifact.status or "") not in {"approved", "skipped"}:
-                    continue
-                draft = merge_step_draft(step_key, artifact.artifact_json, latest_by_step=latest)
-                budget = _CANON_CHAR_BUDGET.get(step_key, _CANON_DEFAULT_BUDGET)
-                items.append(
-                    {
-                        "step_key": step_key,
-                        "draft": _truncate_value(draft, budget),
-                    }
-                )
-                run_ids.append(artifact.step_run_id)
-            if run_ids:
-                refs["snowflake_step_run_ids"] = run_ids
-            return items
-        except Exception:
+            latest = latest_by_step(self.session, SnowflakeStepRun, project_id)
+        except SQLAlchemyError:
+            logger.warning("snowflake canon slot failed for %s", project_id, exc_info=True)
             self._slot_degraded("snowflake_canon")
             return []
+        items: list[dict[str, Any]] = []
+        run_ids: list[str] = []
+        for step_key in _CANON_STEP_KEYS:
+            run = latest.get(step_key)
+            if run is None or str(run.status or "") not in {"approved", "skipped"}:
+                continue
+            draft = merge_step_draft(step_key, run.draft_json, latest_by_step=latest)
+            budget = _CANON_CHAR_BUDGET.get(step_key, _CANON_DEFAULT_BUDGET)
+            items.append(
+                {
+                    "step_key": step_key,
+                    "draft": _truncate_value(draft, budget),
+                }
+            )
+            run_ids.append(run.step_run_id)
+        if run_ids:
+            refs["snowflake_step_run_ids"] = run_ids
+        return items
 
     def _style_reference_slot(self, project_id: str, refs: dict[str, Any]) -> dict[str, Any] | None:
         # 这个槽只进章规划的四个节点的提示：按它们的实际路由判云策略（H1）
@@ -303,37 +295,44 @@ class ChapterPlanningContextBuilder:
         if first_scene is None:
             return None
         try:
-            from novel_system.services.narrative_event_log import NarrativeEventLog
-
-            log = NarrativeEventLog(self.session)
-            text = log.format_state_for_prompt(
+            text = NarrativeEventLog(self.session).format_state_for_prompt(
                 project_id,
                 None,
                 scene_id=first_scene.scene_id,
                 pov_character_id=None,
                 onstage_character_ids=None,
             )
-            return text or None
-        except Exception:
+        except (DomainError, SQLAlchemyError):
+            # 冷启动 / 事件账本读不出：降级，不阻断规划（预期内，不记日志）
             return None
+        return text or None
 
-
-    def _tension_slot(self, chapters: list[ChapterGoal], index: int) -> dict[str, Any]:
-        lo = max(0, index - _TENSION_WINDOW_BEFORE)
-        hi = min(len(chapters), index + _TENSION_WINDOW_AFTER + 1)
-        window = []
-        for i in range(lo, hi):
-            narrative = dict(chapters[i].narrative_json or {})
-            window.append(
+    def _structure_slot(self, chapters: list[ChapterGoal], index: int) -> dict[str, Any]:
+        """本章前后几章的结构位置：第几章、章名、幕、灾难标记、场数（取代从来没人填的「张力曲线」）。"""
+        lo = max(0, index - _NEIGHBORHOOD_BEFORE)
+        hi = min(len(chapters), index + _NEIGHBORHOOD_AFTER + 1)
+        window = chapters[lo:hi]
+        counts = dict(
+            self.session.execute(
+                select(SceneCard.chapter_id, func.count())
+                .where(SceneCard.chapter_id.in_([row.chapter_id for row in window]), SceneCard.trashed_flag == 0)
+                .group_by(SceneCard.chapter_id)
+            ).all()
+        )
+        items = []
+        for offset, row in enumerate(window):
+            narrative = dict(row.narrative_json or {})
+            items.append(
                 {
-                    "no": i + 1,
-                    "title": chapter_title(chapters[i]),
-                    "tension": narrative.get("tension"),
+                    "no": lo + offset + 1,
+                    "title": chapter_title(row),
                     "act": narrative.get("act"),
-                    "is_current": i == index,
+                    "spine": narrative.get("spine") or "",
+                    "scene_count": int(counts.get(row.chapter_id) or 0),
+                    "is_current": lo + offset == index,
                 }
             )
-        return {"window": window, "total_chapters": len(chapters)}
+        return {"window": items, "total_chapters": len(chapters)}
 
     def _character_slot(
         self,
@@ -341,84 +340,56 @@ class ChapterPlanningContextBuilder:
         index: int,
         scenes: list[SceneCard],
     ) -> dict[str, Any]:
-        pov_counts: dict[str, int] = {}
-        for i in range(max(0, index - _POV_LOOKBACK), index):
-            pov = str(dict(chapters[i].narrative_json or {}).get("pov") or "").strip()
-            if pov:
-                pov_counts[pov] = pov_counts.get(pov, 0) + 1
+        # 近几章的视角分布：数前几章里每一场的视角人物（场数），不读从来没人填的章级视角字段
+        previous_ids = [row.chapter_id for row in chapters[max(0, index - _POV_LOOKBACK) : index]]
+        previous_povs = (
+            [
+                pov
+                for pov in self.session.execute(
+                    select(SceneCard.pov_character_id).where(
+                        SceneCard.chapter_id.in_(previous_ids), SceneCard.trashed_flag == 0
+                    )
+                ).scalars()
+                if pov
+            ]
+            if previous_ids
+            else []
+        )
         character_ids: list[str] = []
         for scene in scenes:
             for cid in [scene.pov_character_id, *(scene.onstage_chars_json or [])]:
                 if cid and cid not in character_ids:
                     character_ids.append(cid)
-        names: list[str] = []
-        for cid in character_ids:
-            row = self.session.get(StoryCharacter, cid)
-            if row is not None and row.display_name:
-                names.append(row.display_name)
-        return {"recent_pov_distribution": pov_counts, "onstage_characters": names}
+        names = self._character_names([*previous_povs, *character_ids])
+        pov_counts: dict[str, int] = {}
+        for pov in previous_povs:
+            label = names.get(pov) or pov
+            pov_counts[label] = pov_counts.get(label, 0) + 1
+        return {
+            "recent_pov_distribution": pov_counts,
+            "onstage_characters": [names[cid] for cid in character_ids if names.get(cid)],
+        }
 
-    def _constraints_slot(
-        self,
-        project: StoryProject,
-        chapter: ChapterGoal,
-        refs: dict[str, Any],
-    ) -> dict[str, Any]:
+    def _character_names(self, character_ids: list[str]) -> dict[str, str]:
+        wanted = sorted({cid for cid in character_ids if cid})
+        if not wanted:
+            return {}
+        return {
+            row.character_id: row.display_name
+            for row in self.session.execute(
+                select(StoryCharacter).where(StoryCharacter.character_id.in_(wanted))
+            ).scalars()
+            if row.display_name
+        }
+
+    def _constraints_slot(self, chapter: ChapterGoal) -> dict[str, Any]:
         narrative = dict(chapter.narrative_json or {})
         drama = dict(narrative.get("drama") or {})
-        constraints: dict[str, Any] = {
+        return {
             "forbidden": str(drama.get("forbidden") or ""),
             "must_not": str(chapter.must_not or ""),
             "notes": str(drama.get("notes") or ""),
         }
-        try:
-            from novel_system.db.models import AuthorPreferenceProfile
-
-            scopes: list[tuple[str, str]] = [("global", "global")]
-            genre = " ".join(str(project.genre or "").strip().lower().split())
-            if genre:
-                scopes.append(("genre", genre[:120]))
-            scopes.append(("project", project.project_id))
-            scopes.append(("chapter", chapter.chapter_id))
-            profiles: list[AuthorPreferenceProfile] = []
-            for scope_type, scope_ref_id in scopes:
-                profiles.extend(
-                    self.session.execute(
-                        select(AuthorPreferenceProfile)
-                        .where(
-                            AuthorPreferenceProfile.scope_type == scope_type,
-                            AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
-                            AuthorPreferenceProfile.status == "approved",
-                            AuthorPreferenceProfile.runtime_eligible == 1,
-                        )
-                        .order_by(
-                            AuthorPreferenceProfile.updated_at.asc(),
-                            AuthorPreferenceProfile.profile_id.asc(),
-                        )
-                    ).scalars().all()
-                )
-            if profiles:
-                merged: dict[str, Any] = {}
-                for row in profiles:
-                    merged = merge_preference_summaries(merged, row.summary_json or {})
-                constraints["author_preferences"] = safe_preference_summary_for_prompt(merged)
-                refs["author_preference_profile_ids"] = [row.profile_id for row in profiles]
-            else:
-                self._slot_degraded("author_preferences")
-        except Exception:
-            self._slot_degraded("author_preferences")
-        return constraints
-
-
-def latest_chapter_architecture(
-    session: Session, chapter_id: str
-) -> GenerationPlanningArtifact | None:
-    return latest_active_planning_artifact(
-        session,
-        artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
-        object_type="chapter",
-        object_id=chapter_id,
-    )
 
 
 def _truncate_value(value: Any, budget: int) -> Any:

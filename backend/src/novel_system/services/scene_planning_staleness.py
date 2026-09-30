@@ -6,7 +6,7 @@
 重新确认、换一本参考书或删掉绑定之后，下一次运行仍拿着旧蓝图起草——一场的结尾动作、意象锚、信息
 释放顺序都还是旧参考 / 旧设计的。
 
-本模块是叶子（只依赖 ORM）：把受影响场景 / 章的规划产物置为 ``superseded``，让下一次运行按当前
+本模块是叶子（只依赖 ORM 与蓝图叶子 ``chapter_architecture``）：把受影响场景 / 章的规划产物置为 ``superseded``，让下一次运行按当前
 设计与绑定重新规划。调用点：``ProjectRuntimeInvalidationService``（设计变了）、
 ``binding_apply``（用于作品 / 改绑定配置 / 解除）与删书（参考变了）。作废只是状态翻转，不删行。
 
@@ -31,6 +31,7 @@ from novel_system.db.models import (
     StoryCharacter,
     utcnow,
 )
+from novel_system.services.chapter_architecture import is_author_architecture
 
 SUPERSEDED_STATUS = "superseded"
 _LIVE_BLUEPRINT_STATUSES: tuple[str, ...] = ("draft", "accepted")
@@ -82,7 +83,7 @@ def supersede_scene_planning_artifacts(
                 GenerationPlanningArtifact.status == "active",
             )
         ).scalars().all():
-            if row.llm_call_id is None:
+            if is_author_architecture(row):
                 # 作者亲手写的蓝图（B07-03）：留着，记一条「设计在它之后改过」
                 session.add(
                     OperationLog(
@@ -105,7 +106,7 @@ def supersede_scene_planning_artifacts(
 
 def design_changed_since(session: Session, artifact: GenerationPlanningArtifact | None) -> dict[str, Any] | None:
     """这份（作者写的）章蓝图留下来之后，设计 / 绑定又变过吗？变过 → 最近一次的 ``{reason, at, message}``。"""
-    if artifact is None or artifact.llm_call_id is not None:
+    if not is_author_architecture(artifact):
         return None
     event = session.execute(
         select(OperationLog)
