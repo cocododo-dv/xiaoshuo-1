@@ -22,7 +22,7 @@ from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
     client_host,
-    dispatch,
+    dispatch_response_job,
     llm_client_and_enabled,
 )
 from novel_system.services.errors import DomainError
@@ -118,7 +118,7 @@ def import_book_path(
         path_template=f"{PATH_PREFIX}/books/import-path",
         payload=body,
         action=_do,
-        after_commit=_dispatch_classification,
+        after_commit=dispatch_response_job,
     )
 
 
@@ -148,13 +148,6 @@ def _import_response(session: Session, result) -> dict[str, Any]:
         "classification": classification_payload(job),
         "job_id": job.job_id if job is not None else None,
     }
-
-
-def _dispatch_classification(result: dict[str, Any]) -> None:
-    """事务提交后把分类作业投给工人(认领是条件写,重复投递无害;漏投的由清扫线程补派)。"""
-    job_id = str(result.get("job_id") or (result.get("classification") or {}).get("job_id") or "")
-    if job_id:
-        dispatch(job_id)
 
 
 """上传体积上限:参考书是纯文本,30 万字 UTF-8 约 1MB;10MB 已极宽裕,
@@ -233,7 +226,7 @@ async def import_book_upload(
             path_template=f"{PATH_PREFIX}/books/import-upload",
             payload=payload,
             action=_do,
-            after_commit=_dispatch_classification,
+            after_commit=dispatch_response_job,
         )
 
     return await run_in_threadpool(_run_import)
@@ -442,7 +435,7 @@ def reclassify_book(
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
         payload={"book_id": book_id, "resume": resume, "mode": mode},
         action=_do,
-        after_commit=_dispatch_classification,
+        after_commit=dispatch_response_job,
     )
 
 

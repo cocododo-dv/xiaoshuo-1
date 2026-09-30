@@ -22,7 +22,7 @@ from novel_system.api.deps import get_session, request_id_of
 from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS, dispatch
+from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS, dispatch_response_job
 from novel_system.services.style_reference import check_job as check_job_service
 from novel_system.services.style_reference.check_job import (
     CHECK_MAX_TEXT_CHARS,
@@ -82,15 +82,8 @@ def create_style_check(
         path_template=f"{PATH_PREFIX}/checks",
         payload=body,
         action=_do,
-        after_commit=_dispatch_check,
+        after_commit=dispatch_response_job,
     )
-
-
-def _dispatch_check(result: dict[str, Any]) -> None:
-    """事务提交后把对照检查作业投给工人（认领是条件写，重复投递无害；漏投的由清扫线程补派）。"""
-    job_id = str((result or {}).get("job_id") or "")
-    if job_id:
-        dispatch(job_id)
 
 
 @router.get(f"{PATH_PREFIX}/checks/{{job_id}}")

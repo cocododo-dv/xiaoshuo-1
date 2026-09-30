@@ -18,7 +18,7 @@ from novel_system.api.response import ok
 from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
-    dispatch,
+    dispatch_response_job,
     llm_client_and_enabled,
 )
 from novel_system.services.errors import DomainError
@@ -94,15 +94,8 @@ def learn_book_style(
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/learn",
         payload={"book_id": book_id, **body},
         action=_do,
-        after_commit=_dispatch_learn,
+        after_commit=dispatch_response_job,
     )
-
-
-def _dispatch_learn(result: dict[str, Any]) -> None:
-    """事务提交后把学习作业投给工人(认领是条件写,重复投递无害;漏投的由清扫线程补派)。"""
-    job_id = str((result or {}).get("job_id") or "")
-    if job_id:
-        dispatch(job_id)
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}/learn")
