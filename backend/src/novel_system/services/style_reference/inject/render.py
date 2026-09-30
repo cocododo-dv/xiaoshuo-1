@@ -961,12 +961,17 @@ def render_style(
     if book is not None and marker_is_current(book.stats_json):
         live_root = str(_mapping(_mapping(book.stats_json).get("window_index")).get("root") or "") or None
 
+    anchors: dict[str, str] = {}
+
     def _selection_anchor(root: str | None) -> str:
-        # 没有 bundle 的场景渲染：用的是这一场当前 bundle 冻结的选窗，还是自己的 live 行（M4）——进缓存键
+        # 没有 bundle 的场景渲染：用的是这一场当前 bundle 冻结的选窗，还是自己的 live 行（M4）——进缓存键。
+        # 同一个根哈希只查一次（查缓存与存缓存各要一次；渲染本身只会写这一场自己的 live 行，不会改当前 bundle 的那一行）
         if request.bundle_id is not None or not request.scene_id or not samples_allowed or root is None:
             return ""
-        shared = current_bundle_selection(session, policy, request, root=root)
-        return f"bundle:{shared[0].selection_id}" if shared is not None else "own"
+        if root not in anchors:
+            shared = current_bundle_selection(session, policy, request, root=root)
+            anchors[root] = f"bundle:{shared[0].selection_id}" if shared is not None else "own"
+        return anchors[root]
 
     if use_cache and live_root is not None:
         cached = _cache_get(

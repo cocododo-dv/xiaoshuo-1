@@ -234,7 +234,8 @@ class WindowRef:
 
 @dataclass(frozen=True)
 class SceneSelection:
-    """一场的选窗（按选窗顺序）+ 冻结信息。``index`` 是这次读到的索引（改稿换窗用），不参与比较。"""
+    """一场的选窗（按选窗顺序）+ 冻结信息。``index`` 是这次读到的索引（改稿换窗用），不参与比较；复用冻结行时
+    不先读整张索引（真实书约 500 窗、每次渲染几十毫秒），``index_loader`` 在改稿真要换窗时才读（:meth:`windows_index`）。"""
 
     refs: tuple[WindowRef, ...] = ()
     selection_id: str | None = None
@@ -247,6 +248,13 @@ class SceneSelection:
     params: Mapping[str, Any] = field(default_factory=dict)
     notices: tuple[str, ...] = ()
     index: tuple[IndexWindow, ...] = field(default=(), compare=False, repr=False)
+    index_loader: Callable[[], tuple[IndexWindow, ...]] | None = field(default=None, compare=False, repr=False)
+
+    def windows_index(self) -> tuple[IndexWindow, ...]:
+        """这本书当前的窗口索引：算选窗时已经读过的直接给，复用冻结行的按需读一次。"""
+        if self.index or self.index_loader is None:
+            return self.index
+        return self.index_loader()
 
     def audit(self) -> dict[str, Any]:
         return {
@@ -403,6 +411,19 @@ def target_dimensions(policy: Any, request: StyleRenderRequest) -> list[str]:
 # ---------------------------------------------------------------------------
 # 读索引
 # ---------------------------------------------------------------------------
+
+
+def _current_index_marker(session: Session, book_id: str) -> tuple[str, int] | None:
+    """书上的窗口索引标记是最新的（根哈希 / 类型版本 / 索引与测量核版本都对得上）→ (根哈希, 窗数)；否则 None。"""
+    book = session.get(StyleReferenceBook, str(book_id))
+    if book is None or not marker_is_current(book.stats_json):
+        return None
+    marker = index_marker(book.stats_json) or {}
+    root = str(marker.get("root") or "") or None
+    count = marker.get("window_count")
+    if root is None or isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return root, int(count)
 
 
 def load_index(
@@ -756,9 +777,22 @@ def resolve_scene_selection(
     k = int(getattr(policy, "sample_windows", 0) or 0)
     if not book_id or k <= 0:
         return SceneSelection(book_id=book_id or None)
-    windows, root, notices = load_index(session, book_id, build=build_index, commit=commit_index)
-    if not windows:
-        return SceneSelection(book_id=book_id, root=root, notices=notices)
+    # 索引已是最新（书上的标记记着根哈希与窗数）时先看能不能复用冻结行——复用不需要读整张索引；否则照常读 / 建索引
+    windows: list[IndexWindow] | None = None
+    current = _current_index_marker(session, book_id)
+    if current is not None:
+        root, window_count = current
+        notices: tuple[str, ...] = ()
+    else:
+        windows, root, notices = load_index(session, book_id, build=build_index, commit=commit_index)
+        window_count = len(windows)
+    if not window_count:
+        return SceneSelection(book_id=book_id, root=root, notices=notices or (NOTICE_NO_WINDOWS,))
+
+    def reused_index() -> tuple[IndexWindow, ...]:
+        return tuple(windows) if windows is not None else tuple(load_index(session, book_id, build=False)[0])
+
+    lazy = windows is None
     if request.bundle_id is None and request.scene_id:
         shared = current_bundle_selection(session, policy, request, root=root)
         if shared is not None:
@@ -771,10 +805,11 @@ def resolve_scene_selection(
                 reused=True,
                 book_id=book_id,
                 root=root,
-                window_count=len(windows),
+                window_count=window_count,
                 params=dict(row.params_json or {}),
                 notices=notices,
-                index=tuple(windows),
+                index=() if lazy else tuple(windows),
+                index_loader=reused_index if lazy else None,
             )
     key = selection_key(policy, request) if request.scene_id else None
     existing: StyleReferenceSceneWindows | None = None
@@ -794,12 +829,18 @@ def resolve_scene_selection(
                     reused=True,
                     book_id=book_id,
                     root=root,
-                    window_count=len(windows),
+                    window_count=window_count,
                     params=params,
                     notices=notices,
-                    index=tuple(windows),
+                    index=() if lazy else tuple(windows),
+                    index_loader=reused_index if lazy else None,
                 )
             logger.info("scene window selection %s is stale (book changed); reselecting", existing.selection_id)
+    if windows is None:
+        # 没有可复用的冻结行：这一次要按整张索引选窗
+        windows, root, notices = load_index(session, book_id, build=build_index, commit=commit_index)
+        if not windows:
+            return SceneSelection(book_id=book_id, root=root, notices=notices)
     inputs = selection_inputs(policy, request, scene=scene)
     refs = compute_selection(
         windows,
@@ -854,14 +895,17 @@ def role_windows(policy: Any, request: StyleRenderRequest, selection: SceneSelec
     """
     k = request.effective_k(getattr(policy, "sample_windows", 0))
     refs = list(selection.refs)[:k]
-    if request.role != ROLE_REVISE or not request.revise_dimensions or not refs or not selection.index:
+    if request.role != ROLE_REVISE or not request.revise_dimensions or not refs:
+        return refs
+    index = selection.windows_index()
+    if not index:
         return refs
     states = dict(getattr(policy, "dimension_states", None) or {})
     wanted = {d for d in request.revise_dimensions if states.get(d) != DIMENSION_EXCLUDE}
     if not wanted:
         return refs
     taken = {ref.window_no for ref in refs}
-    candidates = [w for w in selection.index if w.window_no not in taken and wanted & set(w.dimensions)]
+    candidates = [w for w in index if w.window_no not in taken and wanted & set(w.dimensions)]
     if not candidates:
         return refs
     seed = f"{request.scene_id or 'none'}|revise|{','.join(sorted(request.revise_dimensions))}|{SELECTION_VERSION}"
