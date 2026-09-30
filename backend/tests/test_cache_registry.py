@@ -27,6 +27,7 @@ KNOWN_CACHES = {
     "novel_system.services.style_reference.measure": ("style_reference.measure.kernel",),
     "novel_system.services.style_reference.planning_context": ("style_reference.planning_context.chapter_titles",),
     "novel_system.services.style_reference.runtime_contract": ("style_reference.runtime_contract.validated",),
+    "novel_system.services.vector_store": ("vector_store",),
 }
 
 
@@ -57,6 +58,7 @@ def _fill_every_known_cache() -> None:
     from novel_system.services import pricing, reference_copy_gate, scene_diagnosis, scene_run_jobs, style_policy
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
+    from novel_system.services.vector_store import get_vector_store
 
     pricing.load_price_book()
     reference_copy_gate._RESULT_CACHE[("probe",)] = object()
@@ -70,6 +72,8 @@ def _fill_every_known_cache() -> None:
     measure.load_kernel_lexicon()
     planning_context._CHAPTER_TITLES_CACHE[("probe", 1)] = {}
     runtime_contract._VALIDATED["probe"] = "{}"
+    # 进程内的向量集合按作品 id 起名（scenes_<作品 id>），每个用例的新库又用同样的字面 id
+    get_vector_store().write_collection("scenes_probe", [{"id": "probe", "text": "probe"}])
 
 
 def test_caches_filled_by_one_test_part_1_fill() -> None:
@@ -81,6 +85,7 @@ def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
     from novel_system.services import pricing, reference_copy_gate, scene_diagnosis, scene_run_jobs, style_policy
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
+    from novel_system.services.vector_store import get_vector_store
 
     assert pricing._CACHE is None
     assert not reference_copy_gate._RESULT_CACHE and not reference_copy_gate._INDEX_CACHE
@@ -93,3 +98,4 @@ def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
     assert measure._kernel_lexicon.cache_info().currsize == 0
     assert not planning_context._CHAPTER_TITLES_CACHE
     assert not runtime_contract._VALIDATED
+    assert not get_vector_store().collection_exists("scenes_probe")
