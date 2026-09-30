@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Segmented } from "./ws-ui.jsx";
 import { WrCanonicalControl } from "./wr-canonical-control.jsx";
-import { modCombo } from "./ws-writer-keys.js";
+import { modShortcut as modCombo } from "./lib/platform.js";
 import { useWrCount } from "./ws-writer-hooks.js";
 
 /* ==========================================================

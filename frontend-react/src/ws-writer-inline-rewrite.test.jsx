@@ -10,8 +10,6 @@ vi.mock("./lib/client.js", () => ({
 }));
 
 const T = { timeout: 5000, interval: 25 };
-// 整间写作台的装配测试：第一条用例要付模块转换的冷启动
-vi.setConfig({ testTimeout: 15000 });
 const mounted = [];
 const innerTextDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
 const rangeRectDescriptor = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");

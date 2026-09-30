@@ -18,8 +18,6 @@ vi.mock("./lib/client.js", () => ({
 }));
 // 任务控制条的两个请求（ws-scene-job-api.js）
 vi.mock("./ws-scene-job-api.js", () => ({ cancelRunJob: vi.fn(), getLatestSceneRunJob: vi.fn() }));
-// 单条上限放到 15 s：冷启动的模块转换加上 5 s 的 waitFor，主机负载高时会顶到默认的 5 s（与写作台的装配测试一样）
-vi.setConfig({ testTimeout: 15000 });
 
 describe("scene run cancellation client", () => {
   beforeEach(() => {
