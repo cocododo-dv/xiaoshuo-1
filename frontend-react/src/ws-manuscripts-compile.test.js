@@ -71,7 +71,7 @@ describe("manuBuildBody", () => {
     const body = manuBuildBody(chapter(), partial);
     expect(body.scenes.map((s) => [s.idx, s.title, s.live, s.missing])).toEqual([["01", "交班", true, false], ["02", "夜渡", false, true]]);
     expect(body.complete).toBe(false);
-    expect(body.drama).toEqual({ promise: "闸门背后是谁", thrust: "", turn: "", after: "灯" });
+    expect(body.drama).toEqual({ promise: "闸门背后是谁", spine: "", arc: "", aftertaste: "灯" });
   });
 });
 
@@ -129,7 +129,8 @@ describe("导出", () => {
     expect(out.content).toContain("## 第 1 章 · 盐场的早班");
     expect(out.content).toContain("### 01 · 交班");
     expect(out.content).toContain("闸门上有字。");
-    expect(out.content).toContain("> 戏剧卡 — 承诺：闸门背后是谁；推进：—；转变：—；余味：灯");
+    // 附录的叫法与章节编排的编辑器同一套（批准 #19：以前写「承诺 / 推进 / 转变 / 余味」）
+    expect(out.content).toContain("> 戏剧卡 — 核心承诺：闸门背后是谁；主线推进：—；人物变化：—；结尾余味：灯");
   });
 
   it("纯文本：段首缩进四格；没有快照的章写「本章尚无正文」", () => {

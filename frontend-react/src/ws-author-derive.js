@@ -12,7 +12,7 @@
    ========================================================== */
 
 import { ARR_ACTS } from "./ws-author-data.js";
-import { CHAPTER_STATE_ORDER, chapterStage, chapterStateMeta } from "./labels/catalog.js";
+import { CHAPTER_STATE_ORDER, DRAMA_KEYS, chapterStage, chapterStateMeta } from "./labels/catalog.js";
 
 const BLANK_MARKERS = ["待规划", "待定", "待补", "待填"];
 const isBlank = (value) => {
@@ -163,9 +163,6 @@ export function arrChapterChecks(ch, snow) {
   }
   return rows;
 }
-
-/* 戏剧卡的六格（护栏「禁止包含 / 备注」不算在内） */
-export const DRAMA_KEYS = ["promise", "problem", "spine", "arc", "aftertaste", "ending"];
 
 /* 各卷在章序上占的列（节奏镜头的卷带）。卷在目录里是连续的；不连续时取首尾。 */
 export function arrActSpans(chapters) {

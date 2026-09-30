@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { DRAMA_KEYS } from "./ws-author-derive.js";
 import { Tag } from "./ws-ui.jsx";
+import { DRAMA_FIELDS, DRAMA_KEYS } from "./labels/catalog.js";
 
 /* ==========================================================
    章节详情 · 戏剧卡（从 ws-author-detail.jsx 拆出，2026-10）
@@ -11,20 +11,12 @@ import { Tag } from "./ws-ui.jsx";
 
 const { useEffect, useState } = React;
 
+/* 三组（承诺 / 推进 / 收束）；每组的格子与叫法在 labels/catalog.js 的 DRAMA_FIELDS（成稿中心、导出附录同一套） */
 const ARR_DRAMA_GROUPS = [
-  { key: "promise", label: "承诺", icon: "Star", fields: [
-    { k: "promise", label: "核心承诺", hint: "读完这一章读者会得到什么", primary: true },
-    { k: "problem", label: "章节问题", hint: "本章想问读者一个什么问题" },
-  ] },
-  { key: "drive", label: "推进", icon: "ArrowRight", fields: [
-    { k: "spine", label: "主线推进", hint: "本章在全书主线上前进了多少" },
-    { k: "arc", label: "人物变化", hint: "主要人物的内在或外在变化" },
-  ] },
-  { key: "close", label: "收束", icon: "Sparkles", fields: [
-    { k: "aftertaste", label: "结尾余味", hint: "读完最后一段的感觉" },
-    { k: "ending", label: "结尾效果", hint: "最后一句具体的画面 / 动作" },
-  ] },
-];
+  { key: "promise", label: "承诺", icon: "Star" },
+  { key: "drive", label: "推进", icon: "ArrowRight" },
+  { key: "close", label: "收束", icon: "Sparkles" },
+].map((group) => ({ ...group, fields: DRAMA_FIELDS.filter((field) => field.group === group.key) }));
 
 /* 戏剧卡的一格。textarea 不受控（边写边存会打断输入法），所以 key 带上服务端的值：
    AI 编排写入、目录重拉带来新值时换一个新的框显示新值；失焦时只有真的改了才写回——
@@ -73,13 +65,13 @@ function ArrDramaCard({ ch, locked, onPatchDrama, sectionRef }) {
                 <header className="arr-dgroup-head"><Ic size={13} /><span>{g.label}</span><i className="arr-dgroup-rule" /></header>
                 <div className="arr-dgroup-fields">
                   {g.fields.map((f) => (
-                    <div className={`arr-field ${f.primary ? "is-primary" : ""}`} key={f.k}>
+                    <div className={`arr-field ${f.primary ? "is-primary" : ""}`} key={f.key}>
                       <header className="arr-field-head">
                         <span className="arr-field-label">{f.label}</span>
                         <span className="arr-field-hint">{f.hint}</span>
                       </header>
-                      <ArrDramaText className="arr-field-text" label={f.label} value={drama[f.k]} ck={`${ch.id}|${f.k}`}
-                        locked={locked} placeholder="还没写" onCommit={(v) => onPatchDrama(f.k, v)} />
+                      <ArrDramaText className="arr-field-text" label={f.label} value={drama[f.key]} ck={`${ch.id}|${f.key}`}
+                        locked={locked} placeholder="还没写" onCommit={(v) => onPatchDrama(f.key, v)} />
                     </div>
                   ))}
                 </div>

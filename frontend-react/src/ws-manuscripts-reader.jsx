@@ -3,11 +3,11 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { wsConfirm, wsToast } from "./ws-notify.jsx";
 import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
-import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle } from "./labels/catalog.js";
+import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle, dramaFieldLabel } from "./labels/catalog.js";
+import { MANU_DRAMA_KEYS, manuArchivedParas, manuDramaOf } from "./ws-manuscripts-compile.js";
+import { ManuFidelityBadge } from "./ws-manuscripts-fidelity.jsx";
 
 const SCENE_DONE = SCENE_STATE_META.done.label;
-import { manuArchivedParas, manuDramaOf } from "./ws-manuscripts-compile.js";
-import { ManuFidelityBadge } from "./ws-manuscripts-fidelity.jsx";
 
 /* ==========================================================
    成稿中心阅读器的内容：正文、结构（戏剧卡 + 场景拼接 + 场景三问）、
@@ -126,8 +126,6 @@ function ManuStoryCheck({ check, sceneId, sid, go }) {
   );
 }
 
-const DRAMA_FIELDS = [["promise", "核心承诺"], ["thrust", "主线推进"], ["turn", "人物变化"], ["after", "结尾余味"]];
-
 /* 场景拼接的一行：目录场景优先（带状态 / 字数 / 场景三问）；目录没有场景时按服务端归档行列出 */
 function structureRows(chapter, body, canonical) {
   const scenes = (chapter && chapter.scenes) || [];
@@ -161,8 +159,8 @@ function ManuStructure({ body, chapter, canonical, go, diag = null, fidelity = n
         <div className="card">
           <div className="card-head"><div className="card-title">戏剧卡</div></div>
           <div className="ms-struct-grid">
-            {DRAMA_FIELDS.map(([key, label]) => (
-              <div key={key}><div className="ms-struct-k">{label}</div><div className="ms-struct-v">{drama[key] || "—"}</div></div>
+            {MANU_DRAMA_KEYS.map((key) => (
+              <div key={key}><div className="ms-struct-k">{dramaFieldLabel(key)}</div><div className="ms-struct-v">{drama[key] || "—"}</div></div>
             ))}
           </div>
         </div>

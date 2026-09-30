@@ -6,7 +6,8 @@
    「计划中 / 待聚合」、在主页叫「规划」。这里给一份：
    · CHAPTER_STATE_META —— 目录状态 → 中文叫法 / 语气色（ws-ui 的 tone）；SCENE_STATE_META —— 场的三态；
    · chapterStage（旧名 manuscriptStage）—— 一章走到哪一步：主页、成稿中心、章节编排同一条规则；
-   · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」。
+   · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」；
+   · DRAMA_FIELDS —— 戏剧卡六格的键与叫法（编辑器、成稿中心、导出附录同一套）。
    纯函数：章节列表由调用方传入（通常是 WsCatalog.get()），不读 store、不写 window。
    ========================================================== */
 
@@ -82,6 +83,27 @@ export function sceneStateMeta(state) {
   if (state === "active") return SCENE_STATE_META.writing;
   if (state === "archived") return SCENE_STATE_META.done;
   return SCENE_STATE_META[state] || SCENE_STATE_META.todo;
+}
+
+/* ---------- 戏剧卡 ---------- */
+
+/* 戏剧卡的六格：后端 narrative_json.drama 的键，编辑器（章节编排）、成稿中心的结构页签、导出的附录、
+   AI 编排的补丁行都用这一套叫法（2026-10，批准 #19：以前阅读器把键改名成 thrust / turn / after，附录写「转变」「推进」）。
+   group 是章节编排里的三组（承诺 / 推进 / 收束）；护栏两格（禁止包含 / 备注）不算在戏剧卡里。 */
+export const DRAMA_FIELDS = [
+  { key: "promise", label: "核心承诺", hint: "读完这一章读者会得到什么", group: "promise", primary: true },
+  { key: "problem", label: "章节问题", hint: "本章想问读者一个什么问题", group: "promise" },
+  { key: "spine", label: "主线推进", hint: "本章在全书主线上前进了多少", group: "drive" },
+  { key: "arc", label: "人物变化", hint: "主要人物的内在或外在变化", group: "drive" },
+  { key: "aftertaste", label: "结尾余味", hint: "读完最后一段的感觉", group: "close" },
+  { key: "ending", label: "结尾效果", hint: "最后一句具体的画面 / 动作", group: "close" },
+];
+export const DRAMA_KEYS = DRAMA_FIELDS.map((field) => field.key);
+
+/* 戏剧卡一格的叫法；认不出的键给空串（调用方自己兜底） */
+export function dramaFieldLabel(key) {
+  const field = DRAMA_FIELDS.find((f) => f.key === key);
+  return field ? field.label : "";
 }
 
 /* ---------- 章 / 场的叫法 ---------- */

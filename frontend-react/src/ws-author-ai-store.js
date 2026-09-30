@@ -3,6 +3,7 @@ import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { realWorkId } from "./lib/work-id.js";
+import { dramaFieldLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    WsAuthorAi — 章节编排的「AI 编排」store（原 ws-chapter-plan.jsx 的 WsChapterPlan，2026-10 改名：
@@ -274,16 +275,16 @@ export const WsAuthorAi = {
    写入前再按勾选收回补丁形状交给 applyPatch。
    ========================================================== */
 
-/* 字段中文名：界面上不出现英文字段键 */
+/* 字段中文名：界面上不出现英文字段键。戏剧卡的格子（drama.promise……）叫法取 labels/catalog.js 的 DRAMA_FIELDS */
 const CP_FIELD_LABELS = {
   goal: "目标", conflict: "冲突", setback: "挫败",
   reaction: "反应", dilemma: "两难", decision: "决定",
   pov_character_name: "视角", exit_change: "离场变化", hook: "钩子", title: "标题",
-  "drama.promise": "核心承诺", "drama.spine": "主线推进",
-  "drama.arc": "人物变化", "drama.problem": "章节问题",
-  "drama.aftertaste": "结尾余味", "drama.ending": "结尾效果",
 };
-export const cpFieldLabel = (key) => CP_FIELD_LABELS[key] || CP_FIELD_LABELS[`drama.${key}`] || "其他字段";
+export const cpFieldLabel = (key) => {
+  const text = String(key || "");
+  return CP_FIELD_LABELS[text] || dramaFieldLabel(text.startsWith("drama.") ? text.slice(6) : text) || "其他字段";
+};
 
 export function cpPatchRows(patch, sceneNameOf) {
   const rows = [];
