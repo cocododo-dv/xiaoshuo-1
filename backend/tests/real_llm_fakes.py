@@ -113,56 +113,19 @@ def install_online_author_pipeline(monkeypatch) -> None:
 
 
 class WriterNodeOnlineFake(AccountedGenerateMixin):
-    """作家诊断/修订、深评、passage-patch 的在线记账替身，复刻退役离线载荷的既定形状。"""
+    """写作台深评（整场 / 局部 / 通读本章，都走 writer_deep_review 节点）与局部改写的在线记账替身。
+
+    退役的作家诊断 / 修订节点（*_diagnosis、writer_scene_revision、writer_chapter_revision）已经没有调用方，不再应答。"""
 
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         from novel_system.services.writer_deep_review import LITERARY_REVISION_DIMENSIONS
-        from novel_system.services.writer_review import ALL_WRITER_REVIEW_DIMENSIONS
 
         self.requests.append(request)
         node_id = request.node_id or ""
-        if node_id.endswith("_diagnosis"):
-            scores = {dim: 0.5 for dim in ALL_WRITER_REVIEW_DIMENSIONS}
-            scores.update({"continuity": 0.62, "scene_necessity": 0.58, "reader_hook": 0.56})
-            target_label = "章节" if "_chapter_" in node_id else "场景"
-            payload = {
-                "overall_score": 0.54,
-                "scores": scores,
-                "findings": [
-                    {
-                        "dimension": "writer_diagnosis_payload",
-                        "severity": "info",
-                        "issue": f"在线记账{target_label}诊断（测试替身）。",
-                        "recommendation": "以正文证据给出专业评审。",
-                        "evidence_excerpt": "accounted online test diagnosis",
-                        "evidence_location": "accounted online test diagnosis",
-                        "why_it_matters": "确保作家评审链路闭环。",
-                    }
-                ],
-                "revision_brief": [
-                    {"dimension": "reader_hook", "action": "检查结尾是否留下新的选择、风险或追问。", "priority": "medium"}
-                ],
-                "requires_human_review": True,
-            }
-        elif node_id == "writer_scene_revision":
-            payload = {
-                "revised_text": "【作家修订候选】她把证据分成两份，把结尾问题留给读者。",
-                "diff_summary": "在线记账候选（测试替身）。",
-                "changed_dimensions": ["turn", "reader_hook"],
-                "rewrite_strategy": "online_full_scene_rewrite",
-            }
-        elif node_id == "writer_chapter_revision":
-            payload = {
-                "revision_plan": ["检查每场是否都有明确选择、阻碍和结尾钩子。", "兑现本章承诺。"],
-                "selected_rewrite_passages": [],
-                "diff_summary": "在线记账章节候选（测试替身）。",
-                "changed_dimensions": ["scene_necessity", "ending_drive"],
-                "rewrite_strategy": "online_revision_plan",
-            }
-        elif node_id == "writer_deep_review":
+        if node_id == "writer_deep_review":
             payload = {
                 "overall_score": 0.65,
                 "scores": {dim: 0.65 for dim in LITERARY_REVISION_DIMENSIONS},
@@ -172,36 +135,30 @@ class WriterNodeOnlineFake(AccountedGenerateMixin):
                 "lens_evaluations": [],
             }
         elif node_id == "writer_passage_patch":
-            source_excerpt = _extract_prompt_marker(request, "Source Excerpt:") or "占位原句。"
-            target_ref = _extract_prompt_marker(request, "Target Text Ref:") or "ref-scene"
-            patch_common = {
-                "target_text_ref": target_ref,
-                "source_excerpt": source_excerpt,
-                "patch_type": "replace_excerpt",
-            }
+            # writer_passage_patch v4：每个选项回一组段落，不再把原文与 target_text_ref 抄回来
             payload = {
                 "patches": [
                     {
-                        **patch_common,
                         "tone": "shorter",
                         "label": "更短",
-                        "replacement_text": "她按住证据，没有解释。",
+                        "paragraphs": ["她按住证据，没有解释。"],
+                        "patch_type": "replace_excerpt",
                         "changed_dimensions": ["information_rhythm"],
                         "why_it_helps": "压掉解释余量，让动作自己承担压力。",
                     },
                     {
-                        **patch_common,
                         "tone": "sharper",
                         "label": "更狠",
-                        "replacement_text": "她收回手，话到嘴边又咽了回去。",
+                        "paragraphs": ["她收回手，话到嘴边又咽了回去。"],
+                        "patch_type": "replace_excerpt",
                         "changed_dimensions": ["relationship_tension"],
                         "why_it_helps": "让动作后果承担锋利感。",
                     },
                     {
-                        **patch_common,
                         "tone": "subtler",
                         "label": "更含蓄",
-                        "replacement_text": "她把证据分成两份，先看了一眼门缝。",
+                        "paragraphs": ["她把证据分成两份，先看了一眼门缝。"],
+                        "patch_type": "replace_excerpt",
                         "changed_dimensions": ["dialogue_subtext"],
                         "why_it_helps": "把明说转为回避，留出读者判断空间。",
                     },
@@ -212,19 +169,6 @@ class WriterNodeOnlineFake(AccountedGenerateMixin):
         else:
             raise AssertionError(f"unexpected writer-node online request: {node_id}")
         return _response(request, payload, len(self.requests))
-
-
-def _extract_prompt_marker(request: LLMRequest, marker: str) -> str | None:
-    for message in request.messages or []:
-        content = str(message.get("content", ""))
-        idx = content.find(marker)
-        if idx < 0:
-            continue
-        tail = content[idx + len(marker):].lstrip("\n ")
-        line = tail.split("\n", 1)[0].strip()
-        if line:
-            return line
-    return None
 
 
 _WRITER_NODE_RUNNER_MODULES = (

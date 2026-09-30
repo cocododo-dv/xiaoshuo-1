@@ -1,7 +1,7 @@
 """LLM ledger indexes for the cost dashboard; the active models snapshot keeps only the author's choices.
 
 Revision ID: 20260929_0096
-Revises: 20260929_0094
+Revises: 20260929_0095
 Create Date: 2026-09-30
 
 两件事，一份迁移（2026-09-29 全系统重构 P06）：
@@ -41,7 +41,7 @@ from alembic import op
 
 
 revision = "20260929_0096"
-down_revision = "20260929_0094"
+down_revision = "20260929_0095"
 branch_labels = None
 depends_on = None
 

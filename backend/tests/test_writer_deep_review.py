@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
+    AuthorDraft,
     AuthorPreferenceProfile,
     ChapterGoal,
     FinalScene,
     LlmCall,
     PassagePatchCandidate,
+    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,
@@ -17,9 +19,9 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
-from novel_system.services.writer_deep_review import LITERARY_REVISION_RUBRIC_ID
 from novel_system.services.writer_deep_review import WriterDeepReviewService
-from novel_system.services.writer_deep_review import _normalize_deep_review_output
+from novel_system.services.writer_deep_review import _normalize_deep_review_output, _normalize_patch_output
+from novel_system.services.writer_deep_review_output import WriterPassagePatchEmpty
 
 
 import pytest as _pytest_wr
@@ -186,12 +188,10 @@ def test_scene_deep_review_get_returns_the_unified_diagnosis_before_any_ai_run(c
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert payload["status"] == "not_run"
-    assert payload["latest_evaluation"] is None
-    assert payload["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
-    assert payload["ai"]["status"] == "not_run"
+    assert payload["ai"]["status"] == "not_run" and payload["ai"]["evaluation_id"] is None
+    assert not {"status", "latest_evaluation", "rubric_id", "lens_evaluations", "patch_candidates"} & set(payload), "旧契约的键已删"
     assert payload["text"]["layer"] == "runtime_final_scene"
-    assert payload["findings"], "the 21-dimension rules already diagnose the final text"
+    assert payload["findings"], "the rule dimensions already diagnose the final text"
     assert {item["source"] for item in payload["findings"]} <= {"rules", "craft"}
     assert all(item["signal_id"] and item["label"] and item["issue"] for item in payload["findings"])
     assert payload["summary"]["open"] == len(payload["findings"])
@@ -261,10 +261,49 @@ def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monke
     response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
 
     assert response.status_code == 200
-    evaluation = response.json()["data"]["latest_evaluation"]
-    assert evaluation["evaluator_llm_call_id"] == "llm_call_writer_deep_review_test"
-    assert evaluation["overall_score"] == 0.61
-    assert evaluation["findings"][0]["issue"] == "The choice is described rather than enacted."
+    ai = response.json()["data"]["ai"]
+    assert ai["llm_call_id"] == "llm_call_writer_deep_review_test"
+    assert ai["overall_score"] == 0.61
+    row = session.get(WriterEvaluation, ai["evaluation_id"])
+    assert row.findings_json[0]["issue"] == "The choice is described rather than enacted."
+
+
+def test_a_lens_the_model_scored_zero_keeps_its_zero(client: TestClient, session, monkeypatch) -> None:
+    """模型给一个镜头打 0 分就是 0 分：不当作「没给」、再拿各维分的平均顶上（B05-05：``or`` 把 0.0 当成缺失）。"""
+
+    class ZeroLensRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            return SimpleNamespace(
+                llm_call_id="llm_call_zero_lens",
+                response=SimpleNamespace(
+                    structured_output={
+                        "overall_score": 0.4,
+                        "scores": {"choice_pressure": 0.5},
+                        "findings": [],
+                        "revision_brief": [],
+                        "lens_evaluations": [
+                            {"lens": "story", "overall_score": 0.0, "scores": {"choice_pressure": 0.5}, "findings": [], "revision_brief": []}
+                        ],
+                    }
+                ),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", ZeroLensRunner)
+    _seed_finished_scene(session)
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+
+    assert response.status_code == 200
+    lenses = {item["lens"]: item for item in response.json()["data"]["ai"]["lenses"]}
+    assert lenses["story"]["overall_score"] == 0.0
 
 
 def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(client: TestClient, session, monkeypatch) -> None:
@@ -284,11 +323,10 @@ def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(clien
     response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
 
     assert response.status_code == 200
-    evaluation = response.json()["data"]["latest_evaluation"]
-    assert evaluation["source_text_ref"] == f"author_draft:{draft['draft_id']}"
+    assert response.json()["data"]["ai"]["source_text_ref"] == f"author_draft:{draft['draft_id']}"
 
 
-def test_passage_patch_candidate_accepts_without_overwriting_final_and_records_preference(client: TestClient, session) -> None:
+def test_passage_patch_candidate_accepts_without_overwriting_final_and_learns_no_preference(client: TestClient, session) -> None:
     _seed_finished_scene(session)
     original_final = session.get(FinalScene, FINAL_ROW_ID).content
 
@@ -326,20 +364,15 @@ def test_passage_patch_candidate_accepts_without_overwriting_final_and_records_p
     assert session.get(FinalScene, FINAL_ROW_ID).content == original_final
     row = session.get(PassagePatchCandidate, candidate["patch_id"])
     assert row.selected_option_id == candidate["replacement_options"][1]["option_id"]
+    assert row.author_decision_note == "更有刺。"
 
-    profile_response = client.get("/api/v1/author-preference-profile")
-    assert profile_response.status_code == 200
-    profile = profile_response.json()["data"]["profile"]
-    assert profile["status"] == "draft"
-    assert profile["runtime_eligible"] is False
-    assert "更锋利" in " ".join(profile["summary"]["preferred_revision_moves"])
-
-    session.expire_all()
-    db_profile = session.get(AuthorPreferenceProfile, profile["profile_id"])
-    assert db_profile.status == "draft"
+    # 写作偏好学习已退役（批准 #6）：采纳只记在候选行上，不再重建偏好画像、不往待办里塞「写作偏好」卡
+    assert session.query(AuthorPreferenceProfile).count() == 0
+    assert session.query(ReviewItem).count() == 0
+    assert client.get("/api/v1/author-preference-profile").status_code == 404
 
 
-def test_rejecting_passage_patch_updates_candidate_but_keeps_preference_unpublished(client: TestClient, session) -> None:
+def test_rejecting_passage_patch_updates_only_the_candidate(client: TestClient, session) -> None:
     _seed_finished_scene(session)
 
     candidate = client.post(
@@ -364,10 +397,11 @@ def test_rejecting_passage_patch_updates_candidate_but_keeps_preference_unpublis
     rejected = reject_response.json()["data"]["candidate"]
     assert rejected["status"] == "rejected"
     assert rejected["author_decision"] == "rejected"
+    assert rejected["author_decision_note"] == "这处重复保留为人物习惯。"
 
-    profile = client.get("/api/v1/author-preference-profile").json()["data"]["profile"]
-    assert profile["runtime_eligible"] is False
-    assert any("保留" in item for item in profile["summary"]["rejected_revision_moves"])
+    session.expire_all()
+    assert session.query(AuthorPreferenceProfile).count() == 0
+    assert session.query(ReviewItem).count() == 0
 
 
 class ScriptedPassagePatchClient(OnlineAccountedExecution):
@@ -522,7 +556,9 @@ def test_passage_patch_candidate_records_quality_signal_id_for_quality_handoff(s
     assert row.quality_signal_id == "quality:scene:DEEP_CH01_SC01:template_action_reuse"
 
 
-def test_passage_patch_prompt_includes_only_approved_runtime_author_preference(session) -> None:
+def test_passage_patch_prompt_carries_no_author_preference_section(session) -> None:
+    """写作偏好学习已退役（批准 #6）：库里即使留着一份「已批准」的偏好画像（旧数据），局部改写的提示词里也没有偏好段。"""
+
     _seed_finished_scene(session)
     draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     session.add(
@@ -565,6 +601,434 @@ def test_passage_patch_prompt_includes_only_approved_runtime_author_preference(s
     )
 
     user_prompt = llm_client.requests[0].messages[1]["content"]
-    assert "更锋利的反问" in user_prompt
-    assert "解释性对白" in user_prompt
+    assert "Author Preference" not in user_prompt
+    assert "更锋利的反问" not in user_prompt and "解释性对白" not in user_prompt
     assert "草稿偏好不应进入提示词" not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# 三个 LLM 流程共用一次节点调用：失败只翻译一次；没有正文不调模型（审计 B05-06 / B05-10、B09-24）
+# ---------------------------------------------------------------------------
+
+
+def _failing_runner(error_code: str, calls: list):
+    from novel_system.services.llm_task_runner import LLMNodeExecutionError
+
+    class _Runner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            raise LLMNodeExecutionError(
+                llm_call_id="llm_call_failed",
+                error_code=error_code,
+                message=f"{error_code} from the fake runner",
+                request_summary={},
+                response_summary={"error_code": error_code},
+            )
+
+    return _Runner
+
+
+def _patch_request(**overrides):
+    return {
+        "object_type": "scene",
+        "object_id": SCENE_ID,
+        "chapter_id": CHAPTER_ID,
+        "scene_id": SCENE_ID,
+        "target_text_ref": f"final_scene:{FINAL_ROW_ID}",
+        "source_excerpt": "林岑的手指再次停顿。",
+        "issue_dimension": "repetitive_expression",
+        **overrides,
+    }
+
+
+def test_a_provider_failure_is_a_502_and_a_missing_route_a_409_on_every_writer_node(client: TestClient, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    _seed_finished_scene(session)
+    calls: list = []
+
+    # 上游模型失败（超时 / 服务报错）：502 + 节点自己的 failure 码（以前深评一律 409，局部改写整个漏成 500 INTERNAL_ERROR）
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_PROVIDER_TIMEOUT", calls))
+    deep = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+    assert deep.status_code == 502 and deep.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_FAILED"
+    passage = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 0})
+    assert passage.status_code == 502 and passage.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_FAILED"
+    patch = client.post("/api/v1/passages/patch-candidates", json=_patch_request())
+    assert patch.status_code == 502 and patch.json()["error"]["code"] == "WRITER_PASSAGE_PATCH_LLM_FAILED"
+    assert [call["node_id"] for call in calls] == ["writer_deep_review", "writer_deep_review", "writer_passage_patch"]
+    assert [call["step"] for call in calls] == ["writer_deep_review", "writer_passage_review", "writer_passage_patch"]
+
+    # 节点没有路由（作者能处理的配置问题）：409 + 能力码，next_action 指向系统设置
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_ROUTE_NOT_CONFIGURED", calls))
+    patch = client.post("/api/v1/passages/patch-candidates", json=_patch_request())
+    assert patch.status_code == 409
+    error = patch.json()["error"]
+    assert error["code"] == "WRITER_PASSAGE_PATCH_LLM_REQUIRED"
+    assert error["details"]["next_action"].startswith("configure_") and error["details"]["node_id"] == "writer_passage_patch"
+    session.expire_all()
+    assert session.query(WriterEvaluation).count() == 0 and session.query(PassagePatchCandidate).count() == 0
+
+
+def test_deep_review_without_any_text_refuses_before_calling_the_model(client: TestClient, session, monkeypatch) -> None:
+    """没有正文不调模型（审计 B05-06）：整场深评与整章通读都 409 WRITER_DEEP_REVIEW_NO_TEXT、局部深评 409
+    WRITER_PASSAGE_REVIEW_NO_TEXT，不花一次调用。没有正文也包括写作台一打开就建的空白作者稿（``""``，编辑器存回的
+    ``<p></p>`` / ``<p><br></p>``）：以前它算「作者稿层」，照样调模型、模型编的发现落进诊断，缺什么的规则还对白纸
+    报四条（复核 P02b-R1）；有字的场里一个空段，局部深评也不看。"""
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    calls: list = []
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_PROVIDER_TIMEOUT", calls))
+    _seed_finished_scene(session)
+    final = session.get(FinalScene, FINAL_ROW_ID)
+    final.content = "   "
+    session.commit()
+
+    def refused() -> None:
+        scene = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+        assert scene.status_code == 409 and scene.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+        chapter = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+        assert chapter.status_code == 409 and chapter.json()["error"]["code"] == "WRITER_DEEP_REVIEW_NO_TEXT"
+        passage = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 0})
+        assert passage.status_code == 409 and passage.json()["error"]["code"] == "WRITER_PASSAGE_REVIEW_NO_TEXT"
+
+    refused()
+    # 写作台打开这一场：空白作者稿（没有有字终稿的场，写作台建的就是这一份）
+    draft_id = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]["draft_id"]
+    session.commit()
+    for blank in ("", "<p></p>", "<p><br></p>", "<p> </p><p>\u3000</p>"):
+        session.get(AuthorDraft, draft_id).content = blank
+        session.commit()
+        text = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+        assert text["text"]["layer"] == "none" and text["text"]["chars"] == 0, blank
+        assert text["findings"] == [], "白纸不诊断：缺选择 / 缺代价这类规则对白纸全会响"
+        refused()
+    assert calls == []
+
+    # 有字的场里一个空段（编辑器里的空行）：局部深评不拿它去调模型
+    session.get(AuthorDraft, draft_id).content = "<p>门外很安静。</p><p></p><p>钟响了三声。</p>"
+    session.commit()
+    empty_focus = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 1})
+    assert empty_focus.status_code == 409 and empty_focus.json()["error"]["code"] == "WRITER_PASSAGE_REVIEW_NO_TEXT"
+    assert empty_focus.json()["error"]["details"]["focus_paragraphs"] == [1]
+    assert calls == []
+
+    # 没有模型时照旧先说「要模型」（与局部深评同一个先后）
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+    denied = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+    assert denied.status_code == 409 and denied.json()["error"]["code"] == "WRITER_DEEP_REVIEW_LLM_REQUIRED"
+
+
+def test_a_blank_scene_is_not_read_through_and_never_counts_as_changed(client: TestClient, session, monkeypatch) -> None:
+    """章里一场只有空白作者稿（写作台打开过、还没写字）：「AI 通读本章」不送它（以前送一个空的 【第 2 场】）、它记的
+    哈希是空的；通读之后又打开一场新的空白场，章级通读也不因此变成「改前的」——以前空白作者稿按空串的哈希算有字，
+    成稿中心给「只通读改过的 1 场」，点了又是一次只有摘要的白花钱的调用（复核 P02b-R1）。"""
+
+    prompts: list[str] = []
+
+    class ReadThroughRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            prompts.append(kwargs["user_prompt"])
+            return SimpleNamespace(
+                llm_call_id=f"llm_call_read_through_{len(prompts)}",
+                response=SimpleNamespace(structured_output={"findings": [], "scores": {}, "revision_brief": [], "lens_evaluations": []}),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", ReadThroughRunner)
+    _seed_finished_scene(session)
+    blank_ids = [f"{CHAPTER_ID}_SC02", f"{CHAPTER_ID}_SC03"]
+    for seq, scene_id in enumerate(blank_ids, start=2):
+        session.add(SceneCard(scene_id=scene_id, chapter_id=CHAPTER_ID, scene_seq=seq, scene_goal="她去码头等船。"))
+    session.commit()
+    # 第 2 场：没有终稿，写作台打开时建的就是空白作者稿
+    AuthorDraftService(session).ensure("scene", blank_ids[0], actor_ref="writer")
+    session.commit()
+
+    read = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review")
+    assert read.status_code == 200
+    assert len(prompts) == 1 and "【第 1 场】" in prompts[0] and "【第 2 场】" not in prompts[0]
+    row = session.get(WriterEvaluation, read.json()["data"]["ai"]["evaluation_id"])
+    recorded = {item["scene_id"]: item for item in row.contract_field_refs_json["scenes"]}
+    assert recorded[blank_ids[0]]["layer"] == "none" and recorded[blank_ids[0]]["sha256"] == ""
+    assert recorded[SCENE_ID]["sha256"]
+
+    # 通读之后打开第 3 场（也是白纸）：章级通读仍是现在这份字的，没有「改过的场」
+    AuthorDraftService(session).ensure("scene", blank_ids[1], actor_ref="writer")
+    session.commit()
+    after = client.get(f"/api/v1/chapters/{CHAPTER_ID}/deep-review").json()["data"]
+    assert after["ai"]["status"] == "current"
+    assert after["ai"]["changed_scene_ids"] == [] and after["ai"]["changed_count"] == 0
+    assert {entry["scene_id"]: entry["text_layer"] for entry in after["scenes"]} == {
+        SCENE_ID: "runtime_final_scene",
+        blank_ids[0]: "none",
+        blank_ids[1]: "none",
+    }
+    changed_only = client.post(f"/api/v1/chapters/{CHAPTER_ID}/deep-review", json={"scope": "changed"})
+    assert changed_only.status_code == 200 and changed_only.json()["data"]["notice"]["code"] == "CHAPTER_REVIEW_UP_TO_DATE"
+    assert len(prompts) == 1
+
+
+# ---------------------------------------------------------------------------
+# 局部改写 v4（重评 R12）与深评不编分数（审计 B05-04 / B05-05）
+# ---------------------------------------------------------------------------
+
+
+class _PatchRecordingClient(OnlineAccountedExecution):
+    """按脚本回 writer_passage_patch 的在线记账替身，记下发出去的每个请求（含 response schema）。"""
+
+    def __init__(self, patches: list[dict]) -> None:
+        self.patches = patches
+        self.requests = []
+
+    def generate(self, request):
+        self.requests.append(request)
+        output = {"patches": self.patches, "rationale": "按段换回。", "manual_only": True}
+        return LLMResponse(
+            request_id=f"patch_v4_{len(self.requests)}",
+            provider="fake",
+            model=request.model,
+            text="{}",
+            structured_output=output,
+            response_format=request.response_format,
+            raw_response={"id": "patch_v4", "model": request.model},
+            usage={"input_tokens": 11, "output_tokens": 22, "total_tokens": 33},
+            finish_reason="stop",
+        )
+
+    def generate_accounted(self, request, *, accounting_hook):
+        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+        response = self.generate(request)
+        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
+
+
+def _seed_multi_paragraph_draft(session) -> dict:
+    _seed_finished_scene(session)
+    service = AuthorDraftService(session)
+    draft = service.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
+    html = (
+        "<p>门外很安静，潮水退得很远。</p>"
+        "<p>林岑把录音机按停。“你听见了吗？”</p>"
+        "<p>“听见了。”许望说。</p>"
+        "<p>钟响了三声，她没有回头。</p>"
+    )
+    service.save(draft["draft_id"], {"content": html, "base_revision_no": draft["revision_no"]}, actor_ref="writer")
+    session.commit()
+    return service.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
+
+
+def _patch_body(draft: dict, excerpt: str) -> dict:
+    return {
+        "object_type": "scene",
+        "object_id": SCENE_ID,
+        "chapter_id": CHAPTER_ID,
+        "scene_id": SCENE_ID,
+        "target_text_ref": f"author_draft:{draft['draft_id']}",
+        "source_draft_id": draft["draft_id"],
+        "source_excerpt": excerpt,
+        "issue_dimension": "author_instruction",
+        "instruction": "对话化",
+    }
+
+
+def test_cross_paragraph_rewrites_come_back_as_paragraphs_with_both_seams_in_the_prompt(session) -> None:
+    draft = _seed_multi_paragraph_draft(session)
+    excerpt = "把录音机按停。“你听见了吗？”\n“听见了。”许望说。"
+    client = _PatchRecordingClient(
+        [
+            {"tone": "sharper", "paragraphs": ["她按停录音机。“听见了？”", "“嗯。”许望没有抬头。"], "patch_type": "replace_excerpt", "changed_dimensions": ["dialogue_subtext"], "why_it_helps": "短。"},
+            {"tone": "subtler", "paragraphs": ["她按停录音机，只问了一句。", "“听见了。”"], "patch_type": "replace_excerpt", "changed_dimensions": ["dialogue_subtext"], "why_it_helps": "留白。"},
+            # 把两段对白挤成了一段：不要（不替作者拼进正文）
+            {"tone": "shorter", "paragraphs": ["她按停录音机。“听见了？”“嗯。”"], "patch_type": "replace_excerpt", "changed_dimensions": ["information_rhythm"], "why_it_helps": "更短。"},
+        ]
+    )
+
+    candidate = WriterDeepReviewService(session, llm_client=client).create_patch_candidate(_patch_body(draft, excerpt), actor_ref="writer")["candidate"]
+
+    options = candidate["replacement_options"]
+    assert [option["paragraphs"] for option in options] == [["她按停录音机。“听见了？”", "“嗯。”许望没有抬头。"], ["她按停录音机，只问了一句。", "“听见了。”"]]
+    assert options[0]["replacement_text"] == "她按停录音机。“听见了？”\n“嗯。”许望没有抬头。"
+    request = client.requests[-1]
+    user_prompt = request.messages[-1]["content"]
+    # 原文一行一段地给，两头的接缝都在（第一段里选区之前的字、上一段；最后一段里选区之后的字、下一段）
+    assert "Source Paragraphs: 2" in user_prompt and "Source Excerpt:\n把录音机按停。“你听见了吗？”\n“听见了。”许望说。" in user_prompt
+    assert "Paragraph Before: 门外很安静，潮水退得很远。" in user_prompt
+    assert "Same Paragraph, Before The Passage: 林岑" in user_prompt
+    assert "Paragraph After: 钟响了三声，她没有回头。" in user_prompt
+    assert "<p>" not in user_prompt, "接缝是可见文字，不是作者稿的 HTML"
+    assert user_prompt.count("你听见了吗") == 1, "原文不再在摘要里重复一份"
+    schema = request.response_schema["schema"]
+    assert schema["properties"]["patches"]["maxItems"] == 3
+    assert schema["properties"]["patches"]["items"]["required"] == ["paragraphs", "patch_type", "changed_dimensions", "why_it_helps"]
+    assert "source_excerpt" not in schema["properties"]["patches"]["items"]["properties"]
+
+
+def test_long_passages_are_capped_at_two_options_and_the_server_refuses_over_the_limit(session, monkeypatch) -> None:
+    draft = _seed_multi_paragraph_draft(session)
+    long_excerpt = "她把录音机按停。" * 130  # 1,040 字：超过 1,000 字只要两个选项
+    client = _PatchRecordingClient(
+        [
+            {"paragraphs": ["甲版。"], "patch_type": "replace_excerpt", "changed_dimensions": ["x"], "why_it_helps": "a"},
+            {"paragraphs": ["乙版。"], "patch_type": "replace_excerpt", "changed_dimensions": ["x"], "why_it_helps": "b"},
+        ]
+    )
+    candidate = WriterDeepReviewService(session, llm_client=client).create_patch_candidate(_patch_body(draft, long_excerpt), actor_ref="writer")["candidate"]
+    assert len(candidate["replacement_options"]) == 2
+    patches_schema = client.requests[-1].response_schema["schema"]["properties"]["patches"]
+    assert patches_schema["maxItems"] == 2 and patches_schema["minItems"] == 2
+
+    # 与写作台同一个上限（2,000 字，按码点数）：超了不截短、不发请求
+    from novel_system.services.errors import DomainError
+
+    try:
+        WriterDeepReviewService(session, llm_client=client).create_patch_candidate(_patch_body(draft, "字" * 2001), actor_ref="writer")
+    except DomainError as exc:
+        assert exc.code == "PASSAGE_PATCH_TOO_LONG" and exc.status_code == 400
+        assert exc.details == {"length": 2001, "limit": 2000} and "请分段改写" in exc.message
+    else:  # pragma: no cover
+        raise AssertionError("an over-long selection must be refused")
+    assert len(client.requests) == 1
+
+
+def test_a_patch_with_no_usable_option_is_a_502_without_author_action(client: TestClient, session, monkeypatch) -> None:
+    """拒绝式：模型给的改写全不能用（空的，或者都把几段挤成一段）→ 502 WRITER_PASSAGE_PATCH_EMPTY，不带 author_action
+    （这不是配置问题），不留候选行；以前拿写死的演示句子凑成三个选项。"""
+
+    draft = _seed_multi_paragraph_draft(session)
+    collapsing = _PatchRecordingClient([{"paragraphs": ["她按停录音机。“听见了？”“嗯。”"], "patch_type": "replace_excerpt", "changed_dimensions": ["x"], "why_it_helps": "a"}])
+    monkeypatch.setattr(
+        "novel_system.services.writer_deep_review.LLMNodeRunner",
+        lambda db_session, **kwargs: __import__("novel_system.services.llm_task_runner", fromlist=["LLMNodeRunner"]).LLMNodeRunner(db_session, llm_client=collapsing),
+    )
+    response = client.post("/api/v1/passages/patch-candidates", json=_patch_body(draft, "把录音机按停。“你听见了吗？”\n“听见了。”许望说。"))
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "WRITER_PASSAGE_PATCH_EMPTY" and "author_action" not in error.get("details", {})
+    assert error["details"]["reason"] == "paragraphs_collapsed"
+    assert "给出可用的改写" in error["message"]
+    session.expire_all()
+    assert session.query(PassagePatchCandidate).count() == 0
+
+
+def test_only_a_multi_paragraph_source_squeezed_into_one_paragraph_is_dropped_packed_dialogue_is_flagged() -> None:
+    """挤段（重评 R12）：原文几段、选项一段 → 不要，全是这样就是 paragraphs_collapsed。两轮对白挤在一段只是嫌疑 →
+    选项留着、标 ``collapsed``（复核 P02b-R2）。说话人插在一句话中间（“走吧，”她说，“别回头。”）是最常见的对白写法、
+    只是一轮：以前按前引号个数判，这样的选项（「对话化」、对一句对白的润色）全被当成挤段丢掉，全丢光就是 502。"""
+
+    def options(source: str, *candidates: list[str]) -> list[dict]:
+        return _normalize_patch_output(
+            {"patches": [{"paragraphs": paragraphs} for paragraphs in candidates]},
+            source_excerpt=source,
+            issue_dimension="author_instruction",
+        )["replacement_options"]
+
+    narration = "她站在门口，想叫他先走，又没开口。"
+    kept = options(narration, ["“走吧，”她说，“别回头。”"], ["她站在门口。“走吧，”她说，“别回头。”"], ["她说：“走吧。”他没动。“别回头。”"])
+    assert [option["paragraphs"] for option in kept] == [["“走吧，”她说，“别回头。”"], ["她站在门口。“走吧，”她说，“别回头。”"], ["她说：“走吧。”他没动。“别回头。”"]]
+    assert [option["collapsed"] for option in kept] == [False, False, False]
+    # 润色一句插了说话人的对白：原文四个引号，也只是一轮
+    assert options("“走吧，”她说，“别回头。”", ["“走，”她压低声音，“别回头。”"])[0]["collapsed"] is False
+    # R12 的例子：原文把两轮对白挤在一行、选项也只有一段 → 留着、标出来；分成两段的不标
+    packed = options("“你听见了吗？”“听见了。”许望说。", ["“听见了？”“嗯。”"], ["“听见了？”她问。", "“嗯。”许望说。"])
+    assert [option["collapsed"] for option in packed] == [True, False]
+    # 「对话化」把两轮挤进一段（中间隔个空格也算）：同样只标出来
+    assert options(narration, ["“你来了？” 「来了。」"])[0]["collapsed"] is True
+
+    # 原文两段、选项一段：不要；全是这样就报 paragraphs_collapsed
+    two = "她站在门口。\n“走吧。”"
+    assert [option["paragraphs"] for option in options(two, ["她站在门口，只说了一句走吧。"], ["她站在门口。", "“走吧。”"])] == [["她站在门口。", "“走吧。”"]]
+    try:
+        options(two, ["她站在门口，只说了一句走吧。"])
+    except WriterPassagePatchEmpty as exc:
+        assert exc.reason == "paragraphs_collapsed"
+    else:  # pragma: no cover
+        raise AssertionError("a two-paragraph source squeezed into one paragraph must be dropped")
+
+
+def test_accepting_a_cross_paragraph_rewrite_records_the_reading(session, monkeypatch) -> None:
+    """采纳跨段的改写之后照样记一条「像不像」读数：作者稿的可见文字段落之间只隔一个空格，原句与改写之间是换行，
+    以前原样比对永远对不上，读数悄悄不记（重评 R12 复核补充 7）。"""
+
+    draft = _seed_multi_paragraph_draft(session)
+    excerpt = "把录音机按停。“你听见了吗？”\n“听见了。”许望说。"
+    session.add(
+        PassagePatchCandidate(
+            patch_id="patch_cross_paragraph",
+            object_type="scene",
+            object_id=SCENE_ID,
+            scene_id=SCENE_ID,
+            source_draft_id=draft["draft_id"],
+            source_excerpt=excerpt,
+            issue_dimension="author_instruction",
+            replacement_options_json=[{"option_id": "option_llm_1", "paragraphs": ["按停了。", "“嗯。”"], "replacement_text": "按停了。\n“嗯。”"}],
+        )
+    )
+    session.commit()
+    readings: list[dict] = []
+    monkeypatch.setattr(
+        "novel_system.services.writer_deep_review_patches.record_author_draft_reading",
+        lambda db_session, **kwargs: readings.append(kwargs),
+    )
+
+    WriterDeepReviewService(session).accept_patch_candidate("patch_cross_paragraph", {"selected_option_id": "option_llm_1"})
+
+    assert len(readings) == 1
+    assert readings[0]["draft_ref"] == "passage_patch:patch_cross_paragraph:option_llm_1"
+    assert "林岑按停了。 “嗯。” 钟响了三声" in readings[0]["text"]
+
+
+def test_deep_review_invents_no_scores(client: TestClient, session, monkeypatch) -> None:
+    """模型没给的分不编（审计 B05-05）：没给的维度就没有分（以前一律 0.78），没给总分就是空（面板显示「—」，
+    以前拿掺着 0.78 的平均凑一个），按发现重建的镜头没有分（以前按严重度编 0.42 / 0.58 / 0.72），没给维度的
+    发现是「评审意见」（以前冒充「抉择压力」）。"""
+
+    normalized = _normalize_deep_review_output(
+        {
+            "scores": {"choice_pressure": 0.5, "voice_distinction": 7.5},
+            "findings": [
+                {"lens": "prose", "severity": "revision", "issue": "叙述声音偏平。", "recommendation": "放慢。"},
+                {"lens": "story", "dimension": "choice_pressure", "severity": "blocking", "issue": "选择没落地。", "recommendation": "落成动作。"},
+            ],
+            "revision_brief": [],
+        }
+    )
+    assert normalized["scores"] == {"choice_pressure": 0.5}, "越界的 7.5 丢掉，其余维度不补"
+    assert normalized["overall_score"] is None
+    by_lens = {entry["lens"]: entry for entry in normalized["lens_evaluations"]}
+    assert set(by_lens) == {"story", "prose"}
+    assert all(entry["scores"] == {} and "overall_score" not in entry for entry in by_lens.values())
+    assert [finding["dimension"] for finding in normalized["findings"]] == ["review_note", "choice_pressure"]
+    assert all("scene_form" not in finding for finding in normalized["findings"])
+
+    class NoTotalRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            return SimpleNamespace(
+                llm_call_id="llm_call_no_total",
+                response=SimpleNamespace(structured_output={"scores": {"choice_pressure": 0.4}, "findings": [], "revision_brief": []}),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", NoTotalRunner)
+    _seed_finished_scene(session)
+    payload = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+    assert payload["ai"]["status"] == "current" and payload["ai"]["overall_score"] is None

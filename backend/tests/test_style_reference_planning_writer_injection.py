@@ -652,7 +652,15 @@ def test_passage_patch_prompt_carries_the_style_prefix_with_capped_windows(sessi
 def test_deep_review_prompt_carries_the_style_prefix_with_capped_windows(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     _seed_scene(session)
-    AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")
+    # 深评要有正文：空白作者稿没有可评的字，不调模型（复核 P02b-R1）
+    drafts = AuthorDraftService(session)
+    draft = drafts.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
+    drafts.save(
+        draft["draft_id"],
+        {"content": f"<p>茶馆里很吵。{EXCERPT}</p><p>老友把茶杯放下，没有回答。</p>", "base_revision_no": draft["revision_no"]},
+        actor_ref="writer",
+    )
+    session.commit()
     template = load_prompt_templates()["writer_deep_review"]
 
     client = _ScriptedClient([_deep_review_payload()])
@@ -668,7 +676,7 @@ def test_deep_review_prompt_carries_the_style_prefix_with_capped_windows(session
     assert system.startswith("[STYLE_REFERENCE]") and system.endswith(template.system_prompt)
     assert "[风格样例]" in system
     assert 1 <= len(_few_shot_entries(_few_shot_block(system))) <= PLAN_K
-    assert result["latest_evaluation"]["findings"][0]["dimension"] == "repetitive_expression"
+    assert [item["dimension"] for item in result["findings"] if item["source"] == "ai"] == ["repetitive_expression"]
 
     # 章级深评：project + global 作用域
     client = _ScriptedClient([_deep_review_payload()])

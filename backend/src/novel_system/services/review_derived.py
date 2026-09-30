@@ -32,11 +32,25 @@ def derive_cards(session: Session, project_id: str) -> list[dict[str, Any]]:
     project = session.get(StoryProject, project_id)
     if project is None:
         return []
+    # 目录载荷整本书拼一次，目录异常与管线停稿两类卡共用（以前各拼一遍，一次收件箱刷新拼好几遍全书）
+    chapters = _catalog_chapter_payloads(session, project)
     cards: list[dict[str, Any]] = []
     cards.extend(_snowflake_gaps(session, project_id))
-    cards.extend(_catalog_anomalies(session, project))
-    cards.extend(_pipeline_blocked(session, project))
+    cards.extend(_catalog_anomalies(chapters))
+    cards.extend(_pipeline_blocked(session, project, chapters))
     return cards
+
+
+def _catalog_chapter_payloads(session: Session, project: StoryProject) -> list[dict[str, Any]]:
+    """整本书每一章的目录载荷（与章节编排同一份：场景 slug、标题、状态、字数），按章序。"""
+
+    catalog = CatalogService(session)
+    chapter_rows = catalog.chapter_rows(project.project_id)
+    context = catalog.read_context(project.project_id, [chapter.chapter_id for chapter in chapter_rows])
+    return [
+        {"chapter": chapter, "payload": catalog.chapter_payload(project, chapter, index, context=context)}
+        for index, chapter in enumerate(chapter_rows)
+    ]
 
 
 def _snowflake_gaps(session: Session, project_id: str) -> list[dict[str, Any]]:
@@ -92,20 +106,18 @@ def _snowflake_gaps(session: Session, project_id: str) -> list[dict[str, Any]]:
     return cards
 
 
-# 管线停稿的阻塞态（scene_run_states.scene_status）→ 卡片文案。
+# 管线停稿的阻塞态（scene_run_states.scene_status）→ 卡片文案（标签、说明、说明之后的「怎样算处理完」）。
 # 只收「等人拍板/处理」的终局态；in-flight（bundle_built 等）与通过态不投递。
 _PIPELINE_BLOCKED_STATUSES: dict[str, tuple[str, str]] = {
     "human_review_required": (
         "人工审阅",
         "管线把这稿停在人工审阅闸门——草稿已生成，等你在起草台裁决采纳或重跑。",
     ),
-    "critical_scene_human_gate": (
-        "关键场人工把关",
-        "这被判为关键场景，管线强制人工把关——去起草台看候选与评语后拍板。",
-    ),
-    "near_final_revision_required": (
-        "临终稿修订",
-        "临终稿评审要求修订——去起草台看评语，带改写指令重跑或手工润色。",
+    # 关键场景的匿名候选终选（批准 #2，重评 R2）：多稿打开时关键场景停在这里等作者挑一份；运行本章遇到它也
+    # 停下并指到这里——这张卡是作者不论从哪条路进来都找得到这一场的门
+    "awaiting_candidate_selection": (
+        "关键场景 · 等你终选",
+        "去起草台读完候选再选一份，选完自动续跑。",
     ),
     "hard_qc_partial_rewrite_required": (
         "硬质检局部重写",
@@ -126,7 +138,7 @@ _PIPELINE_BLOCKED_STATUSES: dict[str, tuple[str, str]] = {
 }
 
 
-def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str, Any]]:
+def _pipeline_blocked(session: Session, project: StoryProject, chapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """贯通轮遗留 ③：管线 blocked 的稿子投递进待办收件箱。
 
     真相源 = SceneRunState.scene_status（run job 的 blocked 终态落在这里）。
@@ -145,12 +157,9 @@ def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str,
     ]
     if not blocked:
         return []
-    catalog = CatalogService(session)
     slug_map: dict[str, tuple[str, str, str]] = {}
-    chapter_rows = catalog.chapter_rows(project.project_id)
-    context = catalog.read_context(project.project_id, [chapter.chapter_id for chapter in chapter_rows])
-    for index, chapter in enumerate(chapter_rows):
-        payload = catalog.chapter_payload(project, chapter, index, context=context)
+    for entry in chapters:
+        payload = entry["payload"]
         for scene in payload["scenes"]:
             slug_map[scene["scene_id"]] = (scene["slug"], scene["title"], payload["no"])
     cards: list[dict[str, Any]] = []
@@ -159,6 +168,11 @@ def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str,
         if not slug:
             continue
         label, detail = _PIPELINE_BLOCKED_STATUSES[state.scene_status]
+        settle = (
+            " 选完这条会自动消失。"
+            if state.scene_status == "awaiting_candidate_selection"
+            else " 处理（采纳归档 / 重跑 / 改场景卡）后这条会自动消失。"
+        )
         cards.append(
             {
                 "id": f"derived:pipeline:{card.scene_id}:{_fingerprint(state.scene_status)}",
@@ -169,7 +183,7 @@ def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str,
                 "where": f"AI 起草台 · 第 {no} 章",
                 "source": "起草管线",
                 "time": "实时",
-                "detail": detail + " 处理（采纳归档 / 重跑 / 改场景卡）后这条会自动消失。",
+                "detail": detail + settle,
                 "actions": [
                     {"label": "去起草台裁决", "intent": "primary", "op": "nav", "nav_to": "scene", "nav_scene": slug},
                     {"label": "稍后再说", "intent": "quiet", "op": "snooze"},
@@ -179,13 +193,11 @@ def _pipeline_blocked(session: Session, project: StoryProject) -> list[dict[str,
     return cards
 
 
-def _catalog_anomalies(session: Session, project: StoryProject) -> list[dict[str, Any]]:
-    catalog = CatalogService(session)
+def _catalog_anomalies(chapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
-    chapters = catalog.chapter_rows(project.project_id)
-    context = catalog.read_context(project.project_id, [chapter.chapter_id for chapter in chapters])
-    for index, chapter in enumerate(chapters):
-        payload = catalog.chapter_payload(project, chapter, index, context=context)
+    for entry in chapters:
+        chapter = entry["chapter"]
+        payload = entry["payload"]
         scenes = payload["scenes"]
         no = payload["no"]
         title = payload["title"]
@@ -221,7 +233,7 @@ def _catalog_anomalies(session: Session, project: StoryProject) -> list[dict[str
                     "where": f"章节编排 · 第 {no} 章",
                     "source": "起草队列",
                     "time": "实时",
-                    "detail": "场景状态是 done 但字数为 0 —— either 正文没保存，or 状态标错。修正后这条会自动消失。",
+                    "detail": "场景状态是 done 但字数为 0——要么正文没保存，要么状态标错了。修正后这条会自动消失。",
                     "actions": [
                         {"label": "去写作器看", "intent": "primary", "op": "nav", "nav_to": "writer"},
                         {"label": "稍后再说", "intent": "quiet", "op": "snooze"},

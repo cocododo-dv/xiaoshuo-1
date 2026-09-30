@@ -1,7 +1,7 @@
 """场景诊断第三轮（2026-09-22，「重构修复优化」四个开放项）。
 
 1. 局部深评看整场：焦点可以是一段范围；跨段的矛盾带 ``related``（另一段的原话钉到段）；焦点有交集的旧行退位。
-2. 21 维规则按参考书校准：作者的常用词从词表里去掉（稿子里过量的仍提示），作者常态的维度降为提示；
+2. 规则维度按参考书校准：作者的常用词从词表里去掉（稿子里过量的仍提示），作者常态的维度降为提示；
    文学质量视图读同一份校准。
 3. 章级通读只通读改过的场：按每场正文哈希判新旧，未改的场沿用上次的发现（``carried_from``），没改过不调模型。
 4. 计数随写回传：作者稿保存 / 忽略保存 / 深评载荷都带 ``diagnosis_rollup``；``totals`` 由条目汇总。
@@ -201,7 +201,7 @@ def test_endings_come_from_chapters_scene_breaks_or_transitions_and_are_honest_w
 
 
 def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_breaks: list[int] | None = None, deliberate: bool = False) -> None:
-    session.add(StyleReferenceBook(book_id="book_r3", title="龙族", source_kind="upload", cloud_policy="segments_only", text_checksum="r3", stats_json={"scene_breaks": scene_breaks or []}))
+    session.add(StyleReferenceBook(book_id="book_r3", title="旧信", source_kind="upload", cloud_policy="segments_only", text_checksum="r3", stats_json={"scene_breaks": scene_breaks or []}))
     session.add(StyleReferenceRun(run_id="run_r3", book_id="book_r3", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=["language"]))
     session.add_all(
         [
@@ -218,7 +218,7 @@ def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_b
             for index, text in enumerate(paragraphs)
         ]
     )
-    session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="龙族画像", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
+    session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="旧信画像", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
     session.commit()
     # 风格参考 v3：诊断按 StylePolicy 判绑定（校准看 bound，房风标记看「让位」）；画像的刻意复沓从库里读
     monkeypatch.setattr(
@@ -343,10 +343,20 @@ def test_passage_review_over_a_range_sees_the_whole_scene_and_pins_cross_paragra
     assert payload["diagnosis_rollup"]["scenes"][SCENE_ID]["open"] == payload["summary"]["open"]
 
     # 焦点有交集的旧行退位；不相交的并存
+    def active_focus() -> list[list[int]]:
+        session.expire_all()
+        rows = (
+            session.query(WriterEvaluation)
+            .filter(WriterEvaluation.object_id == SCENE_ID, WriterEvaluation.rubric_id == "literary_revision_passage_v1", WriterEvaluation.status != "superseded")
+            .order_by(WriterEvaluation.created_at, WriterEvaluation.evaluation_id)
+            .all()
+        )
+        return [list(row.contract_field_refs_json["focus_paragraphs"]) for row in rows]
+
     again = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 2}).json()["data"]
-    assert [entry["focus_paragraphs"] for entry in again["passage_reviews"]] == [[2]]
+    assert again["passage_review"]["focus_paragraphs"] == [2] and active_focus() == [[2]]
     apart = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"paragraph_index": 0}).json()["data"]
-    assert [entry["focus_paragraphs"] for entry in apart["passage_reviews"]] == [[2], [0]]
+    assert apart["passage_review"]["focus_paragraphs"] == [0] and active_focus() == [[2], [0]]
 
     # 复核一条跨段发现：另一段也进焦点
     verify = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"signal_id": cross["signal_id"]})
@@ -470,7 +480,6 @@ def test_chapter_read_through_can_cover_only_the_changed_scenes(client: TestClie
     scene1 = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     landed = _finding(scene1, "ai", "information_rhythm")
     assert landed["origin"]["kind"] == "chapter" and landed["origin"]["carried_from"] == first_id
-    assert scene1["chapter_review"]["status"] == "current"
 
     # 没有场改过：不调模型，载荷说明
     before = len(calls)

@@ -14,7 +14,7 @@ from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.llm_routing import parse_model_routing_config
 from tests.test_migration_0084_scene_plan_rendering_mode import _migrate
 
-PREVIOUS_HEAD = "20260929_0094"
+PREVIOUS_HEAD = "20260929_0095"
 CURRENT_HEAD = "20260929_0096"
 INDEXES = {
     "llm_calls": {"ix_llm_calls_project_created", "ix_llm_calls_chapter"},

@@ -3,9 +3,9 @@
 Each behaviour has its own explicit name; copies that behaved differently were not
 merged. Variants that stay local on purpose (different contract):
 ``pricing._as_int`` (clamps to >= 0), ``scene_design_context._coerce_int`` (0 → None),
-``learn_extract._as_int`` (parses 【12】-style page labels), ``projects._optional_text``
-(``str()`` of any non-None value), ``literary_quality._string_list`` (de-duplicates),
-``projects._string_list`` (wraps a scalar).
+``learn_extract._as_int`` (parses 【12】-style page labels), ``project_payloads.optional_text``
+(``str()`` of any non-None value), ``literary_quality.service._string_list`` (de-duplicates),
+``project_payloads.string_list`` (wraps a scalar).
 """
 
 from __future__ import annotations

@@ -45,9 +45,11 @@ def test_every_versioned_api_operation_documents_standard_success_and_error_enve
     # hide an accidentally excluded v2 router (the original blind spot).
     # Floors sit just below the live counts; lower them only alongside a
     # deliberate endpoint retirement (2026-09 subtraction batch 1: v1 → 91, v2 → 96;
-    # 2026-09-30 refactor, routes with no UI caller retired — approved #6 / #7 / #16a / #24a / #25: v1 → 84, v2 → 89).
-    assert operation_counts["v1"] >= 83
-    assert operation_counts["v2"] >= 88
+    # 2026-09-30 refactor, routes with no UI caller retired — approved #6 / #7 / #16a / #24a / #25: v1 → 84, v2 → 89;
+    # I2: P02b retires the review badge / legacy review-item detail / preference profile (#24a / #6) and P04 adds the
+    # non-AI chapter-plan gap list: v1 → 81, v2 → 90).
+    assert operation_counts["v1"] >= 80
+    assert operation_counts["v2"] >= 89
 
 
 def test_health_probes_keep_their_minimal_non_enveloped_contract() -> None:

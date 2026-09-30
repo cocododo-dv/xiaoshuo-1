@@ -1,4 +1,4 @@
-"""FE-ALIGN Phase 5: 待办收件箱（卡片模型 / effect 后端执行 / 派生项 / badge）。"""
+"""FE-ALIGN Phase 5: 待办收件箱（卡片模型 / effect 后端执行 / 派生项 / 角标从列表数）。"""
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -171,6 +171,7 @@ def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, sessi
     hollow = next((i for i in items if str(i["id"]).startswith("derived:catalog:hollow:")), None)
     assert hollow is not None
     assert hollow["live"] is True
+    assert "要么正文没保存" in hollow["detail"] and "either" not in hollow["detail"], "卡片文案是中文"
 
     # ① 不可无动作 resolve
     blocked = _post(client, f"/api/v1/review-items/{hollow['id']}/resolve", {"project_id": "work-a"})
@@ -256,13 +257,115 @@ def test_derived_pipeline_blocked_card_lifecycle(client, session):
     assert all(not str(i["id"]).startswith(prefix) for i in items)
 
 
-def test_badge_counts_priority_one(client, session):
+def test_a_critical_scene_waiting_for_the_blinded_selection_raises_an_inbox_card(client, session):
+    """关键场景停在匿名候选终选（批准 #2，重评 R2）：待办里有一张卡，点它去起草台的这一场；选完（状态离开终选）自动消失。
+    以前映射表里是一个早就没有生产者的状态名，这种暂停在待办里看不到，运行本章指过来的「去待处理建议」也落空。"""
+    seed_fixture_works(session)
+    session.commit()
+    scene = session.execute(
+        select(SceneCard).where(SceneCard.project_id == "work-a", SceneCard.state != "done")
+    ).scalars().first()
+    state = session.get(SceneRunState, scene.scene_id)
+    if state is None:
+        state = SceneRunState(scene_id=scene.scene_id)
+        session.add(state)
+    state.scene_status = "awaiting_candidate_selection"
+    session.commit()
+
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
+    card = next((i for i in items if str(i["id"]).startswith(f"derived:pipeline:{scene.scene_id}:")), None)
+    assert card is not None, [i["id"] for i in items]
+    assert card["title"].endswith("关键场景 · 等你终选")
+    assert card["detail"].startswith("去起草台读完候选再选一份，选完自动续跑。") and "选完这条会自动消失" in card["detail"]
+    assert card["priority"] == 1 and card["kind"] == "decision"
+    assert card["actions"][0]["nav_to"] == "scene" and card["actions"][0]["nav_scene"]
+
+    state.scene_status = "archived"
+    session.commit()
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
+    assert all(not str(i["id"]).startswith(f"derived:pipeline:{scene.scene_id}:") for i in items)
+
+
+def test_derived_cards_build_the_catalog_once_per_refresh(client, session, monkeypatch):
+    """目录异常与管线停稿两类派生卡共用一份整本书的目录载荷（以前各拼一遍）。"""
+    from novel_system.services.catalog import CatalogService
+
+    seed_fixture_works(session)
+    session.commit()
+    scene = session.execute(
+        select(SceneCard).where(SceneCard.project_id == "work-a", SceneCard.state != "done")
+    ).scalars().first()
+    state = session.get(SceneRunState, scene.scene_id) or SceneRunState(scene_id=scene.scene_id)
+    state.scene_status = "human_review_required"
+    session.add(state)
+    session.commit()
+    chapter_count = len(CatalogService(session).chapter_rows("work-a"))
+    calls: list[str] = []
+    original = CatalogService.chapter_payload
+
+    def counting(self, project, chapter, index, **kwargs):
+        calls.append(chapter.chapter_id)
+        return original(self, project, chapter, index, **kwargs)
+
+    monkeypatch.setattr(CatalogService, "chapter_payload", counting)
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
+    assert any(str(i["id"]).startswith("derived:pipeline:") for i in items)
+    assert len(calls) == chapter_count
+
+
+def test_priority_one_cards_come_first_and_the_badge_is_counted_from_the_list(client, session):
+    """角标 = 开着的 priority 1 卡数：前端从同一份列表数（单独的 badge 接口没有界面在用，已删——批准 #24a）。"""
     project = _create_project(client)
     pid = project["project_id"]
-    _card(client, pid, priority=1, kind="decision", title="高优先")
     _card(client, pid, priority=2, title="普通")
-    badge = client.get(f"/api/v1/review-items/badge?project_id={pid}").json()["data"]
-    assert badge["count"] == 1
+    _card(client, pid, priority=1, kind="decision", title="高优先")
+    items = [item for item in client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"] if not item["live"]]
+    assert [item["title"] for item in items] == ["高优先", "普通"]
+    assert sum(1 for item in items if item["priority"] == 1) == 1
+    assert client.get(f"/api/v1/review-items/badge?project_id={pid}").status_code in (404, 405)
+
+
+def test_the_inbox_takes_only_cards(client):
+    """收件箱只收卡片：旧的按 review_id upsert 的载荷、单条详情与不带 state 的整表列表都没有调用方，已删。"""
+    project = _create_project(client)
+    pid = project["project_id"]
+    legacy = _post(client, "/api/v1/review-items", {"review_id": "legacy_row", "item_type": "author_preference_profile", "candidate_text": "{}"})
+    assert legacy.status_code == 422
+    assert client.get("/api/v1/review-items/legacy_row").status_code in (404, 405)
+    missing_state = client.get(f"/api/v1/review-items?project_id={pid}")
+    assert missing_state.status_code == 400 and missing_state.json()["error"]["code"] == "REVIEW_STATE_INVALID"
+    missing_project = client.get("/api/v1/review-items?state=open")
+    assert missing_project.status_code == 400 and missing_project.json()["error"]["code"] == "REVIEW_PROJECT_REQUIRED"
+
+
+def test_legacy_preference_decision_rows_are_not_listed(client, session):
+    """写作偏好学习退役（批准 #6，重评 R5）：库里留下的「写作偏好」决策行（不论作品内还是全局）不再进待办，
+    行本身留在库里；收件箱只列卡片行。"""
+    from novel_system.db.models import ReviewItem
+
+    project = _create_project(client)
+    pid = project["project_id"]
+    card = _card(client, pid, title="一张普通卡")
+    for review_id, project_id in (("review_author_pref_project", pid), ("review_author_pref_global_global", None)):
+        session.add(
+            ReviewItem(
+                review_id=review_id,
+                item_type="author_preference_profile",
+                status="pending",
+                candidate_text="{}",
+                candidate_payload_json={},
+                project_id=project_id,
+            )
+        )
+    session.commit()
+
+    for state in ("open", "snoozed"):
+        items = client.get(f"/api/v1/review-items?state={state}&project_id={pid}").json()["data"]["items"]
+        assert not any(str(item["id"]).startswith("review_author_pref") for item in items), items
+    open_items = client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"]
+    assert [item["id"] for item in open_items if not item["live"]] == [card["id"]]
+    session.expire_all()
+    assert session.get(ReviewItem, "review_author_pref_project") is not None
 
 
 def test_global_card_visible_in_any_project(client):

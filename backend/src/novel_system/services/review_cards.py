@@ -1,9 +1,8 @@
 """FE-ALIGN Phase 5: 待办收件箱卡片服务（ReviewItem 扩展原表 —— 一个收件箱一份真相）。
 
 - 卡片行：item_type="fe_card"、status 恒 "pending"（legacy CheckConstraint 兼容），
-  生命周期走 state（open/resolved/snoozed）。
-- legacy 行（QC/安全/triage 等旧生产者）在统一列表里映射：status pending→open、
-  approved/rejected→resolved，kind/priority 给默认值。
+  生命周期走 state（open/resolved/snoozed）。收件箱只列卡片行：旧生产者都已退役，库里留下的旧行
+  （写作偏好学习的「写作偏好」决策卡，批准 #6 退役）处理了也不会改变任何东西，不再列出（行留在库里）。
 - dedupe_key 与 project_id 联合唯一（onceTask 语义）：重复投递返回已存在卡。
 - resolve(action_index)：同一事务执行 actions_json[i].effect（注册表见 review_effects）。
 - 派生卡（services/review_derived，id 前缀 derived:）只读：不可 resolve，可按指纹 snooze。
@@ -23,11 +22,6 @@ from novel_system.services.review_effects import run_effect
 
 CARD_ITEM_TYPE = "fe_card"
 CARD_KINDS = ("decision", "risk", "qc", "idea", "note")
-
-# legacy item_type → 卡片 kind 的展示默认（响应映射，不回写行）
-LEGACY_KIND_DEFAULTS = {
-    "author_preference_profile": "decision",
-}
 
 
 class ReviewCardService:
@@ -94,13 +88,10 @@ class ReviewCardService:
         rows = self.session.execute(
             select(ReviewItem)
             .where(
-                (ReviewItem.project_id == project_id)
-                # 全局卡（如风格画像 decision 卡）在任一作品的收件箱可见；
-                # legacy 行（project_id 同为 NULL）不全局扩散
-                | (ReviewItem.project_id.is_(None) & (ReviewItem.item_type == CARD_ITEM_TYPE))
+                ReviewItem.item_type == CARD_ITEM_TYPE,
+                # 全局卡（如风格画像 decision 卡）在任一作品的收件箱可见
+                (ReviewItem.project_id == project_id) | ReviewItem.project_id.is_(None),
             )
-            # 写作偏好学习已退役（批准 #6）：它留下的「写作偏好」决策卡处理了也不会改变任何生成，不再列出（行留在库里）
-            .where(ReviewItem.item_type != "author_preference_profile")
             .order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())
         ).scalars().all()
         persistent = [self.card_payload(row) for row in rows if self._unified_state(row) == state]
@@ -118,10 +109,6 @@ class ReviewCardService:
         items = derived_visible + persistent
         items.sort(key=lambda card: 0 if card.get("priority") == 1 else 1)
         return {"items": items}
-
-    def badge(self, project_id: str) -> dict[str, Any]:
-        open_items = self.list_cards(project_id, state="open")["items"]
-        return {"count": sum(1 for card in open_items if card.get("priority") == 1)}
 
     # ---- 状态流转 ----
 
@@ -200,7 +187,7 @@ class ReviewCardService:
         return {
             "id": item.review_id,
             "project_id": item.project_id,
-            "kind": item.kind or LEGACY_KIND_DEFAULTS.get(item.item_type, "qc"),
+            "kind": item.kind or "qc",
             "priority": int(item.priority or 2),
             "title": item.candidate_text,
             "where": provenance.get("where") or "",
@@ -220,10 +207,7 @@ class ReviewCardService:
 
     @staticmethod
     def _unified_state(item: ReviewItem) -> str:
-        if item.item_type == CARD_ITEM_TYPE or item.state:
-            return item.state or "open"
-        # legacy 行：pending→open，approved/rejected→resolved
-        return "open" if item.status == "pending" else "resolved"
+        return item.state or "open"
 
     def _require_card(self, review_id: str) -> ReviewItem:
         item = self.session.get(ReviewItem, review_id)

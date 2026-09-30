@@ -16,6 +16,7 @@ from novel_system.cache_registry import register_cache_reset, registered_cache_n
 # 已知的进程级缓存：模块 → 它在定义处登记的名字。新加一处按库内容缓存的地方，就在这里加一行。
 KNOWN_CACHES = {
     "novel_system.api.readiness": ("api.readiness.verified_structure",),
+    "novel_system.services.literary_quality.calibration_source": ("literary_quality.calibration_source.rule_stats",),
     "novel_system.services.llm_degrade": ("llm_degrade.connectivity_caps",),
     "novel_system.services.pricing": ("pricing.price_book",),
     "novel_system.services.reference_copy_gate": ("reference_copy_gate",),
@@ -66,6 +67,7 @@ def _fill_every_known_cache() -> None:
         scene_run_jobs,
         style_policy,
     )
+    from novel_system.services.literary_quality import calibration_source
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
     from novel_system.services.vector_store import get_vector_store
@@ -73,8 +75,9 @@ def _fill_every_known_cache() -> None:
     readiness._VERIFIED_STRUCTURE["probe"] = "probe"
     pricing.load_price_book()
     reference_copy_gate._RESULT_CACHE[("probe",)] = object()
-    scene_diagnosis._FINDINGS_CACHE[("probe",)] = {"findings": [], "waived": []}
-    scene_diagnosis._REFERENCE_CRAFT_CACHE[("probe", 1, "")] = {}
+    scene_diagnosis.findings._FINDINGS_CACHE.put("probe", ("probe",), [], [])
+    scene_diagnosis.calibration._CRAFT_STATS.get_or_build(("probe", 1), dict)
+    calibration_source._RULE_STATS.get_or_build(("probe", 1), dict)
     run_job_leases.mark_dispatched("probe-job")
     scene_run_jobs._BUNDLE_DRAFT_MODES["probe-bundle"] = "style_first"
     style_policy._CACHE["probe"] = style_policy.UNBOUND
@@ -103,6 +106,7 @@ def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
         scene_run_jobs,
         style_policy,
     )
+    from novel_system.services.literary_quality import calibration_source
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
     from novel_system.services.vector_store import get_vector_store
@@ -110,7 +114,8 @@ def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
     assert not readiness._VERIFIED_STRUCTURE
     assert pricing._CACHE is None
     assert not reference_copy_gate._RESULT_CACHE and not reference_copy_gate._INDEX_CACHE
-    assert not scene_diagnosis._FINDINGS_CACHE and not scene_diagnosis._REFERENCE_CRAFT_CACHE
+    assert not scene_diagnosis.findings._FINDINGS_CACHE and not scene_diagnosis.calibration._CRAFT_STATS
+    assert not calibration_source._RULE_STATS
     assert not run_job_leases.busy_job_ids()
     assert not scene_run_jobs._BUNDLE_DRAFT_MODES
     assert not style_policy._CACHE

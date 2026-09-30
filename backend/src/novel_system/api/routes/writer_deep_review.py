@@ -126,7 +126,9 @@ def save_scene_deep_review_preferences(
 
 @router.get("/api/v1/scenes/{scene_id}/deep-review")
 def get_scene_deep_review(scene_id: str, request: Request, session: Session = Depends(get_session)):
-    payload = WriterDeepReviewService(session).scene_summary(scene_id)
+    """写作台深改面板的载荷：统一的场景诊断（规则 / 节奏 / 评审 / AI 深评）。只读——不建 LLM 节点的服务。"""
+
+    payload = SceneDiagnosisService(session).payload(scene_id)
     return ok(payload, req_id=request_id_of(request))
 
 
@@ -204,7 +206,9 @@ def get_chapter_diagnosis_rollup(chapter_id: str, request: Request, session: Ses
 
 @router.get("/api/v1/chapters/{chapter_id}/deep-review")
 def get_chapter_deep_review(chapter_id: str, request: Request, session: Session = Depends(get_session)):
-    payload = WriterDeepReviewService(session).chapter_summary(chapter_id)
+    """成稿中心「AI 通读本章」的载荷：章级判断 + 各场的诊断计数 + 落到各场的通读发现。只读。"""
+
+    payload = SceneDiagnosisService(session).chapter_payload(chapter_id)
     return ok(payload, req_id=request_id_of(request))
 
 
@@ -285,9 +289,3 @@ def reject_passage_patch_candidate(
             patch_id, body, actor_ref=actor_ref
         ),
     )
-
-
-@router.get("/api/v1/author-preference-profile")
-def get_author_preference_profile(request: Request, session: Session = Depends(get_session)):
-    payload = WriterDeepReviewService(session).author_preference_profile()
-    return ok(payload, req_id=request_id_of(request))

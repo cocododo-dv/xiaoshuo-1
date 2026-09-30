@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
     ChapterGoal,
+    PassagePatchCandidate,
     SceneCard,
     SceneDraft,
     StoryProject,
@@ -150,7 +151,7 @@ def test_rule_findings_are_chinese_stable_and_pinned_to_paragraphs() -> None:
     paragraph = text.paragraphs[voice["evidence"]["paragraph_index"]]
     assert paragraph[voice["evidence"]["start"] : voice["evidence"]["end"]] == voice["evidence"]["excerpt"]
     assert voice["signal_id"].startswith("rules:model_voice:") and len(voice["signal_id"].split(":")[-1]) == 8
-    assert voice["quality_signal_id"] == voice["signal_id"]
+    assert "quality_signal_id" not in voice, "发现只有一个 id（前端改写请求自己把 signal_id 当 quality_signal_id 送）"
     assert voice["patch"]["candidate_category"] == "de_model_voice"
 
     # 有位置的发现都钉在段落上；整场缺席的（anchor=scene）没有位置，id 钉在 scene 上
@@ -379,7 +380,8 @@ def test_ai_deep_review_merges_into_the_diagnosis_and_goes_stale_when_the_text_c
     lenses = {item["lens"]: item for item in payload["ai"]["lenses"]}
     assert set(lenses) == {"story", "prose"}
     assert lenses["story"] == {"lens": "story", "label": "故事", "overall_score": 0.5}
-    assert payload["status"] == "reviewed" and payload["latest_evaluation"]["evaluator_llm_call_id"] == "llm_call_diag_deep_review"
+    assert payload["ai"]["llm_call_id"] == "llm_call_diag_deep_review"
+    assert not {"status", "latest_evaluation", "lens_evaluations", "patch_candidates", "passage_reviews", "chapter_review"} & set(payload), "旧契约的键已删（前端从不读）"
 
     pressure = _finding(payload, "ai", "choice_pressure")
     assert pressure["label"] == "抉择压力" and pressure["lens"] == "story"
@@ -563,7 +565,8 @@ def test_patch_candidate_from_a_finding_learns_by_dimension_and_carries_the_inst
     assert "Issue Dimension: model_voice" in user_prompt
     assert f"Diagnosed Issue: {voice['issue']}" in user_prompt
     assert f"Author Instruction: {voice['recommendation']}" in user_prompt
-    assert "## Current Author Draft Context" in user_prompt and "许望没有回答" in user_prompt
+    # 改写要接得上的两头：选区在第 1 段末尾，下一段是「许望没有回答……」（重评 R12：接缝，不是整份作者稿的头尾）
+    assert "## Text Around The Passage" in user_prompt and "Paragraph After: 许望没有回答" in user_prompt
 
     # 工具条的自由改写：维度是 author_instruction，画像记作者的那句话
     free = WriterDeepReviewService(session, llm_client=llm).create_patch_candidate(
@@ -584,9 +587,10 @@ def test_patch_candidate_from_a_finding_learns_by_dimension_and_carries_the_inst
     assert free["quality_signal_id"] is None
     assert "Author Instruction: 更凝练" in llm.requests[-1].messages[-1]["content"]
 
-    # 修补候选随诊断载荷返回（最近的在前）
-    after = SceneDiagnosisService(session).payload(SCENE_ID)
-    assert [row["patch_id"] for row in after["patch_candidates"]] == [free["patch_id"], candidate["patch_id"]]
+    # 两次改写都记成候选行（诊断载荷不再夹带候选清单：前端从不读它）
+    session.expire_all()
+    assert {row.patch_id for row in session.query(PassagePatchCandidate).filter_by(object_id=SCENE_ID)} == {free["patch_id"], candidate["patch_id"]}
+    assert "patch_candidates" not in SceneDiagnosisService(session).payload(SCENE_ID)
 
 
 def test_scene_without_text_diagnoses_nothing(client: TestClient, session) -> None:
@@ -595,6 +599,20 @@ def test_scene_without_text_diagnoses_nothing(client: TestClient, session) -> No
     assert payload["text"]["layer"] == "none"
     assert payload["findings"] == []
     assert payload["summary"]["open"] == 0
+
+
+def test_a_blank_author_draft_is_no_text(client: TestClient, session) -> None:
+    """写作台一打开就建的空白作者稿是一张白纸：诊断说没有正文、不报发现，整本书的计数也不把它算成有字的场。以前它
+    算「作者稿层」：缺选择 / 缺代价 / 结尾没推力这类规则对白纸报四条，主页与成稿中心的角标给每个打开过的空场
+    「诊断 4」，深评还拿它去调模型（复核 P02b-R1）。"""
+
+    _seed_scene(session, draft_html="<p><br></p>")
+    payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
+    assert payload["text"] == {"layer": "none", "ref": None, "sha256": None, "paragraph_count": 0, "chars": 0}
+    assert payload["findings"] == [] and payload["summary"]["open"] == 0
+    summary = client.get(f"/api/v1/projects/{PROJECT_ID}/diagnosis-summary").json()["data"]
+    assert summary["scenes"][SCENE_ID]["text_layer"] == "none" and summary["scenes"][SCENE_ID]["open"] == 0
+    assert summary["totals"]["scenes_with_text"] == 0 and summary["totals"]["open"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -612,11 +630,11 @@ def test_reference_craft_calibration_raises_the_paragraph_limit_and_drops_the_au
     assert stats["paragraphs"] == 45 and stats["long_paragraph_p95"] == 300
     assert stats["echo_per_1k"] > CRAFT_ECHO_HABIT_PER_1K and stats["same_opening_per_1k"] > CRAFT_SAME_OPENING_HABIT_PER_1K
 
-    calibration = calibration_from_reference(profile_id="prof", book_id="book", book_title="龙族", stats=stats, deliberate_repetition=False)
+    calibration = calibration_from_reference(profile_id="prof", book_id="book", book_title="旧信", stats=stats, deliberate_repetition=False)
     assert calibration.source == "reference"
     assert calibration.long_paragraph_chars == 300
     assert calibration.flag_echo is False and calibration.flag_same_opening is False
-    assert "《龙族》" in calibration.note and "300" in calibration.note and "常这么写" in calibration.note
+    assert "《旧信》" in calibration.note and "300" in calibration.note and "常这么写" in calibration.note
 
     text = DiagnosisText(layer="author_draft", ref=None, content="", paragraphs=["门外很安静，安静到能听见潮水。", _distinct_chars(200), "她走了。她停了。她笑了。"])
     assert {item["dimension"] for item in craft_findings(text)} == {"adjacent_echo", "long_paragraph", "same_opening"}
@@ -637,7 +655,7 @@ def test_reference_craft_calibration_raises_the_paragraph_limit_and_drops_the_au
 def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClient, session, monkeypatch) -> None:
     _seed_scene(session)
     reference = ["门外很安静，安静到能听见潮水。"] * 30 + ["她走了。她停了。她笑了。"] * 5 + [_distinct_chars(300)] * 10
-    session.add(StyleReferenceBook(book_id="book_diag", title="龙族", source_kind="upload", cloud_policy="segments_only", text_checksum="diag"))
+    session.add(StyleReferenceBook(book_id="book_diag", title="旧信", source_kind="upload", cloud_policy="segments_only", text_checksum="diag"))
     session.add(StyleReferenceRun(run_id="run_diag", book_id="book_diag", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=["language"]))
     session.add_all(
         [
@@ -659,7 +677,7 @@ def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClie
             profile_id="prof_diag",
             book_id="book_diag",
             run_id="run_diag",
-            title="龙族画像",
+            title="旧信画像",
             profile_json={"voice_signature": {"deliberate_repetition": False}},
         )
     )
@@ -674,10 +692,10 @@ def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClie
     payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert payload["style_bound"] is True
     calibration = payload["craft_calibration"]
-    assert calibration["source"] == "reference" and calibration["book_title"] == "龙族" and calibration["paragraphs"] == 45
+    assert calibration["source"] == "reference" and calibration["book_title"] == "旧信" and calibration["paragraphs"] == 45
     assert calibration["long_paragraph_chars"] == 300
     assert calibration["flag_echo"] is False and calibration["flag_same_opening"] is False
-    assert calibration["note"].startswith("按《龙族》校准")
+    assert calibration["note"].startswith("按《旧信》校准")
     assert not [item for item in payload["findings"] if item["source"] == "craft"], "叠句与句首重复是这位作者的习惯"
     assert all(item["house_taste"] for item in payload["findings"] if item["source"] == "rules")
     # 第二次读走进程缓存：结果一致
@@ -798,12 +816,11 @@ def test_passage_review_verifies_one_finding_and_joins_the_diagnosis(client: Tes
     rhythm = _finding(payload, "ai", "information_rhythm")
     assert rhythm["origin"]["kind"] == "passage" and rhythm["origin"]["about_signal_id"] == voice["signal_id"]
     assert rhythm["evidence"]["paragraph_index"] == 1
-    assert len(payload["passage_reviews"]) == 1
 
     # 同一条再看一次：旧的退位，面板只留最新的意见
     again = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"signal_id": voice["signal_id"]})
     assert again.status_code == 200
-    assert len(again.json()["data"]["passage_reviews"]) == 1
+    assert _finding(again.json()["data"], "rules", "model_voice")["opinion"]["evaluation_id"] == again.json()["data"]["passage_review"]["evaluation_id"]
     session.expire_all()
     rows = session.query(WriterEvaluation).filter_by(object_type="scene", object_id=SCENE_ID, rubric_id=LITERARY_REVISION_PASSAGE_RUBRIC_ID).all()
     assert sorted(row.status for row in rows) == ["completed", "superseded"]
@@ -919,17 +936,16 @@ def test_chapter_read_through_lands_findings_on_scenes_and_keeps_chapter_level_o
     assert chapter["chapter_findings"][0]["evidence"] is None and chapter["chapter_findings"][0]["stale"] is False
     assert chapter["summary"]["chapter_level"] == 1 and chapter["summary"]["blocking"] >= 1
     assert chapter["summary"]["scenes"] == 2
-    assert chapter["status"] == "reviewed" and chapter["latest_evaluation"]["evaluation_id"] == "chapter_eval_diag"
+    assert chapter["ai"]["evaluation_id"] == "chapter_eval_diag"
+    assert not {"status", "latest_evaluation", "lens_evaluations", "patch_candidates"} & set(chapter), "旧契约的键已删"
     assert chapter["ai"]["revision_brief"][0]["action"] == "让最后一场回答第一场的问题。"
 
     # 写作台里第二场的诊断也有这一条（origin 通读）；第一场没有
     scene2 = client.get(f"/api/v1/scenes/{SCENE2_ID}/deep-review").json()["data"]
     landed = _finding(scene2, "ai", "choice_pressure")
     assert landed["origin"]["kind"] == "chapter" and landed["origin"]["evaluation_id"] == "chapter_eval_diag"
-    assert scene2["chapter_review"] == {"status": "current", "evaluation_id": "chapter_eval_diag", "created_at": scene2["chapter_review"]["created_at"], "findings_here": 1}
     scene1 = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert not [item for item in scene1["findings"] if (item.get("origin") or {}).get("kind") == "chapter"]
-    assert scene1["chapter_review"]["findings_here"] == 0
 
     # 改了第二场的字：整章的通读就是改前的
     service = AuthorDraftService(session)
