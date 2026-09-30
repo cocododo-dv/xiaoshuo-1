@@ -283,7 +283,7 @@ class NarrativeEventStore:
                 project_id,
                 before_scene_id=before_scene_id,
                 up_to_scene_id=up_to_scene_id,
-                )
+            )
             .where(
                 NarrativeEvent.entity_id == character_id,
             )
@@ -307,7 +307,7 @@ class NarrativeEventStore:
                 project_id,
                 before_scene_id=before_scene_id,
                 up_to_scene_id=up_to_scene_id,
-                )
+            )
             .where(
                 NarrativeEvent.entity_type == entity_type,
                 NarrativeEvent.entity_id == entity_id,
@@ -331,7 +331,7 @@ class NarrativeEventStore:
                 project_id,
                 before_scene_id=before_scene_id,
                 up_to_scene_id=up_to_scene_id,
-                )
+            )
             .where(
                 NarrativeEvent.entity_id == character_id,
                 NarrativeEvent.event_type == "character_learns",
