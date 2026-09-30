@@ -4,7 +4,8 @@
 学习文风作业(kind=learn,七步进度写在作业行上)与对照检查作业(kind=check),条目由 ``jobs.job_activity_entry``
 给出(键 ``job:<id>``;分类作业另带书名、分类方式与段数 / 字数,学习作业另带书名与做完的步骤)。作业行持久,
 重启之后照样列得出来;抽取 run 行只作血缘,不单列。终态条目只保留最近 ``RECENT_FINISHED_SECONDS``,让前端的
-最后几次轮询读到结果。
+最后几次轮询读到结果——这个窗口是 ``jobs`` 的那一个常量:作业表保留期清理(``cleanup.prune_style_jobs``)不删
+「还在活动面板上」的作业,读的也是它,两边不会各调各的。
 """
 
 from __future__ import annotations
@@ -22,11 +23,11 @@ from novel_system.services.style_reference.jobs import (
     ACTIVE_STATES,
     JOB_KIND_CLASSIFY,
     JOB_KIND_LEARN,
+    RECENT_FINISHED_SECONDS,
     StyleJobService,
     job_activity_entry,
 )
 
-RECENT_FINISHED_SECONDS = 600
 MAX_ITEMS = 50
 
 

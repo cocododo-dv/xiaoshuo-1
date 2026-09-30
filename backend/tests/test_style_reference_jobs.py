@@ -791,3 +791,35 @@ def test_job_retention_is_a_daily_maintenance_task() -> None:
     assert task is cleanup.run_job_retention and interval == 24 * 3600
     assert cleanup.CHECK_JOB_RETENTION_DAYS == 30
 
+
+def test_job_retention_keeps_every_job_the_activity_panel_still_lists(session) -> None:
+    """保留期清理不删「还在活动面板上」的作业：两边读同一个最近结束窗口（``jobs.RECENT_FINISHED_SECONDS``，
+    复核 P07-R2——活动清单原来另有一个同值常量，调大面板窗口，清理就会删掉面板还列着的作业）。"""
+    from novel_system.services.style_reference import activity
+    from novel_system.services.style_reference.cleanup import prune_style_jobs
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+    assert activity.RECENT_FINISHED_SECONDS is jobs_module.RECENT_FINISHED_SECONDS
+    book_id = _book(session, "sr_book_ret_panel")
+    window = activity.RECENT_FINISHED_SECONDS / 86400  # 面板窗口，按天
+    # 面板窗口快到头时结束、已被更新的同类作业取代的旧分类作业：面板还列着它
+    superseded_listed = _job_at(
+        session, JOB_KIND_CLASSIFY, book_id, state=STATE_SUCCEEDED, created_days_ago=window * 1.5, finished_days_ago=window * 0.9
+    )
+    newest = _job_at(
+        session, JOB_KIND_CLASSIFY, book_id, state=STATE_SUCCEEDED, created_days_ago=window * 0.5, finished_days_ago=window * 0.1
+    )
+    # 窗口外结束、同样被取代的：面板不列，清理删
+    superseded_gone = _job_at(
+        session, JOB_KIND_CLASSIFY, book_id, state=STATE_FAILED, created_days_ago=window * 3, finished_days_ago=window * 2
+    )
+
+    listed = {str(entry["key"]) for entry in activity.list_activity(session)}
+    assert {f"job:{superseded_listed}", f"job:{newest}"} <= listed
+    assert f"job:{superseded_gone}" not in listed
+    prune_style_jobs(session)
+    remaining = set(session.scalars(select(StyleReferenceJob.job_id)).all())
+    assert {key.removeprefix("job:") for key in listed} <= remaining
+    assert superseded_gone not in remaining
+
