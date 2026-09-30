@@ -35,6 +35,7 @@ from novel_system.services.writer_briefs import (
     normalize_scene_writer_brief,
 )
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.story_slots import planned_text
 
 TRASH_BLOCK_REASON_HAS_TRASHED_SCENES = "章节下已有单独移入回收站的场景"
 SCENE_RUNTIME_ARTIFACTS_REASON = "场景已有下游运行产物"
@@ -92,10 +93,7 @@ class AuthorLifecycleService:
             "planned_scene_count": chapter.planned_scene_count,
             "chapter_goal": chapter.chapter_goal,
             "main_plot_push": chapter.main_plot_push,
-            "emotional_target": chapter.emotional_target,
-            "ending_effect": chapter.ending_effect,
-            "must_not": chapter.must_not,
-            "notes": chapter.notes,
+            **_planned_chapter_fields(chapter),
             "current_phase": chapter_state.current_phase if chapter_state else "planning",
             "chapter_passed_scene_count": chapter_state.chapter_passed_scene_count if chapter_state else 0,
             "chapter_backfill_pending_count": chapter_state.chapter_backfill_pending_count if chapter_state else 0,
@@ -378,10 +376,7 @@ class AuthorLifecycleService:
             "mid_aggregate_enabled": chapter.mid_aggregate_enabled,
             "chapter_goal": chapter.chapter_goal,
             "main_plot_push": chapter.main_plot_push,
-            "emotional_target": chapter.emotional_target,
-            "ending_effect": chapter.ending_effect,
-            "must_not": chapter.must_not,
-            "notes": chapter.notes,
+            **_planned_chapter_fields(chapter),
             "writer_brief_json": normalize_chapter_writer_brief(chapter.writer_brief_json),
         }
 
@@ -594,3 +589,13 @@ class AuthorLifecycleService:
 
     def _now(self) -> str:
         return utcnow()
+
+
+def _planned_chapter_fields(chapter: ChapterGoal) -> dict[str, str | None]:
+    """章的情绪目标 / 结尾效果 / 禁写 / 备注：作者写了才有值，没规划（含旧的物化样板句）就是 None。"""
+    return {
+        "emotional_target": planned_text(chapter.emotional_target),
+        "ending_effect": planned_text(chapter.ending_effect),
+        "must_not": planned_text(chapter.must_not),
+        "notes": planned_text(chapter.notes),
+    }

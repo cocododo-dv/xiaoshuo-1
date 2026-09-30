@@ -109,6 +109,16 @@ def test_snowflake_chapters_land_in_the_acts_the_arrangement_board_groups_by(cli
 # ------------------------------------------------------------------ 2. 空白占位章
 
 
+def test_materialized_chapters_carry_no_canned_plan_text(client, session) -> None:
+    """S1 9（阶段 F 的「不拿样板当事实」）：分章里没有作者写的情绪目标 / 结尾效果 / 禁写 / 备注，物化就让它们空着
+    （以前每一章都写一套固定的句子，禁写那句就是 2026-09-20 的「人物」禁用词那句政策句）。"""
+    project_id = _materialized(client, "spine-no-canned", scenes_per_chapter=3)
+    chapters = session.execute(select(ChapterGoal).where(ChapterGoal.project_id == project_id)).scalars().all()
+    assert chapters
+    for chapter in chapters:
+        assert (chapter.emotional_target, chapter.ending_effect, chapter.must_not, chapter.notes) == (None, None, None, None)
+
+
 def test_a_pristine_placeholder_chapter_steps_aside_for_the_snowflake_chapters(client, session) -> None:
     project_id = _create_project(client, "spine-placeholder")
     _seed(client, project_id)

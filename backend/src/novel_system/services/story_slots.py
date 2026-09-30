@@ -9,9 +9,22 @@ from typing import Any
 # (catalog_placeholders), and it is one of the scaffolds below.
 SCENE_GOAL_SCAFFOLD = "（本场目标待规划）"
 
-# Historical UI scaffolds that were once persisted as if they were authored
-# story facts. Matching is exact after trim: prose that merely contains one
-# of these words is never altered.
+# The canned chapter text the snowflake outline builder wrote into every
+# materialized chapter until 2026-10-01 (emotional_target / ending_effect /
+# must_not / notes). Nobody authored it; chapters materialized before then
+# still carry it until the next 确认写入 rewrites the fields.
+RETIRED_CHAPTER_BOILERPLATE = frozenset(
+    {
+        "让人物目标、阻碍和代价在行动中显形。",
+        "用新的选择、代价或信息推动下一章。",
+        "不得复制参考书原文表达、人物、设定或桥段。",
+        "由雪花法分章物化，需确认后进入逐章运行。",
+    }
+)
+
+# Historical UI scaffolds and canned text that were once persisted as if they
+# were authored story facts. Matching is exact after trim: prose that merely
+# contains one of these words is never altered.
 EMPTY_STORY_SLOT_VALUES = frozenset(
     {
         "",
@@ -22,6 +35,7 @@ EMPTY_STORY_SLOT_VALUES = frozenset(
         SCENE_GOAL_SCAFFOLD,
         "(本场目标待规划)",
         "待补",
+        *RETIRED_CHAPTER_BOILERPLATE,
     }
 )
 
@@ -31,6 +45,16 @@ def normalize_story_slot(value: Any) -> str:
 
     text = "" if value is None else str(value).strip()
     return "" if text in EMPTY_STORY_SLOT_VALUES else text
+
+
+def planned_text(value: Any) -> str | None:
+    """A stored plan field as the author wrote it, or ``None`` when nothing was
+    planned (missing, blank, or an exact old scaffold / canned text). Payloads
+    that show plan fields use it so a scaffold never reads as the author's."""
+
+    if value is None:
+        return None
+    return value if normalize_story_slot(value) else None
 
 
 def normalize_story_slot_mapping(

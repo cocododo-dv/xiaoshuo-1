@@ -186,6 +186,8 @@ class SceneExecutionContractService:
                 brief.get("expected_reader_emotion"),
                 brief.get("reader_aftertaste"),
                 brief.get("emotional_turn"),
+                # 章的情绪目标只在作者写了时才算：_first_text 按 normalize_story_slot 读，旧的物化样板句
+                # （story_slots.RETIRED_CHAPTER_BOILERPLATE）算没写
                 chapter.emotional_target,
             ),
             "must_reveal": _first_text(brief.get("must_reveal"), brief.get("new_information"), scene.must_include_text),

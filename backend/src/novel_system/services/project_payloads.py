@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, OutlinePlan, QcReport, SceneCard, StoryProject
+from novel_system.services.story_slots import planned_text
 
 
 def project_summary_payload(project: StoryProject) -> dict[str, Any]:
@@ -77,9 +78,10 @@ def chapter_payload(session: Session, chapter: ChapterGoal) -> dict[str, Any]:
         "outline_plan_id": chapter.outline_plan_id,
         "chapter_goal": chapter.chapter_goal,
         "main_plot_push": chapter.main_plot_push,
-        "emotional_target": chapter.emotional_target,
-        "ending_effect": chapter.ending_effect,
-        "must_not": chapter.must_not,
+        # 没规划就是 None：旧的物化样板句不当作者写的（story_slots.planned_text）
+        "emotional_target": planned_text(chapter.emotional_target),
+        "ending_effect": planned_text(chapter.ending_effect),
+        "must_not": planned_text(chapter.must_not),
         "planned_scene_count": chapter.planned_scene_count,
         "scenes": [scene_payload(scene) for scene in scenes],
     }

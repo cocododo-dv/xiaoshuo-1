@@ -21,6 +21,7 @@ from novel_system.services.literary_quality.text import (
     _first_present_term,
 )
 from novel_system.services.source_safety import find_protected_term_spans
+from novel_system.services.story_slots import normalize_story_slot
 
 if TYPE_CHECKING:
     from novel_system.db.models import ChapterGoal
@@ -40,8 +41,9 @@ def _chapter_set_payoff_reveal_checks(chapters: list[ChapterGoal], source_rows: 
                 [
                     chapter.chapter_goal or "",
                     chapter.main_plot_push or "",
-                    chapter.emotional_target or "",
-                    chapter.ending_effect or "",
+                    # 旧的物化样板句（「……代价……」「……选择……」）不是作者的规划，不能替没写正文的章冒充证据
+                    normalize_story_slot(chapter.emotional_target),
+                    normalize_story_slot(chapter.ending_effect),
                     by_chapter.get(chapter.chapter_id, ""),
                 ]
             )
@@ -303,8 +305,8 @@ def _evaluate_cross_chapter_arc(
         fallback = "\n".join([
             ch.chapter_goal or "",
             ch.main_plot_push or "",
-            ch.emotional_target or "",
-            ch.ending_effect or "",
+            normalize_story_slot(ch.emotional_target),
+            normalize_story_slot(ch.ending_effect),
             raw,
         ])
         chapter_texts.append(_compact_ws(raw or fallback))
@@ -419,7 +421,7 @@ def _theme_variety_score(chapters: list[ChapterGoal]) -> float:
 
     levels: list[str] = []
     for ch in chapters:
-        target = (ch.emotional_target or "").strip().lower()
+        target = normalize_story_slot(ch.emotional_target).lower()
         if target:
             levels.append(target)
 
@@ -448,7 +450,7 @@ def _tension_dynamics_score(chapters: list[ChapterGoal]) -> float:
     # Proxy: length of ending_effect + main_plot_push as tension indicator
     values: list[float] = []
     for ch in chapters:
-        tension_proxy = len(ch.ending_effect or "") + len(ch.main_plot_push or "")
+        tension_proxy = len(normalize_story_slot(ch.ending_effect)) + len(ch.main_plot_push or "")
         values.append(float(tension_proxy))
 
     if not values:
