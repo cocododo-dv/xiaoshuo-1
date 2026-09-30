@@ -10,6 +10,7 @@ import {
   TrendChart, costText, fmtInt, pricingComplete,
 } from "./ws-cost-parts.jsx";
 import { readyWorkId } from "./lib/ready-work.js";
+import { isRealWorkId } from "./lib/work-id.js";
 
 /* ==========================================================
    WsCost — 成本看板
@@ -32,7 +33,7 @@ function WsCost() {
   const st = useCostState();
   /* 只跟「当前是哪部作品」走：写作时的字数回写不让整张看板重渲。发请求用能拿去发请求的那个 id
      （新建的作品还没拿到正式 id 时是 null，见 lib/ready-work）——它变的时候身份快照也变，这里跟着重渲 */
-  useActiveWorkIdentity();
+  const identity = useActiveWorkIdentity();
   const activeId = readyWorkId(WsWorks);
   const chapters = useCatalogChapters() || [];
 
@@ -44,13 +45,22 @@ function WsCost() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
-  const dash = st.dashboard;
-  const s = st.level === "project" ? (dash && dash.summary) : null;
+  /* 只摆当前作品的账（复核 Q5-R2）：store 在模块里，视图重挂后它还留着上一部作品的看板——新建的作品在等正式 id 时
+     这里不发请求也不清，一直留到正式 id 回来；切到另一部作品、effect 还没发请求的那一帧也是。这些时候都当「还没读到」：
+     不把上一部的数摆在这部名下，刷新 / 统计窗口 / 下钻也不会去动上一部的账。 */
+  const mine = !!activeId && st.projectId === activeId;
+  const level = mine ? st.level : "project";
+  const dash = mine ? st.dashboard : null;
+  const loading = mine && st.loading;
+  const error = mine ? st.error : null;
+  /* 选中了一部作品、它的账还没开始读：新建的作品在等正式 id，或者刚切过来、请求还没发出去 */
+  const waiting = activeId ? !mine : isRealWorkId(identity && identity.id);
+  const s = level === "project" ? (dash && dash.summary) : null;
   const currency = (s && s.currency) || (st.summary && st.summary.currency) || "USD";
   const complete = pricingComplete(s);
-  const projectId = st.projectId || activeId;
+  const projectId = activeId;
   const empty = s && !s.call_count;
-  const reload = () => costLoad(projectId, st.level === "project" ? { days: st.days } : undefined);
+  const reload = () => costLoad(projectId, level === "project" ? { days: st.days } : undefined);
   const unpricedCalls = (s && s.pricing && Number(s.pricing.unpriced_call_count)) || 0;
 
   return (
@@ -60,35 +70,35 @@ function WsCost() {
         description="每一次生成、重试、审读与质检都记在账上：这里看 token 花在哪、趋势如何、用量走到了哪一步。"
         actions={(
           <>
-            {st.level === "project" && (
+            {level === "project" && (
               <Segmented
                 label="统计窗口"
                 value={st.days}
                 onChange={(n) => costLoad(projectId, { days: n })}
-                options={COST_WINDOWS.map((n) => ({ value: n, label: `近 ${n} 天`, disabled: st.loading || !projectId }))}
+                options={COST_WINDOWS.map((n) => ({ value: n, label: `近 ${n} 天`, disabled: loading || !projectId }))}
               />
             )}
-            <button type="button" className="btn btn-ghost" disabled={st.loading || !projectId} onClick={reload}>
-              {st.loading ? <Spinner size={14} /> : <I.Refresh size={14} />} {st.loading ? "读取中…" : "刷新"}
+            <button type="button" className="btn btn-ghost" disabled={loading || !projectId} onClick={reload}>
+              {loading ? <Spinner size={14} /> : <I.Refresh size={14} />} {loading ? "读取中…" : "刷新"}
             </button>
           </>
         )}
       />
 
-      {st.error && (
+      {error && (
         <Notice tone="danger" title="成本没有加载出来" className="q-notice"
-          actions={projectId ? <button type="button" className="btn btn-ghost btn-sm" onClick={reload}>重试</button> : null}>
-          {st.error}
+          actions={<button type="button" className="btn btn-ghost btn-sm" onClick={reload}>重试</button>}>
+          {error}
         </Notice>
       )}
 
-      {!projectId && !st.loading && (
+      {!projectId && !waiting && (
         <EmptyState compact className="q-empty" title="还没有选作品">先在书架选一部作品，成本看板会自动跟随当前作品。</EmptyState>
       )}
 
-      {projectId && st.level !== "project" && <DrillPanel st={st} chapters={chapters} />}
+      {mine && level !== "project" && <DrillPanel st={st} chapters={chapters} />}
 
-      {projectId && st.level === "project" && dash && (
+      {level === "project" && dash && (
         <div className="cs-grid">
           {empty ? (
             <EmptyState compact className="q-empty" title="这部作品还没有任何模型调用">生成一次草稿或跑一次质检后，这里会出现成本账。</EmptyState>
@@ -139,14 +149,14 @@ function WsCost() {
               {/* 章节构成（可下钻） */}
               <section className="card cs-card">
                 <h3 className="cs-card-title">按章节</h3>
-                <ChapterTable byChapter={dash.by_chapter} chapters={chapters} currency={currency} complete={complete} loading={st.loading}
+                <ChapterTable byChapter={dash.by_chapter} chapters={chapters} currency={currency} complete={complete} loading={loading}
                               onDrill={(cid) => costLoad(projectId, { chapterId: cid })} />
               </section>
 
               {/* Top 调用明细 */}
               <section className="card cs-card">
                 <h3 className="cs-card-title">用量最多的调用</h3>
-                <TopCallsTable topCalls={dash.top_calls} chapters={chapters} currency={currency} loading={st.loading}
+                <TopCallsTable topCalls={dash.top_calls} chapters={chapters} currency={currency} loading={loading}
                                onDrillScene={(sid) => costLoad(projectId, { sceneId: sid })} />
               </section>
 
@@ -158,7 +168,7 @@ function WsCost() {
         </div>
       )}
 
-      {projectId && st.level === "project" && !dash && st.loading && (
+      {level === "project" && !dash && (loading || waiting) && (
         <div className="cs-loading" role="status"><Spinner size={14} /> 正在读取账本…</div>
       )}
     </div>

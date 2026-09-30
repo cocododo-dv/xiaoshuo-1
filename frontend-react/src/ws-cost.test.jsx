@@ -424,6 +424,74 @@ describe("WsCost 视图", () => {
     expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/P9/cost-dashboard?days=30");
   });
 
+  /* 复核 Q5-R2：外壳按作品 id 重挂视图（ws-app 的 key）。新建的作品在等正式 id 时视图不发请求，模块里的 store 还是
+     上一部作品的看板——不能摆在新作品名下，刷新 / 统计窗口也不能去动上一部的账 */
+  const remount = async (mod) => {
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsCost />));
+  };
+
+  it("新建的作品在等正式 id：上一部作品的账不摆在它名下，刷新与统计窗口不可点、不发请求；正式 id 回来按它读", async () => {
+    const { client, mod } = await loadView();
+    client.apiGet.mockResolvedValue({ ...UNPRICED_DASH, summary: { ...UNPRICED_DASH.summary, total_tokens: 424242 } });
+    await mountCost(mod);
+    expect(host.textContent).toContain("全书累计 Token424,242");
+    expect(client.apiGet).toHaveBeenCalledTimes(1);
+
+    works.id = "tmp_new_work";
+    works.pending = true;
+    await remount(mod);
+    expect(host.textContent).not.toContain("424,242");
+    expect(host.textContent).toContain("正在读取账本");
+    expect(host.textContent).not.toContain("还没有选作品");
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent.includes("刷新")).disabled).toBe(true);
+    const windows = [...host.querySelectorAll(".seg-btn")];
+    expect(windows.length).toBe(3);
+    expect(windows.every((b) => b.disabled)).toBe(true);
+    expect(client.apiGet).toHaveBeenCalledTimes(1);
+
+    works.id = "P9";
+    works.pending = false;
+    client.apiGet.mockResolvedValue({ ...UNPRICED_DASH, project_id: "P9", summary: { ...UNPRICED_DASH.summary, total_tokens: 0, call_count: 0 } });
+    await remount(mod);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(client.apiGet).toHaveBeenCalledTimes(2);
+    expect(client.apiGet).toHaveBeenLastCalledWith("/api/v2/projects/P9/cost-dashboard?days=30");
+    expect(host.textContent).toContain("这部作品还没有任何模型调用");
+  });
+
+  it("上一部作品的下钻与出错提示也不带到等正式 id 的新作品上", async () => {
+    const { client, mod } = await loadView();
+    client.apiGet.mockResolvedValueOnce(UNPRICED_DASH);
+    await mod.costLoad("P1");
+    client.apiGet.mockResolvedValueOnce({ level: "chapter", summary: { chapter_id: "C1", total_tokens: 998899, call_count: 28, total_cost: null, pricing: { complete: false } } });
+    await mod.costLoad("P1", { chapterId: "C1" });
+    await mountCost(mod);
+    expect(host.textContent).toContain("返回全书");
+    expect(host.textContent).toContain("998,899");
+
+    works.id = "tmp_new_work";
+    works.pending = true;
+    await remount(mod);
+    expect(host.textContent).not.toContain("返回全书");
+    expect(host.textContent).not.toContain("998,899");
+    expect(host.textContent).toContain("正在读取账本");
+
+    // 上一部作品读失败的提示同样不挂在新作品名下
+    works.id = "P1";
+    works.pending = false;
+    client.apiGet.mockRejectedValueOnce(new Error("账本读不出来"));
+    await mod.costLoad("P1");
+    await remount(mod);
+    expect(host.textContent).toContain("账本读不出来");
+    works.id = "tmp_new_work";
+    works.pending = true;
+    await remount(mod);
+    expect(host.textContent).not.toContain("账本读不出来");
+    expect(client.apiGet).toHaveBeenCalledTimes(3);
+  });
+
   /* ---- 以 token 为主（批准 #4）：没定价的模型不编金额，图与条按 token 画 ---- */
   it("价书里没有单价：卡片、表格说「未定价」，不出现任何金额；趋势与节点条按 token 画", async () => {
     const { client, mod } = await loadView();
