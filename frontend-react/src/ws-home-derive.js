@@ -9,6 +9,8 @@
    或有一场在写 = 写作中），叫法取 CHAPTER_STATE_META（图例、章卡、悬停说明同一个词）——与成稿中心、章节编排同一份。
    ========================================================== */
 import { snowStepByBackendKey } from "./ws-nav.js";
+import { catalogCurrentChapter } from "./ws-catalog-focus.js";
+import { KIND_FIELDS_GCS } from "./ws-catalog-adapt.js";
 import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStage, chapterStateMeta, sceneLabel } from "./labels/catalog.js";
 import { LEGACY_DRAFT_PLACEHOLDER } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
@@ -19,14 +21,6 @@ const HM_BEAT_TONES = ["sage", "gold", "crimson"];
 /* 分段的悬停 / 读屏说明，与成稿中心进度格的 title 同一句：「第 3 章 · 章名：写作中」，前线再补一句。 */
 function hmChapterHint(chapter, stage, front) {
   return `${chapterLabel(chapter, { maxTitle: Infinity })}：${chapterStateMeta(stage).label}${front ? "，前线" : ""}`;
-}
-
-/* 当前章：作者标记的 current 优先，其次第一章「在写」，最后回落到末章（与 WsCatalog.currentChapter 同规则）。
-   只在拿不到焦点场景时兜底用。 */
-function hmCurrentChapter(chapters) {
-  const list = Array.isArray(chapters) ? chapters.filter(Boolean) : [];
-  if (!list.length) return null;
-  return list.find(c => c.current) || list.find(c => c.state === "writing") || list[list.length - 1];
 }
 
 function sameChapter(a, b) {
@@ -40,10 +34,10 @@ function sameChapter(a, b) {
    counts    各阶段的章数；legend 是按 CHAPTER_STATE_ORDER 排好的图例（含 0 章的阶段）
    scenes    全书场景计数（已规划 / 已完成 / 写作中 / 待写，以及铺了场的章数）
    frontChapter 传入时「前线」就是它（主页传焦点场景所在章，焦点卡与进度脊永远指着同一章）；
-   不传则按 hmCurrentChapter。认不出的章节状态按 chapterStage 归入规划（动笔了则在写）；未知的场景状态归入 todo。 */
+   不传则按目录的当前章（ws-catalog-focus.js 的 catalogCurrentChapter，WsCatalog.currentChapter 同一条规则）。认不出的章节状态按 chapterStage 归入规划（动笔了则在写）；未知的场景状态归入 todo。 */
 function hmDeriveSpine(chapters, frontChapter) {
   const list = Array.isArray(chapters) ? chapters.filter(Boolean) : [];
-  const cur = frontChapter ? list.find(c => sameChapter(c, frontChapter)) || null : hmCurrentChapter(list);
+  const cur = frontChapter ? list.find(c => sameChapter(c, frontChapter)) || null : catalogCurrentChapter(list);
   const counts = {};
   CHAPTER_STATE_ORDER.forEach(k => { counts[k] = 0; });
   const scenes = { total: 0, done: 0, writing: 0, todo: 0, chapters: 0 };
@@ -76,25 +70,19 @@ function hmDeriveSpine(chapters, frontChapter) {
   return { total: list.length, segments, counts, legend, scenes, front: cur ? cur.n : null };
 }
 
-/* 焦点卡模型。focus 是 WsCatalog.focusScene() 的返回（{ chapter, scene, index } 或 null）；
-   没有焦点场景时退回服务端 dashboard 的 home 缓存（home.slug / scene / gos）。
-   slug 只放「第几章第几场」两件事；主动 / 反应另起一枚标签。 */
-function hmFocusModel(focus, home) {
-  const fallback = home || {};
+/* 焦点卡模型。focus 是 WsCatalog.focusScene() 的返回（{ chapter, scene, index } 或 null）。
+   没有焦点场景（全书还没有一场）时是空卡：以前退回服务端 dashboard 缓存里的 slug / 场名 / 三拍——那只在
+   同一种情况下才用得上，而后端那时也给不出场（focus_scene_payload 对没有场的书返回空），缓存里剩下的只可能是
+   已经删掉的旧场。slug 只放「第几章第几场」两件事；主动 / 反应另起一枚标签。 */
+const HM_EMPTY_FOCUS = Object.freeze({ chapter: null, scene: null, sid: "", slug: "", kind: "", title: "", beats: [] });
+
+function hmFocusModel(focus) {
   const scene = focus && focus.scene ? focus.scene : null;
   const chapter = focus && focus.chapter ? focus.chapter : null;
-  if (!scene) {
-    return {
-      chapter: null, scene: null, sid: "",
-      slug: String(fallback.slug || "").split(" · ").slice(0, 2).join(" · "),
-      kind: "",
-      title: fallback.scene || "",
-      beats: Array.isArray(fallback.gos) ? fallback.gos : [],
-    };
-  }
+  if (!scene) return HM_EMPTY_FOCUS;
   const index = typeof focus.index === "number" && focus.index >= 0 ? focus.index : 0;
   /* 三拍标签跟着场景形态走：目录给反应场景的是 反应/两难/决定（kindFields），主动场景是 目标/冲突/挫败 */
-  const keys = Array.isArray(scene.kindFields) && scene.kindFields.length === 3 ? scene.kindFields : ["目标", "冲突", "挫败"];
+  const keys = Array.isArray(scene.kindFields) && scene.kindFields.length === 3 ? scene.kindFields : KIND_FIELDS_GCS;
   const beats = [scene.goal, scene.obstacle, scene.turn].map((v, i) => ({
     k: keys[i], tone: HM_BEAT_TONES[i], v: v || `（${i === 0 ? "本场" : ""}${keys[i]}待规划）`,
   }));
@@ -232,5 +220,5 @@ function hmBookProgress(totals, work) {
 }
 
 export {
-  hmBookProgress, hmChapterWindow, hmCurrentChapter, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
+  hmBookProgress, hmChapterWindow, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
 };

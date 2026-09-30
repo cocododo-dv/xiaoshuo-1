@@ -6,8 +6,6 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
 const fx = vi.hoisted(() => ({
   chapters: [],
   reviewItems: [],
@@ -39,42 +37,23 @@ vi.mock("./ws-works.jsx", () => ({
   useWorksStatus: () => fx.status,
   wsKey: (k) => k,
 }));
-// focusScene 逐行照抄 ws-catalog.jsx 的 WsCatalog.currentChapter() + focusScene()（那边改了，这里跟着改）：
-// 当前章里在写的 → 第一场没写完的 → 末场；当前章没铺场时从当前章往后找第一场没写完的（到书尾绕回书头），
-// 全书都写完了就停在当前章之前最近的那一场上。主页不再自己判断「现在该写哪一场」，只认目录 store 给的答案。
-function focusSceneOf(chapters) {
-  const pick = (c) => {
-    const scenes = (c && c.scenes) || [];
-    if (!scenes.length) return null;
-    const s = scenes.find(x => x.state === "writing") || scenes.find(x => x.state !== "done") || scenes[scenes.length - 1];
-    return { chapter: c, scene: s, index: scenes.indexOf(s) };
+// focusScene 用目录层真正的那一条规则（ws-catalog-focus.js，纯函数）：主页不自己判断「现在该写哪一场」，只认目录 store 给的答案
+vi.mock("./ws-catalog.jsx", async () => {
+  const { catalogFocusScene } = await import("./ws-catalog-focus.js");
+  return {
+    WsCatalog: {
+      totals: () => ({ words: 12000, written: 2, planned: fx.chapters.length }),
+      ready: () => fx.catalogReady,
+      loadError: () => null,
+      focusScene: () => catalogFocusScene(fx.chapters),
+      reset: vi.fn(),
+    },
+    useCatalogChapters: () => fx.chapters,
   };
-  const current = chapters.find(c => c.current) || chapters.find(c => c.state === "writing") || chapters[chapters.length - 1] || null;
-  const hit = pick(current);
-  if (hit) return hit;
-  const at = Math.max(0, chapters.indexOf(current));
-  const forward = [...chapters.slice(at + 1), ...chapters.slice(0, at)];
-  for (const c of forward) {
-    const next = pick(c);
-    if (next && next.scene.state !== "done") return next;
-  }
-  const backward = [...chapters.slice(0, at).reverse(), ...chapters.slice(at + 1)];
-  for (const c of backward) { const next = pick(c); if (next) return next; }
-  return null;
-}
-vi.mock("./ws-catalog.jsx", () => ({
-  WsCatalog: {
-    totals: () => ({ words: 12000, written: 2, planned: fx.chapters.length }),
-    ready: () => fx.catalogReady,
-    loadError: () => null,
-    focusScene: () => focusSceneOf(fx.chapters),
-    reset: vi.fn(),
-  },
-  useCatalogChapters: () => fx.chapters,
-}));
-// useReviewOpenItems 照 ws-review.jsx 的订阅式读取来：ws:review-changed 与 store 私有的装载监听都会重渲。
+});
+// useReviewOpenItems 照 ws-review-store.js 的订阅式读取来：ws:review-changed 与 store 私有的装载监听都会重渲。
 // 装载失败不广播 ws:review-changed，这里用测试专用事件 hm-test:review-load 代替 store 的 rvLoadListeners。
-vi.mock("./ws-review.jsx", async () => {
+vi.mock("./ws-review-store.js", async () => {
   const React = await import("react");
   return {
     RV_KINDS: { decision: { tone: "crimson", label: "决策" } },
@@ -576,7 +555,7 @@ describe("WsHome · 单一真相（阶段 2 重构）", () => {
       { id: "rv-effect", kind: "note", title: "绑定参考画像", priority: 2, actions: [{ label: "绑定", effect: { kind: "bind" } }] },
       { id: "rv-options", kind: "note", title: "选一个结尾", priority: 3, options: ["甲", "乙"] },
     ];
-    const { rvMarkResolved } = await import("./ws-review.jsx");
+    const { rvMarkResolved } = await import("./ws-review-store.js");
     const go = vi.fn();
     await mount(go);
     const rows = [...container.querySelectorAll(".home-todo")];
@@ -595,7 +574,7 @@ describe("WsHome · 单一真相（阶段 2 重构）", () => {
       { id: "rv2", kind: "note", title: "第二条提醒", priority: 2 },
       { id: "rv3", kind: "note", title: "第三条提醒", priority: 3 },
     ];
-    const { rvMarkResolved } = await import("./ws-review.jsx");
+    const { rvMarkResolved } = await import("./ws-review-store.js");
     // 照 store 的行为：同步乐观移除并广播 ws:review-changed
     rvMarkResolved.mockImplementation((ids) => {
       fx.reviewItems = fx.reviewItems.filter(it => !ids.includes(it.id));
@@ -632,7 +611,7 @@ describe("WsHome · 单一真相（阶段 2 重构）", () => {
       { id: "rv1", kind: "note", title: "一条提醒", priority: 1 },
       { id: "rv2", kind: "note", title: "第二条提醒", priority: 2 },
     ];
-    const { rvMarkResolved } = await import("./ws-review.jsx");
+    const { rvMarkResolved } = await import("./ws-review-store.js");
     let emit;
     rvMarkResolved.mockImplementation((ids) => {
       // 移除晚到：作者先点了别的按钮
@@ -654,7 +633,7 @@ describe("WsHome · 单一真相（阶段 2 重构）", () => {
       { id: "rv1", kind: "decision", title: "需要你拍板：结尾", priority: 1 },
       { id: "rv2", kind: "note", title: "一条提醒", priority: 2 },
     ];
-    const { rvMarkResolved } = await import("./ws-review.jsx");
+    const { rvMarkResolved } = await import("./ws-review-store.js");
     const go = vi.fn();
     await mount(go);
     const rows = [...container.querySelectorAll(".home-todo")];

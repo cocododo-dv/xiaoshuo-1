@@ -3,24 +3,27 @@
 // 场景计数不再按旧占位符过滤、深链 sid 指向在写的场景。
 import { describe, it, expect } from "vitest";
 import {
-  hmBookProgress, hmChapterWindow, hmCurrentChapter, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
+  hmBookProgress, hmChapterWindow, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
 } from "./ws-home-derive.js";
+import { catalogCurrentChapter } from "./ws-catalog-focus.js";
 
 const CH = (n, state, extra = {}) => ({ id: `ch${n}`, n: String(n).padStart(2, "0"), title: `第${n}章`, state, scenes: [], ...extra });
 
-describe("hmCurrentChapter", () => {
+/* 进度脊不传前线章时的兜底：目录的当前章（ws-catalog-focus.js，WsCatalog.currentChapter 同一条规则） */
+describe("当前章（catalogCurrentChapter）", () => {
   it("空目录返回 null", () => {
-    expect(hmCurrentChapter([])).toBeNull();
-    expect(hmCurrentChapter(null)).toBeNull();
+    expect(catalogCurrentChapter([])).toBeNull();
+    expect(catalogCurrentChapter(null)).toBeNull();
   });
 
   it("current 标记优先于「在写」，其次「在写」，最后回落到末章", () => {
     const writing = CH(2, "writing");
     const current = CH(3, "draft", { current: true });
-    expect(hmCurrentChapter([CH(1, "approved"), writing, current])).toBe(current);
-    expect(hmCurrentChapter([CH(1, "approved"), writing, CH(3, "planned")])).toBe(writing);
+    expect(catalogCurrentChapter([CH(1, "approved"), writing, current])).toBe(current);
+    expect(catalogCurrentChapter([CH(1, "approved"), writing, CH(3, "planned")])).toBe(writing);
     const last = CH(3, "planned");
-    expect(hmCurrentChapter([CH(1, "approved"), CH(2, "review"), last])).toBe(last);
+    expect(catalogCurrentChapter([CH(1, "approved"), CH(2, "review"), last])).toBe(last);
+    expect(hmDeriveSpine([CH(1, "approved"), writing, CH(3, "planned")]).front).toBe("02");
   });
 });
 
@@ -134,10 +137,10 @@ describe("hmFocusModel", () => {
     expect(m.beats.map(b => [b.k, b.v])).toEqual([["反应", "躲起来"], ["两难", "（两难待规划）"], ["决定", "回去"]]);
   });
 
-  it("没有焦点场景时退回 dashboard 缓存，slug 截到两项", () => {
+  it("没有焦点场景（全书还没有一场）时是空卡：不拿 dashboard 缓存里已经删掉的旧场顶上", () => {
     const m = hmFocusModel(null, { slug: "第 2 章 · 第 3 场 · 主动场景", scene: "旧场景", gos: [{ k: "目标", tone: "sage", v: "g" }] });
-    expect(m).toMatchObject({ slug: "第 2 章 · 第 3 场", title: "旧场景", sid: "", scene: null });
-    expect(m.beats).toHaveLength(1);
+    expect(m).toMatchObject({ slug: "", title: "", sid: "", scene: null, chapter: null, kind: "" });
+    expect(m.beats).toEqual([]);
   });
 });
 

@@ -3,8 +3,10 @@ import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork, useWorksStatus, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
-import { RV_KINDS, rvMarkResolved, useReviewOpenItems } from "./ws-review.jsx";
-import { Notice } from "./ws-ui.jsx";
+import { RV_KINDS, rvMarkResolved, useReviewOpenItems } from "./ws-review-store.js";
+import { RV_TONE } from "./ws-review-parts.jsx";
+import { Notice, Tag } from "./ws-ui.jsx";
+import { useWindowEvents } from "./lib/events.js";
 import { LEGACY_DRAFT_PLACEHOLDER, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import {
   hmBookProgress, hmChapterWindow, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
@@ -21,6 +23,7 @@ import { LOADING_WORK_ID } from "./lib/work-id.js";
    （进度脊 + 当前章附近的几章，ws-home-chapters.jsx）。
    单一真相：
    · 焦点场景 = WsCatalog.focusScene()（写作台、AI 起草台落点同一条规则），进度脊的「前线」就是它所在的章；
+     全书还没有一场时焦点卡是空的（不再拿 dashboard 缓存里的旧场顶上）；
    · 章的阶段与叫法 = ws-labels（与成稿中心同一份）；
    · 雪花卡只读服务端 dashboard 的十步状态；
    · 待办读收件箱 store（useReviewOpenItems：列表 + 是否已装载 + 装载失败）；
@@ -30,7 +33,7 @@ import { LOADING_WORK_ID } from "./lib/work-id.js";
    ========================================================== */
 
 /* —— 待办速览的数据源 ——
-   收件箱 store（ws-review.jsx）的订阅式读取 useReviewOpenItems：ready = 当前作品的收件箱已从后端拉回来过，
+   收件箱 store（ws-review-store.js）的订阅式读取 useReviewOpenItems：ready = 当前作品的收件箱已从后端拉回来过，
    error = 最近一次拉取失败（失败不广播 ws:review-changed，只通知这类订阅）。
    没拉回来之前说「正在读取待办…」，拉回来确实是空的才说「都处理完了」；还没拉到过就失败才说读不到——
    拉到过之后的失败保留旧列表，不打扰。
@@ -84,16 +87,14 @@ function HmBeat({ k, tone, v }) {
   const ref = React.useRef(null);
   const [open, setOpen] = React.useState(false);
   const [clamped, setClamped] = React.useState(false);
-  React.useLayoutEffect(() => {
-    const measure = () => {
-      const el = ref.current;
-      if (!el || open) return;
-      setClamped(el.scrollHeight - el.clientHeight > 2);
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [v, open]);
+  const measure = () => {
+    const el = ref.current;
+    if (!el || open) return;
+    setClamped(el.scrollHeight - el.clientHeight > 2);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  React.useLayoutEffect(measure, [v, open]);
+  useWindowEvents({ resize: measure });
   return (
     <div className="hm-gos-row">
       <span className={`hm-gos-k t-${tone}`}>{k}</span>
@@ -167,7 +168,7 @@ function HmTodoCard({ go }) {
           return (
             <div className="home-todo" key={it.id}>
               <button type="button" className="home-todo-open" onClick={() => go("review")} title={hmTodoOpenTitle(it)}>
-                <span className={`pill pill-${m.tone} text-xs`}><span className="pill-dot" />{m.label}</span>
+                <Tag tone={RV_TONE[m.tone] || "info"} dot>{m.label}</Tag>
                 <span className="home-todo-text">{it.title}</span>
               </button>
               {canResolve && (
@@ -224,7 +225,7 @@ function WsHomeFull({ work: p, go, mode, chapters, remote }) {
 
   /* —— 焦点场景（单一真相源）：WsCatalog.focusScene()，进度脊的前线就是它所在的章
      （全书还没有一场时 hero.chapter 为空，hmDeriveSpine 自己退回当前章）—— */
-  const hero = hmFocusModel(WsCatalog.focusScene(), home);
+  const hero = hmFocusModel(WsCatalog.focusScene());
   const spine = hmDeriveSpine(chapters, hero.chapter);
   const windowed = hmChapterWindow(chapters, spine);
   /* 各章还开着的诊断发现数（写作台深改面板的同一份）：章卡角标 + 进度脊一句 */
