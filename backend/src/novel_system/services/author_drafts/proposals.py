@@ -162,7 +162,6 @@ class AuthorDraftProposalsMixin:
             target=target,
             proposal_type=proposal_type,
             instruction=instruction,
-            proposal_kind=proposal_kind,
         )
         proposal = AuthorDraftProposal(
             proposal_id=f"author_draft_proposal_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
@@ -193,19 +192,12 @@ class AuthorDraftProposalsMixin:
         target: dict[str, Any],
         proposal_type: str,
         instruction: str | None,
-        proposal_kind: str,
     ) -> dict[str, str | None]:
         target_for_prompt = {
             **target,
             "proposal_instruction": instruction or "",
         }
-        snapshot = _proposal_generate_snapshot(
-            draft,
-            target=target_for_prompt,
-            proposal_type=proposal_type,
-            proposal_kind=proposal_kind,
-            instruction=instruction,
-        )
+        snapshot = _proposal_generate_snapshot(draft, target=target_for_prompt, proposal_type=proposal_type)
         prompt = PromptBuilder().build(snapshot, "author_proposal_generate")
         user_prompt = _proposal_generate_user_prompt(prompt["user_prompt"], draft=draft, target=target_for_prompt)
         # 续写是正文：有风格绑定就拿到完整 k 的 [STYLE_REFERENCE]（2026-09-14 WP6.3），样例放到 user 消息末尾（2026-09-22）
@@ -379,22 +371,13 @@ def _proposal_generate_snapshot(
     *,
     target: dict[str, Any],
     proposal_type: str,
-    proposal_kind: str,
-    instruction: str | None,
 ) -> dict[str, Any]:
-    inline_digests = {
-        "author_draft": draft.content or "",
-        "target_metadata": json.dumps(target, ensure_ascii=False, sort_keys=True),
-        "proposal_request": json.dumps(
-            {
-                "proposal_type": proposal_type,
-                "proposal_kind": proposal_kind,
-                "instruction": instruction or "",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-    }
+    """PromptBuilder 的输入：只供 user 消息开头的场景 / 章 / 契约 / 阶段几行，以及审计记的 bundle_hash。
+
+    不带 inline 摘要：PromptBuilder 只渲染 ``context_budget.SECTION_SPECS`` 里的摘要，续写要的正文、
+    元数据与这次的指令由 :func:`_proposal_generate_user_prompt` 另附在 user 消息后面。过去这里还备着
+    author_draft / target_metadata / proposal_request 三份摘要，模型从来看不到（R6 复核补充 (2)）。
+    """
     return {
         "contract_version": "AUTHOR_PROPOSAL_GENERATE_SOURCE_v1",
         "stage_allowlist_name": "author_proposal_generate",
@@ -407,12 +390,6 @@ def _proposal_generate_snapshot(
             "proposal_type": proposal_type,
         },
         "resolved_ref_ids": {},
-        "ordered_injections": [
-            {"slot": "author_draft", "ref_id": draft.draft_id, "digest_key": "author_draft"},
-            {"slot": "target_metadata", "ref_id": draft.object_id, "digest_key": "target_metadata"},
-            {"slot": "proposal_request", "ref_id": proposal_type, "digest_key": "proposal_request"},
-        ],
-        "inline_digests": inline_digests,
     }
 
 

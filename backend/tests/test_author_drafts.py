@@ -563,6 +563,45 @@ def test_the_continuation_prompt_carries_no_preference_section(client, session, 
     assert "续写下一段，自然承接当前正文。" in prompt_text
 
 
+def test_the_continuation_snapshot_builds_no_digest_the_prompt_never_renders(client, session, monkeypatch) -> None:
+    """R6 复核补充 (2)：PromptBuilder 只渲染 ``context_budget.SECTION_SPECS`` 里的摘要。续写要的正文与元数据
+    另附在 user 消息后面（「## Current Author Draft」「## Current Metadata」），快照里再备一份 author_draft /
+    target_metadata / proposal_request 摘要只会喂给审计的 bundle_hash，模型从来看不到。"""
+    from novel_system.services.author_drafts import proposals
+    from novel_system.services.context_budget import SECTION_SPECS
+
+    snapshots: list[dict] = []
+    user_prompts: list[str] = []
+    real_build = proposals.PromptBuilder.build
+    real_generate = proposals.LLMNodeRunner.run
+
+    def recording_build(self, bundle_snapshot, template_name, **kwargs):  # noqa: ANN001
+        if template_name == "author_proposal_generate":
+            snapshots.append(bundle_snapshot)
+        return real_build(self, bundle_snapshot, template_name, **kwargs)
+
+    def recording_run(self, **kwargs):  # noqa: ANN001
+        user_prompts.append(kwargs["user_prompt"])
+        return real_generate(self, **kwargs)
+
+    monkeypatch.setattr(proposals.PromptBuilder, "build", recording_build)
+    monkeypatch.setattr(proposals.LLMNodeRunner, "run", recording_run)
+    draft = _scene_draft(client, "AD_CONT_SNAPSHOT")
+    response = _generate_set(client, draft["draft_id"], "continuation-snapshot")
+    assert response.status_code == 200, response.text
+
+    renderable = {key for _name, _label, digest_keys in SECTION_SPECS for key in digest_keys}
+    assert len(snapshots) == 3
+    for snapshot in snapshots:
+        assert set(snapshot.get("inline_digests") or {}) <= renderable
+        assert not snapshot.get("ordered_injections")
+    # 模型拿到的正文与指令照旧在 user 消息里
+    assert len(user_prompts) == 3
+    for user_prompt in user_prompts:
+        assert "## Current Author Draft" in user_prompt and "## Current Metadata" in user_prompt
+        assert "续写下一段，自然承接当前正文。" in user_prompt
+
+
 def test_ensure_creates_a_blank_scene_draft_when_the_scene_has_no_final(client, session) -> None:
     _create_chapter(client, "AD500", planned_scene_count=1)
     _create_scene(client, "AD500_SC01", chapter_id="AD500", scene_seq=1, is_chapter_last=1)
