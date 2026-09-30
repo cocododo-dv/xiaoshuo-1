@@ -39,18 +39,17 @@ function LIB_loadEdits() {
   return {};
 }
 
-/* 条目 patch → 各对象的 PATCH/关系 CRUD；调用粒度=单次保存的 edits 全量 diff */
-const libSentEdits = {};
+/* 条目 patch → 各对象的 PATCH/关系 CRUD；调用粒度=单次保存的 edits 全量 diff。
+   每次都照发：以前按「这个会话上次发过的 patch」去重，别处（构思第 04 步）改过名之后再把名字改回来，这一次被静默
+   跳过还报成功（审计 F05-02）。连点由表单的「保存中…」禁用挡住，重放由请求的幂等键挡住。 */
 async function LIB_persist(edits) {
   try {
     for (const id of Object.keys(edits || {})) {
       const patch = edits[id];
-      if (!patch || JSON.stringify(libSentEdits[id]) === JSON.stringify(patch)) continue;
+      if (!patch) continue;
       const base = LIB_BY_ID[id];
       if (!base) continue;
       await libPushPatch(base, patch);
-      // 只有主对象和关系操作都成功后才去重；部分失败必须允许同载荷重试。
-      libSentEdits[id] = patch;
     }
     libRefetch();
     return true;

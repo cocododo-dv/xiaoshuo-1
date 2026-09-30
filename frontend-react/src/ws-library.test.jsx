@@ -326,6 +326,18 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
     expect(posts).toHaveLength(2);
   });
 
+  /* 审计 F05-02：同一份表单保存两次（中间服务端被别处改过，例如构思第 04 步给人物改了名），第二次必须照样发出去——
+     以前按「这个会话上次发过的 patch」去重，第二次被静默跳过还报「已保存」，刷新后显示的是别处改的名字 */
+  it("同一份 patch 再保存一次照样 PATCH（不按上次发过的内容去重）", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPatch.mockClear();
+    expect(await edit.LIB_persist({ lin: { name: "甲" } })).toBe(true);
+    expect(await edit.LIB_persist({ lin: { name: "甲" } })).toBe(true);
+    const patches = client.apiPatch.mock.calls.filter(c => /\/characters\/lin$/.test(c[0]));
+    expect(patches).toHaveLength(2);
+    expect(patches[1][1]).toEqual(expect.objectContaining({ name: "甲" }));
+  });
+
   it("关系写入失败不会把整次编辑误标成功；相同 patch 可重试", async () => {
     const { client, edit } = await loadLib();
     client.apiPost.mockClear();
