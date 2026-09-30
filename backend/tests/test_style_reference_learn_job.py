@@ -45,7 +45,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
-from novel_system.services.style_reference import learn_job, learn_tags
+from novel_system.services.style_reference import learn_finalize, learn_job, learn_run, learn_tags
 from novel_system.services.style_reference.card import card_from_profile_json
 from novel_system.services.style_reference.card_states import set_card_line_state
 from novel_system.services.style_reference.jobs import (
@@ -129,13 +129,13 @@ def seed_book(session, book_id: str = "learn_book", *, rows: list[dict] | None =
 @pytest.fixture(autouse=True)
 def _fast_learning(monkeypatch):
     """退避不等待、轮询快;每个用例重新登记处理器(作业框架的测试会临时换掉处理器)。"""
-    monkeypatch.setattr(learn_job, "CALL_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
-    monkeypatch.setattr(learn_job, "WAIT_POLL_SECONDS", 0.05)
-    register_job_handler(JOB_KIND_LEARN, learn_job.run_learn_job)
+    monkeypatch.setattr(learn_run, "CALL_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(learn_run, "WAIT_POLL_SECONDS", 0.05)
+    register_job_handler(JOB_KIND_LEARN, learn_run.run_learn_job)
 
 
 def _use(monkeypatch, fake: FakeLearnLLM) -> FakeLearnLLM:
-    monkeypatch.setattr(learn_job, "resolve_learn_client", lambda: (fake, True))
+    monkeypatch.setattr(learn_run, "resolve_learn_client", lambda: (fake, True))
     return fake
 
 
@@ -585,7 +585,7 @@ def test_every_window_is_tagged_in_parallel_batches_and_gists_are_masked(session
     assert job.state == "succeeded"
     windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == "learn_book")).all()
     assert fake.count(NODE_TAGS) == len(windows) and len(windows) >= 4
-    assert fake.max_inflight[NODE_TAGS] <= learn_job.PARALLEL_CALLS
+    assert fake.max_inflight[NODE_TAGS] <= learn_run.PARALLEL_CALLS
     for window in windows:
         tags = window.tags_json
         assert set(tags) == {"situations", "moods", "dimensions", "gist"}  # v2 形状：没有 devices
@@ -717,12 +717,12 @@ def test_resume_after_a_crash_in_each_phase_repeats_no_finished_llm_work(session
     seed_book(session)
     crashed = {"done": False}
     if crash_at in ("windows", "select", "finalize"):
-        target = {
-            "windows": "ensure_window_index",
-            "select": "select_extraction_windows",
-            "finalize": "replace_protected_terms",
+        module, target = {
+            "windows": (learn_run, "ensure_window_index"),
+            "select": (learn_run, "select_extraction_windows"),
+            "finalize": (learn_finalize, "replace_protected_terms"),
         }[crash_at]
-        original = getattr(learn_job, target)
+        original = getattr(module, target)
 
         def crashing(*args, **kwargs):
             if not crashed["done"]:
@@ -730,7 +730,7 @@ def test_resume_after_a_crash_in_each_phase_repeats_no_finished_llm_work(session
                 raise SimulatedCrash(target)
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(learn_job, target, crashing)
+        monkeypatch.setattr(module, target, crashing)
         fake = _use(monkeypatch, _fake())
     else:
         node = {
@@ -829,7 +829,7 @@ def test_deleting_the_book_mid_job_stops_the_worker_without_writes(session, monk
 
 def test_job_without_llm_fails_with_llm_required(session, monkeypatch) -> None:
     seed_book(session)
-    monkeypatch.setattr(learn_job, "resolve_learn_client", lambda: (None, False))
+    monkeypatch.setattr(learn_run, "resolve_learn_client", lambda: (None, False))
     job_id = _start("learn_book")
     run_job_inline(job_id)
     job = _job(job_id)
@@ -987,7 +987,7 @@ def test_a_structure_card_that_cannot_be_computed_only_leaves_that_key_empty(ses
     def broken(*_args, **_kwargs):
         raise ValueError("no chapters")
 
-    monkeypatch.setattr(learn_job, "compute_structure_card", broken)
+    monkeypatch.setattr(learn_run, "compute_structure_card", broken)
     fake, job = _learn(monkeypatch, session)
     assert job.state == "succeeded", job.error_json
     pj = _profile(job.result_json["profile_id"]).profile_json

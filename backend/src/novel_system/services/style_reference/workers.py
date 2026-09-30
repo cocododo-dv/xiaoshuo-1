@@ -1,6 +1,6 @@
 """风格参考作业的处理器与维护任务：显式登记（不靠模块导入的副作用）。
 
-:func:`install_workers` 把三种作业的处理器（段落分类 ``import_job``、学习文风 ``learn_job``、对照检查
+:func:`install_workers` 把三种作业的处理器（段落分类 ``import_job``、学习文风 ``learn_run``、对照检查
 ``check_job``，各带取消收尾钩子 / 能否续跑 / 结束时参数的规则）与风格作业的维护任务（``cleanup`` 的遥测留存与
 作业表保留期）登记到 ``jobs`` 的登记簿上。FastAPI lifespan 在启动清扫线程之前调用它；不经过应用、直接跑作业的
 地方（工具、测试）同样先调用它。可以重复调用：同名登记覆盖。
@@ -23,7 +23,7 @@ from novel_system.services.style_reference.jobs import (
 
 def install_workers() -> None:
     """登记处理器与维护任务（见模块说明）。"""
-    from novel_system.services.style_reference import check_job, cleanup, import_job, learn_job
+    from novel_system.services.style_reference import check_job, cleanup, import_job, learn_job, learn_run
 
     register_job_handler(
         JOB_KIND_CLASSIFY,
@@ -32,8 +32,8 @@ def install_workers() -> None:
     )
     register_job_handler(
         JOB_KIND_LEARN,
-        learn_job.run_learn_job,
-        on_cancelled=learn_job.on_learn_cancelled,
+        learn_run.run_learn_job,
+        on_cancelled=learn_run.on_learn_cancelled,
         resumable=learn_job.learn_resumable,
     )
     register_job_handler(
