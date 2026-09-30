@@ -1,7 +1,7 @@
 """Scene criticality classification — blueprint §13 cost differentiation.
 
 Classifies scenes as critical / standard / transition based on structural
-signals. Critical scenes get full pipeline (N=5, critique pass, human gate);
+signals. Critical scenes get full pipeline (Best-of-N N=3, critique pass, human gate);
 transition scenes skip multi-path and critique for cost savings.
 """
 from __future__ import annotations
@@ -26,8 +26,8 @@ class SceneCriticality:
     best_of_n: int  # 候选上限（= max_best_of_n；保留旧字段名兼容既有消费方）
     skip_critique: bool  # advisory: transition scenes may skip proactive editor passes
     human_gate: bool  # critical scenes pause for author terminal selection (Wave 3 §5.5)
-    # Wave 3（治理 §5.5 成本分配）：初始候选数——关键先 3 补到 5、标准先 2 补到 3、
-    # 过渡恒 1；低分散时按预算逐个补到 best_of_n 上限（渐进补候选）。
+    # Wave 3（治理 §5.5 成本分配）：Best-of-N 的候选数——关键 3、标准 2、过渡恒 1（只有作者手笔直起才出多稿）。
+    # 2026-09-30 [批准#2] 删了低分散补候选，上限 best_of_n（5 / 3）不再补到，只剩编排器的上限转手还在读。
     initial_best_of_n: int = 1
 
     @property
