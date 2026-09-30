@@ -312,7 +312,7 @@ export async function srDeleteBooks(bookIds) {
 
 /* ==========================================================
    导入：multipart 经 lib/client 的 apiPost（FormData），同一个幂等键重试时后端重放
-   成功：把分类作业登记进活动表、刷新书库、广播 sr:book-imported；失败原样抛给导入对话框
+   成功：把分类作业登记进活动表、刷新书库、通知 imported 频道（srSubscribe("imported")）；失败原样抛给导入对话框
    ========================================================== */
 export async function srRunImport({ file, title, authorLabel = null, cloudPolicy, rightsDeclaration = null, importKey = null }) {
   const form = new FormData();
