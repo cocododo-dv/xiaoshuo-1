@@ -11,6 +11,7 @@ import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { isImeComposing } from "./lib/keyboard.js";
 import { emit } from "./lib/events.js";
+import { readyWorkId } from "./lib/ready-work.js";
 import { WR_ANNO_KEY_PREFIX, wrAnnoLoad } from "./ws-writer-annotations.js";
 
 const { useState: useSt6, useEffect: useEf6, useLayoutEffect: useLayout6, useRef: useRef6 } = React;
@@ -107,8 +108,9 @@ function WsSettings({ go, t, setTweak }) {
 
 /* 一个即时保存的字段：失焦或回车提交、Esc 放弃并恢复原值，保存后在旁边说一声「已保存」。
    WsWorks.update 是乐观写 + 失败回滚（回滚时它自己弹错误提示）；回滚后这里没在编辑就跟着恢复原值，
-   不会留着一个没存上的值。数字字段填 0 / 空、必填字段清空，都恢复原值并说明，不再被静默忽略。 */
-function ProjectField({ label, hint, value, onSave, type = "text", step, stacked = false, placeholder, multiline = false, required = false }) {
+   不会留着一个没存上的值。数字字段填 0 / 空、必填字段清空，都恢复原值并说明，不再被静默忽略。
+   disabled：作品还不能拿去发请求时（见 ProjectSettings）只读。 */
+function ProjectField({ label, hint, value, onSave, type = "text", step, stacked = false, placeholder, multiline = false, required = false, disabled = false }) {
   const stored = value == null ? "" : String(value);
   const [draft, setDraft] = useSt6(stored);
   const [status, setStatus] = useSt6(null); /* { tone: ok|warn, text } */
@@ -176,6 +178,7 @@ function ProjectField({ label, hint, value, onSave, type = "text", step, stacked
         rows={multiline ? 2 : undefined}
         value={draft}
         placeholder={placeholder}
+        disabled={disabled}
         onFocus={() => { editingRef.current = true; cancelRef.current = false; }}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
@@ -206,21 +209,26 @@ function ProjectSettings() {
   const work = useActiveWork();
   useCatalogChapters();   // 订阅目录：字数 / 章数变化时这里跟着刷新
   const totals = WsCatalog.totals();
-  const save = (patch) => { if (work.id) WsWorks.update(work.id, patch); };
+  /* 改动只发往「能拿去发请求的」作品 id（lib/ready-work）：书架还在加载（占位作品）、新建的作品还在等后端给正式 id 时
+     没有这个 id，字段先只读——以前照样 PATCH 到 /projects/__loading__ 或临时 id 上，先说「已保存」再失败回滚报错 */
+  const readyId = readyWorkId(WsWorks);
+  const locked = !readyId;
+  const save = (patch) => { if (readyId) WsWorks.update(readyId, patch); };
   const pct = work.wordsTarget ? Math.min(100, Math.round((totals.words / work.wordsTarget) * 100)) : 0;
 
   return (
     <>
       <Section title="项目信息" desc={`当前作品《${work.title}》。失焦或回车即保存，书架和主页会同步更新。`}>
         <ProjectField key={work.id + ":t"} label="书名" hint="显示在书架、主页和导出的成稿里。" value={work.title} required
-          onSave={(v) => save({ title: v })} />
-        <ProjectField key={work.id + ":g"} label="题材" value={work.genre} placeholder="如 悬疑、成长" onSave={(v) => save({ genre: v })} />
+          disabled={locked} onSave={(v) => save({ title: v })} />
+        <ProjectField key={work.id + ":g"} label="题材" value={work.genre} placeholder="如 悬疑、成长" disabled={locked}
+          onSave={(v) => save({ genre: v })} />
         <ProjectField key={work.id + ":s"} label="一句话简介" hint="主页和书架上的那一行。" value={work.sub} stacked multiline
-          placeholder="用一句话说这本书讲什么" onSave={(v) => save({ sub: v })} />
+          placeholder="用一句话说这本书讲什么" disabled={locked} onSave={(v) => save({ sub: v })} />
         <ProjectField key={work.id + ":w"} label="目标字数" type="number" step="10000" value={work.wordsTarget || ""}
-          onSave={(n) => save({ wordsTarget: n })} />
+          disabled={locked} onSave={(n) => save({ wordsTarget: n })} />
         <ProjectField key={work.id + ":d"} label="每日目标" hint="主页「今日」进度条的分母。" type="number" step="100" value={work.wordsTargetDay || ""}
-          onSave={(n) => save({ wordsTargetDay: n })} />
+          disabled={locked} onSave={(n) => save({ wordsTargetDay: n })} />
       </Section>
       <Section title="项目状态" desc="由章节目录实时汇总，与主页、书架同源。">
         <Row label="完成度" readonly>
@@ -320,6 +328,8 @@ function DataSettings({ go }) {
   const works = useWorks();
   const work = WsWorks.active();
   const worksN = works.length || 1;
+  /* 删作品发往能拿去发请求的作品 id：新建的作品还在等后端给正式 id 时没有，按钮先不可点（以前照样 DELETE 临时 id） */
+  const readyId = readyWorkId(WsWorks);
 
   const clearLocalCache = async () => {
     let annotations = 0;
@@ -340,6 +350,7 @@ function DataSettings({ go }) {
   };
 
   const deleteWork = async () => {
+    if (!readyId) return;
     const ok = await wsConfirm({
       title: `删除《${work.title}》？`,
       body: "整部作品会连同全部章节、正文与设定移进回收站，可以在回收站里整体恢复。",
@@ -347,7 +358,7 @@ function DataSettings({ go }) {
       tone: "danger",
     });
     if (!ok) return;
-    WsWorks.remove(work.id);
+    WsWorks.remove(readyId);
     if (go) go("home");
   };
 
@@ -368,7 +379,7 @@ function DataSettings({ go }) {
           <button type="button" className="btn btn-danger" onClick={clearLocalCache}>清除缓存</button>
         </Row>
         <Row label="删除本作品" hint={worksN <= 1 ? "至少要保留一部作品，这是最后一部。" : "整部移进回收站，可以恢复。"} readonly>
-          <button type="button" className="btn btn-danger" disabled={worksN <= 1} onClick={deleteWork}>删除作品</button>
+          <button type="button" className="btn btn-danger" disabled={worksN <= 1 || !readyId} onClick={deleteWork}>删除作品</button>
         </Row>
       </Section>
     </>

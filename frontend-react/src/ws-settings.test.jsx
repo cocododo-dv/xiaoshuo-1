@@ -141,6 +141,68 @@ describe("设置页", () => {
     }
   });
 
+  it("书架还没读回来（占位作品）：项目字段只读，改动不会 PATCH 到占位 id 上；书架到了照常保存到真实作品", async () => {
+    const client = await import("./lib/client.js");
+    let resolveShelf;
+    const shelf = new Promise((resolve) => { resolveShelf = resolve; });
+    client.apiGet.mockImplementation((url) => (url === "/api/v2/projects" ? shelf : Promise.resolve({})));
+    const { WsWorks } = await import("./ws-works.jsx");
+    expect(WsWorks.readyId()).toBeNull();
+    const { WsSettings } = await import("./ws-settings.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const genreInput = () => Array.from(host.querySelectorAll(".set-row")).find(r => r.textContent.includes("题材")).querySelector("input");
+    const typeAndEnter = async (input, text) => {
+      await act(async () => { input.focus(); });
+      await act(async () => { setValue.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" })); });
+    };
+    try {
+      await act(async () => root.render(<WsSettings go={vi.fn()} t={{}} setTweak={vi.fn()} />));
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).not.toHaveBeenCalled();
+      expect(genreInput().disabled).toBe(true);
+
+      await act(async () => { resolveShelf({ items: [{ project_id: "prj-s", title: "试写本" }] }); });
+      await vi.waitFor(() => expect(WsWorks.readyId()).toBe("prj-s"));
+      await vi.waitFor(() => expect(genreInput().disabled).toBe(false));
+      await typeAndEnter(genreInput(), "悬疑");
+      expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/prj-s/profile", { genre: "悬疑" });
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("新建的作品还在等正式 id：「删除作品」先不可点，不会 DELETE 临时 id；拿到正式 id 就能删", async () => {
+    window.sessionStorage.setItem("ws_settings_tab_v1", "data");
+    const view = await mountSettings();
+    const { WsWorks } = await import("./ws-works.jsx");
+    let resolveCreate;
+    view.client.apiPost.mockImplementation((url) => (
+      url === "/api/v2/projects" ? new Promise((resolve) => { resolveCreate = resolve; }) : Promise.resolve({})
+    ));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      await act(async () => { WsWorks.create({ title: "新书" }); });
+      expect(WsWorks.list().length).toBe(2);
+      expect(WsWorks.readyId()).toBeNull();
+      const del = btn(view.host, "删除作品");
+      await click(del);
+      expect(view.client.apiDelete).not.toHaveBeenCalled();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(del.disabled).toBe(true);
+
+      await act(async () => { resolveCreate({ project: { project_id: "prj-new", title: "新书" } }); });
+      await vi.waitFor(() => expect(WsWorks.readyId()).toBe("prj-new"));
+      await vi.waitFor(() => expect(btn(view.host, "删除作品").disabled).toBe(false));
+    } finally {
+      await view.unmount();
+    }
+  });
+
   it("外观：行距在快捷面板里细调过时，给一个真能改回整档的按钮", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "appear");
     const view = await mountSettings({ t: { theme: "day", texture: true, motion: "standard", mode: "writer", fontSize: 18, lineHeight: 2.15 } });
