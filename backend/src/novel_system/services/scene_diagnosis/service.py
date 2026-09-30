@@ -343,6 +343,8 @@ class SceneDiagnosisService:
                 "chars": text.chars,
             },
             "style_bound": style_bound,
+            # 规则 / 节奏发现是不是让位给参考作者（绑定且作者手笔直起；风格参考的测试按这个键核对策略）
+            "house_taste_deferred": house_taste,
             # 这一稿里按参考作者的密度放过的词表词（词、次数、作者每万字次数、一场的量里的期望、这个次数的概率）
             "craft_calibration": {**calibration.as_dict(), "waived_in_scene": waived},
             "findings": deduped,

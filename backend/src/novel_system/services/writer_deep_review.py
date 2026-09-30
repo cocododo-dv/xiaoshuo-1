@@ -199,8 +199,8 @@ class WriterDeepReviewService(PassagePatchMixin):
         """「AI 深评」：对写作台看到的这一场正文跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即
         409；这一场还没有正文也 409（不拿空提示词去花钱，模型给的「发现」只能是编的）。"""
 
-        self._require_live_llm("writer_deep_review")
         scene = require_scene(self.session, scene_id)
+        self._require_live_llm("writer_deep_review")
         text = SceneDiagnosisService(self.session).text_for_scene(scene)
         if text.layer == "none":
             raise _no_text_error("scene", scene.scene_id)
