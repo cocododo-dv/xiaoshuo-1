@@ -7379,17 +7379,15 @@ class Orchestrator:
     ) -> list[str] | None:
         """Wave 3（§4.4/§5.5）：确定性坏稿淘汰后建立匿名候选终选 gate。
 
-        机器只淘汰空文本与来源安全 Q0 命中的无效候选（不按机器分数删，
-        §4.4）；全部无效时返回 None——管线继续，由 QC 层裁决，不装作可选。候选按正文去重后不到两份时
-        调用方根本不开这道门（:meth:`_distinct_candidate_count`）。
+        机器只淘汰空文本与抄袭门（``reference_copy_gate``，候选排序时已查、结论在 ``ranking_audit``）确认抄了
+        参考书原文的候选（不按机器分数删，§4.4；受保护专名只提醒、从不淘汰，[批准#12]）；全部无效时返回 None——
+        管线继续，由 QC 层裁决，不装作可选。候选按正文去重后不到两份时调用方根本不开这道门
+        （:meth:`_distinct_candidate_count`）。
         blinded_order 是随机置换（§5.5 展示顺序必须随机化并记录）。
 
         风格参考 v3（S2 a）：有绑定时，抄袭门「没检查成」的候选（``plagiarism_checked`` 不为 True——读数 / 抄袭门
         抛过异常）也不交给作者盲选（fail-closed；成稿门仍是最后一道）；未绑定的场景没有抄袭门，照旧交付。
         """
-        # 调用时按模块属性取：测试在 source_safety 老家替换它
-        from novel_system.services.source_safety import scan_source_safety
-
         style_bound = bool(getattr(style_policy_for_bundle(bundle), "bound", False))
         valid_candidates: list[Any] = []
         offered_texts: set[str] = set()
@@ -7399,8 +7397,6 @@ class Orchestrator:
                 continue
             if content in offered_texts:
                 # 风格参考 v3（P5b）：作者手笔直起时没过门的修改槽位保留首稿原文——同样的正文只给作者看一次
-                continue
-            if not scan_source_safety(content).get("safe", True):
                 continue
             ranking = getattr(cand, "ranking_audit", None) or {}
             if (
@@ -7434,7 +7430,8 @@ class Orchestrator:
             event_source="candidate_selection",
             priority="high",
             status="awaiting_review",
-            allowed_actions_json=["select", "reopen"],
+            # 终选一次写入，不再有「重开改选」（重评 R2 复核补充 4）
+            allowed_actions_json=["select"],
             details_json={
                 "gate_type": "style_candidate_selection",
                 "candidate_row_ids": valid_row_ids,

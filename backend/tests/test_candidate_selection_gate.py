@@ -191,12 +191,12 @@ def _seed_scene(session, *, constraint_intensity: float | None = 0.9) -> None:
     bind_style_first(session, "gate300", project_id=PROJECT_ID)
 
 
-def _make_orchestrator(session) -> Orchestrator:
+def _make_orchestrator(session, *, scene_client: FakeSceneClient | None = None) -> Orchestrator:
     support = ScenePipelineOnlineFake()
     orchestrator = Orchestrator(
         session,
         scene_generation_service=SceneGenerationService(
-            session, llm_client=FakeSceneClient()
+            session, llm_client=scene_client or FakeSceneClient()
         ),
         hard_qc_engine=HardQcEngine(session, llm_client=FakePassQcClient(_hard_pass())),
         soft_qc_engine=SoftQcEngine(session, llm_client=FakePassQcClient(_soft_pass())),
@@ -823,36 +823,39 @@ def test_resume_validates_hard_qc_report_content_hash_before_provider_work(
     assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
 
 
-def test_resume_uses_contiguous_hashes_when_the_top_ranked_candidate_is_filtered(
+class _SecondRevisionRepeatsTheFirstClient(FakeSceneClient):
+    """槽位 2 的定向修改回了与槽位 1 一字不差的一段（第 3 次回稿 = 第 2 次）：两份读数一样，并列排在最前。"""
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        index = 2 if len(self.requests) == 3 else len(self.requests)
+        payload = {
+            "scene_text": f"Provider-generated draft #{index} for terminal selection.",
+            "continuity_notes": [],
+        }
+        return _response(payload, request_id=f"resp_scene_{len(self.requests):03d}")
+
+
+def test_resume_uses_contiguous_hashes_when_a_middle_candidate_is_filtered(
     client,
     session,
-    monkeypatch,
 ) -> None:
-    """排第一的候选（读数最近的那份修改稿）被来源安全过滤掉：终选清单与候选排序不再同序，续跑按终选清单的连续哈希核对。"""
-    from novel_system.services import source_safety
+    """排在中间的候选（与排第一的那份正文重复）不交给作者：终选清单与候选排序不再同序，续跑按终选清单的连续哈希核对。
 
+    （[批准#12] 之后受保护专名不再淘汰候选；终选门只剩正文为空 / 重复与抄袭门三种淘汰，这里用重复。）"""
     _seed_scene(session)
-    original_scan = source_safety.scan_source_safety
-
-    def _filter_top_ranked_candidate(
-        text: str, *args, **kwargs
-    ):  # noqa: ANN002, ANN003, ANN202
-        if "draft #2" in text:
-            return {"safe": False, "matches": [{"rule": "test-filter"}]}
-        return original_scan(text, *args, **kwargs)
-
-    monkeypatch.setattr(
-        source_safety, "scan_source_safety", _filter_top_ranked_candidate
+    _make_orchestrator(session, scene_client=_SecondRevisionRepeatsTheFirstClient()).run_scene(
+        SCENE_ID, execution_id=ORIGIN_EXECUTION_ID
     )
-    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     offered = gate.details_json["candidate_row_ids"]
     state = session.get(SceneRunState, SCENE_ID)
     all_candidates = state.run_checkpoint_json["artifact_refs"]["candidate_row_ids"]
     assert len(offered) < len(all_candidates)
-    assert offered[0] != all_candidates[0]
-    chosen_row_id = offered[0]
+    chosen_row_id = offered[-1]
+    # 选的那份在终选清单里的位置与它在候选排序里的位置不同：核对只能按终选清单的连续编号
+    assert offered.index(chosen_row_id) != all_candidates.index(chosen_row_id)
 
     assert (
         client.post(
