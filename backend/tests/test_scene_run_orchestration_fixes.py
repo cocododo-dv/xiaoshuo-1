@@ -3,7 +3,8 @@
 - 终选门只按抄袭门淘汰候选，受保护专名从不淘汰（[批准#12]，B04-15）；
 - ``run_policy="auto"`` 不再接收（B01-09）；
 - 准终稿第一轮评审 / 软 QC 第一轮之后的分支表存与读共用一份（B01-04）；
-- 终选后续跑停在严格模式的待接受稿上算完成，与首跑同一张终态表（B01-05）。
+- 终选后续跑停在严格模式的待接受稿上算完成，与首跑同一张终态表（B01-05）；
+- 终选后续跑交给后半程的选中稿是 ``StyleGenerationResult``（B01-18）。
 """
 
 from __future__ import annotations
@@ -13,10 +14,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from novel_system.db.models import SceneCard, SceneRunState
+from novel_system.db.models import SceneBundle, SceneCard, SceneRunState
 from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.scene_generation import StyleGenerationResult
+from tests.real_llm_fakes import install_online_pipeline
 from tests.support.checkpoint_fakes import _seed_resume_scene
+from tests.support.style_first_fixtures import install_readings, reading
+from tests.test_candidate_selection_gate import (
+    ORIGIN_EXECUTION_ID as GATE_ORIGIN_EXECUTION_ID,
+)
+from tests.test_candidate_selection_gate import SCENE_ID as GATE_SCENE_ID
+from tests.test_candidate_selection_gate import _make_orchestrator as _make_gate_orchestrator
+from tests.test_candidate_selection_gate import _seed_scene as _seed_gate_scene
+from tests.test_candidate_selection_gate import _selection_gate
 
 SCENE_ID = "CH_RESUME_SC01"
 
@@ -183,3 +194,53 @@ def test_strict_stop_after_selection_resume_completes_the_execution(session, mon
     state = session.get(SceneRunState, SCENE_ID)
     assert state.active_execution_id == "idempotency:strict-selection-resume"
     assert state.run_execution_status == "completed"
+
+
+# ---------------------------------------------------------------------------------------------- B01-18
+
+
+@pytest.fixture
+def _selection_gate_pipeline(monkeypatch) -> None:
+    """与 test_candidate_selection_gate 相同的场面：在线记账替身、三份候选、合成参考书的读数、预算解除武装。"""
+    install_online_pipeline(monkeypatch)
+
+    def _three_candidates(self, contract, *, criticality=None):  # noqa: ANN001, ANN202
+        if criticality is not None:
+            return max(1, min(3, int(criticality.initial_best_of_n)))
+        return 3
+
+    monkeypatch.setattr(Orchestrator, "_best_of_n_count", _three_candidates)
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+    install_readings(monkeypatch, {"draft #2": reading(0.5, 30.0)}, default=reading(1.0, 60.0))
+
+
+@pytest.mark.usefixtures("_selection_gate_pipeline")
+def test_selection_resume_hands_a_typed_style_generation_to_the_finalizer(client, session, monkeypatch) -> None:
+    """终选后续跑交给后半程（软 QC → 准终稿 → 归档）的选中稿以前是只带五个字段的 SimpleNamespace，缺 bundle_id /
+    bundle_hash / lineage / ranking_audit——后半程将来谁读这些字段，只在续跑这条路上出错。现在与首跑同一种值。"""
+    _seed_gate_scene(session)
+    _make_gate_orchestrator(session).run_scene(GATE_SCENE_ID, execution_id=GATE_ORIGIN_EXECUTION_ID)
+    session.commit()
+    chosen_row_id = _selection_gate(session).details_json["candidate_row_ids"][0]
+    selected = client.post(
+        f"/api/v1/scenes/{GATE_SCENE_ID}/style-candidates/{chosen_row_id}/select",
+        json={},
+        headers={"X-Idempotency-Key": "p01c-typed-selection"},
+    )
+    assert selected.status_code == 200
+    handed: dict = {}
+
+    def capture(self, **kwargs):  # noqa: ANN001, ANN202
+        handed.update(kwargs)
+        return {"scene_status": "archived"}
+
+    monkeypatch.setattr(Orchestrator, "_finalize_after_style", capture)
+
+    Orchestrator(session).resume_after_selection(GATE_SCENE_ID, execution_id="idempotency:p01c-typed-resume")
+
+    generation = handed["style_generation"]
+    bundle = session.get(SceneBundle, handed["bundle"]["bundle_id"])
+    assert isinstance(generation, StyleGenerationResult)
+    assert generation.row_id == chosen_row_id
+    assert (generation.bundle_id, generation.bundle_hash) == (bundle.bundle_id, bundle.bundle_snapshot_hash)
+    assert generation.llm_call_id and generation.execution_step_key and generation.artifact_execution_id

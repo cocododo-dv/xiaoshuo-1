@@ -10,7 +10,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 from novel_system.db.models import (
@@ -1217,10 +1216,13 @@ class PipelineMixin:
         )
         # 与首跑主管线同一入口：续跑同样喂入 §6.4 连续过渡计数，判定不降级。
         criticality = classify_scene_with_context(self.session, scene)
-        style_generation = SimpleNamespace(
+        # 与首跑交给 _finalize_after_style 的是同一种值（B01-18：以前是只带五个字段的 SimpleNamespace）
+        style_generation = StyleGenerationResult(
             row_id=draft.row_id,
             content=draft.content,
             llm_call_id=selected_llm_call_id,
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
             execution_step_key=selected_step_key,
             artifact_execution_id=selected_execution_id,
         )
