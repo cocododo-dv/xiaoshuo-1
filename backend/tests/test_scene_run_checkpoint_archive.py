@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from functools import partial
 
 import pytest
 from sqlalchemy import func, select
@@ -25,12 +26,13 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.aggregator import Aggregator
+from novel_system.services.aggregator import Aggregator, is_chapter_aggregate_of
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
+from novel_system.services.scene_run import archive as scene_run_archive
 
 # Importing the autouse fixture runs every test here against the accounted online fake provider.
 from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
@@ -1238,3 +1240,56 @@ def test_chapter_last_resume_still_rejects_an_aggregate_that_is_not_exactly_its_
         _resume(session, execution_id)
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
     assert "chapter aggregate output changed" in str(corrupt.value)
+
+
+def test_chapter_last_self_check_compares_the_scene_order_join_before_searching(session, monkeypatch) -> None:
+    """复核 I4-R1：第 8 步自检先按现在的场序把清单里的记忆拼一次比——新做的产品、场序没改过的续跑都一次比完，用不着
+    逐段对（逐段对有步数上限，最坏的输入走满就报损坏）。这里把逐段对的步数压成 0：清单按 row_id 排、与场序相反，只有
+    先按场序比的自检过得去——新跑的第 8 步、续跑、已归档的重放都是。"""
+    monkeypatch.setattr(
+        scene_run_archive, "is_chapter_aggregate_of", partial(is_chapter_aggregate_of, max_steps=0)
+    )
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    # 场序在前、row_id 在后的一场
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text="林昭先读了旧信。")
+    execution_id = "idempotency:chapter-last-scene-order-first"
+
+    product = _stop_after_sub9(session, execution_id)
+
+    assert product["outcome"] == "aggregated"
+    assert [item["scene_id"] for item in product["inputs"]] == ["CH_RESUME_SC01", "CH_RESUME_SC09"]
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+    assert _resume(session, execution_id)["scene_status"] == "archived"  # 已归档的重放
+
+
+def test_chapter_last_resume_after_the_chapter_was_reordered_still_recognises_its_aggregate(session) -> None:
+    """复核 I4-R1：第 8 步之后、续跑之前，作者对调了这一章前两场的先后。汇总是按原来的场序拼的，按现在的场序先比比不上，
+    就逐段对——第二场正以第一场的全文开头，照样认得出，续跑照常归档。（章末那一场的前一场没变，起草时的上下文也没变。）"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 4
+    session.commit()
+    _archived_sibling(session, "CH_RESUME_SC07", scene_seq=1, text="林昭先读了旧信。")
+    _archived_sibling(session, "CH_RESUME_SC08", scene_seq=2, text="林昭先读了旧信。\n雨城的钟敲过三下。")
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=3, text="第三场，她把旧信收进案卷。")
+    execution_id = "idempotency:chapter-last-reordered-before-resume"
+    product = _stop_after_sub9(session, execution_id)
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content.startswith("林昭先读了旧信。\n林昭先读了旧信。\n雨城的钟敲过三下。\n第三场，")
+
+    # 前两场对调（同一章里场序不能重号，先挪到空着的号上）
+    first, second = session.get(SceneCard, "CH_RESUME_SC07"), session.get(SceneCard, "CH_RESUME_SC08")
+    first.scene_seq = 90
+    session.flush()
+    second.scene_seq = 1
+    session.flush()
+    first.scene_seq = 2
+    session.commit()
+
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+

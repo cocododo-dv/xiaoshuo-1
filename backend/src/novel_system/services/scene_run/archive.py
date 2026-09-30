@@ -35,7 +35,10 @@ from novel_system.db.models import (
     VolumeSummary,
     WriterEvaluation,
 )
-from novel_system.services.aggregator import is_chapter_aggregate_of
+from novel_system.services.aggregator import (
+    chapter_aggregate_order,
+    is_chapter_aggregate_of,
+)
 from novel_system.services.llm_accounting import (
     ACCOUNTING_EXECUTION_MODE_KEY,
     LLMAccountingError,
@@ -1238,6 +1241,7 @@ class ArchiveCheckpointMixin:
             or product.get("input_hash") != self._json_hash(inputs)
         ):
             raise checkpoint_corrupt("chapter aggregate input manifest is invalid")
+        input_memories: list[SceneMemory] = []
         for item in inputs:
             memory = self.session.get(
                 SceneMemory, item.get("row_id") if isinstance(item, dict) else None
@@ -1251,6 +1255,7 @@ class ArchiveCheckpointMixin:
                 or self._text_hash(memory.content) != item.get("content_hash")
             ):
                 raise checkpoint_corrupt("chapter aggregate input memory changed")
+            input_memories.append(memory)
         snapshot = product.get("chapter_memory")
         if product.get("outcome") == "aggregated":
             memory = self.session.get(ChapterMemory, (snapshot or {}).get("row_id"))
@@ -1267,9 +1272,21 @@ class ArchiveCheckpointMixin:
                 actual[mutable_field] = snapshot.get(mutable_field)
             # 汇总按场序拼，清单按 row_id 排，两个次序不必一致（手加的场 id 带随机后缀；场序归档之后也可能再改），
             # 产品里也不记拼的次序。以前按 row_id 序重拼再逐字比，这样的章章末那一场每次都在第 8 步自检时报损坏。这里
-            # 只认「汇总恰好是这几条记忆各一次、用换行拼起来」，逐段对（一场的全文也出现在别的场里时照样认得出）。
+            # 只认「汇总恰好是这几条记忆各一次、用换行拼起来」：先按现在的场序拼一次比（新做的产品、场序没改过的章
+            # 一次比完），比不上再逐段对（一场的全文也出现在别的场里时照样认得出；步数有上限，走完还认不出就报损坏）。
+            cards = {
+                card.scene_id: card
+                for card in self.session.scalars(
+                    select(SceneCard).where(
+                        SceneCard.scene_id.in_(
+                            {scene_memory.scene_id for scene_memory in input_memories}
+                        )
+                    )
+                ).all()
+            }
             input_texts = [
-                self.session.get(SceneMemory, item["row_id"]).content for item in inputs
+                scene_memory.content
+                for scene_memory in chapter_aggregate_order(input_memories, cards)
             ]
             if actual != snapshot or not is_chapter_aggregate_of(
                 memory.content, input_texts

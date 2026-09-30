@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 from itertools import permutations
 import logging
+import time
 
 import pytest
 
@@ -500,3 +501,26 @@ def test_the_aggregate_check_is_order_free_even_when_scenes_contain_each_other()
         joined = "\n".join(order)
         assert is_chapter_aggregate_of(joined, parts), order
         assert not is_chapter_aggregate_of(f"{joined[:-1]}！", parts), order
+
+
+def test_the_aggregate_check_compares_the_given_order_before_searching() -> None:
+    """复核 I4-R1：先按给的次序拼一次比（第 8 步自检按现在的场序给），比上了就不必逐段对；逐段对走满步数就当不是
+    （fail closed）。"""
+    parts = ["林昭先读了旧信。", "雨城的钟敲过三下。", "她把旧信收进案卷。"]
+    joined = "\n".join(parts)
+    assert is_chapter_aggregate_of(joined, parts, max_steps=0)
+    assert is_chapter_aggregate_of(joined, parts[::-1])
+    assert not is_chapter_aggregate_of(joined, parts[::-1], max_steps=0)
+
+
+def test_the_aggregate_check_gives_up_quickly_on_a_forged_chain_of_openings() -> None:
+    """复核 I4-R1：各段本身带换行、一段正是另一段用换行接着写下去的开头（「雨」「雨\\n雨」……共 18 段），汇总改掉最后
+    一个字。拼得出同一个开头的组合随段数成倍增长，以前要把它们试遍才答「不是」（18 段约 22 秒，每多两段慢 4 倍多）；
+    现在逐段对有步数上限，走满就当不是。对的汇总不论给的次序，照样一下认出。"""
+    parts = ["\n".join(["雨"] * count) for count in range(1, 19)]
+    joined = "\n".join(parts)
+
+    started = time.perf_counter()
+    assert not is_chapter_aggregate_of(f"{joined[:-1]}晴", parts)
+    assert time.perf_counter() - started < 3
+    assert is_chapter_aggregate_of(joined, parts[::-1])

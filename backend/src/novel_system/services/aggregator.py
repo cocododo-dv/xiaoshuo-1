@@ -88,41 +88,78 @@ def derive_chapter_aggregate(
         return ChapterAggregateDerivation(
             "blocked", "active_scene_memory_ambiguous", inputs=inputs, scene_ids=tuple(ambiguous_ids)
         )
-    ordered = sorted(
-        inputs,
-        key=lambda memory: (
-            int(placed[memory.scene_id].scene_seq or 0),
+    return ChapterAggregateDerivation(
+        "derived",
+        "scene_memories_aggregated",
+        inputs=inputs,
+        memories=tuple(chapter_aggregate_order(inputs, placed)),
+    )
+
+
+def chapter_aggregate_order(
+    memories: Iterable[SceneMemory], cards: Mapping[str, SceneCard]
+) -> list[SceneMemory]:
+    """章汇总里各场的先后：场序，同场序再按场 id、建立时间、``row_id``。:func:`derive_chapter_aggregate` 按它拼，流水线
+    第 8 步自检按它先比一次（见 :func:`is_chapter_aggregate_of`）。``cards`` 里没有的场按场序 0 排——只有自检会
+    遇到，那里这只是先试的次序。"""
+
+    def key(memory: SceneMemory) -> tuple[int, str, str, str]:
+        card = cards.get(memory.scene_id)
+        return (
+            int((card.scene_seq if card is not None else 0) or 0),
             memory.scene_id,
             memory.created_at or "",
             memory.row_id,
-        ),
-    )
-    return ChapterAggregateDerivation(
-        "derived", "scene_memories_aggregated", inputs=inputs, memories=tuple(ordered)
-    )
+        )
+
+    return sorted(memories, key=key)
 
 
 def _in_trash(card: SceneCard | None) -> bool:
     return card is not None and bool(card.trashed_flag)
 
 
-def is_chapter_aggregate_of(content: str, parts: Sequence[str]) -> bool:
+# is_chapter_aggregate_of 逐段对最多走几步。真实的章里一场的正文难得正是另一场的开头，逐段对的步数与场数相当；走满
+# 这么多步的是各段层层互为开头、又拼不成的输入（伪造或损坏的行，见函数说明）。
+_AGGREGATE_MATCH_MAX_STEPS = 20_000
+
+
+class _OutOfSteps(Exception):
+    pass
+
+
+def is_chapter_aggregate_of(
+    content: str, parts: Sequence[str], *, max_steps: int = _AGGREGATE_MATCH_MAX_STEPS
+) -> bool:
     """``content`` 是不是 ``parts`` 各用一次、按某个次序拼成的章汇总（拼法同 :attr:`ChapterAggregateDerivation.content`）。
 
     流水线第 8 步的产品只记输入清单（``row_id`` 序），不记拼的次序（场序，归档之后还可能再改），复验就只认这一点。
-    一场的全文可能也出现在别的场里、或正是另一场的开头（短短的收尾场、重复的正文），所以不能按「在汇总里第一次出现的
-    位置」排——那样对的汇总反被判损坏。这里从头逐段对，一段接不上就退回去换一段；走不通的「位置 + 还剩哪几段」记下来
-    不再重走，几段互为开头时也不会一路试遍所有次序。
+    先按 ``parts`` 给的次序拼一次比：调用方按 :func:`chapter_aggregate_order` 排好，归档之后场序没改过的章一次比完。
+    比不上再从头逐段对——一场的全文可能也出现在别的场里、或正是另一场的开头（短短的收尾场、重复的正文），所以不能按
+    「在汇总里第一次出现的位置」排，那样对的汇总反被判损坏；一段接不上就退回去换一段，走不通的「位置 + 还剩哪几段」
+    记下来不再重走。
+
+    记下来也挡不住最坏的情形：几段本身带换行、一段又正是另一段用换行接着写下去的开头时（「雨」「雨\\n雨」
+    「雨\\n雨\\n雨」……），拼得出同一个开头的组合随段数成倍增长，拼不成的时候每一种都得试过才知道（这类问题一般
+    没有快的解法）。所以逐段对最多走 ``max_steps`` 步，走完还没认出来就当不是：fail closed，第 8 步自检照旧报
+    损坏。真实的章走不到这一步：一场的正文难得正是另一场的开头，每个位置接得上的通常只有一段。
     """
     if len(content) != sum(map(len, parts)) + len(_SEPARATOR) * max(len(parts) - 1, 0):
         return False
+    if _SEPARATOR.join(parts) == content:
+        return True
     remaining = Counter(parts)
     candidates = sorted(remaining, key=len, reverse=True)
     dead_ends: set[tuple[int, tuple[int, ...]]] = set()
+    steps = 0
 
     def walk(pos: int, left: int) -> bool:
+        nonlocal steps
         if not left:
             return pos == len(content)
+        steps += 1
+        if steps > max_steps:
+            raise _OutOfSteps
         state = (pos, tuple(remaining[text] for text in candidates))
         if state in dead_ends:
             return False
@@ -142,7 +179,10 @@ def is_chapter_aggregate_of(content: str, parts: Sequence[str]) -> bool:
         dead_ends.add(state)
         return False
 
-    return walk(0, len(parts))
+    try:
+        return walk(0, len(parts))
+    except _OutOfSteps:
+        return False
 
 
 class Aggregator:
