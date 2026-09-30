@@ -7,7 +7,10 @@
    编辑器与场景看板按自己的宽度（容器查询）排版，不按窗口猜。
    ========================================================== */
 
-/* 右栏体检抽屉里的小节标题（原在 screens.css，两份定义合成一份；外层 .ctx-block 在 ws-snow.css） */
+/* 右栏的一块与它的小节标题：章节编排的体检抽屉、构思右栏的脊柱块（ws-snow-rail）共用。
+   .ctx-block 原在 ws-snow.css（2026-10 挪来，和 .ctx-head 放在一起）；构思那边的 .sf-spine-block
+   在 ws-snow-editors.css 里另设 gap，那个文件导入得更晚，挪动前后都是它赢。 */
+.ctx-block { display: flex; flex-direction: column; gap: 8px; }
 .ctx-head { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); letter-spacing: 0.02em; }
 .ctx-head svg { color: var(--ink-3); }
 
