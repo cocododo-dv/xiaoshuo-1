@@ -414,7 +414,7 @@ class CanonicalSceneService:
                 status_code=409,
                 details={"scene_id": scene.scene_id, "aggregate_result": aggregate_result or {}},
             )
-        # 与流水线同样的确定性收尾（[批准#22]，archive_effects_plan.MANUSCRIPT_PROMOTE）：章汇总之后接着卷汇总
+        # 与流水线同样的确定性收尾（[批准#22]，三条归档路径的差别见 archive_effects_plan 的说明）：章汇总之后接着卷汇总
         volume_result = aggregate_volume_after_chapter(self.session, scene.chapter_id)
 
         self.session.add(
