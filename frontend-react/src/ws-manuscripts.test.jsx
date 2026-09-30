@@ -91,7 +91,6 @@ async function loadStore(detailByChapter = { c1: ARCHIVED_DETAIL }) {
 describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 

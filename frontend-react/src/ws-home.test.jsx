@@ -123,7 +123,6 @@ beforeEach(() => {
   fx.catalogReady = true;
   fx.status = { projects: { phase: "ready", error: null }, dashboard: { phase: "ready", error: null } };
   fx.work = { ...fx.work, home: {} };
-  localStorage.clear();
 });
 
 afterEach(async () => {

@@ -54,7 +54,7 @@ async function loadStore() {
 }
 
 describe("WsQuality store（overview 巡检）", () => {
-  beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
   it("qLoadOverview 以含 text_layer/min_severity 的正确 URL 调 apiGet，并映射 summary/items", async () => {
@@ -162,7 +162,7 @@ describe("WsQuality store（换作品与乱序回来的请求）", () => {
 });
 
 describe("WsQuality store（临时文本扫描 analyze）", () => {
-  beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
   it("qAnalyzeText 以 {content} 打到 analyze-text 端点并存入 analyze", async () => {
@@ -226,7 +226,7 @@ describe("WsQuality 维度标签完整性", () => {
 });
 
 describe("WsQuality store（章组复审 chapter-set-review）", () => {
-  beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
   it("qChapterSetReview 以 {chapter_ids,protected_terms,text_layer} 打到 chapter-set-review 端点，并丢弃空值", async () => {
@@ -276,9 +276,7 @@ describe("WsQuality 视图", () => {
   let host;
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     fx.catalog = [{
       id: "ch01", backendId: "c1", n: "01", title: "盐场的早班", state: "writing",
       scenes: [{ sid: "sid-1", backendId: "s1", title: "交班", state: "done" }],
