@@ -23,23 +23,19 @@ import logging
 import random
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.services.llm_accounting import (
-    LLMAccountingError,
-    LLMCallContext,
-    execute_accounted_call,
-    is_llm_control_plane_failure,
+from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
+from novel_system.services.llm_client import build_llm_request
+from novel_system.services.style_reference.llm_nodes import (
+    PROBLEM_ROUTE,
+    NodeConfigUnavailable,
+    NodeRuntime,
+    accounted_call,
+    load_node_runtimes,
 )
-from novel_system.services.llm_client import (
-    build_llm_request,
-    load_model_routing_config,
-    resolve_node_route,
-)
-from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.schemas import ParagraphType
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.text_utils import (
@@ -90,56 +86,31 @@ class SegmentationLLMError(Exception):
         self.details = dict(details or {})
 
 
-@dataclass(frozen=True)
-class NodeRuntime:
-    """一个分类节点在这个作业里的路由与模板(作业开始时载一次)。"""
-
-    node_id: str
-    route: Any
-    template: Any
-
-    @property
-    def prompt_version(self) -> str:
-        return str(getattr(self.template, "version", "") or "")
-
-    @property
-    def route_key(self) -> tuple[str, str]:
-        """(provider_id 或 provider, model):两个节点的这一对相同 = 同一个模型。"""
-        provider = getattr(self.route, "provider_id", None) or getattr(self.route, "provider", None) or ""
-        return (str(provider), str(getattr(self.route, "model", "") or ""))
-
-
 def load_classification_runtimes(
     node_ids: Sequence[str] = CLASSIFY_NODE_IDS,
 ) -> dict[str, NodeRuntime]:
-    """载入分类节点的路由(DB node_routing 优先、yaml 兜底)与提示词模板——每个作业一次。"""
+    """载入分类节点的路由(DB node_routing 优先、yaml 兜底)与提示词模板——每个作业一次;按节点顺序报第一个问题。"""
     try:
-        routing = load_model_routing_config()
-        templates = load_prompt_templates()
-    except Exception as exc:  # pylint: disable=broad-except
+        load = load_node_runtimes(node_ids)
+    except NodeConfigUnavailable as exc:
         raise SegmentationLLMError(
             "STYLE_REFERENCE_CLASSIFY_CONFIG_LOAD_FAILED",
-            f"failed to load model routing or prompt templates: {exc}",
-        ) from exc
-    runtimes: dict[str, NodeRuntime] = {}
-    for node_id in node_ids:
-        try:
-            route = resolve_node_route(routing, node_id)
-        except KeyError:
+            f"failed to load model routing or prompt templates: {exc.cause}",
+        ) from exc.cause
+    if load.problems:
+        node_id, problem = load.problems[0]
+        if problem == PROBLEM_ROUTE:
             raise SegmentationLLMError(
                 "STYLE_REFERENCE_CLASSIFY_ROUTE_MISSING",
                 f"task routing not configured for node {node_id!r}",
                 details={"node_id": node_id},
-            ) from None
-        template = templates.get(node_id)
-        if template is None:
-            raise SegmentationLLMError(
-                "STYLE_REFERENCE_CLASSIFY_PROMPT_MISSING",
-                f"prompt template not configured for node {node_id!r}",
-                details={"node_id": node_id},
             )
-        runtimes[node_id] = NodeRuntime(node_id=node_id, route=route, template=template)
-    return runtimes
+        raise SegmentationLLMError(
+            "STYLE_REFERENCE_CLASSIFY_PROMPT_MISSING",
+            f"prompt template not configured for node {node_id!r}",
+            details={"node_id": node_id},
+        )
+    return dict(load.runtimes)
 
 
 def same_model(first: NodeRuntime, second: NodeRuntime) -> bool:
@@ -327,27 +298,24 @@ def _call_batch(
 ) -> Any:
     items = batch_items(positions, texts, indexes)
     request = build_batch_request(runtime, items)
-    try:
-        response = execute_accounted_call(
-            session,
-            llm_client,
-            request,
-            LLMCallContext(
-                scope_type="style_reference_book",
-                scope_id=scope_id,
-                node_id=runtime.node_id,
-                step=step,
-            ),
-            llm_call_id=f"llm_style_segment_{uuid.uuid4().hex}",
-        )
-    except Exception as exc:  # pylint: disable=broad-except
-        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-            raise
-        raise SegmentationLLMError(
+    response = accounted_call(
+        llm_client,
+        request,
+        context=LLMCallContext(
+            scope_type="style_reference_book",
+            scope_id=scope_id,
+            node_id=runtime.node_id,
+            step=step,
+        ),
+        llm_call_id=f"llm_style_segment_{uuid.uuid4().hex}",
+        execute=execute_accounted_call,
+        wrap_error=lambda exc: SegmentationLLMError(
             "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED",
             f"accounted LLM execution failed for node {runtime.node_id!r}: {exc}",
             details={"node_id": runtime.node_id, "error_type": type(exc).__name__},
-        ) from exc
+        ),
+        session=session,
+    )
     return getattr(response, "structured_output", None)
 
 

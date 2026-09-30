@@ -117,7 +117,6 @@ from novel_system.services.style_reference.learn_llm import (
     NODE_SYNTHESIZE,
     NODE_TAG_WINDOWS,
     LearnCallError,
-    LearnNodeRuntime,
     call_structured,
     load_learn_runtimes,
     payload_fits,
@@ -130,6 +129,7 @@ from novel_system.services.style_reference.learn_tags import (
     plan_tag_batches,
     tag_payload,
 )
+from novel_system.services.style_reference.llm_nodes import NodeRuntime
 from novel_system.services.style_reference.measure import KERNEL_VERSION
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.profile_fields import REFERENCE_BASIS_VERSION
@@ -347,7 +347,7 @@ def _tag_template_is_v2(template: Any) -> bool:
         return False
 
 
-def ensure_tag_template_current(runtimes: Mapping[str, LearnNodeRuntime]) -> None:
+def ensure_tag_template_current(runtimes: Mapping[str, NodeRuntime]) -> None:
     """``load_learn_runtimes`` 之外的一条契约：打标签的模板必须是 v2（见 :func:`_tag_template_is_v2`）；不是 → 与
     模板缺失同一个 409 ``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（``details.stale_templates``）。"""
     runtime = runtimes.get(NODE_TAG_WINDOWS)
@@ -625,7 +625,7 @@ class _LearnRun(JobRun):
         super().__init__(session, claimed, service)
         self.params = dict(claimed.params or {})
         self.cursor: dict[str, Any] = dict(claimed.cursor or {})
-        self.runtimes: dict[str, LearnNodeRuntime] = {}
+        self.runtimes: dict[str, NodeRuntime] = {}
         self.book_title = ""
 
     # ---- lifecycle (终态的附带写:血缘 run 行) -----------------------------

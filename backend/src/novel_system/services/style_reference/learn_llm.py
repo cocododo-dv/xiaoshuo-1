@@ -4,9 +4,10 @@
 配的路由照旧生效）、文风卡合成（``style_ref_synthesize_profile``）、受保护专名（``style_ref_protected_terms``）、
 窗口标签（``style_ref_tag_windows``）。
 
-- 路由与提示词模板**每个作业载一次**（``load_learn_runtimes``），不在每次调用时重新解析；
-- 一次调用 = 一次记账调用（``execute_accounted_call``），记账用**自己的会话**：并行的调用各用各的，作业的会话
-  里没提交的写也不会被记账的 ``commit`` 顺手提交；
+- 路由与提示词模板**每个作业载一次**（``load_learn_runtimes``，经 ``llm_nodes.load_node_runtimes``），不在每次
+  调用时重新解析；
+- 一次调用 = 一次记账调用（``llm_nodes.accounted_call`` → 本模块的 ``execute_accounted_call``），记账用**自己的
+  会话**：并行的调用各用各的，作业的会话里没提交的写也不会被记账的 ``commit`` 顺手提交；
 - 载荷放在唯一的不可信数据边界里（``render_untrusted_user_prompt``）；重试时的修正说明是我们自己的话，接在
   任务文本后面（边界之外）；
 - 输入预算真执行：``estimate_input_tokens`` 与发送时同一种渲染，调用方据此在发送前缩载荷（不再有写在模板里却
@@ -25,18 +26,14 @@ from typing import Any
 
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.errors import DomainError
-from novel_system.services.llm_accounting import (
-    LLMAccountingError,
-    LLMCallContext,
-    execute_accounted_call,
-    is_llm_control_plane_failure,
+from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
+from novel_system.services.llm_client import build_llm_request
+from novel_system.services.style_reference.llm_nodes import (
+    NodeConfigUnavailable,
+    NodeRuntime,
+    accounted_call,
+    load_node_runtimes,
 )
-from novel_system.services.llm_client import (
-    build_llm_request,
-    load_model_routing_config,
-    resolve_node_route,
-)
-from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.untrusted_data import (
     UntrustedPayload,
     render_untrusted_system_prompt,
@@ -83,63 +80,26 @@ class LearnCallError(Exception):
 
 
 @dataclass(frozen=True)
-class LearnNodeRuntime:
-    """一个学习节点在这个作业里的路由与模板（作业开始时载一次）。"""
-
-    node_id: str
-    route: Any
-    template: Any
-
-    @property
-    def prompt_version(self) -> str:
-        return str(getattr(self.template, "version", "") or "")
-
-    @property
-    def input_token_budget(self) -> int:
-        return int(getattr(self.template, "input_token_budget", 0) or 0)
-
-    @property
-    def model(self) -> str:
-        return str(getattr(self.route, "model", "") or "")
-
-
-@dataclass(frozen=True)
 class LearnCallResult:
     structured: dict[str, Any]
     llm_call_id: str
     usage: dict[str, Any]
 
 
-def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, LearnNodeRuntime]:
+def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, NodeRuntime]:
     """载入学习节点的路由（DB node_routing 优先、yaml 兜底）与提示词模板；缺哪个都报 409（中文 + 去系统配置）。"""
     try:
-        routing = load_model_routing_config()
-        templates = load_prompt_templates()
-    except Exception as exc:  # noqa: BLE001 — 配置读不到按缺配置报
+        load = load_node_runtimes(node_ids, template_ok=template_meets_contract)
+    except NodeConfigUnavailable as exc:
         raise DomainError(
             LEARN_CONFIG_MISSING_CODE,
-            f"读不到模型路由或提示词模板:{exc}",
+            f"读不到模型路由或提示词模板:{exc.cause}",
             status_code=409,
             details={"reason": "config_load_failed"},
-        ) from exc
-    runtimes: dict[str, LearnNodeRuntime] = {}
-    missing_routes: list[str] = []
-    missing_templates: list[str] = []
-    stale_templates: list[str] = []
-    for node_id in node_ids:
-        try:
-            route = resolve_node_route(routing, node_id)
-        except KeyError:
-            missing_routes.append(node_id)
-            continue
-        template = templates.get(node_id)
-        if template is None:
-            missing_templates.append(node_id)
-            continue
-        if not template_meets_contract(node_id, template):
-            stale_templates.append(node_id)
-            continue
-        runtimes[node_id] = LearnNodeRuntime(node_id=node_id, route=route, template=template)
+        ) from exc.cause
+    missing_routes = load.missing_routes
+    missing_templates = load.missing_templates
+    stale_templates = load.stale_templates
     if missing_routes or missing_templates or stale_templates:
         parts: list[str] = []
         if missing_routes:
@@ -165,7 +125,7 @@ def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, L
                 },
             },
         )
-    return runtimes
+    return dict(load.runtimes)
 
 
 def _schema_path_present(schema: Any, path: Sequence[str]) -> bool:
@@ -186,7 +146,7 @@ def template_meets_contract(node_id: str, template: Any) -> bool:
     return all(_schema_path_present(schema, path) for path in TEMPLATE_CONTRACT.get(node_id, ()))
 
 
-def _task_text(runtime: LearnNodeRuntime, extra_instruction: str | None) -> str:
+def _task_text(runtime: NodeRuntime, extra_instruction: str | None) -> str:
     task = str(getattr(runtime.template, "task_prompt", "") or "")
     if extra_instruction and extra_instruction.strip():
         task = task.rstrip() + "\n\n" + extra_instruction.strip()
@@ -194,7 +154,7 @@ def _task_text(runtime: LearnNodeRuntime, extra_instruction: str | None) -> str:
 
 
 def render_messages(
-    runtime: LearnNodeRuntime,
+    runtime: NodeRuntime,
     payload: Mapping[str, Any],
     *,
     extra_instruction: str | None = None,
@@ -213,7 +173,7 @@ def render_messages(
 
 
 def estimate_input_tokens(
-    runtime: LearnNodeRuntime,
+    runtime: NodeRuntime,
     payload: Mapping[str, Any],
     *,
     extra_instruction: str | None = None,
@@ -227,13 +187,13 @@ def estimate_input_tokens(
     return int(total * _ESTIMATE_MULTIPLIER) + 1
 
 
-def payload_fits(runtime: LearnNodeRuntime, payload: Mapping[str, Any], *, extra_instruction: str | None = None) -> bool:
+def payload_fits(runtime: NodeRuntime, payload: Mapping[str, Any], *, extra_instruction: str | None = None) -> bool:
     budget = runtime.input_token_budget
     return budget <= 0 or estimate_input_tokens(runtime, payload, extra_instruction=extra_instruction) <= budget
 
 
 def call_structured(
-    runtime: LearnNodeRuntime,
+    runtime: NodeRuntime,
     payload: Mapping[str, Any],
     llm_client: Any,
     *,
@@ -246,8 +206,6 @@ def call_structured(
     记账 / 控制面失败原样抛出；供应商调用失败或输出不是对象 → ``LearnCallError``（可重试）。
     可以在工人线程里调用：不碰调用方的会话。
     """
-    from novel_system.db.session import SessionLocal
-
     try:
         messages = render_messages(runtime, payload, extra_instruction=extra_instruction)
     except Exception as exc:  # noqa: BLE001 — 渲染失败按调用失败报
@@ -263,28 +221,23 @@ def call_structured(
         response_schema=getattr(runtime.template, "structured_schema", None),
     )
     llm_call_id = f"llm_style_learn_{uuid.uuid4().hex}"
-    try:
-        with SessionLocal() as ledger_session:
-            response = execute_accounted_call(
-                ledger_session,
-                llm_client,
-                request,
-                LLMCallContext(
-                    scope_type="style_reference_book",
-                    scope_id=scope_id,
-                    node_id=runtime.node_id,
-                    step=step,
-                ),
-                llm_call_id=llm_call_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — 记账 / 控制面失败原样抛出,其余按可重试的调用失败报
-        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-            raise
-        raise LearnCallError(
+    response = accounted_call(
+        llm_client,
+        request,
+        context=LLMCallContext(
+            scope_type="style_reference_book",
+            scope_id=scope_id,
+            node_id=runtime.node_id,
+            step=step,
+        ),
+        llm_call_id=llm_call_id,
+        execute=execute_accounted_call,
+        wrap_error=lambda exc: LearnCallError(
             LEARN_CALL_FAILED_CODE,
             f"accounted LLM execution failed for node {runtime.node_id!r}: {exc}",
             details={"node_id": runtime.node_id, "error_type": type(exc).__name__},
-        ) from exc
+        ),
+    )
     structured = getattr(response, "structured_output", None)
     if not isinstance(structured, Mapping):
         raise LearnCallError(
@@ -308,7 +261,6 @@ __all__ = [
     "LEARN_NODE_IDS",
     "LearnCallError",
     "LearnCallResult",
-    "LearnNodeRuntime",
     "NODE_PROTECTED_TERMS",
     "NODE_SYNTHESIZE",
     "NODE_TAG_WINDOWS",
