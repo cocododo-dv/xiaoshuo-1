@@ -69,6 +69,18 @@ def test_detect_mechanical_required_beat_listing_flags_tail_loaded_checklist() -
     }
 
 
+def test_required_beats_are_split_like_every_other_must_include_check() -> None:
+    """必写节拍与硬质检 / 成稿门的必写检查按同一个 ``qc_constraints.constraint_terms`` 切（B04-27）：
+    Windows 换行照样分得开，写了两遍的节拍只算一次。"""
+    issue = detect_mechanical_required_beat_listing(
+        content="林岑先听见雾堤下的回声。\n\n最后需要包含：盐钟残片、潮汐记录、幸存者名单。",
+        must_include_text="盐钟残片\r\n潮汐记录\r\n幸存者名单\r\n盐钟残片",
+    )
+
+    assert issue is not None
+    assert issue["matched_terms"] == ["盐钟残片", "潮汐记录", "幸存者名单"]
+
+
 def test_build_character_contract_digest_uses_authoritative_display_names_over_raw_id() -> None:
     """修复裸 id 泄漏：用 StoryCharacter 权威名而非 character_id。"""
     digest = build_character_contract_digest(

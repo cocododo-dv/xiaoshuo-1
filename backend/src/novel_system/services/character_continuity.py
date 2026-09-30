@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any, Iterable
 
+from novel_system.services.qc_constraints import constraint_terms
+
 
 CHARACTER_CONTRACT_VERSION = "CHARACTER_CONTRACT_v1"
 
@@ -68,7 +70,7 @@ def detect_mechanical_required_beat_listing(
     content: str,
     must_include_text: str | None,
 ) -> dict[str, Any] | None:
-    terms = _constraint_terms(must_include_text or "")
+    terms = list(dict.fromkeys(constraint_terms(must_include_text or "")))
     if len(terms) < 2 or not content.strip():
         return None
 
@@ -121,11 +123,6 @@ def _character_names(character: dict[str, Any]) -> list[str]:
 
 def _character_identity_keys(character: dict[str, Any]) -> set[str]:
     return {name.casefold() for name in _character_names(character)}
-
-
-def _constraint_terms(text: str) -> list[str]:
-    terms = [term.strip() for term in re.split(r"[,，、;；\n\r]+", text) if len(term.strip()) >= 2]
-    return list(dict.fromkeys(terms))
 
 
 def _terms_appear_in_order(terms: list[str], text: str) -> bool:
