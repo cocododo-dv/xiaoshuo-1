@@ -2,13 +2,15 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { dayTimeLabel } from "./lib/format.js";
 import { Notice } from "./ws-ui.jsx";
-import { WrDocVersions } from "./wr-doc-store.jsx";
+import { WrDocVersions } from "./wr-doc-versions.js";
 
 /* ==========================================================
    对比：一场正文的两个历史版本逐句比对。
-   数据源是写作台的版本 store（WrDocVersions：list / paras / diff，ES 导入）——
-   成稿中心只读它，不另存版本。以前读 window.WrDocVersions：那只在写作台或 AI 起草台加载过之后才有，
-   刷新页面直接进成稿中心时「对比」一律说这一场还没有历史版本。
+   数据源是写作台的版本 store（wr-doc-versions.js 的 WrDocVersions：list / paras / diff，ES 导入）——
+   成稿中心只读它，不另存版本。以前读 window.WrDocVersions：它要等门面 wr-doc-store.jsx 被写作台、AI 起草台
+   或侧栏底部懒加载的同步与恢复载进来才有，还没载进来时「对比」就说这一场还没有历史版本。
+   直接 import 版本模块、不经门面：门面还登记目录装载后的跟随与预热（会替在写那一场发作者稿 ensure）、写 window，
+   那是写作台 store 的事，成稿中心不带进来。
    ========================================================== */
 
 const { useEffect, useState } = React;

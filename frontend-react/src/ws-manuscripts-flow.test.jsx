@@ -61,9 +61,9 @@ vi.mock("./ws-fidelity-store.js", () => ({
   fidLoadProject: (...args) => fidFx.load(...args),
   fidProject: () => (fidFx.project ? { phase: "ready", data: fidFx.project, error: null } : null),
 }));
-/* 「对比」的版本 store（写作台的 WrDocVersions，ES 导入；以前读 window 上的同名全局） */
+/* 「对比」的版本 store（wr-doc-versions.js 的 WrDocVersions，ES 导入、不经写作台 store 的门面；以前读 window 上的同名全局） */
 const versionsFx = vi.hoisted(() => ({ list: vi.fn(), paras: vi.fn(), diff: vi.fn() }));
-vi.mock("./wr-doc-store.jsx", () => ({ WrDocVersions: versionsFx }));
+vi.mock("./wr-doc-versions.js", () => ({ WrDocVersions: versionsFx }));
 vi.mock("./ws-manuscripts-store.jsx", () => ({
   WsManuStore: flow,
   manuscriptChapterEligible: () => true,

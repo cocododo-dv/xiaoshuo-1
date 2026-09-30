@@ -223,3 +223,27 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     );
   });
 });
+
+describe("成稿中心的「对比」只载入写作台的版本模块", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /* 写作台 store 的门面 wr-doc-store.jsx 登记「目录装载后跟随目录、预热在写那一场」，预热会替那一场发作者稿 ensure
+     （没有作者稿就建一份）。成稿中心只读版本历史：载入「对比」不能把这份登记带进来（复核 I5-R1） */
+  it("载入「对比」之后目录重读，不会因为它替在写那一场发作者稿 ensure", async () => {
+    const client = await import("./lib/client.js");
+    installApiRouter(client);
+    const { WsCatalog } = await import("./ws-catalog.jsx");
+    await vi.waitFor(() => expect(WsCatalog.get().length).toBeGreaterThan(0), T);
+    await import("./ws-manuscripts-diff.jsx");
+
+    await WsCatalog.__refresh();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const ensures = client.apiPost.mock.calls.filter(([url]) => /\/author-drafts\/scene\/[^/]+\/ensure$/.test(url));
+    expect(ensures).toEqual([]);
+  });
+});
