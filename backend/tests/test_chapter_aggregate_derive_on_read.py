@@ -114,7 +114,8 @@ def _stored_aggregate(session, chapter_id: str) -> ChapterMemory | None:
 
 
 def test_a_trashed_archived_scene_is_outside_the_chapter_aggregate(session) -> None:
-    _project_id, chapter_id, (first, second, third) = _seed_chapter(session, "TRASH_AGG", 3)
+    # 第三场（章末）还没有正文：不在汇总里，也不挡汇总
+    _project_id, chapter_id, (first, second, _last) = _seed_chapter(session, "TRASH_AGG", 3)
     _pipeline_archive(session, first, "林昭拆开第一封旧信。")
     _pipeline_archive(session, second, "第二场：雨夜里她把信纸摊在案卷上。")
     created = Aggregator(session).run_final_aggregate(chapter_id)
@@ -139,7 +140,6 @@ def test_a_trashed_archived_scene_is_outside_the_chapter_aggregate(session) -> N
     session.commit()
     assert restored["status"] == "created"
     assert _stored_aggregate(session, chapter_id).content == "林昭拆开第一封旧信。\n第二场：雨夜里她把信纸摊在案卷上。"
-    assert third  # 第三场（章末）没有正文：不在汇总里，也不挡汇总
 
 
 def test_promotion_is_not_blocked_after_an_archived_sibling_went_to_the_trash(client, session) -> None:
