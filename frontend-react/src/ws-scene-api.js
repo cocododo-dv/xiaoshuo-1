@@ -329,11 +329,12 @@ function scnAdoptionPreview(sid, draft) {
     diff: WrDocVersions.diff(htmlToParagraphs(stripLegacyDraftPlaceholder(existing)), htmlToParagraphs(html)),
   };
 }
-/* 预检先等服务器上的作者稿：WrDocs.hydrate 与别处正在进行的水合共用一次（写作台的预热水合还在路上时等它落地，
-   不把还没水合的缓存当成空稿）、读不到服务器时抛错。 */
+/* 预检先和服务器上的作者稿对齐（WrDocs.prepareAdoption）：与别处正在进行的水合共用一次（写作台的预热水合还在路上时
+   等它落地，不把还没水合的缓存当成空稿）、冲突中的先读到服务端版本、保存失败后停着的一稿再发一次（回包丢了的那一稿
+   其实存上了时接上修订号，采纳带的才是服务端眼下的修订号）；读不到服务器时抛错。 */
 async function scnPrepareAdoption(sid, draft) {
   try {
-    await WrDocs.hydrate(sid);
+    await WrDocs.prepareAdoption(sid);
   } catch (e) {
     throw Object.assign(new Error("无法核对服务器上的作者稿，已停止采用；请检查网络后重试"), {
       code: "AUTHOR_DRAFT_PREFLIGHT_FAILED",
@@ -384,17 +385,19 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   if (preview.hasReal) {
     try {
       const currentWorkId = WsWorks.activeId();
-      authorBackup = options.authorBackupId
-        ? WrRecovery.list().find(item => (
-            item.id === options.authorBackupId
-            && item.type === "backup"
-            && item.source === "author"
-            && item.sid === sid
-            && item.workId === currentWorkId
-            && item.html === preview.existing
-            && item.durable !== false
-          )) || null
-        : null;
+      const sameBackup = item => (
+        item.type === "backup"
+        && item.source === "author"
+        && item.sid === sid
+        && item.workId === currentWorkId
+        && item.html === preview.existing
+        && item.durable !== false
+      );
+      const backups = WrRecovery.list();
+      // 给了 id 就用那一份；没给时一模一样的作者稿已经持久地备份过（上一次采纳没成）就沿用它，不每试一次多一份
+      authorBackup = (options.authorBackupId
+        ? backups.find(item => item.id === options.authorBackupId && sameBackup(item))
+        : backups.find(sameBackup)) || null;
       if (!authorBackup) {
         authorBackup = WrRecovery.createBackup(sid, preview.existing, "AI 稿确认覆盖前自动备份作者正文");
       }
@@ -411,6 +414,9 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   if (!docState || !docState.draftId || !Number.isInteger(docState.revision) || docState.revision < 1) {
     return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
   }
+  // 采纳在路上：WrDocs 不再发写作台的保存，路上那一次这期间撞上的 409（多半就是采纳撞的）先按住，
+  // 采纳成了随 acceptCanonical 作废，没成（endAdoption）再照常核对 / 冲突——不为作者自己的采纳提示「在别处被修改」
+  const adopting = WrDocs.beginAdoption(sid);
   let adoption = null;
   try {
     adoption = await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {
@@ -423,6 +429,7 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       },
     });
   } catch (e) {
+    WrDocs.endAdoption(sid, adopting);
     // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
     if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
     const code = (e && e.code) || "";
@@ -430,15 +437,17 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
     return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
   }
   // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。
-  // 成稿门的不拦警告（用了参考书的专名 / 原文重合检查这次没做成）：归档照常，告诉作者一声
-  const gateNotes = finalGateNotes(adoption);
   let cacheWarning = null;
   try {
     const synced = WrDocs.acceptCanonical(sid, html, adoption);
     if (synced && synced.localDurable === false) cacheWarning = "正文已安全归档到服务器，但浏览器缓存写入失败；刷新后可从服务器恢复";
   } catch (e) {
     cacheWarning = "正文已安全归档到服务器，但本地状态同步失败；请刷新页面从服务器恢复";
+  } finally {
+    WrDocs.endAdoption(sid, adopting); // acceptCanonical 已收尾时什么也不做；它抛错时按住的 409 照常走（读到的是采纳后的版本）
   }
+  // 成稿门的不拦警告（用了参考书的专名 / 原文重合检查这次没做成）：归档照常，告诉作者一声
+  const gateNotes = finalGateNotes(adoption);
   const count = countChars(text);
   try { WsCatalog.recordSceneWords(sid, count); } catch (e) {}
   try {

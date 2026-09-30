@@ -23,9 +23,12 @@ import { useWrEvent } from "./ws-writer-hooks.js";
      自动保存 / 离场 / 提升 / 进深改前只管 WrDocs.save + WrDocs.flush，然后听 WrDocs 的通知——
      conflict-resolved：编辑器换成服务端版本（编辑器里还没交出去的字先经 WrDocs 留进同步与恢复）；
      loaded：读缓存换成了别的版本（水合 / 复核读到的服务端新版本、恢复、采纳）：作者正在旧版本上写，
-     同样先留一份再换；读到的就是作者正在写的底稿，就接着写；换上的正文还在等保存（恢复稿）时状态照 WrDocs 说；
+     同样先留一份再换；读到的就是作者正在写的底稿，就接着写（force——服务端拒绝了本机的字、章已锁定——时也换）；
+     换上的正文还在等保存（恢复稿）时状态照 WrDocs 说；
      state：冲突中（服务端版本还没读到）或保存失败时状态是「草稿保存失败」，编辑器里的字不动；冲突中接着敲字
      也不闪「正在保存」（WrDocs 不会发）。
+     章已批准锁定的场也照常把没交出去的字交给 WrDocs：WrDocs 不替它保存，那几句留进同步与恢复、编辑器换回终稿正文
+     （复核三 W1-R3B-3：写作台转只读那一刻还没到自动保存的半句，过去在这里被丢掉）。
      decorate(el)：每次整段换掉编辑器内容之后调用（标实体、标批注）；
      afterLoad(el)：换场载入之后调用，可返回清理函数；beforeSave(el, sceneId)：交给 WrDocs 之前调用。
    · useCanonicalPromotion：把已保存的草稿提升为权威正文，含内容风险逐项复核那一轮。
@@ -99,7 +102,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
 
   const canonicalFromStore = canonicalStatusOf;
 
-  /* 编辑器里的字交给 WrDocs（有没交出去的才交）。之后的一切——本机缓存、排队、重发、冲突——WrDocs 管 */
+  /* 编辑器里的字交给 WrDocs（有没交出去的才交）。之后的一切——本机缓存、排队、重发、冲突、章已锁定——WrDocs 管 */
   const handOver = (el, sceneId) => {
     if (editVersionRef.current === handedRef.current) return;
     beforeSaveEvent(el, sceneId);
@@ -108,17 +111,18 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     saveToWork(sceneId, html, workRef.current);
   };
 
-  /* 把编辑器里的字交给 WrDocs 并等结果 → "saved" | "conflict" | "failed" | "locked" | "dirty"（等的时候又敲了字）| "none" */
+  /* 把编辑器里的字交给 WrDocs 并等结果 → "saved" | "conflict" | "refused" | "failed" | "locked" | "dirty"（等的时候又敲了字）| "none" */
   const settle = async (options) => {
     const sceneId = activeScene;
     const el = editorRef.current;
     if (!el || !sceneId) return "none";
+    // 章已批准锁定：还没交出去的字照样交——WrDocs 不替它保存，留进同步与恢复、编辑器换回终稿正文
+    handOver(el, sceneId);
     if (wrSceneIsApproved(sceneId)) {
       dirtyRef.current = false;
       setSaved("locked");
       return "locked";
     }
-    handOver(el, sceneId);
     const editVersion = editVersionRef.current;
     const outcome = await WrDocs.flush(sceneId, { ...(options || {}), ...(workScope(workRef.current) || {}) });
     if (!mountedRef.current || sceneRef.current !== sceneId) return outcome;
@@ -129,6 +133,9 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       setSaved("saved");
       setSavedAt(Date.now());
       setCanonicalStatus(canonicalFromStore(sceneId));
+    } else if (outcome === "refused") {
+      dirtyRef.current = false;
+      setSaved("loaded"); // 服务端拒绝了：WrDocs 已换回服务端版本、告诉了作者
     } else {
       setSaved("failed"); // 冲突中 / 保存失败：编辑器里的字不动，dirty 不清
     }
@@ -200,15 +207,16 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       setCanonicalStatus(canonicalFromStore(sid));
     };
     /* 读缓存换成了别的版本：作者正在写的就是这份底稿（文字一样）时接着写，下一次保存带新的修订号；否则换稿。
+       force（服务端拒绝了本机的字 / 章已锁定）：接着写也存不上——照样换，正在写的那几句先留。
        换上的正文还在等保存（恢复稿）或没存上时，状态照 WrDocs 的说 */
     const onLoaded = (detail) => {
       const typing = editVersionRef.current !== handedRef.current;
-      if (typing && sameManuscriptText(detail.html, baseRef.current)) return;
+      if (!detail.force && typing && sameManuscriptText(detail.html, baseRef.current)) return;
       replaceEditor(detail.html, detail.reason || "server");
-      setSaved(saveStatusOf(detail, typing ? "loaded" : "saved"));
+      setSaved(detail.force ? "loaded" : saveStatusOf(detail, typing ? "loaded" : "saved"));
     };
     const onResolved = (detail) => {
-      replaceEditor(detail.html, "conflict");
+      replaceEditor(detail.html, detail.reason || "conflict");
       setSaved("loaded");
     };
     const onState = (detail) => {
@@ -225,13 +233,13 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       else if (kind === "loaded") onLoaded(detail);
       else if (kind === "conflict-resolved") onResolved(detail);
     });
-    /* 编辑器里还没交出去的字，用「当时的」场景 id 和作品交给 WrDocs（它在调用之内就写进本机缓存和未同步标记）。
-       交了返回 true */
+    /* 编辑器里还没交出去的字，用「当时的」场景 id 和作品交给 WrDocs（它在调用之内就写进本机缓存和未同步标记；
+       章已批准锁定的场，它在调用之内留进同步与恢复）。交了返回 true */
     const handOverNow = () => {
-      if (wrSceneIsApproved(sid) || editVersionRef.current === handedRef.current) return false;
+      if (editVersionRef.current === handedRef.current) return false;
       try { beforeSaveEvent(el, sid); } catch (e) {}
-      saveToWork(sid, wrSerializeManuscript(el), workId);
       handedRef.current = editVersionRef.current;
+      saveToWork(sid, wrSerializeManuscript(el), workId);
       return true;
     };
     /* 刷新 / 关掉标签页 / 切到后台：React 的清理不会跑，900 ms 的自动保存也可能来不及——这几句先交出去，
@@ -248,9 +256,10 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       document.removeEventListener("visibilitychange", onVisibility);
       if (typeof cleanupAfterLoad === "function") cleanupAfterLoad();
       clearTimeout(saveTimer.current);
+      const handed = handOverNow(); // 章已批准锁定的场也交：WrDocs 把那几句留进同步与恢复
       if (!wrSceneIsApproved(sid)) {
         // 不等回包的离场冲刷：先按本机计数更新目录，回包的 words_rollup 到了再以服务端为准
-        if (handOverNow() && currentWorkId() === workId) {
+        if (handed && currentWorkId() === workId) {
           try { WsCatalog.recordSceneWords(sid, wrCountText(el)); } catch (e) {}
         }
         try { void WrDocs.flush(sid, { retry: true, ...(workScope(workId) || {}) }); } catch (e) {}
@@ -259,9 +268,12 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     };
   }, [activeScene]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /* 编辑器眼下的正文（提升前问作者「只改了文字吗」时，问的就是这一稿） */
+  const shownHTML = useCallback(() => (editorRef.current ? wrSerializeManuscript(editorRef.current) : null), [editorRef]);
+
   return {
     saved, setSaved, savedAt, canonicalStatus, setCanonicalStatus,
-    dirtyRef, recount, persistDoc, schedulePersist, cancelPendingSave, settle,
+    dirtyRef, recount, persistDoc, schedulePersist, cancelPendingSave, settle, shownHTML,
   };
 }
 
@@ -271,6 +283,10 @@ export function canonicalPromotionErrorMessage(error) {
   const code = error && error.code;
   if (code === "CANONICAL_BASE_CONFLICT" || code === "AUTHOR_DRAFT_CONFLICT") {
     return "草稿或权威正文已在别处更新。请刷新、比较最新版本后再提升。";
+  }
+  // 提升途中作者接着写、自动保存先到了服务端：不是别处的改动（复核三 W1-R3B-8）
+  if (code === "AUTHOR_DRAFT_MOVED_BY_SELF") {
+    return "提升途中你又改了几句，已经保存；这次没有提升。看过之后再点一次「提升为权威正文」。";
   }
   if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
     return "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
@@ -297,7 +313,13 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
   const [review, setReview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const { setSaved, setCanonicalStatus, dirtyRef, settle, cancelPendingSave } = doc;
+  const { setSaved, setCanonicalStatus, dirtyRef, settle, cancelPendingSave, shownHTML } = doc;
+
+  /* 提升没成之后权威正文的状态：作者自己接着写、草稿已往前走（MOVED_BY_SELF）是「待更新」，不是「提升失败」 */
+  const failedCanonicalStatus = (sceneId, code) => {
+    if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") return "reconcile";
+    return code === "AUTHOR_DRAFT_MOVED_BY_SELF" ? canonicalStatusOf(sceneId) : "error";
+  };
 
   const promote = useWrEvent(async () => {
     if (!activeScene) return;
@@ -315,12 +337,16 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
         storeAlert(null, canonicalPromotionErrorMessage({ code: "AUTHOR_DRAFT_CONFLICT" }));
         return;
       }
+      if (outcome === "refused") return; // 服务端拒绝了这一稿：WrDocs 已换回服务端版本并告诉了作者
       if (outcome !== "saved") {
         storeAlert(null, "草稿还没有保存到服务端，暂时不能提升为权威正文。先让草稿保存成功再试。");
         return;
       }
     }
-    /* 两个明确的选项代替浏览器的「确定 / 取消」：作者回答的是「改了什么」，不是「要不要继续」 */
+    /* 两个明确的选项代替浏览器的「确定 / 取消」：作者回答的是「改了什么」，不是「要不要继续」。
+       问的是编辑器眼下这一稿：记下它，确认框开着时水合 / 后台复核落地、编辑器被换成了别处的版本，WrDocs 就不提升
+       （作者确认的不是那一稿；复核三 W1-R3A-1 · W1-R3B-5） */
+    const asked = shownHTML();
     const confirmed = await wsConfirm({
       title: "这次只改了文字表达吗？",
       body: "提升为权威正文前请确认：人物、时间、地点、物品和剧情结果都没有变。改了故事事实的话先不要提升——系统不会静默沿用旧的叙事事件。",
@@ -331,7 +357,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
 
     setCanonicalStatus("promoting");
     try {
-      const data = await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged" });
+      const data = await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged", expectedText: asked });
       // 提升在路上时作者又存了一稿：提升的是较早的那个修订号，照 WrDocs 说「待更新」，不说「已更新」
       setCanonicalStatus(canonicalStatusOf(activeScene));
       notify(promotedMessage("草稿已提升为权威正文，场景记忆与章节汇总已随之重建。", data));
@@ -340,13 +366,13 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
       if (code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
         const next = contentSafetyReviewFromError(e);
         if (next) {
-          setReview({ ...next, sid: activeScene, acceptedCodes: [] });
+          setReview({ ...next, sid: activeScene, acceptedCodes: [], expectedText: asked });
           setError("");
           setCanonicalStatus("review");
           return;
         }
       }
-      setCanonicalStatus(code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED" ? "reconcile" : "error");
+      setCanonicalStatus(failedCanonicalStatus(activeScene, code));
       storeAlert(null, canonicalPromotionErrorMessage(e));
     }
   });
@@ -370,9 +396,11 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
     setCanonicalStatus("promoting");
     const acceptedForRetry = [...new Set([...(review.acceptedCodes || []), ...exactCodes])];
     try {
+      // 逐项复核的还是作者当初确认「只改了文字」的那一稿：这期间编辑器被换成了别处的版本就不提升
       const data = await WrDocs.promote(review.sid, {
         narrativeEffect: "facts_unchanged",
         acceptedWarningCodes: acceptedForRetry,
+        ...(review.expectedText !== undefined ? { expectedText: review.expectedText } : {}),
       });
       setReview(null);
       setCanonicalStatus(canonicalStatusOf(review.sid));
@@ -381,7 +409,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
       if (e && e.code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
         const next = contentSafetyReviewFromError(e);
         if (next) {
-          setReview({ ...next, sid: review.sid, acceptedCodes: acceptedForRetry });
+          setReview({ ...next, sid: review.sid, acceptedCodes: acceptedForRetry, expectedText: review.expectedText });
           setError("服务端返回了仍需复核的项目。系统没有沿用上次勾选，请重新逐项核对。");
           setCanonicalStatus("review");
           return;
@@ -392,7 +420,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
         setCanonicalStatus("review");
       } else {
         setReview(null);
-        setCanonicalStatus(e && e.code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED" ? "reconcile" : "error");
+        setCanonicalStatus(failedCanonicalStatus(review.sid, e && e.code));
         storeAlert(null, canonicalPromotionErrorMessage(e));
       }
     } finally {

@@ -1,7 +1,7 @@
 import { htmlToParagraphs } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { WrDocs } from "./wr-doc-sync.js";
+import { WrDocs, refusalReason } from "./wr-doc-sync.js";
 import { cacheRead, cacheReadForWork } from "./wr-doc-cache.js";
 import { WrDocVersions, diffSentences } from "./wr-doc-versions.js";
 import { activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryList, recoveryRemove } from "./wr-recovery-store.js";
@@ -15,43 +15,20 @@ import { activeWorkId, notifyRecoveryChanged, recoveryCreate, recoveryList, reco
    这里放 WrRecovery（同步与恢复中心用：列、比、恢复、重试），登记目录装载后的预热，转出三个对象。
    ========================================================== */
 
-const REFUSAL_CODES = new Set(["CHAPTER_APPROVED_LOCKED", "AUTHOR_DRAFT_NOT_CURRENT", "AUTHOR_DRAFT_NOT_FOUND"]);
-const TRANSIENT_CODES = new Set([
-  "NETWORK_ERROR", "REQUEST_TIMEOUT", "REQUEST_ABORTED", "REQUEST_FAILED", "DATABASE_BUSY", "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-  "AUTHOR_DRAFT_UNAVAILABLE", "AUTHOR_DRAFT_STALE_READ", "AUTHOR_DRAFT_NOT_SYNCED",
-]);
-
-/* 保存没成是一时的（断网、超时、服务端出错、场景一时没就绪）：下一次保存 / 离开这一场 / 重新联网时会再发。
-   服务端明确拒绝的（章已锁定、作者稿已不是当前的一份、其余 4xx）不是 */
-function transientSaveError(error) {
-  if (!error) return true;
-  if (REFUSAL_CODES.has(error.code)) return false;
-  if (error.retryable || TRANSIENT_CODES.has(error.code)) return true;
-  const status = Number(error.status);
-  return !status || status >= 500 || status === 429;
-}
-
 function lockedRestoreError() {
   return Object.assign(new Error("这一章已批准锁定，恢复不了：请先到成稿中心重新打开本章，再恢复这份记录。这份记录还在。"), {
     code: "CHAPTER_APPROVED_LOCKED",
   });
 }
 
-/* 服务端拒绝这一稿的原因（作者读得懂的话；认不得的照实给代码） */
-function refusalReason(error) {
-  const code = error && error.code;
-  if (code === "CHAPTER_APPROVED_LOCKED") return "这一章已批准锁定，要先到成稿中心重新打开本章";
-  if (code === "AUTHOR_DRAFT_NOT_CURRENT" || code === "AUTHOR_DRAFT_NOT_FOUND") return "服务端的这份作者稿已不是当前的一份，刷新后再试";
-  return code ? `服务端拒绝了这次保存（${code}）` : "服务端拒绝了这次保存";
-}
-
 /* 恢复稿交给 WrDocs 之后没能同步上服务端：按那一刻的真实情况说清它眼下在哪、之后会怎样（同步与恢复中心照原话显示）。
-   409：编辑器是不是已经换成了服务端版本，看 WrDocs 那一刻的状态说（复核二 W1-R2A-3 · W1-R2B-6）；一时的失败才说
-   「之后会再同步」；服务端明确拒绝的（这期间章在别处批准了……）永远存不上：编辑器和本机缓存换回服务端的版本
-   （恢复稿在这份记录里，恢复前的正文在自动备份里，之后又写的字 WrDocs 先留进同步与恢复），说它拒绝了什么（复核二 W1-R2A-2）。 */
+   409：编辑器是不是已经换成了服务端版本，看 WrDocs 那一刻的状态说（复核二 W1-R2A-3 · W1-R2B-6）；服务端明确拒绝的
+   （这期间章在别处批准了……，WrDocs 标 refused）永远存不上：WrDocs 已把编辑器和本机缓存换回服务端的版本（恢复稿在
+   这份记录里，恢复前的正文在自动备份里，之后又写的字 WrDocs 先留进同步与恢复），说它拒绝了什么（复核二 W1-R2A-2）；
+   其余是一时的（断网、超时、服务端出错、场景一时没就绪）：恢复稿停在本机，之后会再同步。 */
 function restoreFailure(error, sid) {
   // WrDocs 自己拒绝的（这一刻章已批准锁定）：编辑器和本机缓存都没动
-  if (error && error.code === "CHAPTER_APPROVED_LOCKED" && !error.status) return lockedRestoreError();
+  if (error && error.code === "CHAPTER_APPROVED_LOCKED" && !error.status && !error.refused) return lockedRestoreError();
   if (error && error.code === "AUTHOR_DRAFT_CONFLICT") {
     const state = WrDocs.state(sid);
     const message = state && state.conflictPending
@@ -59,17 +36,14 @@ function restoreFailure(error, sid) {
       : "这一场在别处有更新，编辑器已换成服务端的最新版本；这份记录还在，可以比较后再恢复。";
     return Object.assign(new Error(message), { code: "AUTHOR_DRAFT_CONFLICT", cause: error });
   }
-  if (transientSaveError(error)) {
-    return Object.assign(new Error("已恢复到编辑器和这台电脑的本机缓存，但还没同步到服务端（网络或服务端出错）。下一次保存或离开这一场时会再同步；这份记录仍保留。"), {
-      code: "RECOVERY_NOT_SYNCED",
+  if (error && error.refused) {
+    return Object.assign(new Error(`服务端没有接受这份恢复稿：${refusalReason(error)}。编辑器换回了服务端上的正文；这份记录还在。`), {
+      code: "RECOVERY_REFUSED",
       cause: error,
     });
   }
-  const reverted = WrDocs.dropLocal(sid);
-  return Object.assign(new Error(reverted
-    ? `服务端没有接受这份恢复稿：${refusalReason(error)}。编辑器换回了服务端上的正文；这份记录还在。`
-    : `服务端没有接受这份恢复稿：${refusalReason(error)}。恢复稿在编辑器和这台电脑的本机缓存里，没有同步到服务端；这份记录还在。`), {
-    code: "RECOVERY_REFUSED",
+  return Object.assign(new Error("已恢复到编辑器和这台电脑的本机缓存，但还没同步到服务端（网络或服务端出错）。下一次保存或离开这一场时会再同步；这份记录仍保留。"), {
+    code: "RECOVERY_NOT_SYNCED",
     cause: error,
   });
 }

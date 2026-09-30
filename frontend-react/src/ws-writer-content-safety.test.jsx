@@ -121,7 +121,8 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
 
     await vi.waitFor(() => expect(document.querySelector(".wr-safety-dialog")).toBeTruthy(), T);
     expect(document.querySelector(".wr-safety-dialog").textContent).toContain("age:16");
-    expect(promote).toHaveBeenNthCalledWith(1, "ch01s1", { narrativeEffect: "facts_unchanged" });
+    // 提升带上作者确认「只改了文字」时编辑器里的那一稿：WrDocs 只提升它（复核三 W1-R3A-1）
+    expect(promote).toHaveBeenNthCalledWith(1, "ch01s1", { narrativeEffect: "facts_unchanged", expectedText: "<p>作者正文</p>" });
     const checkbox = document.querySelector('.wr-safety-dialog input[type="checkbox"]');
     const confirm = document.querySelector('[data-testid="content-safety-confirm"]');
     expect(confirm.disabled).toBe(true);
@@ -134,6 +135,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
     expect(promote).toHaveBeenNthCalledWith(2, "ch01s1", {
       narrativeEffect: "facts_unchanged",
       acceptedWarningCodes: ["sexual_content_with_minor_indicators"],
+      expectedText: "<p>作者正文</p>",
     });
     await vi.waitFor(() => expect(document.querySelector(".wr-safety-dialog")).toBeNull(), T);
     expect(host.querySelector('[data-testid="canonical-status"]').textContent).toBe("权威正文已更新");

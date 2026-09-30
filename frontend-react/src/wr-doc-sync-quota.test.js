@@ -113,3 +113,44 @@ describe("复核二 · 同步与恢复放不下时，本机缓存里那一份本
     expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === LOCAL)).toEqual([expect.objectContaining({ durable: false })]);
   });
 });
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+describe("复核三 · 本机存储满了：共用读缓存里停着的是这一页自己写进去的那一份（W1-R3A-6）", () => {
+  it("R3A-3 一个标签页，保存在路上时本机存储满了、作者接着写：不把这一页自己写进去的服务端版本当成另一个标签页没同步上的（不提示、不多一份未同步稿）", async () => {
+    const shared = { revision: 1, content: "<p>起点</p>" };
+    const tab = await loadDocs(shared);
+    const hung = deferred();
+    tab.client.apiPatch.mockImplementation(() => hung.promise);
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    expect(window.localStorage.getItem(CACHE)).toBe("<p>起点</p>");
+    // 从这时起本机存储满了：让 wr-doc: 的值变长、多放一条恢复记录都写不进去；不变长的小写入（未同步标记）还写得进去
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      const k = String(key);
+      const before = this.getItem(k);
+      const grows = before == null ? String(value).length > 20 : String(value).length > before.length;
+      if (k.startsWith("wr-recovery:v1:") || (k.startsWith("wr-doc:") && grows)) {
+        throw Object.assign(new Error("full"), { name: "QuotaExceededError" });
+      }
+      return realSet.call(this, key, value);
+    });
+    void tab.mod.WrDocs.save("ch01s1", "<p>起点，第一句写得长一些。</p>").catch(() => {});
+    await vi.waitFor(() => expect(tab.client.apiPatch).toHaveBeenCalledTimes(1), T);
+    void tab.mod.WrDocs.save("ch01s1", "<p>起点，第一句写得长一些。第二句。</p>").catch(() => {});
+    await tick(50);
+    const alerts = window.alert.mock.calls.map(([message]) => String(message));
+    expect(alerts.filter((message) => message.includes("另一个标签页"))).toEqual([]);
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === "<p>起点</p>")).toEqual([]);
+    // 作者的字没丢：在这一页的会话内存里（编辑器读到的就是它）
+    expect(tab.mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点，第一句写得长一些。第二句。</p>");
+    hung.resolve({ draft: { draft_id: "d1", revision_no: 2, content: "<p>起点，第一句写得长一些。</p>" } });
+    await tick(50);
+  });
+});

@@ -1437,8 +1437,9 @@ describe("SceneRunJobControl", () => {
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
+    // 预检和服务器上的作者稿对齐走 WrDocs.prepareAdoption（W1 复核三起；过去是 WrDocs.hydrate）：按住它，预检就一直在路上
     const hydration = deferred();
-    const hydrateSpy = vi.spyOn(window.WrDocs, "hydrate").mockImplementation((sid) => (
+    const hydrateSpy = vi.spyOn(window.WrDocs, "prepareAdoption").mockImplementation((sid) => (
       sid === "ch01s1" ? hydration.promise : Promise.resolve(null)
     ));
     const page = await import("./ws-scene.jsx");
