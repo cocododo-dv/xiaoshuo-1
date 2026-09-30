@@ -1,7 +1,9 @@
 """章汇总与卷汇总（§2 摘要塔）。
 
-章汇总（``ChapterMemory``，``aggregate_stage = final``）= 这一章各场有效的场景记忆按场序拼起来
-（:func:`derive_chapter_aggregate`，重评 R13）。晋升（每次）与流水线（章末那一场）重建存下来的这一份，卷汇总从它卷起。
+章汇总（``ChapterMemory``，``aggregate_stage = final``）= 这一章各场有效的场景记忆按场序拼起来。它只是一份派生
+缓存（重评 R13 + 主管补充，[批准#21]）：章级读者——终审读通包、文学质量的章源、章级准终稿评审——一律读各场当前
+终稿现拼，不读它；文学质量显式挑「章记忆终稿」这一层时也按 :func:`derive_chapter_aggregate` 读时现拼。存下来的
+这一份只由晋升（每次，重建不成只记日志）与流水线（章末那一场）重建，卷汇总从它卷起。
 """
 
 from __future__ import annotations
@@ -235,14 +237,10 @@ class Aggregator:
 
     def run_final_aggregate(self, chapter_id: str) -> dict | None:
         """重建这一章存下来的章汇总：拼得出来就落一版新的、旧的标为被取代；拼不出来原样回报（``no_op`` / ``blocked``）。"""
-        # 目录冷启动章可能没有状态行（审计 P-1）：缺行补建
+        # 目录冷启动章可能没有状态行（审计 P-1）：缺行补建。
+        # 以前这里还有一道「回填 / 回溯中」闸门（aggregate_block_reason、chapter_backfill_pending_count）：写它们的
+        # 章回填 / 手动挂起在 2026-09 减法里删了，库里只剩默认值 none / 0，闸门随之删掉（B03-18）。
         chapter_state = ensure_chapter_state(self.session, chapter_id)
-        if chapter_state.chapter_backfill_pending_count != 0 or chapter_state.aggregate_block_reason != "none":
-            return {
-                "status": "blocked",
-                "reason": "aggregate_gate_blocked",
-                "chapter_memory_row_id": None,
-            }
         derivation = self.derive_final_aggregate(chapter_id)
         if derivation.status != "derived":
             result: dict = {

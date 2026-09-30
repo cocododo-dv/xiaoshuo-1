@@ -3,7 +3,8 @@
 
 - 回收站里的场不在这一章里：它的场景记忆不算进章汇总，也就不再挡住同一章别的场晋升（探针 a）；
 - 流水线先归档章末一场、后归档前面的场时，汇总漏掉前面那场；场序重排后汇总还是旧顺序——章级读者（文学质量的
-  章源、章级准终稿评审）都不读它（探针 b、复核的重排探针）。
+  章源、章级准终稿评审）都不读它（探针 b、复核的重排探针）；
+- 晋升照旧重建章汇总，重建不成只记日志、不再 409；同一修订的重放判断不再要求章汇总逐字一致。
 
 探针原稿：``scratch/reeval/r13/*.py`` 与 ``scratch/reeval/g5_critic/probe_reorder_stale_aggregate.py``。
 """
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from novel_system.db.models import (
     AuthorDraft,
@@ -18,6 +20,7 @@ from novel_system.db.models import (
     ChapterMemory,
     ChapterState,
     FinalScene,
+    OperationLog,
     SceneCard,
     SceneMemory,
     SceneRunState,
@@ -275,3 +278,171 @@ def test_chapter_readers_follow_a_scene_reorder(client, session) -> None:
     assert near_final["content"] == "第二场正文。\n\n第一场正文。"
     assert _quality_chapter_source(session, chapter_id, "chapter_memory_final")["content"] == "第二场正文。\n第一场正文。"
     assert _overview_chapter_item(client, chapter_id, "chapter_memory_final")["text_layer"] == "chapter_memory_final"
+
+
+# ---------------------------------------------------------------------------------------------- 晋升：汇总重建不成只记日志，重放不看汇总
+
+
+def _seed_promotable_scene(session, key: str) -> dict[str, str]:
+    """两场的一章：第一场有待晋升的作者稿（第 2 版），当前权威正文已归档、事实已核对。"""
+    project_id, chapter_id, (first, second) = _seed_chapter(session, key, 2)
+    final_id = f"final_{first}_v1"
+    text = "旧权威正文。"
+    session.add(
+        SceneRunState(
+            scene_id=first,
+            scene_status="archived",
+            current_final_scene_row_id=final_id,
+            narrative_sync_status="synced",
+            narrative_sync_final_scene_row_id=final_id,
+        )
+    )
+    session.add(
+        FinalScene(
+            row_id=final_id,
+            scene_id=first,
+            chapter_id=chapter_id,
+            content=text,
+            content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            status="archived",
+            source_bundle_id=f"bundle_{first}",
+            source_bundle_hash=f"hash_{first}",
+            source_kind="generation",
+        )
+    )
+    draft_id = f"author_draft_scene_{first}"
+    session.add(
+        AuthorDraft(
+            draft_id=draft_id,
+            object_type="scene",
+            object_id=first,
+            source_text_ref=f"final_scene:{final_id}",
+            content="<p>林昭在雨城的案卷里夹了一张便条。</p>",
+            revision_no=2,
+            status="current",
+        )
+    )
+    session.flush()
+    Archiver(session).archive_final_scene(first, final_id)
+    CanonContinuityService(session).verify_scene_complete(
+        project_id, first, actor_ref="author", note="核对过。", expected_final_scene_row_id=final_id
+    )
+    assert Aggregator(session).run_final_aggregate(chapter_id)["status"] == "created"
+    session.commit()
+    return {
+        "project_id": project_id,
+        "chapter_id": chapter_id,
+        "scene_id": first,
+        "sibling_id": second,
+        "final_id": final_id,
+        "draft_id": draft_id,
+    }
+
+
+def _promote(client, seeded: dict[str, str], key: str, expected_final_id: str | None = None):
+    return client.post(
+        f"/api/v1/author-drafts/{seeded['draft_id']}/promote-canonical",
+        json={
+            "base_revision_no": 2,
+            "expected_current_final_scene_row_id": expected_final_id or seeded["final_id"],
+            "narrative_effect": "facts_unchanged",
+            "accepted_warning_codes": [],
+        },
+        headers={"X-Idempotency-Key": key},
+    )
+
+
+def test_promotion_logs_a_chapter_aggregate_it_cannot_rebuild_instead_of_refusing(client, session, caplog) -> None:
+    seeded = _seed_promotable_scene(session, "AGG_BLOCKED")
+    # 同一章另一场有两条都「有效」的场景记忆（旧库里才有的不一致）：章汇总拼不出来
+    for suffix in ("a", "b"):
+        session.add(
+            SceneMemory(
+                row_id=f"scene_memory_{seeded['sibling_id']}_{suffix}",
+                scene_id=seeded["sibling_id"],
+                chapter_id=seeded["chapter_id"],
+                content=f"重复的记忆 {suffix}",
+                source_bundle_id=f"bundle_{suffix}",
+                final_scene_row_id=f"final_{suffix}",
+                active_flag=1,
+            )
+        )
+    session.commit()
+    stale = _stored_aggregate(session, seeded["chapter_id"])
+
+    with caplog.at_level(logging.WARNING, logger="novel_system.services.canonical_manuscripts"):
+        response = _promote(client, seeded, "r13-aggregate-blocked")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["chapter_memory_row_id"] is None
+    assert any("active_scene_memory_ambiguous" in record.getMessage() for record in caplog.records)
+    session.expire_all()
+    # 正文照常发布：新一版权威正文、指针、草稿的晋升记录
+    new_final = session.get(FinalScene, data["final_scene_row_id"])
+    assert new_final is not None and new_final.content == "林昭在雨城的案卷里夹了一张便条。"
+    assert session.get(SceneRunState, seeded["scene_id"]).current_final_scene_row_id == new_final.row_id
+    assert session.get(AuthorDraft, seeded["draft_id"]).last_promoted_revision_no == 2
+    # 汇总没动（拼不出来就不拼），卷汇总跟着章汇总走、也不做；审计里记着这两件事
+    assert _stored_aggregate(session, seeded["chapter_id"]).row_id == stale.row_id
+    log = session.query(OperationLog).filter_by(
+        event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+    ).one()
+    assert log.payload_json["chapter_aggregate"] == "blocked"
+    assert log.payload_json["volume_aggregate"] == "skipped"
+
+
+def test_a_legacy_aggregate_gate_value_no_longer_blocks_the_chapter_aggregate(client, session) -> None:
+    """B03-18：章汇总的回填闸门（aggregate_block_reason / chapter_backfill_pending_count）随 2026-09 减法里的
+    章回填 / 手动挂起一起没了写端，库里全是 none / 0；旧行上残留的值不再挡汇总、也不再挡晋升。"""
+    seeded = _seed_promotable_scene(session, "LEGACY_GATE")
+    chapter_state = session.get(ChapterState, seeded["chapter_id"])
+    chapter_state.aggregate_block_reason = "project_backtrack"
+    chapter_state.chapter_backfill_pending_count = 2
+    session.commit()
+
+    response = _promote(client, seeded, "r13-legacy-gate")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    session.expire_all()
+    aggregate = _stored_aggregate(session, seeded["chapter_id"])
+    assert aggregate is not None and aggregate.row_id == data["chapter_memory_row_id"]
+    assert aggregate.content == "林昭在雨城的案卷里夹了一张便条。"
+
+
+def test_same_revision_replay_does_not_require_an_exact_chapter_aggregate(client, session) -> None:
+    seeded = _seed_promotable_scene(session, "REPLAY")
+    first = _promote(client, seeded, "r13-replay-first")
+    assert first.status_code == 200, first.text
+    author_final_id = first.json()["data"]["final_scene_row_id"]
+
+    # 同一章的另一场随后归档、没有重建章汇总（流水线归档不是章末的场就是这样）：存下来的汇总落后于逐场终稿
+    _pipeline_archive(session, seeded["sibling_id"], "第二场：林昭把便条折好。", chapter_last_rebuilds=False)
+    assert _stored_aggregate(session, seeded["chapter_id"]).content == "林昭在雨城的案卷里夹了一张便条。"
+    session.expire_all()
+    counts_before = {
+        "finals": session.query(FinalScene).filter_by(scene_id=seeded["scene_id"]).count(),
+        "scene_memories": session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"]).count(),
+        "chapter_memories": session.query(ChapterMemory).filter_by(chapter_id=seeded["chapter_id"]).count(),
+        "logs": session.query(OperationLog).filter_by(
+            event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+        ).count(),
+    }
+
+    again = _promote(client, seeded, "r13-replay-second-key", expected_final_id=author_final_id)
+
+    assert again.status_code == 200, again.text
+    data = again.json()["data"]
+    assert data["already_current"] is True
+    assert data["derivation_reused"] is True
+    assert data["final_scene_row_id"] == author_final_id
+    session.expire_all()
+    assert {
+        "finals": session.query(FinalScene).filter_by(scene_id=seeded["scene_id"]).count(),
+        "scene_memories": session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"]).count(),
+        "chapter_memories": session.query(ChapterMemory).filter_by(chapter_id=seeded["chapter_id"]).count(),
+        "logs": session.query(OperationLog).filter_by(
+            event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+        ).count(),
+    } == counts_before
