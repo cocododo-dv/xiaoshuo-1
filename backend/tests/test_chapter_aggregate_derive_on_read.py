@@ -1,5 +1,9 @@
-"""章汇总（重评 R13，[批准#21]）：回收站里的场不在这一章里——它的场景记忆不算进章汇总，也就不再挡住同一章别的场
-晋升（探针 a）。
+"""章汇总读时现拼（重评 R13 + 主管补充，[批准#21]）：章级读者一律读各场当前终稿现拼，存下来的章汇总（ChapterMemory）
+只是一份派生缓存——
+
+- 回收站里的场不在这一章里：它的场景记忆不算进章汇总，也就不再挡住同一章别的场晋升（探针 a）；
+- 流水线先归档章末一场、后归档前面的场时，汇总漏掉前面那场；场序重排后汇总还是旧顺序——章级读者（文学质量的
+  章源、章级准终稿评审）都不读它（探针 b、复核的重排探针）。
 
 探针原稿：``scratch/reeval/r13/*.py`` 与 ``scratch/reeval/g5_critic/probe_reorder_stale_aggregate.py``。
 """
@@ -23,6 +27,10 @@ from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
+from novel_system.services.catalog import CatalogService
+from novel_system.services.chapter_manuscripts import ChapterManuscriptService
+from novel_system.services.literary_quality.service import LiteraryQualityService
+from novel_system.services.near_final import NearFinalAcceptanceService
 
 
 def _seed_chapter(session, key: str, scene_count: int) -> tuple[str, str, list[str]]:
@@ -202,3 +210,68 @@ def test_promotion_is_not_blocked_after_an_archived_sibling_went_to_the_trash(cl
     aggregate = _stored_aggregate(session, chapter_id)
     assert aggregate is not None and aggregate.row_id == data["chapter_memory_row_id"]
     assert aggregate.content == "林昭把旧信塞回案卷，雨声停了。"
+
+
+# ---------------------------------------------------------------------------------------------- 章级读者（探针 b、重排）
+
+
+def _quality_chapter_source(session, chapter_id: str, text_layer: str = "author_draft_preferred") -> dict | None:
+    """文学质量巡检拼给一章的那份正文（与 overview / chapter-set-review 同一条取法）。"""
+    service = LiteraryQualityService(session)
+    rows = service._text_rows(
+        text_layer,
+        chapter_ids=[chapter_id],
+        scenes=service._scenes(project_id=None, chapter_id=chapter_id),
+    )
+    return service._chapter_source(chapter_id, text_layer=text_layer, rows=rows)
+
+
+def _overview_chapter_item(client, chapter_id: str, text_layer: str = "author_draft_preferred") -> dict:
+    response = client.get(f"/api/v1/literary-quality/overview?text_layer={text_layer}&chapter_id={chapter_id}")
+    assert response.status_code == 200, response.text
+    return next(item for item in response.json()["data"]["items"] if item["object_type"] == "chapter")
+
+
+def test_chapter_readers_include_scenes_archived_after_the_chapter_last_one(client, session) -> None:
+    _project_id, chapter_id, (first, second) = _seed_chapter(session, "PIPELINE_ORDER", 2)
+    _pipeline_archive(session, second, "第二场（本章最后一场）先起草、先归档。")
+    _pipeline_archive(session, first, "第一场后起草、后归档。")
+
+    # 存下来的汇总只在章末那一场归档时建过：漏了后归档的第一场（这份缓存不再被任何章级读者读）
+    assert _stored_aggregate(session, chapter_id).content == "第二场（本章最后一场）先起草、先归档。"
+    detail = ChapterManuscriptService(session).manuscript_detail(chapter_id)
+    assert detail["assembled"]["content"] == "第一场后起草、后归档。\n第二场（本章最后一场）先起草、先归档。"
+
+    quality = _quality_chapter_source(session, chapter_id)
+    assert quality["text_layer"] == "chapter_assembled"
+    assert quality["content"] == "第一场后起草、后归档。\n\n第二场（本章最后一场）先起草、先归档。"
+    item = _overview_chapter_item(client, chapter_id)
+    assert item["text_layer"] == "chapter_assembled"
+    assert item["source_ref"] == f"chapter_assembled:{chapter_id}"
+
+    near_final = NearFinalAcceptanceService(session)._chapter_source(session.get(ChapterGoal, chapter_id))
+    assert near_final["source_text_ref"] == f"chapter_assembled:{chapter_id}"
+    assert near_final["content"] == "第一场后起草、后归档。\n\n第二场（本章最后一场）先起草、先归档。"
+
+    # 显式挑「章记忆终稿」这一层也是读时现拼：这一章此刻归档过的各场记忆，按场序
+    memory_layer = _quality_chapter_source(session, chapter_id, "chapter_memory_final")
+    assert memory_layer["text_layer"] == "chapter_memory_final"
+    assert memory_layer["content"] == "第一场后起草、后归档。\n第二场（本章最后一场）先起草、先归档。"
+
+
+def test_chapter_readers_follow_a_scene_reorder(client, session) -> None:
+    _project_id, chapter_id, (first, second) = _seed_chapter(session, "REORDER", 2)
+    _pipeline_archive(session, first, "第一场正文。")
+    _pipeline_archive(session, second, "第二场正文。")
+    assert _stored_aggregate(session, chapter_id).content == "第一场正文。\n第二场正文。"
+
+    CatalogService(session).reorder_scenes(chapter_id, {"scene_ids": [second, first], "last_scene_id": first})
+    session.commit()
+
+    detail = ChapterManuscriptService(session).manuscript_detail(chapter_id)
+    assert detail["assembled"]["content"] == "第二场正文。\n第一场正文。"
+    assert _quality_chapter_source(session, chapter_id)["content"] == "第二场正文。\n\n第一场正文。"
+    near_final = NearFinalAcceptanceService(session)._chapter_source(session.get(ChapterGoal, chapter_id))
+    assert near_final["content"] == "第二场正文。\n\n第一场正文。"
+    assert _quality_chapter_source(session, chapter_id, "chapter_memory_final")["content"] == "第二场正文。\n第一场正文。"
+    assert _overview_chapter_item(client, chapter_id, "chapter_memory_final")["text_layer"] == "chapter_memory_final"

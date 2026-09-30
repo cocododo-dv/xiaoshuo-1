@@ -10,6 +10,7 @@ from novel_system.db.models import (
     FinalScene,
     HumanReviewEvent,
     SceneCard,
+    SceneMemory,
     SceneRunState,
 )
 from novel_system.services.literary_quality import (
@@ -134,9 +135,23 @@ def test_literary_quality_overview_prefers_author_drafts_and_does_not_mutate_run
     assert session.execute(select(HumanReviewEvent)).scalars().all() == []
 
 
-def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregate(client, session) -> None:
+def test_literary_quality_overview_falls_back_to_runtime_text_and_derives_chapter_text_on_read(client, session) -> None:
+    """R13：章的正文读时现拼。存下来的章汇总（这里故意是一份过期的）既不是默认层的章源，也不是「章记忆终稿」层的
+    章源——前者拼各场当前终稿，后者现拼这一章归档过的各场记忆。"""
     final_row_id = _seed_quality_scene(session, chapter_id="LQ200", scene_id="LQ200_SC01")
-    memory = ChapterMemory(
+    final = session.get(FinalScene, final_row_id)
+    session.add(
+        SceneMemory(
+            row_id=f"scene_memory_{final_row_id}",
+            scene_id="LQ200_SC01",
+            chapter_id="LQ200",
+            content=final.content,
+            source_bundle_id=final.source_bundle_id,
+            final_scene_row_id=final_row_id,
+            active_flag=1,
+        )
+    )
+    stale = ChapterMemory(
         row_id="chapter_memory_final_LQ200_v1",
         chapter_id="LQ200",
         aggregate_stage="final",
@@ -145,8 +160,8 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
         runtime_eligible=1,
         runtime_eligibility_basis="direct_read",
     )
-    session.add(memory)
-    session.get(ChapterState, "LQ200").last_final_memory_row_id = memory.row_id
+    session.add(stale)
+    session.get(ChapterState, "LQ200").last_final_memory_row_id = stale.row_id
     session.commit()
 
     response = client.get("/api/v1/literary-quality/overview?text_layer=author_draft_preferred")
@@ -158,8 +173,8 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
 
     assert scene_item["text_layer"] == "runtime_final_scene"
     assert scene_item["source_ref"] == f"final_scene:{final_row_id}"
-    assert chapter_item["text_layer"] == "chapter_memory_final"
-    assert chapter_item["source_ref"] == f"chapter_memory:{memory.row_id}"
+    assert chapter_item["text_layer"] == "chapter_assembled"
+    assert chapter_item["source_ref"] == "chapter_assembled:LQ200"
 
     runtime_response = client.get("/api/v1/literary-quality/overview?text_layer=runtime_final_scene&chapter_id=LQ200")
     assert runtime_response.status_code == 200
@@ -172,6 +187,9 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
     memory_items = memory_response.json()["data"]["items"]
     assert [item["object_type"] for item in memory_items] == ["chapter"]
     assert memory_items[0]["text_layer"] == "chapter_memory_final"
+    assert memory_items[0]["source_ref"] == "chapter_memory:LQ200"
+    # 现拼的是那一场的记忆（与终稿同文），不是那份过期的汇总：两层读到的是同一段文字
+    assert memory_items[0]["fingerprint"] == chapter_item["fingerprint"]
 
 
 def test_literary_quality_detects_template_reuse() -> None:

@@ -7,7 +7,6 @@ from sqlalchemy import select
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
-    ChapterMemory,
     ChapterState,
     FinalScene,
     GenerationPlanningArtifact,
@@ -625,17 +624,19 @@ def test_strict_policy_stops_on_a_gate_rejected_near_final_rewrite_instead_of_ar
 
 def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
     _seed_scene(session, is_chapter_last=1)
+    # 章级评审读各场当前终稿现拼（R13），不读存下来的章汇总
     session.add(
-        ChapterMemory(
-            row_id=f"chapter_memory_final_{CHAPTER_ID}_v1",
+        FinalScene(
+            row_id=f"final_scene_{SCENE_ID}_v1",
+            scene_id=SCENE_ID,
             chapter_id=CHAPTER_ID,
-            aggregate_stage="final",
             content="林岑公开了录音。没有回收第二枚盐钟，也没有回答阿砚为什么被追踪。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
+            status="archived",
+            source_bundle_id="b",
+            source_bundle_hash="h",
         )
     )
+    session.get(SceneRunState, SCENE_ID).current_final_scene_row_id = f"final_scene_{SCENE_ID}_v1"
     session.commit()
     chapter_client = SequencedClient(
         [
@@ -679,6 +680,7 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
     assert result["failure_class"] == "chapter_payoff_gap"
     assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
     assert evaluation.findings_json[0]["dimension"] == "payoff_integrity"
+    assert evaluation.source_text_ref == f"chapter_assembled:{CHAPTER_ID}"
     llm_call = session.get(LlmCall, evaluation.evaluator_llm_call_id)
     assert llm_call.scope_type == "chapter"
     assert llm_call.scope_id == CHAPTER_ID
