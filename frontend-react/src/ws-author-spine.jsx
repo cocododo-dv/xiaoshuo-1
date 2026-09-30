@@ -1,8 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
-import { arrBookFacts, arrBookSpine } from "./ws-author-derive.js";
-import { ARR_SCENE_STATE } from "./ws-author-data.jsx";
+import { arrBookSpine } from "./ws-author-derive.js";
+import { ARR_SCENE_STATE } from "./ws-author-data.js";
 import { chapterHeading, chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
@@ -11,7 +11,7 @@ import { chapterHeading, chapterLabel } from "./labels/catalog.js";
    全书编排的第一张图：卷 → 章 → 场，全部按故事序。它画的是作者在构思里真的做出来的结构——
    三幕、三个灾难各自收束一章、每章装着第几到第几场、每一场是主动还是反应、谁的视角、写到哪了。
    摘要条是全书唯一的一行数：章 / 场 / 字数 / 写完几场 / 视角分布（体检和统计块不再各报一遍）。
-   点章 = 进章节详情；点场 = 进章节详情并落在那一场上。
+   点章 = 进章节详情；点场 = 进章节详情并落在那一场上。book 是全书编排算好的 arrBookFacts（体检也读它），这里不再算一遍。
    ========================================================== */
 
 function sceneTip(scene, chapterNum) {
@@ -25,9 +25,8 @@ function sceneTip(scene, chapterNum) {
   return `${head}\n${scene.summary || scene.title || ""}`;
 }
 
-function ArrSpineLens({ chapters, numOf, pickedId, onOpen, onOpenScene }) {
+function ArrSpineLens({ chapters, book: facts, numOf, pickedId, onOpen, onOpenScene }) {
   const groups = React.useMemo(() => arrBookSpine(chapters, numOf), [chapters, numOf]);
-  const facts = React.useMemo(() => arrBookFacts(chapters), [chapters]);
   const proactive = facts.sceneTotal - facts.reactiveScenes;
   const wordsPct = facts.wordsTarget > 0 ? Math.min(100, Math.round((facts.words / facts.wordsTarget) * 100)) : null;
 

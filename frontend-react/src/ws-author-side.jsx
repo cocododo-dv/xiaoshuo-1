@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_ACTS } from "./ws-author-data.jsx";
+import { ARR_ACTS } from "./ws-author-data.js";
 import { arrChapterFacts, arrIsPlanChapter, arrRailTally, arrRangeLabel } from "./ws-author-derive.js";
 import { ArrAiHealth } from "./ws-author-ai.jsx";
 import { ArrChapterStateTag, ArrMiniScenes } from "./ws-author-ui.jsx";

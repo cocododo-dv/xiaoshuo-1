@@ -4,7 +4,7 @@ import { SnowSync } from "./ws-snow-sync.jsx";
 import { wsKey } from "./ws-works.jsx";
 import { navigateWithViewIntent, queueViewIntent } from "./ws-view-intents.js";
 import { wsConfirm } from "./ws-notify.jsx";
-import { ARR_ACTS } from "./ws-author-data.jsx";
+import { ARR_ACTS } from "./ws-author-data.js";
 import { arrIsPlanChapter, arrIsPlanScene } from "./ws-author-derive.js";
 import { randomSuffix } from "./lib/ids.js";
 import { useWindowEvents } from "./lib/events.js";

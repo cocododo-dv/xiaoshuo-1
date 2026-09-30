@@ -11,7 +11,7 @@
    产品里没有编辑入口、也没有东西写它，不再盖过场上读出来的事实。
    ========================================================== */
 
-import { ARR_ACTS } from "./ws-author-data.jsx";
+import { ARR_ACTS } from "./ws-author-data.js";
 import { CHAPTER_STATE_ORDER, chapterStage, chapterStateMeta } from "./labels/catalog.js";
 
 const BLANK_MARKERS = ["待规划", "待定", "待补", "待填"];

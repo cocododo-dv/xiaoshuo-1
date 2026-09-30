@@ -45,6 +45,7 @@ vi.mock("./ws-chapter-run.jsx", () => ({
 
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsAuthor } from "./ws-author.jsx";
+import { arrPlanReceipt } from "./ws-author-plan-door.jsx";
 
 let host;
 let root;
@@ -375,7 +376,7 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(cards[0].querySelector(".arr-card-pov").textContent).toBe("林昭");
 
     // 默认镜头 = 结构；没有章级张力 / 线索数据时，那两个镜头根本不出现（不拿 0.3 的默认值画平线）
-    const lensTabs = [...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent);
+    const lensTabs = [...host.querySelectorAll(".arr-lens .seg-btn")].map((node) => node.textContent);
     expect(lensTabs).toEqual(["结构", "节奏镜头"]);
     const lens = host.querySelector('[data-testid="arr-spine-lens"]');
     expect([...lens.querySelectorAll(".arr-spine-cell")].map((cell) => cell.textContent)).toEqual(["1", "2", "3"]);
@@ -410,7 +411,7 @@ describe("章节编排 · 服务端目录真相", () => {
     ];
     localStorage.setItem("arr.lens", JSON.stringify("arc"));   // 旧版记住的镜头：落回结构镜头
     await act(async () => root.render(<WsAuthor />));
-    expect([...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent)).toEqual(["结构", "节奏镜头"]);
+    expect([...host.querySelectorAll(".arr-lens .seg-btn")].map((node) => node.textContent)).toEqual(["结构", "节奏镜头"]);
     expect(host.querySelector('[data-testid="arr-spine-lens"]')).not.toBeNull();
     const doctor = host.querySelector(".arr-doctor").textContent;
     expect(doctor).not.toContain("张力");
@@ -455,6 +456,15 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(snow.current.materialize.mock.calls[0][1].replace_chapters).toBe(true);
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
     expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("章节结构已按这一版写入目录 · 1 个变空的旧章已移入回收站");
+  });
+
+  it("确认写入的回执：顺手做了什么都说一句，什么都没做就只说写入了", () => {
+    expect(arrPlanReceipt(null)).toBe("章节结构已按这一版写入目录");
+    expect(arrPlanReceipt({
+      trashed_placeholder_chapters: [{}], trashed_empty_chapters: [{}, {}], restored_chapter_ids: ["c1"],
+      restored_scene_ids: ["s1", "s2", "s3"], chapter_order_held: true,
+    })).toBe("章节结构已按这一版写入目录 · 1 个没动过笔的空白占位章已移入回收站 · 2 个变空的旧章已移入回收站 · 1 章从回收站取回"
+      + " · 3 场随旧章进了回收站的场景卡已取回 · 目录里有已终审的章，按章表排会挪动它——新章暂时接在最后");
   });
 
   it("章节详情：构思条说得出这一章是什么，入口 / 出口、视角 · 时空取自各场，体检不再摆假的对勾", async () => {

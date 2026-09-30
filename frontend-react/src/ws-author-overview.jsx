@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_ACTS, ARR_SCENE_STATE } from "./ws-author-data.jsx";
+import { ARR_ACTS, ARR_SCENE_STATE } from "./ws-author-data.js";
 import { arrBookFacts, arrIsPlanChapter, arrLensChapters, arrRangeLabel } from "./ws-author-derive.js";
 import { ArrPacingLens } from "./ws-author-pacing.jsx";
 import { ArrSpineLens } from "./ws-author-spine.jsx";
@@ -126,12 +126,14 @@ const ARR_LENSES = [
 function ArrOverview({ chapters, numOf, pickedId, onOpen, onOpenScene, rowDnd, boardDnd, onNew, lens, setLens, batch, snow, onOpenPlan, canMove, onMoveChapter }) {
   const selectMode = !!batch.mode;
   const book = React.useMemo(() => arrBookFacts(chapters), [chapters]);
-  const lensChapters = React.useMemo(() => arrLensChapters(chapters), [chapters]);
   const activeLens = ARR_LENSES.find((l) => l.key === lens) || ARR_LENSES[0];
+  /* 节奏镜头才要每章的主视角 / 时间（结构镜头读场上的视角，不用它） */
+  const pacing = activeLens.key === "pace";
+  const lensChapters = React.useMemo(() => (pacing ? arrLensChapters(chapters) : null), [chapters, pacing]);
 
   return (
     <div className="arr-ov-scroll">
-      <section className="card arr-arc" aria-labelledby="arr-lens-title">
+      <section className="card arr-lens" aria-labelledby="arr-lens-title">
         <div className="card-head">
           <div>
             <h2 className="card-title" id="arr-lens-title">{activeLens.title}</h2>
@@ -140,9 +142,9 @@ function ArrOverview({ chapters, numOf, pickedId, onOpen, onOpenScene, rowDnd, b
           <Segmented value={activeLens.key} onChange={setLens} label="全书镜头" size="sm"
             options={ARR_LENSES.map((l) => ({ value: l.key, label: l.label }))} />
         </div>
-        {activeLens.key === "pace"
+        {pacing
           ? <ArrPacingLens chapters={lensChapters} numOf={numOf} onOpen={onOpen} />
-          : <ArrSpineLens chapters={chapters} numOf={numOf} pickedId={pickedId} onOpen={onOpen} onOpenScene={onOpenScene} />}
+          : <ArrSpineLens chapters={chapters} book={book} numOf={numOf} pickedId={pickedId} onOpen={onOpen} onOpenScene={onOpenScene} />}
       </section>
 
       <ArrDoctor chapters={chapters} numOf={numOf} onOpen={onOpen} onLens={setLens} book={book} snow={snow} onOpenPlan={onOpenPlan} />

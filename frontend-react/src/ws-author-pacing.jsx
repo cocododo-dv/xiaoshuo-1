@@ -1,5 +1,5 @@
 import React from "react";
-import { ARR_SCENE_STATE } from "./ws-author-data.jsx";
+import { ARR_SCENE_STATE } from "./ws-author-data.js";
 import { arrActSpans } from "./ws-author-derive.js";
 import { chapterLabel } from "./labels/catalog.js";
 

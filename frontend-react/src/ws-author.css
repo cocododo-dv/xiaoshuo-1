@@ -44,10 +44,10 @@
   max-width: calc(var(--content-max) + 2 * var(--page-gutter)); margin: 0 auto; width: 100%;
 }
 .arr-ov-scroll > .card { padding: var(--s5) var(--s6); }
-.arr-arc .card-head, .arr-doctor .card-head, .arr-board-card .card-head {
+.arr-lens .card-head, .arr-doctor .card-head, .arr-board-card .card-head {
   align-items: flex-start; flex-wrap: wrap; row-gap: var(--s2); margin-bottom: var(--s4);
 }
-.arr-arc .card-head > div:first-child, .arr-doctor .card-head > div:first-child, .arr-board-card .card-head > div:first-child { flex: 1 1 320px; min-width: 0; }
+.arr-lens .card-head > div:first-child, .arr-doctor .card-head > div:first-child, .arr-board-card .card-head > div:first-child { flex: 1 1 320px; min-width: 0; }
 
 /* 章节清单：按卷分组，一章一行（结构镜头负责「看」，这里负责「动」） */
 .arr-actsec { display: flex; flex-direction: column; gap: var(--s1); }
