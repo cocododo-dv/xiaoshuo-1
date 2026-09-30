@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 
 from novel_system.db.models import StyleReferenceJob
 from novel_system.db.session import SessionLocal
@@ -505,6 +505,155 @@ def test_activity_lists_every_active_job_however_many_finished_recently(session)
     listed = [job.job_id for job in service.list_recent(limit=3)]
     assert old_active.job_id in listed
     assert len(listed) == 4  # 1 条在跑 + 至多 3 条刚结束
+
+
+# ---------------------------------------------------------------------------
+# 热路径上的读（B10-18）：检查点、进度写、书卡、活动清单不整行重读游标
+# ---------------------------------------------------------------------------
+
+
+def _capture_selects(session):
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _params, _context, _executemany) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    return statements, _capture
+
+
+def test_checkpoints_and_progress_writes_do_not_reload_the_cursor(session) -> None:
+    """模型调用在飞时每 2 秒一次的检查点、每一次进度写，只读状态 / 主人 / 取消标记与进度这几列——真实学习作业的
+    游标有 66 KB，原来每次都整行重读。取消、丢所有权、写落空的行为不变。"""
+    book_id = _book(session)
+    service = StyleJobService(session)
+    job = service.create(JOB_KIND_LEARN, book_id=book_id, phase="windows")
+    claimed = service.claim(job.job_id)
+    assert claimed is not None
+    assert service.save_cursor(claimed, {"phases_done": ["windows"], "blob": "旧信" * 2000})
+    statements, capture = _capture_selects(session)
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        service.check_continue(claimed)
+        assert service.still_owner(claimed)
+        assert service.progress(claimed, phase="select", phase_label="挑窗口", done=1, total=4, llm_calls_delta=1)
+        assert service.progress(claimed, done=2, llm_calls_delta=2)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert statements and not any("cursor_json" in statement for statement in statements), statements
+    row = service.get(job.job_id, fresh=True)
+    assert row.progress_json["phase"] == "select" and row.progress_json["phase_label"] == "挑窗口"
+    assert row.progress_json["done"] == 2 and row.progress_json["llm_calls"] == 3
+    assert row.phase == "select" and row.cursor_json["phases_done"] == ["windows"]
+
+    session.execute(update(StyleReferenceJob).where(StyleReferenceJob.job_id == job.job_id).values(cancel_requested=1))
+    with pytest.raises(JobCancelled):
+        service.check_continue(claimed)
+    session.execute(
+        update(StyleReferenceJob).where(StyleReferenceJob.job_id == job.job_id).values(owner_token="another-worker")
+    )
+    with pytest.raises(JobLost):
+        service.check_continue(claimed)
+    assert service.still_owner(claimed) is False
+    assert service.progress(claimed, done=3) is False
+    session.execute(StyleReferenceJob.__table__.delete().where(StyleReferenceJob.job_id == job.job_id))
+    with pytest.raises(JobLost):
+        service.check_continue(claimed)
+    assert service.progress(claimed, done=4) is False
+
+
+def test_book_list_loads_only_the_latest_job_of_each_kind(session) -> None:
+    """书卡只看每本书每种最近的一个作业：只把那一行读进来（原来把每本书的全部作业连同游标都读进内存再取最后一个）。
+    同一时刻建的几个按作业 id 定先后，与原来的升序覆盖一致。"""
+    from novel_system.db.models import StyleReferenceBook
+    from novel_system.services.style_reference.summaries import book_summaries
+
+    book_a = _book(session, "sr_book_sum_a")
+    book_b = _book(session, "sr_book_sum_b")
+    _book(session, "sr_book_sum_empty")
+    latest: dict[tuple[str, str], str] = {}
+    for book_id in (book_a, book_b):
+        for kind, count in ((JOB_KIND_CLASSIFY, 4), (JOB_KIND_LEARN, 3)):
+            for index in range(count):
+                job_id = _job_at(
+                    session, kind, book_id, state=STATE_SUCCEEDED, created_days_ago=5 - index, finished_days_ago=1
+                )
+                latest[(kind, book_id)] = job_id
+    # 同一时刻的两个学习作业：id 大的算最近
+    tie_time = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    tied = []
+    for suffix in ("0000", "ffff"):
+        job_id = f"sr_job_tie_{suffix}"
+        session.add(
+            StyleReferenceJob(
+                job_id=job_id,
+                kind=JOB_KIND_LEARN,
+                book_id=book_b,
+                state=STATE_SUCCEEDED,
+                cancel_requested=0,
+                attempt=1,
+                params_json={},
+                cursor_json={"run_id": suffix},
+                progress_json={},
+                created_at=tie_time,
+                updated_at=tie_time,
+            )
+        )
+        tied.append(job_id)
+    latest[(JOB_KIND_LEARN, book_b)] = tied[-1]
+    session.commit()
+    session.expunge_all()
+
+    loaded: list[str] = []
+
+    def _count(target, _context) -> None:
+        loaded.append(target.job_id)
+
+    books = list(session.scalars(select(StyleReferenceBook).order_by(StyleReferenceBook.book_id)))
+    event.listen(StyleReferenceJob, "load", _count)
+    try:
+        payloads = {payload["book_id"]: payload for payload in book_summaries(session, books)}
+    finally:
+        event.remove(StyleReferenceJob, "load", _count)
+    assert sorted(loaded) == sorted(latest.values())
+    for (kind, book_id), job_id in latest.items():
+        key = "classification" if kind == JOB_KIND_CLASSIFY else "learn"
+        assert payloads[book_id][key]["job_id"] == job_id, (kind, book_id)
+    assert payloads["sr_book_sum_empty"]["classification"] is None and payloads["sr_book_sum_empty"]["learn"] is None
+
+
+def test_activity_list_fetches_the_books_in_one_query(session) -> None:
+    """活动清单的书名与字数一条 SQL 取齐，只取这两列（原来每个作业查一次书行，连同整份 stats_json）。"""
+    from novel_system.services.style_reference.activity import list_activity
+
+    service = StyleJobService(session)
+    titles = {}
+    for index in range(3):
+        book_id = _book(session, f"sr_book_act_{index}")
+        titles[book_id] = "作业测试书"
+        job = service.create(JOB_KIND_CLASSIFY if index else JOB_KIND_LEARN, book_id=book_id)
+        service.claim(job.job_id)
+    check = service.create(JOB_KIND_CHECK, book_id=None, allow_parallel=True, params={"target": "text", "text": "旧信"})
+    service.claim(check.job_id)
+    session.commit()
+    session.expunge_all()
+
+    statements, capture = _capture_selects(session)
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        entries = list_activity(session)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    book_reads = [statement for statement in statements if "FROM style_reference_books" in statement]
+    assert len(book_reads) == 1 and "stats_json" not in book_reads[0], book_reads
+    by_book = {entry.get("book_id"): entry for entry in entries}
+    for book_id, title in titles.items():
+        assert by_book[book_id]["title"] == title
+    assert by_book[None]["title"] is None
+    classify_entries = [entry for entry in entries if entry["kind"] == JOB_KIND_CLASSIFY]
+    assert classify_entries and all(entry["chars_total"] == 100 for entry in classify_entries)
 
 
 # ---------------------------------------------------------------------------

@@ -230,6 +230,35 @@ def _book_base(book: StyleReferenceBook) -> dict[str, Any]:
     }
 
 
+def _latest_jobs(session: Session, book_ids: Sequence[str]) -> dict[tuple[str, str], StyleReferenceJob]:
+    """每本书每种（分类 / 学习）最近的一个作业（按创建时间、同一时刻按作业 id）。窗口函数先挑出每组的第一行，
+    只把这几行整行读出来——原来把每本书的全部作业连同几十 KB 的游标都读进来再在内存里取最后一个（B10-18）。"""
+    ranked = (
+        select(
+            StyleReferenceJob.job_id.label("job_id"),
+            func.row_number()
+            .over(
+                partition_by=(StyleReferenceJob.kind, StyleReferenceJob.book_id),
+                order_by=(StyleReferenceJob.created_at.desc(), StyleReferenceJob.job_id.desc()),
+            )
+            .label("rank"),
+        )
+        .where(
+            StyleReferenceJob.kind.in_((JOB_KIND_CLASSIFY, JOB_KIND_LEARN)),
+            StyleReferenceJob.book_id.in_(list(book_ids)),
+        )
+        .subquery()
+    )
+    return {
+        (job.kind, str(job.book_id)): job
+        for job in session.scalars(
+            select(StyleReferenceJob).where(
+                StyleReferenceJob.job_id.in_(select(ranked.c.job_id).where(ranked.c.rank == 1))
+            )
+        )
+    }
+
+
 def book_summaries(
     session: Session,
     books: Sequence[StyleReferenceBook],
@@ -240,16 +269,7 @@ def book_summaries(
     if not books:
         return []
     book_ids = [str(b.book_id) for b in books]
-    latest: dict[tuple[str, str], StyleReferenceJob] = {}
-    for job in session.scalars(
-        select(StyleReferenceJob)
-        .where(
-            StyleReferenceJob.kind.in_((JOB_KIND_CLASSIFY, JOB_KIND_LEARN)),
-            StyleReferenceJob.book_id.in_(book_ids),
-        )
-        .order_by(StyleReferenceJob.created_at, StyleReferenceJob.job_id)
-    ):
-        latest[(job.kind, str(job.book_id))] = job  # 升序:最后写入的就是最近一个
+    latest = _latest_jobs(session, book_ids)
     profiles = _profile_light_rows(session, StyleReferenceProfile.book_id.in_(book_ids))
     by_book: dict[str, list[dict[str, Any]]] = {}
     for row in profiles:

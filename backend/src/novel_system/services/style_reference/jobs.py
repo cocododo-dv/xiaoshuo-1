@@ -8,7 +8,8 @@
 
 **所有权**：认领时 ``attempt`` +1 并换一枚新的 ``owner_token``；之后的每一次写（心跳 / 进度 / 游标 /
 结束）都是「owner_token 仍是我、state 仍是 running」的条件 UPDATE。作业被清扫重排、被取消、所属的书被删，
-旧工人的写全部落空（返回 False），工人据此停下——这就是作业的身份，不靠进程内状态。
+旧工人的写全部落空（返回 False），工人据此停下——这就是作业的身份，不靠进程内状态。检查点与进度写只读用得着的列
+（状态 / 主人 / 取消标记、进度），不整行重读几十 KB 的游标。
 
 **恢复**：常驻清扫线程每 ``SWEEP_INTERVAL_SECONDS`` 秒把心跳过期的 running 放回 queued 并把所有 queued
 派发出去；启动时先清扫一次。重复派发无害——认领是条件写，只有一个工人能拿到。
@@ -33,9 +34,9 @@ SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一�
 已关）一律按中断放回队列。三种处理器共用的脚手架（检查点、并行调用循环、终态收尾）在 ``job_runtime.JobRun``，
 它记失败用的也是 :func:`job_failure`。
 
-**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（例：``cleanup`` 的遥测 90 天留存清理，
-``workers.install_workers`` 登记）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记
-日志、不影响清扫。
+**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（``cleanup`` 的遥测 90 天留存清理与作业
+留存——结束 30 天以上的对照检查作业删掉，每本书每类只留最近一个分类 / 学习作业；``workers.install_workers``
+登记）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记日志、不影响清扫。
 
 与业务无关的运行时（工人代、守护调用池、维护任务登记簿、带自己停止信号的周期线程）在
 ``services.background_jobs``；这里转出旧名字（``DaemonCallPool``、``current_worker_generation`` …），调用方与
@@ -367,18 +368,27 @@ class StyleJobService:
     def heartbeat(self, claimed: ClaimedJob) -> bool:
         return self._owned_update(claimed, heartbeat_at=utcnow())
 
+    def _ownership(self, job_id: str) -> Any:
+        """检查点只读这三列（状态、主人、取消标记）：模型调用在飞时每 2 秒一次，不能每次把几十 KB 的游标 JSON
+        整行重读一遍（B10-18）。没有这一行 → None。"""
+        return self.session.execute(
+            select(StyleReferenceJob.state, StyleReferenceJob.owner_token, StyleReferenceJob.cancel_requested).where(
+                StyleReferenceJob.job_id == job_id
+            )
+        ).one_or_none()
+
     def still_owner(self, claimed: ClaimedJob) -> bool:
-        job = self.get(claimed.job_id, fresh=True)
-        return bool(job is not None and job.state == STATE_RUNNING and job.owner_token == claimed.owner_token)
+        row = self._ownership(claimed.job_id)
+        return bool(row is not None and row.state == STATE_RUNNING and row.owner_token == claimed.owner_token)
 
     def check_continue(self, claimed: ClaimedJob) -> None:
         """处理器的检查点：进程要退出 → ``JobInterrupted``；取消 → ``JobCancelled``；不再是主人 → ``JobLost``。"""
         if worker_generation_changed(claimed):
             raise JobInterrupted(claimed.job_id)
-        job = self.get(claimed.job_id, fresh=True)
-        if job is None or job.state != STATE_RUNNING or job.owner_token != claimed.owner_token:
+        row = self._ownership(claimed.job_id)
+        if row is None or row.state != STATE_RUNNING or row.owner_token != claimed.owner_token:
             raise JobLost(claimed.job_id)
-        if int(job.cancel_requested or 0):
+        if int(row.cancel_requested or 0):
             raise JobCancelled(claimed.job_id)
 
     # ------------------------------------------------------------------ 进度 / 游标
@@ -394,10 +404,13 @@ class StyleJobService:
         llm_calls_delta: int = 0,
         extra: Mapping[str, Any] | None = None,
     ) -> bool:
-        job = self.get(claimed.job_id, fresh=True)
-        if job is None:
+        # 只读进度这一列（不带游标 JSON，B10-18）；写仍是条件写，落空返回 False
+        current = self.session.execute(
+            select(StyleReferenceJob.progress_json).where(StyleReferenceJob.job_id == claimed.job_id)
+        ).one_or_none()
+        if current is None:
             return False
-        progress = dict(job.progress_json or {})
+        progress = dict(current.progress_json or {})
         if phase is not None:
             if progress.get("phase") != phase:
                 progress["phase_started_at"] = utcnow()
