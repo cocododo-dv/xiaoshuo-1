@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -9,19 +8,16 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import func, select
 
-from novel_system.db.models import LlmCall, SnowflakeScenePlan, StoryProject
+from novel_system.db.models import SnowflakeScenePlan, StoryProject
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
-from novel_system.services.llm_client import LLMConfigurationError, build_llm_request
-from novel_system.services.llm_service_base import RuntimeLLMAccess, structured_prompt_hash
-from novel_system.services.llm_accounting import (
-    LLMCallContext,
-    execute_accounted_call,
-    mark_postprocess_failure,
-)
+from novel_system.services.llm_client import LLMConfigurationError
+from novel_system.services.llm_service_base import RuntimeLLMAccess
+# 这三个名字留在本模块命名空间：运行器调用时从这里取（测试按模块属性替换它们）
+from novel_system.services.llm_accounting import execute_accounted_call, mark_postprocess_failure
+from novel_system.services.structured_llm_call import run_structured_call, supplement_accounted_call
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services import snowflake_chapter_llm as chapter_llm
-from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
 from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.snowflake_prompt_budget import (
     AUTHOR_DIRECTION_BRIEF_KEY,
@@ -816,131 +812,45 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             budget_tokens=self._input_token_budget(template),
             step_key=step_ref,
         )
-        user_prompt = _render_user_prompt(template, prompt_payload)
         structured_schema, schema_enriched = enrich_structured_schema(
             template.structured_schema,
             step_key=schema_step_key,
             template_name=template_name,
         )
-        prompt_hash = structured_prompt_hash(template_name, template.version, template.system_prompt, user_prompt, structured_schema)
-        llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
-        request = build_llm_request(
-            task_config,
+        # 调用、审计补写与错误码走共用骨架（B07-10）；计量 / 清洗失败标记 / 审计补写三个钩子取本模块命名空间里的
+        # 同名函数（调用时取），按模块属性替换它们的测试照旧生效。
+        result = run_structured_call(
+            self.session,
+            self._client(),
+            task_config=task_config,
+            template=template,
             node_id=task_key,
-            messages=[
-                {"role": "system", "content": template.system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_schema={"name": template.name, "schema": structured_schema},
-        )
-        request_summary = sanitize_audit_summary(
-            {
-                "task_key": task_key,
-                "template_name": template.name,
-                "template_version": template.version,
-                "step_key": step_ref,
+            project_id=project_id,
+            step_ref=step_ref,
+            user_prompt=_render_user_prompt(template, prompt_payload),
+            prompt_payload=prompt_payload,
+            normalize_output=normalize_output,
+            error_prefix="SNOWFLAKE",
+            failure_message=lambda exc: _llm_failure_message(exc, task_key),
+            invalid_message=str,
+            invalid_details=_invalid_output_details,
+            structured_schema=structured_schema,
+            extra_request_summary={
                 # 哪些成员对象的 schema 是按编辑器模板补全的——审计里留痕，
                 # 「模型为什么只回了空对象」才查得出是 schema 的锅还是模型的锅。
                 "response_schema_enriched": schema_enriched,
                 # 降载过的提示词必须在审计里留痕：否则「模型怎么把这个角色写丢了」
                 # 将永远查不出是预算削的还是模型的锅。摊平是为了在摘要超限压缩时存活。
                 **budget_audit_fields(budget_report),
-                **normalize(prompt_payload),
-            }
-        )
-        try:
-            response = execute_accounted_call(
-                self.session,
-                self._client(),
-                request,
-                LLMCallContext(
-                    scope_type="project",
-                    scope_id=project_id,
-                    project_id=project_id,
-                    node_id=task_key,
-                    step=step_ref,
-                ),
-                llm_call_id=llm_call_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._supplement_accounted_call(
-                llm_call_id=llm_call_id,
-                request_summary=request_summary,
-                prompt_hash=prompt_hash,
-                response_summary=error_audit_summary(exc),
-            )
-            raise DomainError(
-                "SNOWFLAKE_LLM_CALL_FAILED",
-                _llm_failure_message(exc, task_key),
-                status_code=409,
-                details={
-                    "llm_call_id": llm_call_id,
-                    "node_id": task_key,
-                    "error_code": getattr(exc, "code", exc.__class__.__name__),
-                    "next_action": "check_provider_route_model_and_retry",
-                    "response_summary": error_audit_summary(exc),
-                },
-            ) from exc
-
-        try:
-            raw_output = response.structured_output or {}
-            if not isinstance(raw_output, dict):
-                raise ValueError("structured output must be an object")
-            normalized_output = normalize_output(raw_output)
-        except Exception as exc:  # noqa: BLE001
-            mark_postprocess_failure(
-                self.session,
-                llm_call_id,
-                error_code="LLM_RESPONSE_INVALID_SCHEMA",
-                error_text=str(exc),
-            )
-            self._supplement_accounted_call(
-                llm_call_id=llm_call_id,
-                request_summary=request_summary,
-                prompt_hash=prompt_hash,
-                response_summary={
-                    "message": str(exc),
-                    "structured_output": response.structured_output,
-                    "request_id": response.request_id,
-                },
-            )
-            count_mismatch = isinstance(exc, StructuredCountMismatch)
-            sparse_output = isinstance(exc, SparseGenerationOutput)
-            if count_mismatch:
-                next_action = "regenerate_with_exact_count"
-            elif sparse_output:
-                next_action = "regenerate_with_substantive_content"
-            else:
-                next_action = "retry_or_adjust_prompt_schema"
-            raise DomainError(
-                "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA",
-                str(exc),
-                status_code=409,
-                details={
-                    "llm_call_id": llm_call_id,
-                    "node_id": task_key,
-                    "error_code": "LLM_RESPONSE_INVALID_SCHEMA",
-                    "next_action": next_action,
-                    "count_mismatch": count_mismatch,
-                    "sparse_output": sparse_output,
-                    "structured_output": response.structured_output,
-                },
-            ) from exc
-
-        self._supplement_accounted_call(
-            llm_call_id=llm_call_id,
-            request_summary=request_summary,
-            prompt_hash=prompt_hash,
-            response_summary={
-                "request_id": response.request_id,
-                "response_format": response.response_format,
-                "structured_output": response.structured_output,
             },
+            execute=execute_accounted_call,
+            mark_failure=mark_postprocess_failure,
+            supplement=supplement_accounted_call,
         )
         return WorkspaceLLMResult(
             source="llm",
-            llm_call_id=response.llm_call_id or llm_call_id,
-            payload=normalized_output,
+            llm_call_id=result.llm_call_id,
+            payload=result.output,
             notice=_budget_notice(budget_report),
         )
 
@@ -1026,32 +936,6 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         """公开可用性探针：FE 的「采纳并结构化」用它决定报错而不是落 fallback 版本。"""
         return self._llm_enabled()
 
-    def _supplement_accounted_call(
-        self,
-        *,
-        llm_call_id: str,
-        request_summary: dict[str, Any],
-        prompt_hash: str,
-        response_summary: dict[str, Any],
-    ) -> None:
-        parent = self.session.get(LlmCall, llm_call_id)
-        if parent is None:
-            raise RuntimeError(f"accounted snowflake call {llm_call_id} is missing")
-        parent.prompt_hash = prompt_hash
-        parent.request_payload_summary = sanitize_audit_summary(
-            {
-                **dict(parent.request_payload_summary or {}),
-                **request_summary,
-            }
-        )
-        parent.response_payload_summary = sanitize_audit_summary(
-            {
-                **dict(parent.response_payload_summary or {}),
-                **response_summary,
-            }
-        )
-        self.session.commit()
-
 
 def _budget_notice(report: dict[str, Any]) -> dict[str, Any] | None:
     """降载阶梯跑完仍超预算 → 作者可见的警告。
@@ -1072,6 +956,24 @@ def _budget_notice(report: dict[str, Any]) -> dict[str, Any] | None:
             "可精简上游步骤，或调高该节点的输入预算。"
         ),
         **{key: report.get(key) for key in ("budget_tokens", "estimated_before", "estimated_after", "applied")},
+    }
+
+
+def _invalid_output_details(exc: Exception, response: Any) -> dict[str, Any]:
+    """输出不合格时错误细节里 ``error_code`` 之后的键：计数不对 / 太稀疏各有下一步，FE 据此提示重生成。"""
+    count_mismatch = isinstance(exc, StructuredCountMismatch)
+    sparse_output = isinstance(exc, SparseGenerationOutput)
+    if count_mismatch:
+        next_action = "regenerate_with_exact_count"
+    elif sparse_output:
+        next_action = "regenerate_with_substantive_content"
+    else:
+        next_action = "retry_or_adjust_prompt_schema"
+    return {
+        "next_action": next_action,
+        "count_mismatch": count_mismatch,
+        "sparse_output": sparse_output,
+        "structured_output": response.structured_output,
     }
 
 

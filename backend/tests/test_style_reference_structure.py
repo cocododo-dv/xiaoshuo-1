@@ -610,7 +610,7 @@ def captured_snowflake_requests(monkeypatch):
     monkeypatch.setattr(mod, "execute_accounted_call", fake_execute)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_supplement_accounted_call", lambda self, **kwargs: None)
+    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
     return captured
 
 

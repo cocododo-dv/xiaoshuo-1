@@ -64,8 +64,7 @@ def _install_llm(monkeypatch, responder):
                         lambda session, llm_call_id, **kwargs: None)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_supplement_accounted_call",
-                        lambda self, **kwargs: None)
+    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
 
 
 def _payload_of(request) -> dict:
@@ -480,8 +479,8 @@ def test_shedding_is_recorded_in_the_llm_audit_summary(session, monkeypatch):
         return _respond({"scenes": [_deep(sid) for sid in _focus_ids(_payload_of(request))]})
 
     _install_llm(monkeypatch, responder)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_supplement_accounted_call",
-                        lambda self, **kwargs: summaries.append(kwargs.get("request_summary") or {}))
+    monkeypatch.setattr(mod, "supplement_accounted_call",
+                        lambda session, llm_call_id, **kwargs: summaries.append(kwargs.get("request_summary") or {}))
     monkeypatch.setenv("NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET", "2000")
     _seed(session, "prj-audit", scene_count=30)
 
