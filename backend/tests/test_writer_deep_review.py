@@ -663,6 +663,12 @@ def test_a_provider_failure_is_a_502_and_a_missing_route_a_409_on_every_writer_n
     assert patch.status_code == 502 and patch.json()["error"]["code"] == "WRITER_PASSAGE_PATCH_LLM_FAILED"
     assert [call["node_id"] for call in calls] == ["writer_deep_review", "writer_deep_review", "writer_passage_patch"]
     assert [call["step"] for call in calls] == ["writer_deep_review", "writer_passage_review", "writer_passage_patch"]
+    # 失败详情说得出是哪一步（B09-24）：整场深评与局部深评是同一个节点，只有 step 分得开
+    assert [response.json()["error"]["details"]["step"] for response in (deep, passage, patch)] == [
+        "writer_deep_review",
+        "writer_passage_review",
+        "writer_passage_patch",
+    ]
 
     # 节点没有路由（作者能处理的配置问题）：409 + 能力码，next_action 指向系统设置
     monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", _failing_runner("LLM_ROUTE_NOT_CONFIGURED", calls))
@@ -671,6 +677,7 @@ def test_a_provider_failure_is_a_502_and_a_missing_route_a_409_on_every_writer_n
     error = patch.json()["error"]
     assert error["code"] == "WRITER_PASSAGE_PATCH_LLM_REQUIRED"
     assert error["details"]["next_action"].startswith("configure_") and error["details"]["node_id"] == "writer_passage_patch"
+    assert error["details"]["step"] == "writer_passage_patch"
     session.expire_all()
     assert session.query(WriterEvaluation).count() == 0 and session.query(PassagePatchCandidate).count() == 0
 

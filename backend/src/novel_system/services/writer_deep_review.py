@@ -686,6 +686,8 @@ class WriterDeepReviewService(PassagePatchMixin):
                 operation=node.operation,
                 node_id=node_id,
                 next_action=node.next_action,
+                # 局部深评与整场深评是同一个节点，失败详情里只有 step 分得开是哪一个流程（B09-24）
+                extra_details={"step": step},
             )
 
     def _scene_design_sections(self, scene_id: str) -> dict[str, str]:
