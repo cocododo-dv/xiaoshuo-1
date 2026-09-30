@@ -7,7 +7,8 @@ runtime_defaults / accounting_contract），环境变量各解析一份（B09-05
 
 * ``load_env_settings()``：只看环境变量的 ``Settings``；``settings.get_settings()`` 在它上面叠库里的活动 api 快照。
 * ``load_database_runtime()``：数据库地址与外键开关，Alembic 与会话工厂用（不碰其余变量）。
-* ``env_admin_token()`` / ``env_config_secret()`` / ``reservation_recovery_ttl_seconds()``：各自一个变量。
+* ``env_admin_token()`` / ``env_config_secret()`` / ``reservation_recovery_ttl_seconds()``：各自一个变量
+  （最后这个 ``load_env_settings`` 也读一遍：写错了启动就失败）。
 * ``warn_retired_env_vars()``：已经没有效果、还设着的变量，每个进程警告一次。
 
 布尔变量的宽松 / 严格两种读法按变量保持原样（见 ``env_parsing``）。
@@ -259,6 +260,9 @@ def load_env_settings() -> Settings:
     content_safety_mode = os.environ.get("NOVEL_SYSTEM_CONTENT_SAFETY_MODE", "review").strip().lower()
     if content_safety_mode not in {"review", "audit"}:
         raise ValueError("NOVEL_SYSTEM_CONTENT_SAFETY_MODE must be review or audit")
+    # 启动对账才用这个值，但写错了要在这里就起不来：等到对账时才读，它只记一条 scan_failed，后端照常跑，
+    # 没有主人的非场景预留就永远回收不了（重评 R3 退役的是另外八个变量，它留着）。
+    reservation_recovery_ttl_seconds()
     return Settings(
         database_url=database_url,
         vector_backend=vector_backend,

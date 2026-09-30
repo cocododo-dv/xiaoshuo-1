@@ -59,6 +59,18 @@ def test_retired_quota_env_vars_log_one_startup_warning_and_block_nothing(monkey
     assert "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT" not in warnings[0]
 
 
+@pytest.mark.parametrize("value", ["0", "-60", "an-hour"])
+def test_invalid_reservation_recovery_ttl_still_stops_startup(monkeypatch, value: str) -> None:
+    """NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS 没有退役(重评 R3 只退役那八个):写错了照旧起不来。
+    只在启动对账里才读的话,后端照常起来,对账只记一条 scan_failed,没有主人的非场景预留永远回收不了。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS", value)
+
+    with pytest.raises(ValueError, match="NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS"):
+        get_settings(include_runtime_config=False)
+    with pytest.raises(ValueError, match="NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS"):
+        create_app()
+
+
 def test_settings_read_does_not_create_vector_store_directory(monkeypatch, tmp_path) -> None:
     vector_dir = tmp_path / "not-initialized-yet"
     monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", str(vector_dir))
