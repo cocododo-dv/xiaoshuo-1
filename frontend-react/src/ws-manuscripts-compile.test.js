@@ -168,7 +168,7 @@ describe("正史审核台的词表", () => {
     expect(Object.values(CANON_EVENT_LABELS).every((label) => /[\u4e00-\u9fff]/.test(label))).toBe(true);
   });
 
-  it("\u63d0\u53d6\u7ed3\u679c / \u539f\u56e0\u7684\u53eb\u6cd5\u53ea\u6536\u540e\u7aef\u8fd8\u4f1a\u5199\u7684\u503c\uff08\u540e\u7aef\u65e9\u4e0d\u518d\u5199\u7684\u952e\u662f\u6b7b\u53eb\u6cd5\uff0c\u6bd4\u5982\u79bb\u7ebf\u6a21\u5f0f\u9000\u5f79\u540e\u7684 offline_unsupported\uff09", () => {
+  it("提取结果 / 原因的叫法只收后端还会写的值（后端早不再写的键是死叫法，比如离线模式退役后的 offline_unsupported）", () => {
     const servicesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../backend/src/novel_system/services");
     const sources = [];
     const walk = (dir) => {
