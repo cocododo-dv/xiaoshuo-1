@@ -1,18 +1,19 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
-import { LIB_CATS, LIB_ENTRIES, libLoadState, libRefetch, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
+import { LIB_CATS, libLive, libLoadState, libRefetch, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
 import {
   LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_entrySub, LIB_overviewFacts, LIB_sortWithPin,
-} from "./ws-library-derive.jsx";
+} from "./ws-library-derive.js";
 import { Dossier, DossierNav } from "./ws-library-dossier.jsx";
 import { LibGraph } from "./ws-library-graph.jsx";
 import { LibTimeline } from "./ws-library-timeline.jsx";
 import { LibOverview } from "./ws-library-overview.jsx";
 import { LibEntryRow, libCatLabel } from "./ws-library-parts.jsx";
-import { DossierCreate, DossierEdit, LIB_createEntry, LIB_deleteEntry, LIB_migrateLegacy, LIB_persist } from "./ws-library-edit.jsx";
-import { WsWorks, useActiveWorkIdentity } from "./ws-works.jsx";
+import { DossierCreate, DossierEdit, LIB_createEntry, LIB_deleteEntry, LIB_persist } from "./ws-library-edit.jsx";
+import { useActiveWorkIdentity } from "./ws-works.jsx";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
+import { useWindowEvents } from "./lib/events.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { isImeComposing } from "./lib/keyboard.js";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner } from "./ws-ui.jsx";
@@ -27,10 +28,10 @@ const {
 
 /* ==========================================================
    资料 · 故事圣经（左目录 | 右详情），另有图谱与时间线两种看法。
-   数据只有一份：ws-library-data.jsx 从后端装载的 LIB_ENTRIES；这里不再叠本地覆盖层——
-   新建先落后端再选中，编辑保存后以服务端为准刷新。
+   数据只有一份：ws-library-store.js 从后端装载的档案快照（这里经门面 ws-library-data.jsx / ws-library-edit.jsx
+   import——门面顺带把过渡期的 window 接缝挂上）；不叠本地覆盖层——新建先落后端再选中，编辑保存后以服务端为准刷新。
    这个文件只管页面：目录、筛选、选中与编辑态的切换。档案阅读视图在 ws-library-dossier.jsx，
-   编辑 / 新建表单在 ws-library-edit.jsx，共用的行与字块在 ws-library-parts.jsx；回收站在 ws-trash.jsx。
+   编辑 / 新建表单在 ws-library-form.jsx，共用的行与字块在 ws-library-parts.jsx；回收站在 ws-trash.jsx。
    ========================================================== */
 
 const VIEW_OPTIONS = [
@@ -55,17 +56,18 @@ function WsLibrary({ go }) {
   const listRef = useLbRef(null);
   const pendingEdit = useLbRef(null);   /* 新建后自动进入编辑态的目标 id */
   const editDirty = useLbRef(false);    /* 编辑表单是否有没保存的改动（DossierEdit 回报） */
+  /* 订阅修订号（档案与读取状态都算）：挂上就按需拉一次当前作品的资料库 */
   const libraryRevision = useLbExternalStore(libSubscribe, libSnapshot, libSnapshot);
-  const chapters = useCatalogChapters ? useCatalogChapters() : [];
-  const work = useActiveWorkIdentity ? useActiveWorkIdentity() : (WsWorks ? WsWorks.active() : { title: "" });
+  const chapters = useCatalogChapters();
+  const work = useActiveWorkIdentity();
 
   const entries = useLbMemo(
-    () => LIB_ENTRIES.map(e => (e.id in pinOverride ? { ...e, pinned: pinOverride[e.id] } : e)),
+    () => libLive().entries.map(e => (e.id in pinOverride ? { ...e, pinned: pinOverride[e.id] } : e)),
     [libraryRevision, pinOverride] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const byId       = useLbMemo(() => entries.reduce((m, e) => { m[e.id] = e; return m; }, {}), [entries]);
   const backlinks  = useLbMemo(() => LIB_buildBacklinks(entries), [entries]);
-  const facts      = useLbMemo(() => LIB_overviewFacts(entries), [entries]);
+  const facts      = useLbMemo(() => LIB_overviewFacts(entries, byId, backlinks), [entries, byId, backlinks]);
 
   /* counts per category, respecting the live query */
   const matches = useLbMemo(() => {
@@ -133,10 +135,6 @@ function WsLibrary({ go }) {
     }).then((ok) => { if (ok) { editDirty.current = false; fn(); } });
   };
 
-  /* 外部跳转的监听只挂一次，经 ref 调到最新的 leaveEdit（否则拿到的是首帧的 editing=false，护不住没保存的表单） */
-  const leaveEditRef = useLbRef(leaveEdit);
-  leaveEditRef.current = leaveEdit;
-
   const openEntry = (id, { reveal = false } = {}) => leaveEdit(() => {
     setCreating(false);
     if (reveal) { setQuery(""); setCat("all"); }
@@ -192,24 +190,19 @@ function WsLibrary({ go }) {
     if (done) { setSelId(null); setEditing(false); }
   };
 
-  /* 旧版本机覆盖层（只存在浏览器里的改动 / 新建）一次性上行到服务端；每部作品成功一次，失败下次打开再试 */
-  const workId = work && work.id;
-  useLbEffect(() => { LIB_migrateLegacy(); }, [workId]);
-
-  /* 外部跳转：从正文写作点击实体 → 打开对应档案 */
-  useLbEffect(() => {
-    const h = (e) => {
+  /* 外部跳转：从正文写作点击实体 → 打开对应档案。处理函数每次渲染换成最新的（拿到当前的编辑态，
+     护得住没保存的表单）；监听先挂上，再宣布「资料页就绪」——就绪时会同步投递排队的指令。 */
+  useWindowEvents({
+    "ws:lib-open": (e) => {
       const id = e.detail;
       if (!id) return;
-      leaveEditRef.current(() => { setVmode("files"); setCreating(false); setQuery(""); setCat("all"); setSelId(id); setPane("detail"); });
-    };
-    window.addEventListener("ws:lib-open", h);
+      leaveEdit(() => { setVmode("files"); setCreating(false); setQuery(""); setCat("all"); setSelId(id); setPane("detail"); });
+    },
+  });
+  useLbEffect(() => {
     setViewIntentTargetReady("library");
-    return () => {
-      setViewIntentTargetReady("library", false);
-      window.removeEventListener("ws:lib-open", h);
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => setViewIntentTargetReady("library", false);
+  }, []);
 
   /* 键盘：焦点在列表某一条上时，↑/↓ 翻条目，Home/End 到首尾；焦点跟着走 */
   const focusItem = (id) => {

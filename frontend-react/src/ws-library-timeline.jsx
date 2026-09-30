@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_chapterLabel, LIB_entrySub } from "./ws-library-derive.jsx";
+import { LIB_chapterLabel, LIB_entrySub } from "./ws-library-derive.js";
 import { LibEntryRow, LibGlyph, libAccClass } from "./ws-library-parts.jsx";
 import { EmptyState, SectionLabel } from "./ws-ui.jsx";
 

@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_CATS } from "./ws-library-data.jsx";
-import { LIB_REL_TYPES, LIB_relLabel, LIB_relType } from "./ws-library-derive.jsx";
+import { LIB_CATS } from "./ws-library-store.js";
+import { LIB_REL_TYPES, LIB_relLabel, LIB_relType } from "./ws-library-derive.js";
 import { LibEntryRow, libCatLabel } from "./ws-library-parts.jsx";
 import { wsKey } from "./ws-works.jsx";
 import { EmptyState, IconButton, Segmented } from "./ws-ui.jsx";
@@ -22,7 +22,7 @@ const GW = 1000, GH = 660;
 /* 舞台四周留给节点半径和名字的像素边距（名字写在节点下方，所以下边多留一点） */
 const PAD = { l: 48, r: 48, t: 40, b: 56 };
 const POS_KEY = "ws-lib-graph-pos-v1";
-const posKey = () => (wsKey ? wsKey(POS_KEY) : POS_KEY);
+const posKey = () => wsKey(POS_KEY);
 
 /* 无向、去重的边 */
 function buildEdges(entries, byId) {

@@ -1,13 +1,13 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { LIB_chapterLabel, LIB_groupConnections, LIB_relLabel } from "./ws-library-derive.jsx";
+import { LIB_chapterLabel, LIB_groupConnections, LIB_relLabel } from "./ws-library-derive.js";
 import { LIB_CAT_BY_ID, LibEntryRow, LibGlyph, libAccClass, libCatLabel } from "./ws-library-parts.jsx";
 import { navigateWithViewIntent } from "./ws-view-intents.js";
 import { IconButton, SectionLabel, Tag } from "./ws-ui.jsx";
 
 /* ==========================================================
    资料 · 一份档案的阅读视图（Dossier）与它上面的导航条（DossierNav）。
-   编辑 / 新建表单在 ws-library-edit.jsx（那里还挂着写作台用的 window 契约）。
+   编辑 / 新建表单在 ws-library-form.jsx。
    ========================================================== */
 
 /* 导航条：回总览 / 当前类别，以及沿当前可见列表翻上一条、下一条 */

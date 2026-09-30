@@ -1,4 +1,5 @@
-import { LIB_CATS } from "./ws-library-data.jsx";
+import { LIB_CATS } from "./ws-library-store.js";
+import { chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    Library — 派生层 (selectors)
@@ -122,27 +123,25 @@ function LIB_entrySub(e) {
 }
 
 /* ---- 章节显示名：chapter_ref 可能是章 id（目录里的 backendId）或 slug，也可能是作者手写的文字。
-   目录里找得到 → 「第 N 章 · 标题」；形如内部 id 却找不到 → 说它不在目录里；其余原样显示。 */
+   目录里找得到 → 全站同一个叫法「第 N 章 · 章名」（labels/catalog 的 chapterLabel；以前这里自己拼，
+   目录的章号是「01」，就成了「第 01 章」）；形如内部 id 却找不到 → 与 chapterLabelById 同一句「已不在目录里的章」；
+   其余（作者手写的「开篇前三年那一章」）原样显示。 */
 function LIB_chapterLabel(ref, chapters) {
   const value = String(ref || "").trim();
   if (!value) return "";
   const list = Array.isArray(chapters) ? chapters : [];
   const hit = list.find(c => c && (c.backendId === value || c.id === value));
-  if (hit) {
-    const no = hit.n != null ? `第 ${hit.n} 章` : "";
-    const title = String(hit.title || "").trim();
-    if (no && title && title !== no) return `${no} · ${title}`;
-    return title || no || "未命名章节";
-  }
-  if (/^[A-Za-z0-9]+_[A-Za-z0-9_]+$/.test(value) || /^ch\d+$/i.test(value)) return "章节已不在目录里";
+  if (hit) return chapterLabel(hit);
+  if (/^[A-Za-z0-9]+_[A-Za-z0-9_]+$/.test(value) || /^ch\d+$/i.test(value)) return "已不在目录里的章";
   return value;
 }
 
 /* ---- 总览：只说数据里真有的事 ---- */
 const LIB_RECENT_N = 6;
-function LIB_overviewFacts(entries) {
-  const byId = entries.reduce((m, e) => { m[e.id] = e; return m; }, {});
-  const backlinks = LIB_buildBacklinks(entries);
+/* byId / backlinks 由调用方给（资料页已经为别的用途算好了一份，不再各算一遍）；不给就在这里算 */
+function LIB_overviewFacts(entries, byId = null, backlinks = null) {
+  byId = byId || entries.reduce((m, e) => { m[e.id] = e; return m; }, {});
+  backlinks = backlinks || LIB_buildBacklinks(entries);
   const total = entries.length;
   const linksN = LIB_linkCount(entries, byId);
   const byCat = LIB_CATS.map(c => ({ cat: c, n: entries.filter(e => e.cat === c.id).length }));
@@ -172,7 +171,7 @@ function LIB_sortWithPin(items, sortKey) {
 }
 
 export {
-  LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_linkCount, LIB_overviewFacts,
+  LIB_buildBacklinks, LIB_connections, LIB_overviewFacts,
   LIB_SORTS, LIB_sortWithPin, LIB_entrySub, LIB_chapterLabel,
-  LIB_REL_TYPES, LIB_REL_TYPE_BY_ID, LIB_relType, LIB_relLabel, LIB_groupConnections,
+  LIB_REL_TYPES, LIB_relType, LIB_relLabel, LIB_groupConnections,
 };

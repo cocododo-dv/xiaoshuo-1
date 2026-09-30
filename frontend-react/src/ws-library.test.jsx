@@ -1,19 +1,12 @@
-// WsLibrary store 层单测：libFetch 关系双向索引 + LIB_persist diff→PATCH +
-// relations CRUD（含 event 终点跳过）+ 失败 refetch/告警 + LIB_persistAdds 去重。
-//
-// 「store 实质」不在 ws-library.jsx（那是视图组件），而在：
-//   · ws-library-data.jsx —— libFetch / LIB_ENTRIES / LIB_BY_ID / window.LIB_refetch
-//   · ws-library-edit.jsx —— LIB_persist / libSyncLinks / LIB_persistAdds / LIB_newEntry
-// 这两个模块级纯函数族就是被测契约面。
+// 资料库：store（ws-library-store.js）的读取 / 关系双向索引 / 写入（diff→PATCH、关系增删、失败回滚），
+// 过渡期门面（ws-library-data.jsx / ws-library-edit.jsx）挂的 window 接缝，以及资料页视图。
 //
 // 断言取向（对齐 ws-catalog.test 范式）：断「可观测结果」+「仅失败路径触发的 alert」。
-// 写动词去重不可靠，故失败回滚断 alert + refetch；端点路由断精确 URL+body（可证伪）。
+// 失败回滚断 alert + 以服务端为准重读（又发了一次 /library GET）；端点路由断精确 URL+body（可证伪）。
 // installApiRouter 不识别 /library，故本 spec 自带 apiGet 路由。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -26,9 +19,10 @@ vi.mock("./lib/client.js", () => ({
 vi.mock("./ws-catalog.jsx", () => ({
   // 大事记的「所在章」按目录解析；资料库视图订阅目录
   WsCatalog: { get: () => [], subscribe: () => () => {} },
+  // 目录适配层给的章号是补零的字符串（catalog_reader 的 "01"）
   useCatalogChapters: () => [
-    { id: "ch01", backendId: "prj-main_CH01", n: 1, title: "雾港" },
-    { id: "ch02", backendId: "prj-main_CH02", n: 2, title: "潮信" },
+    { id: "ch01", backendId: "prj-main_CH01", n: "01", title: "雾港" },
+    { id: "ch02", backendId: "prj-main_CH02", n: "02", title: "潮信" },
   ],
 }));
 
@@ -81,19 +75,20 @@ function namedLibrary(id, name) {
 async function loadLib(lib = libResponse()) {
   const client = await import("./lib/client.js");
   routeApiGet(client, lib);
-  // 先让 WsWorks 落到真实激活作品，再 import 数据层（其 import 期 libFetch 才会真正拉取）
-  await import("./ws-works.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  // 先让 WsWorks 落到真实激活作品，再读资料库（store 只在有人要时才拉）
+  const { WsWorks } = await import("./ws-works.jsx");
+  await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
   const data = await import("./ws-library-data.jsx");
   const edit = await import("./ws-library-edit.jsx");
-  await window.LIB_refetch();   // 等内联 IIFE 拉取 settle（resolve 在 LIB_ENTRIES 赋值之后）
+  await data.libRefetch();
   return { client, data, edit };
 }
+
+const libraryGets = (client) => client.apiGet.mock.calls.filter(c => /\/library$/.test(c[0])).length;
 
 describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
@@ -110,7 +105,8 @@ describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
   it("空 library 不抛、缓存清空", async () => {
     const { data } = await loadLib({ characters: [], entities: [], timeline: [], relations: [] });
     expect(data.LIB_ENTRIES.length).toBe(0);
-    expect(window.LIB_relationsRaw()).toEqual([]);
+    expect(data.libLive().entries).toEqual([]);
+    expect(data.libLoadState().status).toBe("ready");
   });
 
   it("A→B 快速切换时立即隔离旧快照，且 A 的迟到响应不能覆盖 B", async () => {
@@ -130,7 +126,9 @@ describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
     const { WsWorks } = await import("./ws-works.jsx");
     await vi.waitFor(() => expect(WsWorks.list().map(w => w.id)).toEqual(["project-a", "project-b"]), T);
     const data = await import("./ws-library-data.jsx");
+    const off = data.libSubscribe(() => {});   // 像资料页一样挂上：开始读 A
     expect(data.LIB_ENTRIES).toHaveLength(0);
+    expect(data.libLoadState()).toMatchObject({ pid: "project-a", status: "loading" });
 
     WsWorks.setActive("project-b");
     await vi.waitFor(() => expect(data.LIB_ENTRIES.map(e => e.name)).toEqual(["乙角色"]), T);
@@ -140,13 +138,122 @@ describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
     await Promise.resolve();
     expect(data.LIB_ENTRIES.map(e => e.name)).toEqual(["乙角色"]);
     expect(data.LIB_BY_ID["char-a"]).toBeUndefined();
+    expect(data.libLive().entries.map(e => e.name)).toEqual(["乙角色"]);
+    off();
+  });
+});
+
+/* store 本身：import 不拉数据，第一个用到的人才拉（写作台 / 章节编排直接 import 它，不必先开过「资料」页——审计 F05-01）；
+   快照不可变，变了就换一份；门面只挂还有人读的几个窗口名 */
+describe("资料库 store：按需拉取、不可变快照、窗口接缝", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  async function activeWork() {
+    const client = await import("./lib/client.js");
+    routeApiGet(client, libResponse());
+    window.localStorage.setItem("ws_active_work_v1", "prj-main");
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
+    return client;
+  }
+
+  it("import 不拉；第一个订阅者才拉一次，读完快照换新、第二个订阅者不再拉", async () => {
+    const client = await activeWork();
+    const store = await import("./ws-library-store.js");
+    // 基线取在 import 之后：上一个用例留下的旧模块实例在 import 新实例时才撤掉它的换作品监听
+    const base = libraryGets(client);
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(libraryGets(client)).toBe(base);
+    expect(store.libLive().entries).toEqual([]);
+    const first = store.libLive();
+
+    const seen = vi.fn();
+    const off = store.libSubscribe(seen);
+    await vi.waitFor(() => expect(store.libLoadState().status).toBe("ready"), T);
+    expect(libraryGets(client)).toBe(base + 1);
+    expect(seen).toHaveBeenCalled();
+    const live = store.libLive();
+    expect(live).not.toBe(first);
+    expect(live.entries.map(e => e.name)).toEqual(["林岑", "周岚", "档案馆", "第三潮汐事件"]);
+    expect(live.byId.zhou.name).toBe("周岚");
+    expect(store.libLive()).toBe(live);        // 没变就是同一份，不每次复制
+
+    const off2 = store.libSubscribe(() => {});
+    await act(async () => { await Promise.resolve(); });
+    expect(libraryGets(client)).toBe(base + 1);
+    off(); off2();
+  });
+
+  it("useLibraryLive：冷启动挂上就拉，读到后组件拿到条目（写作台不必先开资料页）", async () => {
+    await activeWork();
+    const store = await import("./ws-library-store.js");
+    function Names() {
+      const live = store.useLibraryLive();
+      return <span>{live.entries.map(e => e.name).join("、")}</span>;
+    }
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<Names />));
+      await vi.waitFor(() => expect(host.textContent).toBe("林岑、周岚、档案馆、第三潮汐事件"), T);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("没人用过就不因为换作品去拉；用过之后换作品跟着换", async () => {
+    const client = await import("./lib/client.js");
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [
+        { project_id: "project-a", title: "甲项目" }, { project_id: "project-b", title: "乙项目" },
+      ] });
+      if (url === "/api/v2/projects/project-a/library") return Promise.resolve(namedLibrary("char-a", "甲角色"));
+      if (url === "/api/v2/projects/project-b/library") return Promise.resolve(namedLibrary("char-b", "乙角色"));
+      return Promise.resolve({});
+    });
+    window.localStorage.setItem("ws_active_work_v1", "project-a");
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.activeId()).toBe("project-a"), T);
+    const store = await import("./ws-library-store.js");
+    const base = libraryGets(client);
+
+    WsWorks.setActive("project-b");
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(libraryGets(client)).toBe(base);
+
+    await store.libEnsureLoaded();
+    expect(store.libLive().entries.map(e => e.name)).toEqual(["乙角色"]);
+    WsWorks.setActive("project-a");
+    await vi.waitFor(() => expect(store.libLive().entries.map(e => e.name)).toEqual(["甲角色"]), T);
+  });
+
+  it("门面只挂还有人读的窗口名：LIB_ENTRIES / LIB_BY_ID / LIB_CATS（写作台、章节编排、冒烟）与 LIB_persist / LIB_live", async () => {
+    await activeWork();
+    const data = await import("./ws-library-data.jsx");
+    await import("./ws-library-edit.jsx");
+    await data.libRefetch();
+    expect(window.LIB_ENTRIES).toBe(data.LIB_ENTRIES);
+    expect(window.LIB_ENTRIES.map(e => e.name)).toContain("林岑");
+    expect(window.LIB_BY_ID.lin.name).toBe("林岑");
+    expect(window.LIB_CATS.map(c => c.id)).toEqual(["people", "world", "events"]);
+    expect(window.LIB_live().byId.lin.name).toBe("林岑");
+    expect(typeof window.LIB_persist).toBe("function");
+    for (const gone of ["LIB_refetch", "LIB_relationsRaw", "LIB_subscribe", "LIB_snapshot", "LIB_loadEdits", "LIB_applyEdit",
+      "LIB_loadAdds", "LIB_persistAdds", "LIB_newEntry", "LIB_seedOn", "DossierEdit", "DossierCreate"]) {
+      expect(window[gone], gone).toBeUndefined();
+    }
   });
 });
 
 describe("WsLibrary 视图与异步资料快照连通", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
@@ -200,7 +307,9 @@ describe("WsLibrary 视图与异步资料快照连通", () => {
     await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
     const data = await import("./ws-library-data.jsx");
     const { WsLibrary } = await import("./ws-library.jsx");
-    await vi.waitFor(() => expect(data.libLoadState().status).toBe("error"), T);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await data.libRefetch()).toBe(false);
+    expect(data.libLoadState().status).toBe("error");
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -234,7 +343,6 @@ describe("WsLibrary 视图与异步资料快照连通", () => {
 describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
@@ -277,53 +385,23 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
   it("event 作为 relation 终点被跳过（不产生 to_ref=event: 的 POST）", async () => {
     const { client, edit } = await loadLib();
     client.apiPost.mockClear();
-    const refetch = vi.spyOn(window, "LIB_refetch");
     // 保留 →zhou(避免删边)，新增 →e1(事件终点应被守卫跳过)
-    edit.LIB_persist({ lin: { links: [
+    expect(await edit.LIB_persist({ lin: { links: [
       { id: "zhou", type: "conflict", rel: "宿敌", relationId: "r1" },
       { id: "e1", type: "related", rel: "卷入" },
-    ] } });
-    await vi.waitFor(() => expect(refetch).toHaveBeenCalled(), T); // persist 全程跑完
+    ] } })).toBe(true); // persist 全程跑完
     const postedTo = client.apiPost.mock.calls.map(c => c[1] && c[1].to_ref);
     // 可证伪：删掉 startsWith("event:") 守卫 → 出现 to_ref="event:e1" 的 POST
     expect(postedTo).not.toContain("event:e1");
   });
 
-  it("PATCH 失败→alert 告警且 refetch 以服务端为准回滚", async () => {
+  it("PATCH 失败→alert 告警且以服务端为准重读回滚", async () => {
     const { client, edit } = await loadLib();
-    const refetch = vi.spyOn(window, "LIB_refetch");
+    const before = libraryGets(client);
     client.apiPatch.mockRejectedValueOnce(new Error("boom"));
-    edit.LIB_persist({ lin: { name: "会失败" } });
-    await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T); // 仅失败路径调 alert
-    await vi.waitFor(() => expect(refetch).toHaveBeenCalled(), T);      // 回滚 = 重拉服务端
-  });
-
-  it("LIB_persistAdds 新建 people→POST characters，且同 id 不重复发", async () => {
-    const { client, edit } = await loadLib();
-    client.apiPost.mockClear();
-    const ne = edit.LIB_newEntry("people", "新人物");
-    edit.LIB_persistAdds([ne]);
-    edit.LIB_persistAdds([ne]); // 第二次应被 libSentAdds 去重
-    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/prj-main/library/characters",
-      expect.objectContaining({ name: "新人物" })), T);
-    const charPosts = client.apiPost.mock.calls.filter(c => /\/library\/characters$/.test(c[0]));
-    expect(charPosts.length).toBe(1); // 去重可证伪
-  });
-
-  it("新建请求失败不会污染去重集合；同一条目可重试", async () => {
-    const { client, edit } = await loadLib();
-    client.apiPost.mockClear();
-    client.apiPost.mockRejectedValueOnce(new Error("network down"));
-    const ne = edit.LIB_newEntry("people", "可重试人物");
-
-    expect(await edit.LIB_persistAdds([ne])).toBe(false);
-    expect(window.alert).toHaveBeenCalled();
-    client.apiPost.mockResolvedValueOnce({});
-    expect(await edit.LIB_persistAdds([ne])).toBe(true);
-
-    const posts = client.apiPost.mock.calls.filter(c => /\/library\/characters$/.test(c[0]));
-    expect(posts).toHaveLength(2);
+    expect(await edit.LIB_persist({ lin: { name: "会失败" } })).toBe(false);
+    expect(window.alert).toHaveBeenCalled();                                  // 仅失败路径调 alert
+    await vi.waitFor(() => expect(libraryGets(client)).toBe(before + 1), T); // 回滚 = 重拉服务端
   });
 
   /* 审计 F05-02：同一份表单保存两次（中间服务端被别处改过，例如构思第 04 步给人物改了名），第二次必须照样发出去——
@@ -361,7 +439,6 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
 describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
@@ -431,28 +508,6 @@ describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () 
       expect.objectContaining({ name: "钟楼", kind: "location" }));
   });
 
-  it("旧本机覆盖层迁移：资料库没读到时不上行也不写完成标记，读到后才 PATCH 并记完成", async () => {
-    const { client, edit } = await loadLib();
-    window.localStorage.setItem("ws-lib-edits-v1::prj-main", JSON.stringify({ lin: { blurb: "旧的本机简述" } }));
-    client.apiPatch.mockClear();
-    client.apiGet.mockImplementation((url) => {
-      if (/\/library$/.test(url)) return Promise.reject(new Error("offline"));
-      return Promise.resolve({ items: [{ project_id: "prj-main", title: "北岸手记" }] });
-    });
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(await edit.LIB_migrateLegacy()).toBe(false);
-    expect(client.apiPatch).not.toHaveBeenCalled();
-    expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).toBeNull();
-
-    routeApiGet(client, libResponse());
-    expect(await edit.LIB_migrateLegacy()).toBe(true);
-    expect(client.apiPatch).toHaveBeenCalledWith(
-      "/api/v2/projects/prj-main/library/characters/lin",
-      expect.objectContaining({ details: expect.objectContaining({ blurb: "旧的本机简述" }) }),
-    );
-    expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).not.toBeNull();
-  });
-
   it("删除人物遇到「仍在使用」时说清原因并返回 false", async () => {
     const { client, edit, data } = await loadLib();
     client.apiDelete.mockRejectedValueOnce(Object.assign(new Error("character is still referenced"), {
@@ -504,7 +559,6 @@ const buttonByText = (root, text) => Array.from(root.querySelectorAll("button"))
 describe("WsLibrary 视图：新建、键盘与删除", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
@@ -589,17 +643,20 @@ describe("WsLibrary 视图：新建、键盘与删除", () => {
     }
   });
 
-  it("打开资料库时把旧版只存在本机的新建档案上行一次", async () => {
+  /* 批准 #25（重评 R16）：7–8 月浏览器里的旧资料一次性上行删掉了——打开资料页不再读旧键、不往后端写，旧键原样留着 */
+  it("打开资料库不再上行浏览器里的旧资料，旧键原样留着", async () => {
     window.localStorage.setItem("ws-lib-additions-v1::prj-main", JSON.stringify([
       { id: "u-old1", cat: "world", name: "旧本机地点", kind: "", summary: "", blurb: "", tags: [], facts: [], links: [] },
     ]));
+    window.localStorage.setItem("ws-lib-edits-v1::prj-main", JSON.stringify({ lin: { blurb: "旧的本机简述" } }));
     const view = await mountLibrary(libResponse());
     try {
-      await vi.waitFor(() => expect(view.client.apiPost).toHaveBeenCalledWith(
-        "/api/v2/projects/prj-main/library/entities",
-        expect.objectContaining({ name: "旧本机地点" }),
-      ), T);
-      await vi.waitFor(() => expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).not.toBeNull(), T);
+      await act(async () => { await new Promise(r => setTimeout(r, 30)); });
+      expect(view.client.apiPost).not.toHaveBeenCalled();
+      expect(view.client.apiPatch).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem("ws-lib-additions-v1::prj-main")).toContain("旧本机地点");
+      expect(window.localStorage.getItem("ws-lib-edits-v1::prj-main")).toContain("旧的本机简述");
+      expect(window.localStorage.getItem("ws-lib-migrated-v1::prj-main")).toBeNull();
     } finally {
       await view.unmount();
     }
@@ -641,10 +698,11 @@ describe("WsLibrary 视图：新建、键盘与删除", () => {
       expect(text).not.toContain("就绪度");
       expect(text).not.toContain("待你处理");
       expect(text).toContain("还没写简述");
-      // 大事记的所在章经目录解析成「第 N 章 · 标题」
+      // 大事记的所在章经目录解析成全站同一个叫法「第 N 章 · 标题」（不是「第 02 章」）
       await click(view.host.querySelector('.lib2-item[data-lib-id="e1"]'));
       expect(view.host.textContent).toContain("2003");
       expect(view.host.textContent).toContain("第 2 章 · 潮信");
+      expect(view.host.textContent).not.toContain("第 02 章");
       expect(view.host.textContent).not.toContain("prj-main_CH02");
     } finally {
       await view.unmount();
@@ -655,7 +713,6 @@ describe("WsLibrary 视图：新建、键盘与删除", () => {
 describe("WsLibrary 视图：图谱与时间线", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
