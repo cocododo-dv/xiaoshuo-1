@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ catalog: [], projectId: "p1", catalogReady: true, catalogError: null, removeScenes: null }));
 const flow = vi.hoisted(() => ({
+  subscribe: vi.fn(() => () => {}),
   refresh: vi.fn().mockResolvedValue({}),
   body: vi.fn(() => null),
   snapshot: vi.fn(),
-  aggregate: vi.fn().mockResolvedValue({ status: "created" }),
   setReviewState: vi.fn().mockResolvedValue({}),
   confirmRead: vi.fn().mockResolvedValue({ body_hash: "hash-1" }),
   approveFinal: vi.fn().mockResolvedValue({ approved_chapter_id: "c1" }),
@@ -35,10 +35,10 @@ vi.mock("./ws-works.jsx", () => ({
   WsWorks: {
     activeId: () => fixture.projectId,
     active: () => ({ id: fixture.projectId, title: "测试长篇", genre: "悬疑", wordsTarget: 100000, chaptersTotal: 2 }),
-    __refresh: worksRefresh,
+    retry: worksRefresh,
   },
 }));
-vi.mock("./ws-review.jsx", () => ({ rvPush: vi.fn() }));
+vi.mock("./ws-review-store.js", () => ({ rvPush: vi.fn() }));
 /* 诊断计数与诊断页签：这里只验成稿中心把它们接在哪儿；面板本身在 ws-manuscripts-diagnosis.test.jsx */
 const diagFx = vi.hoisted(() => ({ chapters: {}, scenes: {} }));
 vi.mock("./ws-diagnosis-summary.jsx", () => ({
@@ -61,6 +61,9 @@ vi.mock("./ws-fidelity-store.js", () => ({
   fidLoadProject: (...args) => fidFx.load(...args),
   fidProject: () => (fidFx.project ? { phase: "ready", data: fidFx.project, error: null } : null),
 }));
+/* 「对比」的版本 store（写作台的 WrDocVersions，ES 导入；以前读 window 上的同名全局） */
+const versionsFx = vi.hoisted(() => ({ list: vi.fn(), paras: vi.fn(), diff: vi.fn() }));
+vi.mock("./wr-doc-store.jsx", () => ({ WrDocVersions: versionsFx }));
 vi.mock("./ws-manuscripts-store.jsx", () => ({
   WsManuStore: flow,
   manuscriptChapterEligible: () => true,
@@ -70,9 +73,7 @@ vi.mock("./ws-manuscripts-store.jsx", () => ({
 const dialog = () => document.querySelector('[role="dialog"]');
 
 import { WsManuscripts } from "./ws-manuscripts.jsx";
-import { rvPush } from "./ws-review.jsx";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+import { rvPush } from "./ws-review-store.js";
 const mounted = [];
 
 function chapter(state) {
@@ -150,7 +151,9 @@ beforeEach(() => {
   flow.extractSceneCanon.mockResolvedValue({});
   catalogRefresh.mockResolvedValue({});
   worksRefresh.mockResolvedValue({});
-  delete window.WrDocVersions;
+  versionsFx.list.mockResolvedValue([]);
+  versionsFx.paras.mockResolvedValue([]);
+  versionsFx.diff.mockReturnValue({ paras: [], adds: 0, dels: 0 });
   fidFx.project = null;
 });
 
@@ -199,6 +202,7 @@ describe("成稿中心权威章节流", () => {
 
     expect(flow.reopenFinal).toHaveBeenCalledWith("p1", "c1", "第三场时间线需要纠正");
     expect(catalogRefresh).toHaveBeenCalledWith("p1");
+    expect(worksRefresh).toHaveBeenCalledWith("projects");
   });
 
   it("送入审阅等待服务端目录 PATCH 成功后再刷新权威目录", async () => {
@@ -322,14 +326,30 @@ describe("成稿中心权威章节流", () => {
     });
   });
 
+  it("刷新后直接进成稿中心（写作台还没加载过）「对比」也列得出这一场的版本，并逐句比对最新两版", async () => {
+    versionsFx.list.mockResolvedValue([
+      { revisionNo: 3, at: "2026-09-21T14:05:00", words: 1200 },
+      { revisionNo: 2, at: "2026-09-20T10:00:00", words: 1100 },
+    ]);
+    versionsFx.paras.mockImplementation(async (sid, rev) => [rev === 3 ? "新的一句。" : "旧的一句。"]);
+    versionsFx.diff.mockReturnValue({ paras: [{ segs: [{ t: "del", text: "旧的一句。" }, { t: "add", text: "新的一句。" }] }], adds: 1, dels: 1 });
+    const host = await renderPage("review");
+    await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(versionsFx.list).toHaveBeenCalledWith("ch01s1");
+    expect(host.textContent).not.toContain("这一场还没有可对比的历史版本");
+    expect(host.querySelector('select[aria-label="新版本"]').value).toBe("3");
+    expect(host.querySelector('select[aria-label="旧版本"]').value).toBe("2");
+    expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 2);
+    expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 3);
+    expect(host.querySelector(".ms-diff-body .d-add").textContent).toBe("新的一句。");
+  });
+
   it("版本历史请求失败会显示错误并可重试", async () => {
-    window.WrDocVersions = {
-      list: vi.fn()
-        .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
-        .mockResolvedValueOnce([]),
-      paras: vi.fn(),
-      diff: vi.fn(),
-    };
+    versionsFx.list
+      .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
+      .mockResolvedValueOnce([]);
     const host = await renderPage("review");
     const diffTab = [...host.querySelectorAll("button")].find(node => node.textContent === "对比");
     await click(diffTab);
@@ -337,16 +357,12 @@ describe("成稿中心权威章节流", () => {
 
     expect(host.textContent).toContain("版本服务暂时不可用");
     await click(host.querySelector('[data-testid="manuscript-diff-history-retry"]'));
-    expect(window.WrDocVersions.list).toHaveBeenCalledTimes(2);
+    expect(versionsFx.list).toHaveBeenCalledTimes(2);
   });
 
   it("开发模式连跑两遍挂载 effect 也只拉一次版本列表；幂等冲突说成中文", async () => {
     let rejectList;
-    window.WrDocVersions = {
-      list: vi.fn(() => new Promise((resolve, reject) => { rejectList = reject; })),
-      paras: vi.fn(),
-      diff: vi.fn(),
-    };
+    versionsFx.list.mockImplementation(() => new Promise((resolve, reject) => { rejectList = reject; }));
     fixture.catalog = [chapter("review")];
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -355,7 +371,7 @@ describe("成稿中心权威章节流", () => {
     await act(async () => root.render(<React.StrictMode><WsManuscripts go={vi.fn()} /></React.StrictMode>));
     await act(async () => Promise.resolve());
     await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
-    expect(window.WrDocVersions.list).toHaveBeenCalledTimes(1);
+    expect(versionsFx.list).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       rejectList(Object.assign(new Error("request with the same idempotency key is still running"), { code: "IDEMPOTENCY_REQUEST_IN_PROGRESS" }));
@@ -526,6 +542,19 @@ describe("成稿中心 · 阶段、下一步与空态", () => {
     expect(removeScenes).not.toHaveBeenCalled();
   });
 
+  it("场景三问「回第 10 步」：和章节编排、写作台同一组意图（先切到第 10 步，再选中这一场）", async () => {
+    const go = vi.fn();
+    const ch = chapter("review");
+    ch.scenes[0].storyCheck = { verdict: "maybe", crucible_identified: true, shape_landed: false };
+    const host = await renderPage([ch], go);
+    await click([...host.querySelectorAll('[role="radio"]')].find((b) => b.textContent === "结构"));
+    await click(host.querySelector('[data-testid="ms-story-check-plan"]'));
+    expect(go).toHaveBeenLastCalledWith("snowflake", [
+      { type: "ws:snow-step", detail: "planning" },
+      { type: "ws:snow-scene", detail: "s1" },
+    ]);
+  });
+
   it("标待删确认后走目录 store（ES 导入，不读 window.WsCatalog）移入回收站", async () => {
     const removeScenes = vi.fn(() => true);
     fixture.removeScenes = removeScenes;
@@ -552,17 +581,18 @@ describe("成稿中心 · 拆分后的页头、状态行与对话框", () => {
     expect(host.textContent).not.toContain("控制塔");
   });
 
-  it("状态行只说最近一次动作的结果：导出失败后再刷新汇总，旧错误不再压住新提示", async () => {
+  it("状态行只说最近一次动作的结果：导出失败后再重新打开终稿，旧错误不再压住新提示", async () => {
     const host = await renderPage("approved");
     flow.snapshot.mockReturnValue({ status: "error", body: null, error: { message: "导出前正文核验失败" } });
     await click(host.querySelector('[data-testid="chapter-export"]'));
     expect(host.querySelector(".ms-status").textContent).toContain("导出前正文核验失败");
 
     flow.snapshot.mockReturnValue(readySnapshot());
-    flow.aggregate.mockResolvedValue({ status: "created" });
-    await click(host.querySelector('[data-testid="chapter-aggregate"]'));
-    expect(flow.aggregate).toHaveBeenCalledWith("c1");
-    expect(host.textContent).toContain("章节汇总已生成");
+    await click(host.querySelector('[data-testid="reopen-final-open"]'));
+    await typeTextarea(document.querySelector('textarea[placeholder*="打破终稿锁"]'), "第三场时间线需要纠正");
+    await click(document.querySelector('[data-testid="reopen-final-confirm"]'));
+    expect(flow.reopenFinal).toHaveBeenCalledWith("p1", "c1", "第三场时间线需要纠正");
+    expect(host.querySelector(".ms-status").textContent).toContain("终稿已重新打开");
     expect(host.textContent).not.toContain("导出前正文核验失败");
   });
 
@@ -628,7 +658,8 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
   it("开发模式下退回对话框的焦点落在理由框上；定位到场是方向键可切换的单选，只有选中的一场占 Tab 位", async () => {
     const ch = chapter("review");
     ch.scenes = [...ch.scenes, { sid: "ch01s2", backendId: "s2", title: "夜渡", state: "done" }];
-    const host = await renderPage([ch], vi.fn(), { strict: true });
+    const go = vi.fn();
+    const host = await renderPage([ch], go, { strict: true });
     const opener = button(host.querySelector(".ms-reader-foot"), "退回小修");
     opener.focus();
     await click(opener);
@@ -651,6 +682,11 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
       where: "第 1 章 · 夜渡",
     }));
     expect(rvPush.mock.calls[0][0].actions[0].scene).toBe("ch01s2");
+    // 「直达深改」默认勾着：带着深改姿态进写作台，落在定位的那一场
+    expect(go).toHaveBeenLastCalledWith("writer", [
+      { type: "ws:writer-scene", detail: "ch01s2" },
+      { type: "ws:writer-posture", detail: "deep" },
+    ]);
   });
 
   it("章名是占位的「第 1 章」时，进度条提示与退回待办的标题都不写两遍", async () => {
@@ -688,33 +724,33 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
     }
   });
 
-  it("刷新汇总在途时换章：结果不报到新章头上；回到原章时按钮仍在忙，结果落回原章", async () => {
+  it("送审在途时换章：结果不报到新章头上；回到原章时按钮仍在忙，结果落回原章", async () => {
     const other = { ...chapter("draft"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" };
     const host = await renderPage([chapter("draft"), other]);
-    let resolveAggregate;
-    flow.aggregate.mockReturnValueOnce(new Promise((resolve) => { resolveAggregate = resolve; }));
-    const aggregateButton = () => host.querySelector('[data-testid="chapter-aggregate"]');
+    let resolveSubmit;
+    flow.setReviewState.mockReturnValueOnce(new Promise((resolve) => { resolveSubmit = resolve; }));
+    const submitButton = () => button(host.querySelector(".ms-reader-foot"), "送入审阅");
 
-    await click(aggregateButton());
-    expect(aggregateButton().disabled).toBe(true);
+    await click(submitButton());
+    expect(flow.setReviewState).toHaveBeenCalledWith("p1", "c1", "review");
+    expect(submitButton().disabled).toBe(true);
 
     await click(chapterRow(host, "c2"));
     expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
-    expect(aggregateButton().disabled).toBe(false);
+    expect(submitButton().disabled).toBe(false);
     await click(chapterRow(host, "c1"));
-    expect(aggregateButton().disabled).toBe(true);
+    expect(submitButton().disabled).toBe(true);
     await click(chapterRow(host, "c2"));
 
-    await act(async () => { resolveAggregate({ status: "created" }); await Promise.resolve(); await Promise.resolve(); });
-    expect(host.textContent).not.toContain("章节汇总已生成");
+    await act(async () => { resolveSubmit({}); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(host.textContent).not.toContain("状态已由服务端确认");
 
     await click(chapterRow(host, "c1"));
-    expect(aggregateButton().disabled).toBe(false);
-    expect(host.querySelector(".ms-status").textContent).toContain("章节汇总已生成");
+    expect(submitButton().disabled).toBe(false);
+    expect(host.querySelector(".ms-status").textContent).toContain("状态已由服务端确认");
   });
 
   it("停在「对比」上退回小修：本章没有对比了就回到正文，不留一个没有选中项的分段", async () => {
-    window.WrDocVersions = { list: vi.fn().mockResolvedValue([]), paras: vi.fn(), diff: vi.fn() };
     const host = await renderPage("review");
     const checked = () => host.querySelector('.ms-reader-tools [role="radio"][aria-checked="true"]');
     await click(button(host.querySelector(".ms-reader-tools"), "对比"));
@@ -792,6 +828,18 @@ describe("成稿中心 · 像不像", () => {
     expect(row.querySelector('[data-testid="ms-scene-fidelity"]').textContent).toBe("作者范围内 · 第 42 位");
     // 小标都在同一格里：行里的直接子元素个数不随有没有角标而变
     expect(row.children.length).toBe(5);
+  });
+
+  it("角标悬停里的「前 N 位」按作品汇总里记下的范围说：scene_finals 没带时用走势里同一条读数记下的", async () => {
+    fidFx.project = {
+      bound: true,
+      scene_finals: { s1: { reading_id: "r1", percentile: 41.6, within_range: true, reliable: true, created_at: "2026-09-23T10:00:00" } },
+      trend: [{ reading_id: "r1", scene_id: "s1", stage: "final", percentile: 41.6, within_range: true, reliable: true, max_percentile: 85, created_at: "2026-09-23T10:00:00" }],
+    };
+    const host = await renderPage("review");
+    const title = host.querySelector('.ms-scene-head [data-testid="ms-scene-fidelity"]').getAttribute("title");
+    expect(title).toContain("前 85 位");
+    expect(title).not.toContain("前 90 位");
   });
 
   it("超出范围 / 量不准各有说法；作品没用参考书的文风时什么也不挂", async () => {

@@ -9,7 +9,6 @@ import {
 } from "./ws-fidelity-ui.jsx";
 import { fidErrorInfo } from "./ws-fidelity-model.js";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const mounted = [];
 
 async function render(node) {

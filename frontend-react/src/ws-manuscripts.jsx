@@ -18,6 +18,8 @@ import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog, ManuReturnDialog } from "./ws-manuscripts-dialogs.jsx";
+import { writerIntents } from "./ws-finding-ui.jsx";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    成稿中心 — 一本书在这里一章章成形：页头是整书进度与统一导出，
@@ -119,13 +121,6 @@ function WsManuscripts({ go }) {
               </div>
             </div>
             <div className="ms-reader-tools">
-              {synced && (
-                <button type="button" className="btn btn-quiet btn-sm" data-testid="chapter-aggregate" onClick={flow.aggregate} disabled={busy.aggregate}
-                  title="用各场已完成的终稿重新拼出本章汇总">
-                  {busy.aggregate ? <Spinner size={13} /> : <I.Layers size={13} />}
-                  {busy.aggregate ? "汇总中…" : "刷新章节汇总"}
-                </button>
-              )}
               <Segmented label="阅读方式" value={view} onChange={setView} options={tabOptions} />
             </div>
           </header>
@@ -141,7 +136,7 @@ function WsManuscripts({ go }) {
           )}
 
           {view === "canon" && (
-            <ManuCanon projectId={WsWorks.activeId()} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
+            <ManuCanon projectId={readyWorkId(WsWorks)} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
           )}
           {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} fidelity={fidelity.finals} />}
           {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} fidelity={fidelity.finals} />}
@@ -270,10 +265,7 @@ function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReas
   }
   if (canonical.status !== "ready") return null;
   const firstMissing = manuFirstMissingScene(chapter, canonical);
-  const goWrite = () => {
-    if (!go) return;
-    go("writer", firstMissing && firstMissing.sid ? [{ type: "ws:writer-scene", detail: firstMissing.sid }] : []);
-  };
+  const goWrite = () => { if (go) go("writer", writerIntents(firstMissing && firstMissing.sid)); };
   return <button type="button" className="btn btn-accent" onClick={goWrite}><I.Pen size={14} /> {picked.words ? "去写作台续写" : "去写作台动笔"}</button>;
 }
 

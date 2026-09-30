@@ -2,10 +2,11 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner, StatTile, Tag } from "./ws-ui.jsx";
+import { FindingLine, findingPlainText, writerIntents } from "./ws-finding-ui.jsx";
 import { chapterLabel, chapterLabelById, findSceneByBackendId } from "./labels/catalog.js";
 import {
-  QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_MIN_SEVERITIES, QUALITY_SEV, QUALITY_TEXT_LAYERS, Q_ITEM_LAYER,
-  qDimLabel, qFindingText, qObjectLabel, qPct, qPlainText, qRiskDims, qScore, qSevLabel, qSevTone,
+  QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_MIN_SEVERITIES, QUALITY_TEXT_LAYERS, Q_ITEM_LAYER,
+  qDimLabel, qDimensionOptions, qObjectLabel, qPct, qRiskDims, qScore, qSevLabel,
 } from "./ws-quality-model.js";
 import {
   qAnalyzeText, qChapterSetReview, qLoadOverview, qScopeFilters, qSnapshot, useQualityState,
@@ -13,14 +14,14 @@ import {
 
 /* ==========================================================
    WsQuality — 文学质量巡检
-   对接后端 21 维「质量地板」引擎：
+   对接后端的规则维度「质量地板」引擎（维度表以服务端为准，巡检回包带 dimensions）：
      GET  /api/v1/literary-quality/overview            全库巡检
      POST /api/v1/literary-quality/analyze-text        临时文本即时扫描
      POST /api/v1/literary-quality/chapter-set-review  章组复审
    引擎是纯规则 / 词表打分，与是否启用模型无关——随时可用。
 
-   这个文件只管页面（巡检 / 章组复审两个视图与它们的条目）；21 维与严重度的中文名、
-   格式化在 ws-quality-model.js，请求与缓存在 ws-quality-store.js。
+   这个文件只管页面（巡检 / 章组复审两个视图与它们的条目）；维度与严重度的中文名、
+   格式化在 ws-quality-model.js（词在 labels/finding.js），请求与缓存在 ws-quality-store.js。
    ========================================================== */
 
 function WsQuality({ go }) {
@@ -36,7 +37,7 @@ function WsQuality({ go }) {
     <div className="ws-page ws-view q-quality" data-screen-label="quality">
       <PageHeader
         title="文学质量"
-        description="用 21 个维度的规则引擎巡检稿件，或即时扫描一段文字，找出模型腔、意象同质、无抉择场景这类问题。巡检不调用模型，随时可用。"
+        description="用规则引擎巡检稿件，或即时扫描一段文字，找出模型腔、意象同质、无抉择场景这类问题。巡检不调用模型，随时可用。"
       />
       <Segmented
         className="q-tabs"
@@ -65,6 +66,7 @@ function QualityOverview({ go, filters, setFilters, draft, setDraft }) {
   const items = ov.items || [];
   const analyze = st.analyze;
   const chapterOptions = chapters.filter((c) => c && c.backendId);
+  const dimensionOptions = qDimensionOptions(ov.dimensions);
 
   const summaryCards = [
     { k: "object_count", label: "巡检对象", v: summary.object_count ?? 0 },
@@ -95,7 +97,7 @@ function QualityOverview({ go, filters, setFilters, draft, setDraft }) {
           <span>风险维度</span>
           <select className="select" value={filters.risk_type} onChange={(e) => setF("risk_type", e.target.value)}>
             <option value="">全部</option>
-            {QUALITY_DIM_KEYS.map((k) => <option key={k} value={k}>{qDimLabel(k)}</option>)}
+            {dimensionOptions.map((d) => <option key={d.key} value={d.key}>{d.label}</option>)}
           </select>
         </label>
         <label className="q-field">
@@ -156,32 +158,6 @@ function QualityOverview({ go, filters, setFilters, draft, setDraft }) {
   );
 }
 
-/* 一条发现：问题 / 改法是服务端给的中文（与写作台深改面板同一份）；onLocate 带着它的 signal_id
-   去写作台——深改面板到了诊断就选中同一条并滚到那一句 */
-function QualityFinding({ finding, evidence, onLocate }) {
-  const text = qFindingText(finding);
-  const excerpt = qPlainText(finding.context || evidence);
-  const label = finding.label || qDimLabel(finding.dimension);
-  const signalId = finding.signal_id || finding.quality_signal_id;
-  return (
-    <li className="q-finding">
-      <div className="q-finding-head">
-        <Tag tone={qSevTone(finding.severity)}>{qSevLabel(finding.severity)}</Tag>
-        <strong title={QUALITY_DIMS[finding.dimension] || finding.label ? undefined : finding.dimension}>{label}</strong>
-        {onLocate && signalId && (
-          <button type="button" className="btn btn-quiet btn-sm q-finding-go" onClick={() => onLocate(signalId)}>
-            <I.Pen size={12} /> 在写作台看这一处
-          </button>
-        )}
-      </div>
-      {text.issue && <p className="q-finding-issue" title={text.english || undefined}>{text.issue}</p>}
-      {!text.issue && finding.issue && <p className="q-finding-issue">{finding.issue}</p>}
-      {excerpt && <blockquote className="q-finding-evidence">{excerpt}</blockquote>}
-      {text.fix && <p className="q-finding-fix">改法：{text.fix}</p>}
-    </li>
-  );
-}
-
 function QualityItem({ item, chapters, go }) {
   const [open, setOpen] = React.useState(false);
   const riskDims = qRiskDims(item);
@@ -196,11 +172,7 @@ function QualityItem({ item, chapters, go }) {
   const sceneHit = item.object_type === "scene" ? findSceneByBackendId(chapters, item.scene_id || item.object_id) : null;
   const sceneSid = (sceneHit && sceneHit.scene.sid) || "";
   const toWriter = (signalId) => {
-    if (!go) return;
-    const posture = signalId ? { posture: "deep", signal_id: signalId } : "deep";
-    go("writer", sceneSid
-      ? [{ type: "ws:writer-scene", detail: sceneSid }, { type: "ws:writer-posture", detail: posture }]
-      : []);
+    if (go) go("writer", writerIntents(sceneSid, { deep: true, signalId: signalId || "" }));
   };
   const topSignal = rna.signal_id || rna.quality_signal_id || null;
   const ignoredCount = Number(item.ignored_count) || 0;
@@ -227,7 +199,7 @@ function QualityItem({ item, chapters, go }) {
           ) : (
             <ul className="q-findings">
               {findings.map((f, i) => (
-                <QualityFinding key={f.signal_id || i} finding={f} evidence={f.evidence_excerpt}
+                <FindingLine key={f.signal_id || i} finding={f} evidence={f.evidence_excerpt}
                   onLocate={sceneSid && go ? toWriter : null} />
               ))}
             </ul>
@@ -257,7 +229,7 @@ function AnalyzeResult({ data }) {
       </div>
       {spans.length > 0 && (
         <ul className="q-findings">
-          {spans.map((s, i) => <QualityFinding key={i} finding={s} evidence={s.evidence} />)}
+          {spans.map((s, i) => <FindingLine key={i} finding={s} evidence={s.evidence} />)}
         </ul>
       )}
     </div>
@@ -362,7 +334,7 @@ function QualityChapterSet({ go }) {
               <h3 className="q-block-title">受保护词命中 <span className="q-more">{safety.length}</span></h3>
               <ul className="q-lines">
                 {safety.slice(0, 12).map((f, i) => (
-                  <li key={i}>{f.term ? `「${f.term}」` : ""}{qPlainText(f.evidence_excerpt) || f.issue || ""}</li>
+                  <li key={i}>{f.term ? `「${f.term}」` : ""}{findingPlainText(f.evidence_excerpt) || f.issue || ""}</li>
                 ))}
               </ul>
             </section>
@@ -379,4 +351,4 @@ function QualityChapterSet({ go }) {
 }
 
 /* store 与标签表原先就从这里导出（单测这样 import），拆文件后照样从这里拿得到 */
-export { WsQuality, qLoadOverview, qAnalyzeText, qChapterSetReview, qSnapshot, useQualityState, QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_SEV, QUALITY_TEXT_LAYERS };
+export { WsQuality, qLoadOverview, qAnalyzeText, qChapterSetReview, qSnapshot, useQualityState, QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_TEXT_LAYERS };

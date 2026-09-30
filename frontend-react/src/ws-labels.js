@@ -6,7 +6,9 @@
    · labels/catalog.js —— 章 / 场的叫法与章节状态（chapterLabel、sceneLabel、CHAPTER_STATE_META、manuscriptStage……）；
    · labels/review.js —— 待办来源、写作偏好；
    · labels/llm.js —— 模型记账状态、模型节点的中文名；
-   · labels/style-reference.js —— 风格参考的 16 维、段落类型、样例窗、场面 / 情绪标签、作业叫法。
+   · labels/style-reference.js —— 风格参考的 16 维、段落类型、样例窗、场面 / 情绪标签、作业叫法；
+   · labels/finding.js —— 诊断发现的严重程度与规则维度的中文名（文学质量、成稿中心诊断、写作台深改共用）；
+   · labels/canon.js —— 正史审核台的事实类型、提取结果与状态的叫法。
    这里原样转出全部名字，旧的 import 路径（与 ws-labels.test.js）照旧可用。纯 ESM，不写 window。
    ========================================================== */
 
@@ -14,3 +16,5 @@ export * from "./labels/catalog.js";
 export * from "./labels/review.js";
 export * from "./labels/llm.js";
 export * from "./labels/style-reference.js";
+export * from "./labels/finding.js";
+export * from "./labels/canon.js";

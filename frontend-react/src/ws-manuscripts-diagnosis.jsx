@@ -1,10 +1,9 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { apiGet, apiPost } from "./lib/client.js";
-import { Notice, Spinner, Tag } from "./ws-ui.jsx";
+import { Notice, Spinner } from "./ws-ui.jsx";
 import { wrAiError } from "./ws-writer-ai.js";
-import { qSevLabel, qSevTone } from "./ws-quality-model.js";
-import { WsDiagnosis, announceDiagnosisChanged } from "./ws-diagnosis-summary.jsx";
+import { FindingLine, writerIntents } from "./ws-finding-ui.jsx";
+import { useChapterDiagnosis } from "./ws-manuscripts-diagnosis-store.js";
 import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
@@ -17,10 +16,11 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    「在写作台看这一处」（带 signal_id）。
    第三轮：通读记着每场正文的哈希，改过的场服务端算得出来——改前的通读给「只通读改过的 N 场」（POST scope=changed：
    未改的场沿用上次的发现，标「沿用上次」）和「整章重新通读」；没有场改过时服务端不调模型，这里说一句。
-   通读的响应带 diagnosis_rollup，直接合进 WsDiagnosis，广播时一并带上。
+   通读的响应带 diagnosis_rollup，随广播交给计数 store（WsDiagnosis）。读写都在 ws-manuscripts-diagnosis-store.js
+   （一次通读只属于发起它的那一章：等模型时换了章，回包、提示、出错都不落到别的章上），
+   这里只管画；一条发现的版式与文学质量共用（ws-finding-ui.jsx 的 FindingLine）。
+   章里各场都还没有正文时（后端对它回 409 WRITER_DEEP_REVIEW_NO_TEXT，不调模型）两个通读按钮不可点。
    ========================================================== */
-
-const { useEffect, useRef, useState } = React;
 
 const AI_STATUS_TEXT = {
   not_run: "还没通读过：让模型读整章，判断承诺、升级、兑现与收束，发现落到各场。",
@@ -41,78 +41,21 @@ function changedScenesText(ai, scenesById, entries) {
   return `改过 ${ids.length} 场${numbers.length ? `：${numbers.join("、")}` : ""}。`;
 }
 
-function useChapterDiagnosis(chapterId) {
-  const [state, setState] = useState({ status: "idle", payload: null, error: null });
-  const seq = useRef(0);
-  const load = () => {
-    if (!chapterId) { setState({ status: "idle", payload: null, error: null }); return Promise.resolve(); }
-    const mine = ++seq.current;
-    setState((prev) => ({ ...prev, status: "loading", error: null }));
-    return apiGet(`/api/v1/chapters/${encodeURIComponent(chapterId)}/deep-review`)
-      .then((payload) => { if (seq.current === mine) setState({ status: "ready", payload, error: null }); })
-      .catch((error) => { if (seq.current === mine) setState((prev) => ({ ...prev, status: "error", error })); });
-  };
-  useEffect(() => {
-    load();
-    const onChanged = () => { load(); };
-    window.addEventListener("ws:diagnosis-changed", onChanged);
-    return () => { seq.current += 1; window.removeEventListener("ws:diagnosis-changed", onChanged); };
-  }, [chapterId]); // eslint-disable-line react-hooks/exhaustive-deps
-  return { ...state, reload: load, setPayload: (payload) => setState({ status: "ready", payload, error: null }) };
-}
-
-function DiagFinding({ finding, onLocate }) {
-  const carried = !!(finding.origin && finding.origin.carried_from);
-  const related = finding.related || null;
-  return (
-    <li className="ms-diag-row">
-      <span className={`ms-diag-mark sev-${finding.severity}`} title={`严重程度：${qSevLabel(finding.severity)}`}>{finding.label || finding.dimension}</span>
-      <span className="ms-diag-body">
-        <span className="ms-diag-t">{finding.issue}</span>
-        {finding.recommendation && <span className="ms-diag-fix">改法：{finding.recommendation}</span>}
-        {related && <span className="ms-diag-fix">{Number.isInteger(related.paragraph_index) ? `与第 ${related.paragraph_index + 1} 段` : "与另一段"}{related.label || "矛盾"}：{related.excerpt}</span>}
-        {carried && <span className="ms-diag-carried">沿用上次通读</span>}
-        {finding.stale && <span className="ms-diag-stale">引的那句已经不在正文里</span>}
-      </span>
-      {onLocate && finding.evidence && (
-        <button type="button" className="btn btn-quiet btn-sm" onClick={() => onLocate(finding.signal_id)}>在写作台看这一处</button>
-      )}
-    </li>
-  );
+/* 各场都还没有正文（空白稿后端也报 text_layer "none"）：通读不了 */
+function chapterHasNoText(payload) {
+  return !!payload && (payload.scenes || []).every((entry) => entry && entry.text_layer === "none");
 }
 
 function ManuDiagnosis({ chapter, go }) {
   const chapterId = chapter && chapter.backendId;
-  const { status, payload, error, reload, setPayload } = useChapterDiagnosis(chapterId);
-  const [running, setRunning] = useState(null);   // 正在跑的 scope："all" | "changed"
-  const [runError, setRunError] = useState(null);
-  const [runNotice, setRunNotice] = useState(null);
+  /* running：这一章正在跑的通读（"all" | "changed" | null）；runError / runNotice 也只是这一章的 */
+  const { status, payload, error, reload, run, running, runError, runNotice } = useChapterDiagnosis(chapter);
   const scenesById = {};
   ((chapter && chapter.scenes) || []).forEach((scene, index) => { if (scene && scene.backendId) scenesById[scene.backendId] = { ...scene, index }; });
 
-  const run = async (scope = "all") => {
-    if (!chapterId || running) return;
-    setRunning(scope);
-    setRunError(null);
-    setRunNotice(null);
-    try {
-      const next = await apiPost(`/api/v1/chapters/${encodeURIComponent(chapterId)}/deep-review`, { scope });
-      setPayload(next);
-      if (next && next.notice && next.notice.code === "CHAPTER_REVIEW_UP_TO_DATE") setRunNotice(next.notice.message || "上次通读之后没有场改过字。");
-      if (next && next.diagnosis_rollup) WsDiagnosis.applyRollup(next.diagnosis_rollup);
-      announceDiagnosisChanged({ chapterId, rollup: next && next.diagnosis_rollup });
-    } catch (err) {
-      setRunError(err || new Error("chapter deep review failed"));
-    } finally {
-      setRunning(null);
-    }
-  };
   const goWriter = (scene, signalId) => {
     if (!go || !scene || !scene.sid) return;
-    go("writer", [
-      { type: "ws:writer-scene", detail: scene.sid },
-      { type: "ws:writer-posture", detail: signalId ? { posture: "deep", signal_id: signalId } : "deep" },
-    ]);
+    go("writer", writerIntents(scene.sid, { deep: true, signalId: signalId || "" }));
   };
   const openSettings = go ? () => go("settings", { type: "ws:settings-tab", detail: "ai" }) : null;
 
@@ -128,6 +71,8 @@ function ManuDiagnosis({ chapter, go }) {
   const summary = (payload && payload.summary) || {};
   const errorInfo = runError ? wrAiError(runError) : null;
   const busy = !!running || status === "loading";
+  const noText = chapterHasNoText(payload);
+  const noTextTip = noText ? "这一章的各场还没有正文，写出正文之后才能通读" : undefined;
   const incremental = ai.status === "stale" && !!ai.incremental_available && (ai.changed_count || 0) > 0;
   const changedText = ai.status === "stale" ? changedScenesText(ai, scenesById, scenes) : "";
   const scopeText = ai.status !== "not_run" && ai.scope === "changed" && (ai.carried_scene_ids || []).length
@@ -141,12 +86,12 @@ function ManuDiagnosis({ chapter, go }) {
           <div className="card-title"><I.Sparkles size={14} /> AI 通读本章</div>
           <div className="ms-diag-acts">
             {incremental && (
-              <button type="button" className="btn btn-accent btn-sm" data-testid="chapter-deep-review-run-changed" disabled={busy} onClick={() => run("changed")}
-                title="只把改过的场全文送审，没改的场沿用上次的发现">
+              <button type="button" className="btn btn-accent btn-sm" data-testid="chapter-deep-review-run-changed" disabled={busy || noText} onClick={() => run("changed")}
+                title={noTextTip || "只把改过的场全文送审，没改的场沿用上次的发现"}>
                 {running === "changed" ? <Spinner size={13} /> : <I.Sparkles size={13} />} {running === "changed" ? "通读中…" : `只通读改过的 ${ai.changed_count} 场`}
               </button>
             )}
-            <button type="button" className={`btn ${incremental ? "btn-ghost" : "btn-accent"} btn-sm`} data-testid="chapter-deep-review-run" disabled={busy} onClick={() => run("all")}>
+            <button type="button" className={`btn ${incremental ? "btn-ghost" : "btn-accent"} btn-sm`} data-testid="chapter-deep-review-run" disabled={busy || noText} title={noTextTip} onClick={() => run("all")}>
               {running === "all" ? <Spinner size={13} /> : (incremental ? null : <I.Sparkles size={13} />)} {running === "all" ? "通读中…" : (ai.status === "not_run" ? "AI 通读本章" : (incremental ? "整章重新通读" : "重新通读"))}
             </button>
           </div>
@@ -156,6 +101,7 @@ function ManuDiagnosis({ chapter, go }) {
           {AI_STATUS_TEXT[ai.status] || AI_STATUS_TEXT.not_run}
           {changedText ? ` ${changedText}` : ""}
           {scopeText ? ` ${scopeText}` : ""}
+          {noText ? " 这一章的各场还没有正文，写出正文之后才能通读。" : ""}
         </p>
         {runNotice && <Notice tone="info" className="ms-status">{runNotice}</Notice>}
         {errorInfo && (
@@ -181,7 +127,7 @@ function ManuDiagnosis({ chapter, go }) {
         {ai.status !== "not_run" && chapterFindings.length > 0 && (
           <>
             <div className="ms-diag-sub">整章的判断 <span className="card-sub">{chapterFindings.length}</span></div>
-            <ul className="ms-diag-list">{chapterFindings.map((f) => <DiagFinding key={f.signal_id} finding={f} />)}</ul>
+            <ul className="ms-diag-list">{chapterFindings.map((f) => <FindingLine key={f.signal_id} layout="row" finding={f} />)}</ul>
           </>
         )}
         {ai.status !== "not_run" && chapterFindings.length === 0 && summary.open === 0 && (
@@ -220,7 +166,7 @@ function ManuDiagnosis({ chapter, go }) {
                     </div>
                     {fromChapter.length > 0 && (
                       <ul className="ms-diag-list">
-                        {fromChapter.map((f) => <DiagFinding key={f.signal_id} finding={f} onLocate={catalogScene && go ? (signalId) => goWriter(catalogScene, signalId) : null} />)}
+                        {fromChapter.map((f) => <FindingLine key={f.signal_id} layout="row" finding={f} onLocate={catalogScene && go ? (signalId) => goWriter(catalogScene, signalId) : null} />)}
                       </ul>
                     )}
                   </li>
@@ -234,4 +180,4 @@ function ManuDiagnosis({ chapter, go }) {
   );
 }
 
-export { ManuDiagnosis, useChapterDiagnosis };
+export { ManuDiagnosis };

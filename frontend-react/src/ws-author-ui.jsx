@@ -1,21 +1,25 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_CH_STATE, ARR_SCENE_STATE } from "./ws-author-data.jsx";
-import { arrChapterStatus } from "./ws-author-derive.js";
+import { ARR_SCENE_STATE } from "./ws-author-data.js";
 import { Tag } from "./ws-ui.jsx";
+import { isImeComposing } from "./lib/keyboard.js";
+import { chapterStage, chapterStageDerived, chapterStateMeta } from "./labels/catalog.js";
 
 /* ==========================================================
    章节编排 · 小零件（全书清单、序列栏、章节详情共用）
-   状态标签、进度点、字数条、抓手。纯展示，不读 store。
+   状态标签、进度点、字数条、抓手、行内输入框的回车。纯展示，不读 store。
    ========================================================== */
 
-/* 章的状态：已定稿 / 审阅中来自后端流程，其余按各场的进度读出来（arrChapterStatus，只显示不回写） */
+/* 行内输入框按回车 = 改完了（失焦写回）。输入法确认候选的那一下回车不算：拼音选词时按回车会把半截题名写进目录、把作者甩出输入框 */
+export const blurOnEnter = (e) => { if (e.key === "Enter" && !isImeComposing(e)) e.target.blur(); };
+
+/* 章的状态：与主页、成稿中心同一条规则（labels/catalog.js 的 chapterStage，只显示不回写）。
+   已定稿 / 审阅中 / 草稿来自审阅与批准流程，其余按各场的进度读出来。 */
 function ArrChapterStateTag({ ch }) {
-  const st = arrChapterStatus(ch);
-  const m = ARR_CH_STATE[st.key] || ARR_CH_STATE.planned;
+  const m = chapterStateMeta(chapterStage(ch));
   return (
     <Tag tone={m.tone} dot className="arr-state-tag"
-      title={st.derived ? "按各场的进度显示：有一场动了笔就是写作中。审阅与终稿批准由成稿中心推进。" : "由审阅与终稿批准流程推进"}>
+      title={chapterStageDerived(ch) ? "按各场的进度显示：有一场动了笔就是写作中。审阅与终稿批准由成稿中心推进。" : "由审阅与终稿批准流程推进"}>
       {m.label}
     </Tag>
   );

@@ -490,39 +490,6 @@ button:focus:not(:focus-visible) { outline: none; }
 }
 
 /* ==========================================================
-   Pill / Badge / Tag
-   ========================================================== */
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
-  border-radius: var(--r-pill);
-  font-size: 11.5px;
-  font-weight: 500;
-  background: var(--paper-2);
-  color: var(--ink-2);
-  border: 1px solid var(--line-1);
-  white-space: nowrap;
-}
-.pill-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ink-3);
-}
-.pill-crimson { background: var(--crimson-wash); color: var(--crimson-ink); border-color: transparent; }
-.pill-crimson .pill-dot { background: var(--crimson); }
-.pill-gold { background: var(--gold-wash); color: var(--gold-ink); border-color: transparent; }
-.pill-gold .pill-dot { background: var(--gold); }
-.pill-sage { background: var(--sage-wash); color: var(--sage-ink); border-color: transparent; }
-.pill-sage .pill-dot { background: var(--sage); }
-.pill-slate { background: var(--slate-wash); color: var(--slate-ink); border-color: transparent; }
-.pill-slate .pill-dot { background: var(--slate); }
-.pill-rose { background: var(--rose-wash); color: var(--rose-ink); border-color: transparent; }
-.pill-rose .pill-dot { background: var(--rose); }
-
-/* ==========================================================
    Form
    ========================================================== */
 .input, .textarea, .select {
@@ -565,7 +532,6 @@ button:focus:not(:focus-visible) { outline: none; }
 .text-muted { color: var(--ink-3); }
 .text-serif { font-family: var(--font-serif); }
 .text-sm { font-size: 12.5px; }
-.text-xs { font-size: 11.5px; }
 .fw-600 { font-weight: 600; }
 .mt-4 { margin-top: var(--s4); }
 .tab-num { font-variant-numeric: tabular-nums; }

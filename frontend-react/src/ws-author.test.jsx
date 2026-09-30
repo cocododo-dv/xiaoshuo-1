@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,10 +29,25 @@ vi.mock("./ws-works.jsx", () => ({
   },
 }));
 
-// 章节编排与分章面板从 ws-snow-sync.jsx import SnowSync；每个用例把自己的假 SnowSync 挂在 window 上，这里转发过去
-// （用例没给的方法读出来是 undefined，面板照「同步模块尚未就绪」处理）。
+// 章节编排与分章面板从 ws-snow-sync.jsx import SnowSync：每个用例一份假的（snow.current），默认是「构思还没物化过」；
+// installSnowSync 换成物化好的、带分章面板接口的那一份。
+const snow = vi.hoisted(() => ({ current: null }));
 vi.mock("./ws-snow-sync.jsx", () => ({
-  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+  SnowSync: new Proxy({}, { get: (_target, name) => snow.current[name] }),
+}));
+const baseSnowSync = () => ({
+  readyToMaterialize: () => false,
+  resyncStatus: () => ({ pendingCount: 0 }),
+  subscribe: () => () => {},
+  feStepKey: () => "",
+  resync: vi.fn(async () => ({ synced: 0 })),
+});
+/* 资料库的读取（章节编排的视角候选读它的人物）：用例自己往 lib.entries 里放人，改完 bump 一下 */
+const lib = vi.hoisted(() => ({ entries: [], rev: 0, subs: new Set() }));
+vi.mock("./ws-library-data.jsx", () => ({
+  LIB_ENTRIES: lib.entries,
+  libSnapshot: () => lib.rev,
+  libSubscribe: (fn) => { lib.subs.add(fn); return () => lib.subs.delete(fn); },
 }));
 vi.mock("./ws-chapter-run.jsx", () => ({
   ArrChapterRunAction: () => <button type="button">运行本章</button>,
@@ -37,8 +55,7 @@ vi.mock("./ws-chapter-run.jsx", () => ({
 
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsAuthor } from "./ws-author.jsx";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+import { arrPlanReceipt } from "./ws-author-plan-door.jsx";
 
 let host;
 let root;
@@ -65,7 +82,8 @@ const click = (node) => node.dispatchEvent(new MouseEvent("click", { bubbles: tr
 const byText = (selector, text) => [...host.querySelectorAll(selector)].find((node) => node.textContent.includes(text));
 
 beforeEach(() => {
-  localStorage.clear();
+  snow.current = baseSnowSync();
+  lib.entries.length = 0;
   catalogState.ready = false;
   catalogState.chapters = [];
   catalogState.error = null;
@@ -78,7 +96,6 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
-  delete window.SnowSync;
 });
 
 describe("章节编排 · 服务端目录真相", () => {
@@ -214,6 +231,31 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.textContent).toContain("已选 1 / 2 场");
   });
 
+  it("手加的场：视角候选取自资料库的人物与各场用过的视角——不必先打开资料库；资料库读回来就跟着变", async () => {
+    lib.entries.push({ cat: "people", name: "林昭" }, { cat: "places", name: "雨城" });
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "第一章", {
+        scenes: [
+          { sid: "s1", backendId: "b1", title: "开场", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" },
+          { sid: "s2", backendId: "b2", title: "构思的场", kind: "主动", state: "todo", goal: "目标", obstacle: "冲突", turn: "挫折", povName: "顾行", design: { origin: "snowflake", owner: "plan" } },
+        ],
+      }),
+      chapter("ch02", "第二章", { scenes: [{ sid: "s3", backendId: "b3", title: "夜渡", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "", povName: "待定" }] }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const input = host.querySelector('input[aria-label="开场 · 视角"]');
+    const options = () => [...document.getElementById(input.getAttribute("list")).querySelectorAll("option")].map((o) => o.value);
+    expect(options()).toEqual(["林昭", "顾行"]);
+
+    lib.entries.push({ cat: "people", name: "周川" });
+    lib.rev += 1;
+    await act(async () => { lib.subs.forEach((fn) => fn()); });
+    expect(options()).toEqual(["林昭", "周川", "顾行"]);
+  });
+
   it("批量删除被作者取消时不写目录（confirm 是真闸门，不是装饰）", async () => {
     catalogState.ready = true;
     catalogState.chapters = [chapter("ch01", "第一章"), chapter("ch02", "第二章")];
@@ -334,7 +376,8 @@ describe("章节编排 · 服务端目录真相", () => {
     ...extra,
   });
   const installSnowSync = (extra = {}) => {
-    window.SnowSync = {
+    snow.current = {
+      ...baseSnowSync(),
       readyToMaterialize: () => true,
       resyncStatus: () => ({ pendingCount: 0 }),
       chapterPreview: vi.fn(async () => ({
@@ -352,7 +395,8 @@ describe("章节编排 · 服务端目录真相", () => {
     installSnowSync();
     catalogState.ready = true;
     catalogState.chapters = [
-      planChapter("ch01", "雨夜来信", { spine: "灾一", structure: { owner: "plan", rowUid: "r1", sceneRange: { first: 1, last: 2 }, plannedSceneCount: 2, titleAuto: false },
+      // 旧数据里还存着章级视角：不再盖过各场的视角（批准 #17a）
+      planChapter("ch01", "雨夜来信", { spine: "灾一", pov: "老陈", structure: { owner: "plan", rowUid: "r1", sceneRange: { first: 1, last: 2 }, plannedSceneCount: 2, titleAuto: false },
         scenes: [planScene("SC1", 1), planScene("SC2", 2, { kind: "反应", state: "done" })] }),
       planChapter("ch02", "第 2 章", { act: "act2", structure: { owner: "plan", rowUid: "r2", sceneRange: { first: 3, last: 3 }, plannedSceneCount: 1, titleAuto: true },
         scenes: [planScene("SC3", 3)] }),
@@ -365,9 +409,10 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(cards.map((card) => card.getAttribute("draggable"))).toEqual(["false", "false", "true"]);
     expect(cards[0].textContent).toContain("第 1–2 场");
     expect(cards[1].textContent).toContain("第 3 场");
+    expect(cards[0].querySelector(".arr-card-pov").textContent).toBe("林昭");
 
     // 默认镜头 = 结构；没有章级张力 / 线索数据时，那两个镜头根本不出现（不拿 0.3 的默认值画平线）
-    const lensTabs = [...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent);
+    const lensTabs = [...host.querySelectorAll(".arr-lens .seg-btn")].map((node) => node.textContent);
     expect(lensTabs).toEqual(["结构", "节奏镜头"]);
     const lens = host.querySelector('[data-testid="arr-spine-lens"]');
     expect([...lens.querySelectorAll(".arr-spine-cell")].map((cell) => cell.textContent)).toEqual(["1", "2", "3"]);
@@ -402,7 +447,7 @@ describe("章节编排 · 服务端目录真相", () => {
     ];
     localStorage.setItem("arr.lens", JSON.stringify("arc"));   // 旧版记住的镜头：落回结构镜头
     await act(async () => root.render(<WsAuthor />));
-    expect([...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent)).toEqual(["结构", "节奏镜头"]);
+    expect([...host.querySelectorAll(".arr-lens .seg-btn")].map((node) => node.textContent)).toEqual(["结构", "节奏镜头"]);
     expect(host.querySelector('[data-testid="arr-spine-lens"]')).not.toBeNull();
     const doctor = host.querySelector(".arr-doctor").textContent;
     expect(doctor).not.toContain("张力");
@@ -419,7 +464,7 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => {});
     const panel = host.querySelector('[data-testid="chapter-plan-panel"]');
     expect(panel).not.toBeNull();
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledWith("auto", {});
+    expect(snow.current.chapterPreview).toHaveBeenCalledWith("auto", {});
     expect(panel.textContent).toContain("旧信到了");
 
     // 面板里的一场 → 构思第 10 步的那一场
@@ -443,10 +488,19 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => {});
     await act(async () => click(host.querySelector('[data-testid="chapter-plan-confirm"]')));
     await act(async () => {});
-    expect(window.SnowSync.materialize).toHaveBeenCalledTimes(1);
-    expect(window.SnowSync.materialize.mock.calls[0][1].replace_chapters).toBe(true);
+    expect(snow.current.materialize).toHaveBeenCalledTimes(1);
+    expect(snow.current.materialize.mock.calls[0][1].replace_chapters).toBe(true);
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeNull();
     expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("章节结构已按这一版写入目录 · 1 个变空的旧章已移入回收站");
+  });
+
+  it("确认写入的回执：顺手做了什么都说一句，什么都没做就只说写入了", () => {
+    expect(arrPlanReceipt(null)).toBe("章节结构已按这一版写入目录");
+    expect(arrPlanReceipt({
+      trashed_placeholder_chapters: [{}], trashed_empty_chapters: [{}, {}], restored_chapter_ids: ["c1"],
+      restored_scene_ids: ["s1", "s2", "s3"], chapter_order_held: true,
+    })).toBe("章节结构已按这一版写入目录 · 1 个没动过笔的空白占位章已移入回收站 · 2 个变空的旧章已移入回收站 · 1 章从回收站取回"
+      + " · 3 场随旧章进了回收站的场景卡已取回 · 目录里有已终审的章，按章表排会挪动它——新章暂时接在最后");
   });
 
   it("章节详情：构思条说得出这一章是什么，入口 / 出口、视角 · 时空取自各场，体检不再摆假的对勾", async () => {
@@ -514,6 +568,31 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(confirm.mock.calls[0][0]).toContain("构思的分章还在");
     expect(confirm.mock.calls[0][0]).toContain("整理章节结构");
     expect(WsCatalog.set).toHaveBeenCalledTimes(1); // 取消 = 什么都不删
+  });
+
+  it("构思的回流状态变了（SnowSync.subscribe 的 resync / hydrated）就重读待同步的场数；别的消息不重读", async () => {
+    let pending = 0;
+    const listeners = new Set();
+    const resyncStatus = vi.fn(() => ({ pendingCount: pending }));
+    installSnowSync({ resyncStatus, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); } });
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [planChapter("ch01", "雨夜来信", { scenes: [planScene("SC1", 1)] })];
+    await act(async () => root.render(<WsAuthor />));
+    expect(listeners.size).toBe(1);
+    expect(host.querySelector('[data-testid="arr-plan-resync"]')).toBeNull();
+
+    pending = 2;
+    const reads = resyncStatus.mock.calls.length;
+    await act(async () => { listeners.forEach((fn) => fn("health", "project-1")); });
+    expect(resyncStatus.mock.calls.length).toBe(reads);
+    await act(async () => { listeners.forEach((fn) => fn("resync", "project-1")); });
+    expect(host.querySelector('[data-testid="arr-plan-resync"]').textContent).toContain("同步 2 场改动");
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    expect(listeners.size).toBe(0);                                // 离开页面就退订
   });
 
   it("构思的闸门此刻没过（某一步待重新确认）：目录里已有构思分出来的章，门不能跟着消失；纯手建的书没有这扇门", async () => {
@@ -764,6 +843,40 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => click(byText(".arr-scenes-actions button", "回收站")));
     expect(go).toHaveBeenLastCalledWith("trash");
     expect(window.location.hash).not.toBe("#snowflake");   // 有外壳就不自己改 hash
+  });
+
+  it("章的阶段与主页、成稿中心同一条规则：退回小修的章读作「草稿」、目录说写作中的章读作「写作中」；序列栏把审阅中 / 草稿单独数", async () => {
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "退回的章", { state: "draft", words: { cur: 900, target: 4000 }, scenes: [{ sid: "s1", backendId: "b1", title: "一", kind: "主动", state: "done", goal: "", obstacle: "", turn: "" }] }),
+      chapter("ch02", "在写的章", { state: "writing" }),
+      chapter("ch03", "审阅一", { state: "review" }),
+      chapter("ch04", "审阅二", { state: "review" }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const states = [...host.querySelectorAll('[data-testid="arr-chapter-card"] .arr-card-state')].map((node) => node.textContent);
+    expect(states).toEqual(["草稿", "写作中", "审阅中", "审阅中"]);
+
+    await act(async () => click(host.querySelector(".arr-card-title")));
+    const stat = [...host.querySelectorAll(".arr-rail-stat > span")].map((node) => node.textContent);
+    expect(stat).toEqual(["0 已定稿", "2 审阅中", "1 草稿", "1 写作中", "0 规划中"]);
+  });
+
+  it("还没动笔的章（规划中 / 待写）在卡片上章名一样淡一档：卡片按阶段挂 s-*，样式表两种阶段都有", async () => {
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "规划的章", { state: "planned" }),
+      chapter("ch02", "待写的章", { state: "todo" }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const stages = [...host.querySelectorAll('[data-testid="arr-chapter-card"]')]
+      .map((node) => [...node.classList].find((cls) => cls.startsWith("s-")));
+    expect(stages).toEqual(["s-planned", "s-todo"]);
+    const css = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "ws-author.css"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const dimmed = [...css.matchAll(/([^{}]+)\{\s*color:\s*var\(--ink-2\);?\s*\}/g)]
+      .flatMap((m) => m[1].split(",").map((selector) => selector.trim()));
+    for (const stage of stages) expect(dimmed).toContain(`.arr-card.${stage} .arr-card-title`);
   });
 
   it("目录请求失败与真空作品分开呈现，并提供真实重试", async () => {

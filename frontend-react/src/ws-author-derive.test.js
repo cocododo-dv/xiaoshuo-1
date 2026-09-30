@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  arrActSpans, arrBookFacts, arrBookSpine, arrChapterChecks, arrChapterEdge, arrChapterFacts, arrChapterStatus,
-  arrIsPlanChapter, arrLensChapters, arrRangeLabel, arrSceneBeatsPlanned,
+  arrActSpans, arrBookFacts, arrBookSpine, arrChapterChecks, arrChapterEdge, arrChapterFacts,
+  arrIsPlanChapter, arrLensChapters, arrPovCandidates, arrRailTally, arrRangeLabel, arrSceneBeatsPlanned,
 } from "./ws-author-derive.js";
 import { arrDeriveIssues } from "./ws-author-doctor.jsx";
+import { chapterStage, chapterStageDerived, chapterStarted } from "./labels/catalog.js";
 
 /* 阶段 Z：章节编排读的是作者在构思里真的做出来的东西（场上的 POV / 时间 / 地点 / 离场变化、章装着第几到第几场），
    而不是一套没人能填的章级字段。这里全是目录载荷上的纯函数。 */
@@ -24,7 +25,7 @@ const chapter = (id, extra = {}) => ({
 });
 
 describe("章节编排 · 派生层", () => {
-  it("一章的入口 / 出口、视角 · 时空从各场读出来；作者填过的章级字段优先", () => {
+  it("一章的入口 / 出口、视角 · 时空只从各场读；旧数据里存着的章级值不再盖过场上的事实", () => {
     const ch = chapter("ch02", {
       structure: { owner: "plan", rowUid: "r2", sceneRange: { first: 6, last: 8 }, plannedSceneCount: 3, titleAuto: true },
       scenes: [
@@ -35,20 +36,27 @@ describe("章节编排 · 派生层", () => {
     });
     const facts = arrChapterFacts(ch);
     expect(facts.rangeLabel).toBe("第 6–8 场");
-    expect(facts.entry).toEqual({ text: "s6 的整句摘要", derived: true });
-    expect(facts.exit).toEqual({ text: "林昭找到了寄信人", derived: true });
-    expect(facts.pov).toEqual({ text: "林昭 2 · 顾行 1", derived: true });
-    expect(facts.time).toEqual({ text: "第二日·晨 → 第二日·中午", derived: true });
-    expect(facts.place).toEqual({ text: "码头 · 邮局", derived: true });
+    expect(facts.entry).toBe("s6 的整句摘要");
+    expect(facts.exit).toBe("林昭找到了寄信人");
+    expect(facts.pov).toBe("林昭 2 · 顾行 1");
+    expect(facts.time).toBe("第二日·晨 → 第二日·中午");
+    expect(facts.place).toBe("码头 · 邮局");
     expect(facts.beats).toEqual({ planned: 3, total: 3 });
 
-    const authored = arrChapterFacts({ ...ch, pov: "老陈", entry: "雨停了", exit: "（待规划）" });
-    expect(authored.pov).toEqual({ text: "老陈", derived: false });
-    expect(authored.entry).toEqual({ text: "雨停了", derived: false });
-    expect(authored.exit.derived).toBe(true); // 「（待规划）」是占位，不是作者填的
-    expect(arrChapterEdge(null, "entry")).toEqual({ text: "", derived: false });
+    const legacy = arrChapterFacts({ ...ch, pov: "老陈", time: "去年冬天", place: "别处", entry: "雨停了", exit: "天亮了" });
+    expect([legacy.pov, legacy.time, legacy.place, legacy.entry, legacy.exit])
+      .toEqual([facts.pov, facts.time, facts.place, facts.entry, facts.exit]);
+    expect(arrChapterEdge(null, "entry")).toBe("");
+    expect(arrChapterEdge(chapter("ch09"), "exit")).toBe("");
     expect(arrRangeLabel({ sceneRange: { first: 4, last: 4 } })).toBe("第 4 场");
     expect(arrRangeLabel({ sceneRange: null })).toBe("");
+  });
+
+  it("视角候选：资料库的人物在前，各场用过、资料库里还没建档的视角名跟在后面；去重、不收占位词", () => {
+    const entries = [{ cat: "people", name: "林昭" }, { cat: "places", name: "雨城" }, { cat: "people", name: " 顾行 " }];
+    const chapters = [chapter("ch01", { scenes: [scene("a", { povName: "顾行" }), scene("b", { povName: "老陈" })] }), chapter("ch02", { scenes: [scene("c", { povName: "待定" })] })];
+    expect(arrPovCandidates(entries, chapters)).toEqual(["林昭", "顾行", "老陈"]);
+    expect(arrPovCandidates(null, null)).toEqual([]);
   });
 
   it("系统占位的三拍按没规划算", () => {
@@ -58,15 +66,16 @@ describe("章节编排 · 派生层", () => {
     expect(arrSceneBeatsPlanned(scene("d", { obstacle: "" }))).toBe(false);
   });
 
-  it("镜头用的章：章级 POV 没填时取本章场次最多的那一位，泳道看得见本章出现过的全部视角", () => {
-    const [lensed, authored, empty] = arrLensChapters([
-      chapter("ch01", { scenes: [scene("a", { povName: "老陈" }), scene("b", { povName: "林昭" }), scene("c", { povName: "林昭" })] }),
-      chapter("ch02", { pov: "顾行", scenes: [scene("d", { povName: "林昭" })] }),
+  it("镜头用的章：主 POV 是本章场次最多的那一位，泳道看得见本章出现过的全部视角；旧的章级 POV / 时间不再算数", () => {
+    const [lensed, legacy, empty] = arrLensChapters([
+      chapter("ch01", { scenes: [scene("a", { povName: "老陈" }), scene("b", { povName: "林昭" }), scene("c", { povName: "林昭", design: { owner: "plan", storyTime: "第三日" } })] }),
+      chapter("ch02", { pov: "顾行", time: "去年", scenes: [scene("d", { povName: "林昭" })] }),
       chapter("ch03"),
     ]);
     expect(lensed.pov).toBe("林昭");
     expect(lensed.povs).toEqual(["林昭", "老陈"]);
-    expect(authored.povs).toEqual(["顾行"]);
+    expect(lensed.time).toBe("第三日");
+    expect([legacy.pov, legacy.povs, legacy.time]).toEqual(["林昭", ["林昭"], ""]);
     expect(empty.pov).toBe("未定");
   });
 
@@ -148,12 +157,39 @@ describe("全书体检 · 只报读得出来的事实", () => {
 });
 
 describe("章的显示状态、章节体检与卷带", () => {
-  it("已批准 / 审阅中来自后端；其余按各场读：有一场动了笔或已经有字 = 写作中，否则规划中", () => {
-    expect(arrChapterStatus(chapter("a", { state: "approved" }))).toEqual({ key: "approved", derived: false });
-    expect(arrChapterStatus(chapter("b", { state: "review" }))).toEqual({ key: "review", derived: false });
-    expect(arrChapterStatus(chapter("c", { state: "planned", scenes: [scene("s1", { state: "done" })] }))).toEqual({ key: "writing", derived: true });
-    expect(arrChapterStatus(chapter("d", { state: "planned", words: { cur: 12, target: 0 } })).key).toBe("writing");
-    expect(arrChapterStatus(chapter("e", { state: "writing", scenes: [scene("s2")] }))).toEqual({ key: "planned", derived: true });
+  it("章的阶段与主页、成稿中心同一条规则：审阅 / 定稿 / 退回小修的草稿照流程；目录说写作中、有字、有一场在写或写完 = 写作中", () => {
+    expect(chapterStage(chapter("a", { state: "approved" }))).toBe("approved");
+    expect(chapterStage(chapter("b", { state: "review" }))).toBe("review");
+    // 成稿中心「退回小修」把章设成 draft：章节编排以前读成写作中 / 规划中
+    expect(chapterStage(chapter("c", { state: "draft", words: { cur: 900, target: 0 }, scenes: [scene("s1", { state: "done" })] }))).toBe("draft");
+    // 目录说写作中、还没有字：以前章节编排读成规划中，主页 / 成稿中心读成写作中
+    expect(chapterStage(chapter("d", { state: "writing", scenes: [scene("s2")] }))).toBe("writing");
+    expect(chapterStage(chapter("e", { state: "planned", scenes: [scene("s3", { state: "done" })] }))).toBe("writing");
+    expect(chapterStage(chapter("f", { state: "planned", words: { cur: 12, target: 0 } }))).toBe("writing");
+    // 有一场在写（还没存下字）也算动笔了：以前主页、成稿中心读成规划中
+    expect(chapterStage(chapter("g", { state: "planned", scenes: [scene("s4", { state: "writing" })] }))).toBe("writing");
+    expect(chapterStage(chapter("h", { state: "planned", scenes: [scene("s5")] }))).toBe("planned");
+    expect(chapterStage(chapter("i", { state: "todo" }))).toBe("todo");
+    expect(chapterStage(chapter("j", { state: "something-new" }))).toBe("planned");
+    expect([chapter("k", { state: "draft" }), chapter("l", { state: "review" }), chapter("m", { state: "approved" })].map(chapterStageDerived)).toEqual([false, false, false]);
+    expect([chapter("n", { state: "writing" }), chapter("o", { state: "planned" })].map(chapterStageDerived)).toEqual([true, true]);
+    // 「动笔了没有」那一半单独转出（成稿中心左栏收不收规划中的章该用同一条）：有字、有一场在写 / 写完了 / 记着字数
+    expect([
+      chapter("p", { scenes: [scene("s6", { state: "writing" })] }),
+      chapter("q", { scenes: [scene("s7", { words: 30 })] }),
+      chapter("r", { words: { cur: 5, target: 0 } }),
+      chapter("s", { scenes: [scene("s8", { state: "archived" })] }),
+      chapter("t", { scenes: [scene("s9")] }),
+      null,
+    ].map(chapterStarted)).toEqual([true, true, true, true, false, false]);
+  });
+
+  it("序列栏的数按同一条阶段规则：审阅中 / 草稿有章时单独成一项，不再记在「写作中」名下", () => {
+    const tally = arrRailTally([
+      chapter("a", { state: "review" }), chapter("b", { state: "review" }), chapter("c", { state: "review" }),
+      chapter("d", { state: "draft" }), chapter("e", { state: "planned" }),
+    ]);
+    expect(tally.map((t) => [t.label, t.n])).toEqual([["已定稿", 0], ["审阅中", 3], ["草稿", 1], ["写作中", 0], ["规划中", 1]]);
   });
 
   it("章节体检：只报读得出来的事实，与构思同步只对有构思分章的书出现", () => {

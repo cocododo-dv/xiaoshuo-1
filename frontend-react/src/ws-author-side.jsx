@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_ACTS, ARR_CH_STATE } from "./ws-author-data.jsx";
-import { arrChapterFacts, arrChapterStatus, arrIsPlanChapter, arrRangeLabel } from "./ws-author-derive.js";
+import { ARR_ACTS } from "./ws-author-data.js";
+import { arrChapterFacts, arrIsPlanChapter, arrRailTally, arrRangeLabel } from "./ws-author-derive.js";
 import { ArrAiHealth } from "./ws-author-ai.jsx";
 import { ArrChapterStateTag, ArrMiniScenes } from "./ws-author-ui.jsx";
 import { isImeComposing, useFocusTrap } from "./ws-dialog.jsx";
@@ -61,12 +61,12 @@ function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose, onConf
 
       <div className="ctx-block" data-testid="arr-ctx-spacetime">
         <div className="ctx-head"><I.Eye size={13} /><span>视角 · 时空</span>
-          {(facts.pov.derived || facts.time.derived || facts.place.derived) ? <span className="arr-ctx-hint">取自本章各场</span> : null}
+          {(facts.pov || facts.time || facts.place) ? <span className="arr-ctx-hint">取自本章各场</span> : null}
         </div>
         <ul className="arr-meta">
-          <li><span>视角</span><strong>{facts.pov.text || "—"}</strong></li>
-          <li><span>时间</span><strong>{facts.time.text || "—"}</strong></li>
-          <li><span>地点</span><strong>{facts.place.text || "—"}</strong></li>
+          <li><span>视角</span><strong>{facts.pov || "—"}</strong></li>
+          <li><span>时间</span><strong>{facts.time || "—"}</strong></li>
+          <li><span>地点</span><strong>{facts.place || "—"}</strong></li>
         </ul>
       </div>
     </aside>
@@ -76,13 +76,7 @@ function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose, onConf
 /* 序列栏的一行是整行按钮（点开这一章），里面放不下第二个按钮当抓手：
    手建的章在行上按 Alt + 上下方向键挪（和全书清单抓手上的方向键是同一个 move）。 */
 function ArrRail({ chapters, numOf, pickedId, onPick, rowDnd, boardDnd, onBack, onNew, canMove, onMove }) {
-  const counts = { approved: 0, going: 0, planned: 0 };
-  chapters.forEach((c) => {
-    const key = arrChapterStatus(c).key;
-    if (key === "approved") counts.approved += 1;
-    else if (key === "planned") counts.planned += 1;
-    else counts.going += 1;
-  });
+  const tally = arrRailTally(chapters);
 
   return (
     <aside className="arr-rail" aria-label="章节序列">
@@ -91,9 +85,7 @@ function ArrRail({ chapters, numOf, pickedId, onPick, rowDnd, boardDnd, onBack, 
         <h2 className="arr-rail-title text-serif">章节序列</h2>
       </header>
       <div className="arr-rail-stat">
-        <span><strong className="tab-num">{counts.approved}</strong> {ARR_CH_STATE.approved.label}</span>
-        <span><strong className="tab-num">{counts.going}</strong> {ARR_CH_STATE.writing.label}</span>
-        <span><strong className="tab-num">{counts.planned}</strong> {ARR_CH_STATE.planned.label}</span>
+        {tally.map((t) => <span key={t.stage} data-stage={t.stage}><strong className="tab-num">{t.n}</strong> {t.label}</span>)}
       </div>
       <div className="arr-rail-list">
         {ARR_ACTS.map((a) => {

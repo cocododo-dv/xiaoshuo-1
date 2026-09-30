@@ -5,8 +5,10 @@
    PRJ_…_CH01、成本看板拿前端 slug 去比后端 id 永远对不上；章节状态在成稿中心叫
    「计划中 / 待聚合」、在主页叫「规划」。这里给一份：
    · CHAPTER_STATE_META —— 目录状态 → 中文叫法 / 语气色（ws-ui 的 tone）；SCENE_STATE_META —— 场的三态；
-   · manuscriptStage —— 成稿中心看的是稿子走到哪一步，不是目录上手打的标签；
-   · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」。
+   · chapterStage（旧名 manuscriptStage）—— 一章走到哪一步：主页、成稿中心、章节编排同一条规则；
+     chapterStarted —— 其中「动笔了没有」那一半；
+   · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」；
+   · DRAMA_FIELDS —— 戏剧卡六格的键与叫法（编辑器、成稿中心、导出附录同一套）。
    纯函数：章节列表由调用方传入（通常是 WsCatalog.get()），不读 store、不写 window。
    ========================================================== */
 
@@ -33,20 +35,38 @@ export function chapterStateMeta(state) {
   return CHAPTER_STATE_META[state] || CHAPTER_STATE_META.planned;
 }
 
-function hasManuscriptText(chapter) {
+/* 这一章动笔了没有：已经有字，或者有一场在写 / 写完了（场上记着字数也算）。
+   下面的阶段规则用它；成稿中心左栏收不收一个「规划中」的章（ws-manuscripts-store 的 manuscriptChapterEligible）
+   也该按它——否则一章在页头进度里读作写作中，左栏里却没有它。 */
+export function chapterStarted(chapter) {
   if (!chapter) return false;
   if (Number(chapter.words && chapter.words.cur) > 0) return true;
-  return (chapter.scenes || []).some((scene) => scene && (scene.state === "done" || scene.state === "archived"));
+  return (chapter.scenes || []).some((scene) => scene && (
+    scene.state === "writing" || scene.state === "done" || scene.state === "archived" || Number(scene.words) > 0));
 }
 
-/* 成稿中心的阶段：已定稿 / 审阅中 / 草稿照目录；其余（写作中、规划、待写）只要已经有字
-   或有写完的场，就是「写作中」——一章写了四千字还挂着「计划中」，作者读不懂。 */
-export function manuscriptStage(chapter) {
+/* 流程定下的阶段：审阅与终稿批准（成稿中心推进）、退回小修后的草稿。其余阶段按各场的进度读。 */
+const WORKFLOW_STAGES = ["approved", "review", "draft"];
+
+/* 一章的阶段——主页、成稿中心、章节编排同一条规则（2026-10，批准 #19）：
+   已定稿 / 审阅中 / 草稿照目录；目录说「写作中」、已经有字、或者有一场在写 / 写完了，就是「写作中」；
+   否则照目录说「待写」或「规划中」（认不出的状态也读作规划中）。只用于显示，绝不回写。
+   以前章节编排自己一条规则：退回小修的「草稿」章读成写作中或规划中、目录说写作中但还没字的章读成规划中，
+   同一章在三个视图里叫法不一样。 */
+export function chapterStage(chapter) {
   const state = chapter && chapter.state;
-  if (state === "approved" || state === "review" || state === "draft" || state === "writing") return state;
-  if (hasManuscriptText(chapter)) return "writing";
+  if (WORKFLOW_STAGES.includes(state) || state === "writing") return state;
+  if (chapterStarted(chapter)) return "writing";
   return state === "todo" ? "todo" : "planned";
 }
+
+/* 这一章的阶段是不是按各场读出来的（不是审阅 / 批准 / 退回这些流程定下的）——状态标签的悬停说明据此说话 */
+export function chapterStageDerived(chapter) {
+  return !WORKFLOW_STAGES.includes(chapter && chapter.state);
+}
+
+/* 旧名：成稿中心、主页一直这样叫它 */
+export const manuscriptStage = chapterStage;
 
 /* ---------- 场景状态 ---------- */
 
@@ -66,6 +86,27 @@ export function sceneStateMeta(state) {
   if (state === "active") return SCENE_STATE_META.writing;
   if (state === "archived") return SCENE_STATE_META.done;
   return SCENE_STATE_META[state] || SCENE_STATE_META.todo;
+}
+
+/* ---------- 戏剧卡 ---------- */
+
+/* 戏剧卡的六格：后端 narrative_json.drama 的键，编辑器（章节编排）、成稿中心的结构页签、导出的附录、
+   AI 编排的补丁行都用这一套叫法（2026-10，批准 #19：以前阅读器把键改名成 thrust / turn / after，附录写「转变」「推进」）。
+   group 是章节编排里的三组（承诺 / 推进 / 收束）；护栏两格（禁止包含 / 备注）不算在戏剧卡里。 */
+export const DRAMA_FIELDS = [
+  { key: "promise", label: "核心承诺", hint: "读完这一章读者会得到什么", group: "promise", primary: true },
+  { key: "problem", label: "章节问题", hint: "本章想问读者一个什么问题", group: "promise" },
+  { key: "spine", label: "主线推进", hint: "本章在全书主线上前进了多少", group: "drive" },
+  { key: "arc", label: "人物变化", hint: "主要人物的内在或外在变化", group: "drive" },
+  { key: "aftertaste", label: "结尾余味", hint: "读完最后一段的感觉", group: "close" },
+  { key: "ending", label: "结尾效果", hint: "最后一句具体的画面 / 动作", group: "close" },
+];
+export const DRAMA_KEYS = DRAMA_FIELDS.map((field) => field.key);
+
+/* 戏剧卡一格的叫法；认不出的键给空串（调用方自己兜底） */
+export function dramaFieldLabel(key) {
+  const field = DRAMA_FIELDS.find((f) => f.key === key);
+  return field ? field.label : "";
 }
 
 /* ---------- 章 / 场的叫法 ---------- */

@@ -2,6 +2,9 @@
 // 临时文本扫描 analyze 的端点/载荷；失败路径 error/alert（可证伪）。
 // 视图不依赖 active project（端点不收 project_id），故无需 installApiRouter/settleActive。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -51,7 +54,7 @@ async function loadStore() {
 }
 
 describe("WsQuality store（overview 巡检）", () => {
-  beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
   it("qLoadOverview 以含 text_layer/min_severity 的正确 URL 调 apiGet，并映射 summary/items", async () => {
@@ -89,8 +92,77 @@ describe("WsQuality store（overview 巡检）", () => {
   });
 });
 
+describe("WsQuality store（换作品与乱序回来的请求）", () => {
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  afterEach(() => { works.id = null; vi.restoreAllMocks(); });
+
+  const reviewPayload = (id) => ({
+    chapter_ids: [id], summary: { chapter_count: 1 }, scores: {}, chapters: [], scenes: [], repeated_patterns: [], reference_safety_findings: [],
+  });
+
+  it("换一部作品后看不到上一部的巡检、章组复审与扫描结果；换回来还在", async () => {
+    works.id = "work-a";
+    const { client, mod } = await loadStore();
+    client.apiGet.mockImplementation((u) => Promise.resolve(String(u).includes("/overview") ? overviewPayload() : {}));
+    client.apiPost.mockImplementation((u) => Promise.resolve(String(u).includes("chapter-set-review") ? reviewPayload("c1") : { score: 0.4, span_findings: [], signals: {} }));
+    await mod.qLoadOverview({});
+    await mod.qChapterSetReview({ chapter_ids: ["c1"] });
+    await mod.qAnalyzeText("甲作品的一段");
+    expect(mod.qSnapshot().review.chapter_ids).toEqual(["c1"]);
+
+    works.id = "work-b";
+    expect(mod.qSnapshot().overview).toBeNull();
+    expect(mod.qSnapshot().review).toBeNull();
+    expect(mod.qSnapshot().analyze).toBeNull();
+
+    works.id = "work-a";
+    expect(mod.qSnapshot().overview.summary.object_count).toBe(3);
+    expect(mod.qSnapshot().review.chapter_ids).toEqual(["c1"]);
+    expect(mod.qSnapshot().analyze.score).toBe(0.4);
+  });
+
+  it("换作品之后才回来的章组复审落回它自己那部作品，不显示在新作品下面", async () => {
+    works.id = "work-a";
+    const { client, mod } = await loadStore();
+    let resolveReview;
+    client.apiPost.mockImplementation(() => new Promise((resolve) => { resolveReview = resolve; }));
+    const pending = mod.qChapterSetReview({ chapter_ids: ["c1"] });
+    works.id = "work-b";
+    resolveReview(reviewPayload("c1"));
+    await pending;
+    expect(mod.qSnapshot().review).toBeNull();
+    expect(mod.qSnapshot().reviewing).toBe(false);
+    works.id = "work-a";
+    expect(mod.qSnapshot().review.chapter_ids).toEqual(["c1"]);
+    expect(mod.qSnapshot().reviewing).toBe(false);
+  });
+
+  it("连点两次「重新巡检」乱序回来：只认后发的那一次，前一次的失败也不盖上来", async () => {
+    const { client, mod } = await loadStore();
+    const pending = [];
+    client.apiGet.mockImplementation(() => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }));
+    const first = mod.qLoadOverview({ text_layer: "runtime_final_scene" });
+    const second = mod.qLoadOverview({ text_layer: "author_draft_preferred" });
+    pending[1].resolve({ ...overviewPayload(), summary: { ...overviewPayload().summary, object_count: 7 } });
+    await second;
+    expect(mod.qSnapshot().loading).toBe(false);
+    pending[0].reject(new Error("旧的那一次失败了"));
+    await first;
+    expect(mod.qSnapshot().overview.summary.object_count).toBe(7);
+    expect(mod.qSnapshot().error).toBeNull();
+
+    const third = mod.qLoadOverview({});
+    const fourth = mod.qLoadOverview({});
+    pending[3].resolve({ ...overviewPayload(), summary: { ...overviewPayload().summary, object_count: 9 } });
+    await fourth;
+    pending[2].resolve({ ...overviewPayload(), summary: { ...overviewPayload().summary, object_count: 1 } });
+    await third;
+    expect(mod.qSnapshot().overview.summary.object_count).toBe(9);
+  });
+});
+
 describe("WsQuality store（临时文本扫描 analyze）", () => {
-  beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
   it("qAnalyzeText 以 {content} 打到 analyze-text 端点并存入 analyze", async () => {
@@ -130,19 +202,31 @@ describe("WsQuality 维度标签完整性", () => {
   beforeEach(() => { vi.resetModules(); });
   afterEach(() => vi.restoreAllMocks());
 
-  it("21 维齐全且含蓝图 v2 新增三维中文标签", async () => {
+  it("20 维齐全（有效留白这个空壳维度已删）且含蓝图 v2 新增三维中文标签", async () => {
     const { mod } = await loadStore();
-    expect(mod.QUALITY_DIM_KEYS.length).toBe(21);
+    expect(mod.QUALITY_DIM_KEYS.length).toBe(20);
+    expect(mod.QUALITY_DIMS.valid_ambiguity).toBeUndefined();
     expect(mod.QUALITY_DIMS.perception_filter).toBe("感知过滤");
     expect(mod.QUALITY_DIMS.self_repetition).toBe("自我重复");
     expect(mod.QUALITY_DIMS.conflict_too_clean).toBe("冲突过净");
     // 无 undefined 标签
     expect(mod.QUALITY_DIM_KEYS.every((k) => typeof mod.QUALITY_DIMS[k] === "string")).toBe(true);
   });
+
+  it("维度的键、顺序与中文名和后端 literary_quality/dimensions.py 的 DIMENSION_LABELS 逐字相同", async () => {
+    const { mod } = await loadStore();
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../backend/src/novel_system/services/literary_quality/dimensions.py"), "utf8");
+    const start = source.indexOf("DIMENSION_LABELS: dict[str, str] = {");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = source.slice(start, source.indexOf("}", start));
+    const backend = [...block.matchAll(/"([a-z_]+)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+    expect(Object.entries(mod.QUALITY_DIMS)).toEqual(backend);
+  });
 });
 
 describe("WsQuality store（章组复审 chapter-set-review）", () => {
-  beforeEach(() => { vi.resetModules(); window.localStorage.clear(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
+  beforeEach(() => { vi.resetModules(); vi.spyOn(window, "alert").mockImplementation(() => {}); });
   afterEach(() => vi.restoreAllMocks());
 
   it("qChapterSetReview 以 {chapter_ids,protected_terms,text_layer} 打到 chapter-set-review 端点，并丢弃空值", async () => {
@@ -192,9 +276,7 @@ describe("WsQuality 视图", () => {
   let host;
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
     vi.spyOn(window, "alert").mockImplementation(() => {});
-    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     fx.catalog = [{
       id: "ch01", backendId: "c1", n: "01", title: "盐场的早班", state: "writing",
       scenes: [{ sid: "sid-1", backendId: "s1", title: "交班", state: "done" }],
@@ -327,6 +409,27 @@ describe("WsQuality 视图", () => {
     const overviewCalls = second.client.apiGet.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/literary-quality/overview"));
     expect(overviewCalls.at(-1)).not.toContain("project_id");
     works.id = null;
+  });
+
+  it("「风险维度」的选项跟着巡检回包里服务端的维度表走；还没巡检到时用本地那一份", async () => {
+    const { client, mod } = await loadStore();
+    let resolveOverview;
+    client.apiGet.mockImplementation((u) => (String(u).includes("/literary-quality/overview")
+      ? new Promise((resolve) => { resolveOverview = resolve; })
+      : Promise.resolve({})));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root.render(<mod.WsQuality go={vi.fn()} />));
+    const riskOptions = () => [...[...host.querySelectorAll(".q-field")].find((f) => f.textContent.includes("风险维度")).querySelectorAll("option")]
+      .map((o) => [o.value, o.textContent]);
+    expect(riskOptions()).toHaveLength(21);               // 「全部」+ 本地 20 维
+    expect(riskOptions()).not.toContainEqual(["valid_ambiguity", "有效留白"]);
+    await act(async () => {
+      resolveOverview({ ...overviewPayload(), dimensions: [{ dimension: "model_voice", label: "模型腔" }, { dimension: "new_rule", label: "新规则" }] });
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(riskOptions()).toEqual([["", "全部"], ["model_voice", "模型腔"], ["new_rule", "新规则"]]);
   });
 
   it("章组复审的章来自目录，不必先巡检", async () => {

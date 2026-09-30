@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fidBadgeView, fidCopyView, fidDimensionGroups, fidErrorInfo, fidExplain, fidFinalsSummary, fidGaps, fidGapsByDimension,
-  fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingLine, fidReadingStates, fidReadingView, fidScoreTone,
+  fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingStates, fidReadingView, fidSceneFinals, fidScoreTone,
   fidStyleStepView, fidTrendPoints, fidUnreliableText, fidVerdict, fidWeakestDims,
 } from "./ws-fidelity-model.js";
 
@@ -35,7 +35,7 @@ describe("一条读数的说法", () => {
     expect(view.verdict).toEqual({ key: "within", tone: "ok", label: "在作者的正常范围内" });
     expect(view.explain).toContain("从 1 排到 100（第 1 位最像）");
     expect(view.explain).toContain("这段排在第 72 位，前 90 位都算作者的正常范围");
-    expect(fidReadingLine(reading())).toBe("第 72 位 · 在作者的正常范围内");
+    expect(`${view.rankText} · ${view.verdict.label}`).toBe("第 72 位 · 在作者的正常范围内");
   });
 
   it("范围外；位次在前面但重点维越界——说清楚为什么不算在范围内", () => {
@@ -127,9 +127,40 @@ describe("成稿中心 / 文风画像 / 走势", () => {
     expect(fidBadgeView({ percentile: 96, within_range: false, reliable: true })).toMatchObject({ tone: "warn", text: "超出范围 · 第 96 位" });
     expect(fidBadgeView({ percentile: 50, within_range: true, reliable: false })).toMatchObject({ tone: "neutral", text: "量不准 · 第 50 位" });
     expect(fidBadgeView(null)).toBeNull();
+    // 「前 N 位」按读数记下的范围说：后端的范围设成 85 时不再说「前 90 位」；读数没带才用默认的 90
+    expect(fidBadgeView({ percentile: 41.6, within_range: true, reliable: true, max_percentile: 85 }).title).toContain("前 85 位");
+    expect(fidBadgeView({ percentile: 41.6, within_range: true, reliable: true }).title).toContain("前 90 位");
     expect(fidFinalsSummary({ a: { percentile: 30, within_range: true, reliable: true }, b: { percentile: 97, within_range: false, reliable: true }, c: { percentile: 40, within_range: true, reliable: false } }))
       .toEqual({ total: 3, within: 1, text: "3 场终稿里 1 场在作者范围内" });
     expect(fidFinalsSummary({})).toBeNull();
+  });
+
+  it("角标的范围从作品汇总里取：scene_finals 自己带的优先，没带就用走势里同一条读数记下的，读数不在走势里就用走势最近一条的", () => {
+    const summary = {
+      bound: true,
+      scene_finals: {
+        s1: { reading_id: "r1", percentile: 40, within_range: true, reliable: true },
+        s2: { reading_id: "r-old", percentile: 50, within_range: true, reliable: true },
+        s3: { reading_id: "r3", percentile: 60, within_range: true, reliable: true, max_percentile: 70 },
+      },
+      trend: [
+        { reading_id: "r1", stage: "final", percentile: 40, max_percentile: 80 },
+        { reading_id: "r2", stage: "first_draft", percentile: 93, max_percentile: null },
+        { reading_id: "r9", stage: "final", percentile: 30, max_percentile: 85 },
+      ],
+    };
+    const finals = fidSceneFinals(summary);
+    expect(finals.s1.max_percentile).toBe(80);                 // 同一条读数记下的（不是最近一条的 85）
+    expect(finals.s2.max_percentile).toBe(85);                 // 早于走势窗口：走势里最近记下的
+    expect(finals.s3.max_percentile).toBe(70);                 // 自己带的
+    expect(fidBadgeView(finals.s1).title).toContain("前 80 位");
+    expect(fidBadgeView(finals.s2).title).toContain("前 85 位");
+    expect(summary.scene_finals.s1.max_percentile).toBeUndefined();   // 不改原对象
+    // 走势里一条都没记：不补，角标照旧说默认的 90
+    const bare = fidSceneFinals({ scene_finals: { s1: { reading_id: "r1", percentile: 40, within_range: true, reliable: true } }, trend: [] });
+    expect(bare.s1.max_percentile).toBeUndefined();
+    expect(fidBadgeView(bare.s1).title).toContain("前 90 位");
+    expect(fidSceneFinals(null)).toEqual({});
   });
 
   it("近期常见偏差按维归组；走势点按时间顺序、首稿与终稿分开", () => {

@@ -91,7 +91,6 @@ async function loadStore(detailByChapter = { c1: ARCHIVED_DETAIL }) {
 describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.localStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -126,19 +125,6 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     await pending;
     expect(mod.WsManuStore.snapshot("c1").status).toBe("ready");
     expect(mod.WsManuStore.snapshot("c1").body.scenes[0].live).toBe(true);
-  });
-
-  it("aggregate 由成稿中心触发 final aggregate，并在成功后刷新同章正文", async () => {
-    const { mod, client } = await loadStore();
-    client.apiPost.mockResolvedValue({ status: "created", chapter_id: "c1" });
-    client.apiGet.mockClear();
-
-    const result = await mod.WsManuStore.aggregate("c1");
-
-    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/runtime/aggregate/final", {});
-    expect(client.apiGet).toHaveBeenCalledWith("/api/v1/chapter-manuscripts/c1");
-    expect(result.status).toBe("created");
-    expect(mod.WsManuStore.body("c1").completion).toBe("complete");
   });
 
   it("完成门：清空 localStorage 后正文仍完整来自 API（缓存清除不丢稿）", async () => {

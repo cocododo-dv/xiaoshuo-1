@@ -136,13 +136,6 @@ export function fidReadingView(reading) {
   };
 }
 
-/* 一行短话：「第 72 位 · 在作者的正常范围内」 */
-export function fidReadingLine(reading) {
-  if (!reading) return "";
-  const verdict = fidVerdict(reading);
-  return `${fidRankText(reading.percentile)} · ${verdict ? verdict.label : ""}`;
-}
-
 /* 读数记下的维度状态（重点 / 不学）→ { dim: "emphasize" | "exclude" }（按维的表据此标出） */
 export function fidReadingStates(reading) {
   const states = {};
@@ -278,16 +271,43 @@ export function fidPatchView(patch) {
 
 /* ---------- 成稿中心：按场的角标 ---------- */
 
-/* 一场最新的终稿读数（作品汇总的 scene_finals[sceneId]）→ { tone, text, title } 或 null */
-export function fidBadgeView(final, { maxPercentile = DEFAULT_MAX_PERCENTILE } = {}) {
+/* 作品汇总（GET /api/v1/projects/{id}/style-fidelity）里各场最新的终稿读数，补上记下的范围 max_percentile：
+   scene_finals 的条目自己带了就用它；没带（后端给 scene_finals 补上这个键之前）就从同一份汇总的走势里找——
+   同一条读数（reading_id 相同）记下的范围；这一场的读数早于走势的窗口时，用走势里最近一条读数记下的范围
+   （后端现在的 style_step_max_percentile）；走势里一条都没记才不补（角标用默认的 90）。不改原对象。 */
+export function fidSceneFinals(summary) {
+  const finals = summary && summary.scene_finals && typeof summary.scene_finals === "object" ? summary.scene_finals : {};
+  const recorded = new Map();
+  let latest = null;
+  for (const row of Array.isArray(summary && summary.trend) ? summary.trend : []) {   // 走势是时间顺序
+    const value = num(row && row.max_percentile);
+    if (value == null) continue;
+    if (row.reading_id) recorded.set(row.reading_id, value);
+    latest = value;
+  }
+  const out = {};
+  for (const [sceneId, final] of Object.entries(finals)) {
+    const value = final && num(final.max_percentile) == null
+      ? (final.reading_id && recorded.has(final.reading_id) ? recorded.get(final.reading_id) : latest)
+      : null;
+    out[sceneId] = value == null ? final : { ...final, max_percentile: value };
+  }
+  return out;
+}
+
+/* 一场最新的终稿读数（fidSceneFinals 补过范围的 scene_finals[sceneId]）→ { tone, text, title } 或 null。
+   「前 N 位」按这条读数记下的范围说（final.max_percentile，后端的 style_step_max_percentile），
+   读数没带时才用默认的 90。 */
+export function fidBadgeView(final) {
   if (!final || fidRank(final.percentile) == null) return null;
   const rank = fidRank(final.percentile);
+  const threshold = Math.round(num(final.max_percentile) || DEFAULT_MAX_PERCENTILE);
   const ruler = `终稿像不像这位参考作者：把作者自己书里的段落从最像到最不像排成 100 位，这一场排第 ${rank} 位`;
   if (final.reliable === false) {
     return { tone: "neutral", text: `量不准 · 第 ${rank} 位`, title: `${ruler}；这一场太短（或参考书能比的片段太少），只能参考。` };
   }
   if (final.within_range) {
-    return { tone: "ok", text: `作者范围内 · 第 ${rank} 位`, title: `${ruler}，在作者的正常范围内（前 ${maxPercentile} 位）。` };
+    return { tone: "ok", text: `作者范围内 · 第 ${rank} 位`, title: `${ruler}，在作者的正常范围内（前 ${threshold} 位）。` };
   }
   return { tone: "warn", text: `超出范围 · 第 ${rank} 位`, title: `${ruler}，超出作者的正常范围。` };
 }

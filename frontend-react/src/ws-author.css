@@ -7,7 +7,10 @@
    编辑器与场景看板按自己的宽度（容器查询）排版，不按窗口猜。
    ========================================================== */
 
-/* 右栏体检抽屉里的小节标题（原在 screens.css，两份定义合成一份；外层 .ctx-block 在 ws-snow.css） */
+/* 右栏的一块与它的小节标题：章节编排的体检抽屉、构思右栏的脊柱块（ws-snow-rail）共用。
+   .ctx-block 原在 ws-snow.css（2026-10 挪来，和 .ctx-head 放在一起）；构思那边的 .sf-spine-block
+   在 ws-snow-editors.css 里另设 gap，那个文件导入得更晚，挪动前后都是它赢。 */
+.ctx-block { display: flex; flex-direction: column; gap: 8px; }
 .ctx-head { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); letter-spacing: 0.02em; }
 .ctx-head svg { color: var(--ink-3); }
 
@@ -44,10 +47,10 @@
   max-width: calc(var(--content-max) + 2 * var(--page-gutter)); margin: 0 auto; width: 100%;
 }
 .arr-ov-scroll > .card { padding: var(--s5) var(--s6); }
-.arr-arc .card-head, .arr-doctor .card-head, .arr-board-card .card-head {
+.arr-lens .card-head, .arr-doctor .card-head, .arr-board-card .card-head {
   align-items: flex-start; flex-wrap: wrap; row-gap: var(--s2); margin-bottom: var(--s4);
 }
-.arr-arc .card-head > div:first-child, .arr-doctor .card-head > div:first-child, .arr-board-card .card-head > div:first-child { flex: 1 1 320px; min-width: 0; }
+.arr-lens .card-head > div:first-child, .arr-doctor .card-head > div:first-child, .arr-board-card .card-head > div:first-child { flex: 1 1 320px; min-width: 0; }
 
 /* 章节清单：按卷分组，一章一行（结构镜头负责「看」，这里负责「动」） */
 .arr-actsec { display: flex; flex-direction: column; gap: var(--s1); }
@@ -91,7 +94,9 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 button.arr-card-title:hover { color: var(--accent-ink); }
-.arr-card.s-planned .arr-card-title { color: var(--ink-2); }
+/* 还没动笔的章（阶段规则读作规划中 / 待写）章名淡一档 */
+.arr-card.s-planned .arr-card-title,
+.arr-card.s-todo .arr-card-title { color: var(--ink-2); }
 .arr-card-promise { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arr-card-range { grid-area: range; font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; }
 .arr-card-spine { grid-area: spine; display: flex; }
@@ -443,7 +448,8 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 .arr-dgroup-head { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
 .arr-dgroup-head svg { color: var(--ink-3); }
 .arr-dgroup-rule { flex: 1; height: 1px; margin-left: 4px; background: var(--line-1); }
-.arr-dgroup-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* 戏剧卡的格子、护栏、AI 编排的蓝图：两列，编辑器窄了（下面的容器查询）并成一列 */
+.arr-dgroup-fields, .arr-guard-grid, .arr-bp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .arr-field {
   display: flex; flex-direction: column; gap: 5px; padding: 10px 12px;
   border: 1px solid var(--line-1); border-radius: var(--r-md); background: var(--paper-0);
@@ -462,7 +468,6 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 }
 .arr-field.is-primary .arr-field-text { font-size: 15px; }
 .arr-field-text::placeholder, .arr-guard-text::placeholder { color: var(--ink-4); }
-.arr-guard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .arr-guard { padding: 10px 13px; border-radius: var(--r-md); background: var(--tone-wash); }
 .arr-guard:focus-within { box-shadow: inset 0 0 0 1px var(--tone); }
 .arr-guard-label { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; font-size: var(--fs-xs); font-weight: 600; color: var(--tone-ink); }
@@ -495,7 +500,6 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 .arr-ai-bullets { margin: 4px 0 0 18px; padding: 0; }
 .arr-ai-note { margin-top: var(--s2); }
 .arr-ai-unsaved { margin-left: var(--s2); vertical-align: 1px; }
-.arr-bp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .arr-sync { font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
 .arr-sync b { color: var(--ink-2); font-weight: 600; }
 

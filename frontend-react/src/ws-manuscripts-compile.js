@@ -1,5 +1,5 @@
 import { escapeManuscriptText } from "./manuscript-html.js";
-import { chapterLabel, chapterStateMeta, manuscriptStage } from "./labels/catalog.js";
+import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    ws-manuscripts-compile — 成稿中心的纯函数
@@ -12,7 +12,8 @@ import { chapterLabel, chapterStateMeta, manuscriptStage } from "./labels/catalo
    不碰 DOM、不写 window——所以能直接单测。
    ========================================================== */
 
-const IDLE_SNAPSHOT = { status: "idle", body: null, error: null };
+/* 没有后端 id / 还没拉过的章：没有正文可言（工作流与导出都用这一份） */
+export const MANU_IDLE_SNAPSHOT = Object.freeze({ status: "idle", body: null, error: null });
 
 /* 服务端说这一章可以流转：聚合完整、没有缺场、正史核验完成。 */
 export function manuCanonicalComplete(snapshot) {
@@ -49,12 +50,15 @@ export function manuScenesArchived(snapshot) {
     && (body.missingSceneIds || []).length === 0 && body.completion === "complete");
 }
 
-/* 目录戏剧卡 → 阅读器概要卡四字段；四项都空就没有戏剧卡。 */
+/* 成稿中心看的戏剧卡四格（键与叫法同 labels/catalog.js 的 DRAMA_FIELDS：结构页签的概要卡、导出的附录都按这个顺序） */
+export const MANU_DRAMA_KEYS = ["promise", "spine", "arc", "aftertaste"];
+
+/* 目录戏剧卡 → 这四格（键就是后端的键）；四项都空就没有戏剧卡。 */
 export function manuDramaOf(chapter) {
   const d = (chapter && chapter.drama) || {};
   const pick = (v) => (v && v !== "—" ? v : "");
-  if (!pick(d.promise) && !pick(d.spine) && !pick(d.arc) && !pick(d.aftertaste)) return null;
-  return { promise: pick(d.promise), thrust: pick(d.spine), turn: pick(d.arc), after: pick(d.aftertaste) };
+  if (MANU_DRAMA_KEYS.every((key) => !pick(d[key]))) return null;
+  return Object.fromEntries(MANU_DRAMA_KEYS.map((key) => [key, pick(d[key])]));
 }
 
 /* 某一场的归档段落（服务端有终稿才有），没有就是 null。 */
@@ -104,7 +108,7 @@ export function manuBuildBody(chapter, snapshot) {
 /* ---------- 左栏与进度条 ---------- */
 
 /* 目录章 → 成稿中心的章行。eligible 决定哪些章进成稿中心（ws-manuscripts-store 的
-   manuscriptChapterEligible）；stage 是稿子走到哪一步（ws-labels.manuscriptStage）。
+   manuscriptChapterEligible）；stage 是稿子走到哪一步（labels/catalog.js 的 chapterStage，与主页、章节编排同一条规则）。
    目录载荷里没有批准时间，所以章行也不带（以前的「于 … 批准」只有测试夹具填得出来）。 */
 export function manuChapterRows(chapters, eligible) {
   return (chapters || []).filter(eligible || Boolean).map((c) => {
@@ -114,7 +118,7 @@ export function manuChapterRows(chapters, eligible) {
       backendId: c.backendId || "",
       n: c.n,
       title: c.title,
-      stage: manuscriptStage(c),
+      stage: chapterStage(c),
       words: (c.words && c.words.cur) || 0,
       scenes: scenes.length,
       sceneDone: scenes.filter((s) => s.state === "done").length,
@@ -145,11 +149,29 @@ export function manuDefaultPick(rows) {
 
 /* 整书进度格：按目录全序（含还没进成稿中心的规划章），计划章数比目录多时补占位格。 */
 export function manuProgressCells(chapters, planChapters) {
-  const cells = (chapters || []).map((c) => ({ id: c.id, n: c.n, title: c.title, stage: manuscriptStage(c) }));
+  const cells = (chapters || []).map((c) => ({ id: c.id, n: c.n, title: c.title, stage: chapterStage(c) }));
   for (let i = cells.length; i < (Number(planChapters) || 0); i++) {
     cells.push({ id: `plan${i}`, n: String(i + 1), title: "", stage: "planned", plan: true });
   }
   return cells;
+}
+
+/* 退回小修的待办：理由 + 定位到哪一场 + 直达深改的动作（rvPush 的载荷）。picked 是成稿中心的章行。 */
+export function manuReturnTodo(picked, { reason, sid, sceneTitle } = {}) {
+  const head = chapterLabel(picked, { withTitle: false });
+  return {
+    kind: "qc", priority: 1,
+    // 「退回小修：第 3 章 · 盐场」；章名是占位的「第 3 章」时不写两遍
+    title: `退回小修：${chapterLabel(picked, { maxTitle: Infinity })}`,
+    where: `${head}${sceneTitle ? " · " + sceneTitle : ""}`,
+    source: "成稿中心",
+    detail: reason,
+    actions: [
+      { label: "直达深改 · 定位本场", intent: "primary", op: "nav", to: "writer", scene: sid, posture: "deep" },
+      { label: "查看本章", intent: "ghost", op: "nav", to: "manuscripts" },
+      { label: "标记完成", intent: "quiet", op: "resolve" },
+    ],
+  };
 }
 
 /* 先去写哪一场：服务端说缺的第一场，没有就目录里第一场没写完的。 */
@@ -169,7 +191,7 @@ export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   if (!selected.length) return "该范围内没有章节。";
   const unsynced = selected.filter((c) => !c.backendId);
   if (unsynced.length) return `有 ${unsynced.length} 章尚未同步到服务端。`;
-  const snapshots = selected.map((c) => (snapshotOf && snapshotOf(c)) || IDLE_SNAPSHOT);
+  const snapshots = selected.map((c) => (snapshotOf && snapshotOf(c)) || MANU_IDLE_SNAPSHOT);
   const failed = snapshots.find((snapshot) => snapshot.status === "error");
   if (failed) return (failed.error && failed.error.message) || "服务端正文加载失败。";
   const pending = snapshots.filter((snapshot) => snapshot.status === "idle" || snapshot.status === "loading");
@@ -179,12 +201,14 @@ export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   return "";
 }
 
-function chapterHeading(chapter) {
+/* 导出里的章标题用完整章名（不截断）；和 labels 里的同名 chapterHeading（章号 / 章名两段）不是一回事，所以另起名字 */
+function fullChapterTitle(chapter) {
   return chapterLabel(chapter, { maxTitle: Infinity });
 }
 
+/* 附录里的戏剧卡：叫法与章节编排的编辑器同一套（核心承诺 / 主线推进 / 人物变化 / 结尾余味，批准 #19） */
 function dramaLine(drama) {
-  return `戏剧卡 — 承诺：${drama.promise || "—"}；推进：${drama.thrust || "—"}；转变：${drama.turn || "—"}；余味：${drama.after || "—"}`;
+  return `戏剧卡 — ${MANU_DRAMA_KEYS.map((key) => `${dramaFieldLabel(key)}：${drama[key] || "—"}`).join("；")}`;
 }
 
 /* 把 scopeIds 里的章（按目录顺序）编译成一个文件：{ name, content, mime }。
@@ -200,11 +224,11 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
     if (book && book.kind) chunks.push(`> ${book.kind}\n`);
     if (toc) {
       chunks.push("\n## 目录\n");
-      selected.forEach((c) => chunks.push(`- ${chapterHeading(c)}`));
+      selected.forEach((c) => chunks.push(`- ${fullChapterTitle(c)}`));
       chunks.push("");
     }
     bodies.forEach(({ c, body }) => {
-      chunks.push(`\n## ${chapterHeading(c)}\n`);
+      chunks.push(`\n## ${fullChapterTitle(c)}\n`);
       if (body) {
         body.scenes.forEach((s) => {
           chunks.push(`### ${s.idx} · ${s.title}\n`);
@@ -224,7 +248,7 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
   if (fmt === "txt") {
     const chunks = [title + "\n"];
     bodies.forEach(({ c, body }) => {
-      chunks.push(`\n\n${chapterHeading(c)}\n`);
+      chunks.push(`\n\n${fullChapterTitle(c)}\n`);
       if (body) body.scenes.forEach((s) => { chunks.push(""); s.paras.forEach((p) => chunks.push("    " + p)); });
       else chunks.push("（本章尚无正文）");
     });
@@ -235,9 +259,9 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
   const esc = escapeManuscriptText;
   let html = `<html xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><title>${esc(title)}</title></head><body style="font-family:serif">`;
   html += `<h1>${esc(title)}</h1>`;
-  if (toc) html += "<h2>目录</h2><ul>" + selected.map((c) => `<li>${esc(chapterHeading(c))}</li>`).join("") + "</ul>";
+  if (toc) html += "<h2>目录</h2><ul>" + selected.map((c) => `<li>${esc(fullChapterTitle(c))}</li>`).join("") + "</ul>";
   bodies.forEach(({ c, body }) => {
-    html += `<h2>${esc(chapterHeading(c))}</h2>`;
+    html += `<h2>${esc(fullChapterTitle(c))}</h2>`;
     if (body) {
       body.scenes.forEach((s) => {
         html += `<h3>${esc(s.idx)} · ${esc(s.title)}</h3>` + s.paras.map((p) => `<p>${esc(p)}</p>`).join("");

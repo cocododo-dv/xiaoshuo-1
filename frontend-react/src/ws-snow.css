@@ -277,8 +277,6 @@
   gap: 16px;
   overflow-y: auto;
 }
-/* 右栏的一块（章节编排的体检抽屉也用它） */
-.ctx-block { display: flex; flex-direction: column; gap: 8px; }
 @media (max-width: 1280px) {
   .snow-cols { grid-template-columns: 240px minmax(0, 1fr) 280px; }
 }

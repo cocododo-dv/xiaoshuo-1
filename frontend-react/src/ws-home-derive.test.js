@@ -3,24 +3,27 @@
 // 场景计数不再按旧占位符过滤、深链 sid 指向在写的场景。
 import { describe, it, expect } from "vitest";
 import {
-  hmBookProgress, hmChapterWindow, hmCurrentChapter, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
+  hmBookProgress, hmChapterWindow, hmDeriveSpine, hmFocusModel, hmResumeModel, hmSnowLoadState, hmSnowSummary,
 } from "./ws-home-derive.js";
+import { catalogCurrentChapter } from "./ws-catalog-focus.js";
 
 const CH = (n, state, extra = {}) => ({ id: `ch${n}`, n: String(n).padStart(2, "0"), title: `第${n}章`, state, scenes: [], ...extra });
 
-describe("hmCurrentChapter", () => {
+/* 进度脊不传前线章时的兜底：目录的当前章（ws-catalog-focus.js，WsCatalog.currentChapter 同一条规则） */
+describe("当前章（catalogCurrentChapter）", () => {
   it("空目录返回 null", () => {
-    expect(hmCurrentChapter([])).toBeNull();
-    expect(hmCurrentChapter(null)).toBeNull();
+    expect(catalogCurrentChapter([])).toBeNull();
+    expect(catalogCurrentChapter(null)).toBeNull();
   });
 
   it("current 标记优先于「在写」，其次「在写」，最后回落到末章", () => {
     const writing = CH(2, "writing");
     const current = CH(3, "draft", { current: true });
-    expect(hmCurrentChapter([CH(1, "approved"), writing, current])).toBe(current);
-    expect(hmCurrentChapter([CH(1, "approved"), writing, CH(3, "planned")])).toBe(writing);
+    expect(catalogCurrentChapter([CH(1, "approved"), writing, current])).toBe(current);
+    expect(catalogCurrentChapter([CH(1, "approved"), writing, CH(3, "planned")])).toBe(writing);
     const last = CH(3, "planned");
-    expect(hmCurrentChapter([CH(1, "approved"), CH(2, "review"), last])).toBe(last);
+    expect(catalogCurrentChapter([CH(1, "approved"), CH(2, "review"), last])).toBe(last);
+    expect(hmDeriveSpine([CH(1, "approved"), writing, CH(3, "planned")]).front).toBe("02");
   });
 });
 
@@ -71,7 +74,7 @@ describe("hmDeriveSpine", () => {
   });
 });
 
-describe("hmDeriveSpine / hmChapterWindow · 章的阶段与成稿中心同一套（ws-labels.manuscriptStage）", () => {
+describe("hmDeriveSpine / hmChapterWindow · 章的阶段与成稿中心、章节编排同一套（labels/catalog.js 的 chapterStage）", () => {
   // 目录上还挂着「规划 / 待写」、但已经有字或有写完的场的章，成稿中心读作「写作中」；主页以前照抄目录标签说「规划」
   const book = () => [
     CH(1, "approved", { words: { cur: 0, target: 3000 } }),
@@ -87,6 +90,11 @@ describe("hmDeriveSpine / hmChapterWindow · 章的阶段与成稿中心同一�
     expect(spine.segments.map(s => s.state)).toEqual(["approved", "writing", "writing", "writing", "planned", "todo"]);
     expect(spine.counts).toEqual({ approved: 1, review: 0, draft: 0, writing: 3, planned: 1, todo: 1 });
     expect(spine.legend.find(l => l.state === "writing").n).toBe(3);
+  });
+
+  it("有一场在写（还没存下字）的规划章也算「写作中」——与章节编排、成稿中心同一条规则", () => {
+    const spine = hmDeriveSpine([CH(1, "planned", { scenes: [{ sid: "w1", state: "writing" }, { sid: "w2", state: "todo" }] }), CH(2, "draft")]);
+    expect(spine.segments.map(s => s.state)).toEqual(["writing", "draft"]);
   });
 
   it("章卡的状态标签用同一个阶段：同一个词 + ws-ui 语气", () => {
@@ -129,10 +137,10 @@ describe("hmFocusModel", () => {
     expect(m.beats.map(b => [b.k, b.v])).toEqual([["反应", "躲起来"], ["两难", "（两难待规划）"], ["决定", "回去"]]);
   });
 
-  it("没有焦点场景时退回 dashboard 缓存，slug 截到两项", () => {
+  it("没有焦点场景（全书还没有一场）时是空卡：不拿 dashboard 缓存里已经删掉的旧场顶上", () => {
     const m = hmFocusModel(null, { slug: "第 2 章 · 第 3 场 · 主动场景", scene: "旧场景", gos: [{ k: "目标", tone: "sage", v: "g" }] });
-    expect(m).toMatchObject({ slug: "第 2 章 · 第 3 场", title: "旧场景", sid: "", scene: null });
-    expect(m.beats).toHaveLength(1);
+    expect(m).toMatchObject({ slug: "", title: "", sid: "", scene: null, chapter: null, kind: "" });
+    expect(m.beats).toEqual([]);
   });
 });
 

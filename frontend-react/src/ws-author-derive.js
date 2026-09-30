@@ -7,10 +7,12 @@
    灾难、每一场的形态 / POV / 时间 / 地点 / 离场变化、每一章装着故事序上的第几到第几场——到了这里一样都看不见。
 
    这一层把后者读出来：全部是目录载荷（WsCatalog 的章 / 场）上的纯函数，不写 window、不碰网络。
-   章级字段作者真的填过（旧数据、AI 编排写的）就用作者的；没填过才用场上读出来的，并标明「来自各场」。
+   章级的视角 / 时间 / 地点 / 入口 / 出口只从各场读（2026-10，批准 #17a、重评 R10）：旧数据里存着的章级值
+   产品里没有编辑入口、也没有东西写它，不再盖过场上读出来的事实。
    ========================================================== */
 
-import { ARR_ACTS } from "./ws-author-data.jsx";
+import { ARR_ACTS } from "./ws-author-data.js";
+import { CHAPTER_STATE_ORDER, DRAMA_KEYS, chapterStage, chapterStateMeta } from "./labels/catalog.js";
 
 const BLANK_MARKERS = ["待规划", "待定", "待补", "待填"];
 const isBlank = (value) => {
@@ -18,6 +20,16 @@ const isBlank = (value) => {
   return !text || text === "—" || BLANK_MARKERS.some((m) => text.includes(m));
 };
 const clean = (value) => (isBlank(value) ? "" : String(value).trim());
+
+/* 视角候选（手加的场填视角时的下拉）：资料库里的人物，再加上目录里各场已经用过的视角名（资料库没建档的人也在）；
+   去重、保持先后，占位词（待定……）不算名字 */
+export function arrPovCandidates(entries, chapters) {
+  const names = [];
+  const add = (name) => { const text = clean(name); if (text && !names.includes(text)) names.push(text); };
+  (entries || []).forEach((entry) => { if (entry && entry.cat === "people") add(entry.name); });
+  (chapters || []).forEach((c) => ((c && c.scenes) || []).forEach((s) => add(s && s.povName)));
+  return names;
+}
 
 /* 这一章的结构归构思的分章（先后 / 幕 / 成员只在「整理章节结构」里改）吗 */
 export const arrIsPlanChapter = (c) => !!(c && c.structure && c.structure.owner === "plan");
@@ -37,14 +49,10 @@ function countBy(list) {
 const sceneOpening = (s) => clean(s && (s.summary || s.title));
 const sceneClosing = (s) => clean(s && (s.exitChange || s.summary || s.title));
 
-/* 一章的入口 / 出口：作者填过就用作者的；否则入口 = 第一场在做什么，出口 = 最后一场离场时变了什么 */
+/* 一章的入口 / 出口：入口 = 第一场在做什么，出口 = 最后一场离场时变了什么（没有场时是空串） */
 export function arrChapterEdge(ch, edge) {
-  if (!ch) return { text: "", derived: false };
-  const authored = clean(edge === "entry" ? ch.entry : ch.exit);
-  if (authored) return { text: authored, derived: false };
-  const scenes = ch.scenes || [];
-  const text = edge === "entry" ? sceneOpening(scenes[0]) : sceneClosing(scenes[scenes.length - 1]);
-  return { text, derived: !!text };
+  const scenes = (ch && ch.scenes) || [];
+  return edge === "entry" ? sceneOpening(scenes[0]) : sceneClosing(scenes[scenes.length - 1]);
 }
 
 export function arrRangeLabel(structure) {
@@ -53,22 +61,26 @@ export function arrRangeLabel(structure) {
   return span.first === span.last ? `第 ${span.first} 场` : `第 ${span.first}–${span.last} 场`;
 }
 
-/* 章节详情要用的全部派生事实 */
+/* 各场的视角：按场次多少排（「林昭 2 · 顾行 1」的来源） */
+const scenePovs = (scenes) => countBy((scenes || []).map((s) => clean(s.povName)));
+/* 各场的故事时间：头尾两场（同一个就只写一个） */
+function sceneTimeLine(scenes) {
+  const times = (scenes || []).map((s) => clean(s.design && s.design.storyTime)).filter(Boolean);
+  if (!times.length) return "";
+  return times[0] === times[times.length - 1] ? times[0] : `${times[0]} → ${times[times.length - 1]}`;
+}
+
+/* 章节详情要用的全部派生事实（视角 / 时间 / 地点 / 入口 / 出口都是从各场读出来的字，没有就是空串） */
 export function arrChapterFacts(ch) {
   const scenes = (ch && ch.scenes) || [];
-  const povs = countBy(scenes.map((s) => clean(s.povName)));
-  const times = scenes.map((s) => clean(s.design && s.design.storyTime)).filter(Boolean);
+  const povs = scenePovs(scenes);
   const places = countBy(scenes.map((s) => clean(s.design && s.design.location)));
-  const authoredPov = clean(ch && ch.pov);
-  const authoredTime = clean(ch && ch.time);
-  const authoredPlace = clean(ch && ch.place);
-  const timeLine = times.length ? (times[0] === times[times.length - 1] ? times[0] : `${times[0]} → ${times[times.length - 1]}`) : "";
   const planned = scenes.filter(arrSceneBeatsPlanned).length;
   return {
     povs,
-    pov: { text: authoredPov || povs.map((p) => (povs.length > 1 ? `${p.name} ${p.count}` : p.name)).join(" · "), derived: !authoredPov && povs.length > 0 },
-    time: { text: authoredTime || timeLine, derived: !authoredTime && !!timeLine },
-    place: { text: authoredPlace || places.slice(0, 3).map((p) => p.name).join(" · "), derived: !authoredPlace && places.length > 0 },
+    pov: povs.map((p) => (povs.length > 1 ? `${p.name} ${p.count}` : p.name)).join(" · "),
+    time: sceneTimeLine(scenes),
+    place: places.slice(0, 3).map((p) => p.name).join(" · "),
     entry: arrChapterEdge(ch, "entry"),
     exit: arrChapterEdge(ch, "exit"),
     beats: { planned, total: scenes.length },
@@ -76,17 +88,15 @@ export function arrChapterFacts(ch) {
   };
 }
 
-/* 镜头用的章：章级 POV / 时间没填时用场上读出来的（主 POV = 本章场次最多的那一位） */
+/* 节奏镜头用的章：主 POV = 本章场次最多的那一位，povs = 本章各场出现过的全部视角，time = 第一场的故事时间 */
 export function arrLensChapters(chapters) {
   return (chapters || []).map((c) => {
-    const facts = arrChapterFacts(c);
-    const names = facts.povs.map((p) => p.name);
-    const authored = clean(c.pov);
+    const names = scenePovs(c.scenes).map((p) => p.name);
     return {
       ...c,
-      pov: authored || names[0] || "未定",
-      povs: authored ? [authored] : (names.length ? names : ["未定"]),
-      time: clean(c.time) || (facts.time.text ? facts.time.text.split(" → ")[0] : ""),
+      pov: names[0] || "未定",
+      povs: names.length ? names : ["未定"],
+      time: sceneTimeLine(c.scenes).split(" → ")[0],
     };
   });
 }
@@ -113,15 +123,15 @@ export function arrBookFacts(chapters) {
   };
 }
 
-/* 章的显示状态。已批准 / 审阅中是后端流程给的；其余（后端的「规划中 / 草稿 / 进行中」写作时从不推进）
-   按各场读：有一场在写 / 写完、或者已经有字 = 写作中，否则 = 规划中。只用于显示，绝不回写。 */
-export function arrChapterStatus(c) {
-  const raw = c && c.state;
-  if (raw === "approved" || raw === "review") return { key: raw, derived: false };
-  const scenes = (c && c.scenes) || [];
-  const started = ((c && c.words && c.words.cur) || 0) > 0
-    || scenes.some((s) => s.state === "writing" || s.state === "done" || (s.words || 0) > 0);
-  return { key: started ? "writing" : "planned", derived: true };
+/* 序列栏顶上的一行数：各阶段几章（章的阶段与主页、成稿中心同一条规则：labels/catalog.js 的 chapterStage）。
+   已定稿 / 写作中 / 规划中总在，审阅中 / 草稿 / 待写有章时才出现——以前审阅中、草稿的章都记在「写作中」名下。 */
+const ARR_RAIL_ALWAYS = ["approved", "writing", "planned"];
+export function arrRailTally(chapters) {
+  const counts = {};
+  (chapters || []).forEach((c) => { const stage = chapterStage(c); counts[stage] = (counts[stage] || 0) + 1; });
+  return CHAPTER_STATE_ORDER
+    .filter((stage) => ARR_RAIL_ALWAYS.includes(stage) || counts[stage])
+    .map((stage) => ({ stage, n: counts[stage] || 0, label: chapterStateMeta(stage).label }));
 }
 
 /* 章节体检（右栏 + 页头「体检」按钮上的待办数）：只报读得出来的事实。
@@ -153,9 +163,6 @@ export function arrChapterChecks(ch, snow) {
   }
   return rows;
 }
-
-/* 戏剧卡的六格（护栏「禁止包含 / 备注」不算在内） */
-export const DRAMA_KEYS = ["promise", "problem", "spine", "arc", "aftertaste", "ending"];
 
 /* 各卷在章序上占的列（节奏镜头的卷带）。卷在目录里是连续的；不连续时取首尾。 */
 export function arrActSpans(chapters) {

@@ -5,6 +5,10 @@ import {
   manuBuildBody, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
   manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScenesArchived, manuScopeProblem,
 } from "./ws-manuscripts-compile.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { CANON_EVENT_LABELS } from "./labels/canon.js";
 
 const CANON_DONE = { complete: true, missing_final_scene_ids: [], pending_scene_ids: [], pending_candidate_count: 0 };
 
@@ -71,7 +75,7 @@ describe("manuBuildBody", () => {
     const body = manuBuildBody(chapter(), partial);
     expect(body.scenes.map((s) => [s.idx, s.title, s.live, s.missing])).toEqual([["01", "交班", true, false], ["02", "夜渡", false, true]]);
     expect(body.complete).toBe(false);
-    expect(body.drama).toEqual({ promise: "闸门背后是谁", thrust: "", turn: "", after: "灯" });
+    expect(body.drama).toEqual({ promise: "闸门背后是谁", spine: "", arc: "", aftertaste: "灯" });
   });
 });
 
@@ -82,7 +86,7 @@ describe("左栏与进度格", () => {
     chapter({ id: "ch03", backendId: "c3", n: "03", title: "第 3 章", state: "planned", words: { cur: 0 }, scenes: [] }),
   ];
 
-  it("章行：阶段来自 manuscriptStage（规划但有字 = 写作中），不再带恒定的版本号", () => {
+  it("章行：阶段来自 chapterStage（规划但有字 = 写作中），不再带恒定的版本号", () => {
     const rows = manuChapterRows(catalog, (c) => c.state !== "planned" || c.words.cur > 0);
     expect(rows.map((r) => [r.id, r.stage, r.words, r.sceneDone, r.scenes])).toEqual([["ch01", "approved", 1200, 2, 2], ["ch02", "writing", 800, 0, 0]]);
     expect(rows[0]).not.toHaveProperty("ver");
@@ -129,7 +133,8 @@ describe("导出", () => {
     expect(out.content).toContain("## 第 1 章 · 盐场的早班");
     expect(out.content).toContain("### 01 · 交班");
     expect(out.content).toContain("闸门上有字。");
-    expect(out.content).toContain("> 戏剧卡 — 承诺：闸门背后是谁；推进：—；转变：—；余味：灯");
+    // 附录的叫法与章节编排的编辑器同一套（批准 #19：以前写「承诺 / 推进 / 转变 / 余味」）
+    expect(out.content).toContain("> 戏剧卡 — 核心承诺：闸门背后是谁；主线推进：—；人物变化：—；结尾余味：灯");
   });
 
   it("纯文本：段首缩进四格；没有快照的章写「本章尚无正文」", () => {
@@ -149,5 +154,17 @@ describe("导出", () => {
     expect(out.content).toContain("&lt;b&gt;交班&lt;/b&gt;");
     expect(out.content).toContain("<p>他说：&quot;&lt;script&gt;&quot;</p>");
     expect(out.content).not.toContain("<script>");
+  });
+});
+
+describe("正史审核台的词表", () => {
+  it("候选事实的类型与后端 narrative/taxonomy.py 的 EVENT_TYPES 逐项相同，每一类都有中文名", () => {
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../backend/src/novel_system/services/narrative/taxonomy.py"), "utf8");
+    const start = source.indexOf("EVENT_TYPES = (");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const backend = [...source.slice(start, source.indexOf(")", start)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(Object.keys(CANON_EVENT_LABELS)).toEqual(backend);
+    expect(Object.values(CANON_EVENT_LABELS).every((label) => /[\u4e00-\u9fff]/.test(label))).toBe(true);
   });
 });

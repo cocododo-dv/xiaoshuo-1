@@ -1,32 +1,34 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { rvPush } from "./ws-review.jsx";
+import { rvPush } from "./ws-review-store.js";
 import { WsManuStore } from "./ws-manuscripts-store.jsx";
 import { wsToast } from "./ws-notify.jsx";
+import { writerIntents } from "./ws-finding-ui.jsx";
+import { readyWorkId } from "./lib/ready-work.js";
 import { chapterLabel } from "./labels/catalog.js";
-import { manuCanonicalBlockReason, manuCanonicalComplete, manuCompile } from "./ws-manuscripts-compile.js";
+import {
+  MANU_IDLE_SNAPSHOT, manuCanonicalBlockReason, manuCanonicalComplete, manuCompile, manuReturnTodo,
+} from "./ws-manuscripts-compile.js";
 
 /* ==========================================================
    ws-manuscripts-workflow — 成稿中心里跟服务端打交道的部分
    ----------------------------------------------------------
    · manuSnapshotOf / useManuCanonical：选中章的服务端聚合快照（WsManuStore 的同步缓存）；
    · manuRefreshChapters / manuDownload：导出前的逐章补拉与浏览器下载；
-   · useManuWorkflow：送审、退回、批准、重新打开、刷新汇总、导出本章——每章一个状态对象
-     （各动作各自的忙碌标记 + 一条状态消息），对话框开关也在这里。
+   · useChapterActionStatus：每章一个动作状态（各动作各自的忙碌标记 + 一条状态消息）；
+   · useManuWorkflow：送审、退回、批准、重新打开、导出本章，对话框开关也在这里。
    ========================================================== */
 
 const { useCallback, useEffect, useRef, useState } = React;
 
-const IDLE_SNAPSHOT = { status: "idle", body: null, error: null };
-
 /* 目录章 → 服务端聚合快照。没有后端 id 的章就是 idle（没有正文可言）。 */
 export function manuSnapshotOf(chapter) {
-  if (!chapter || !chapter.backendId) return IDLE_SNAPSHOT;
+  if (!chapter || !chapter.backendId) return MANU_IDLE_SNAPSHOT;
   return WsManuStore.snapshot(chapter.backendId);
 }
 
-/* 选中章的权威快照：换章时拉一次，store 的 loaded 事件驱动重渲（store 是同步缓存）。
+/* 选中章的权威快照：换章时拉一次，store 一变（WsManuStore.subscribe）就重渲（store 是同步缓存）。
    bump 给动作用——动作改了服务端之后强制重读一遍快照。 */
 export function useManuCanonical(chapter) {
   const [, setTick] = useState(0);
@@ -35,10 +37,7 @@ export function useManuCanonical(chapter) {
   useEffect(() => {
     if (backendId) WsManuStore.refresh(backendId).then(() => bump());
   }, [backendId, bump]);
-  useEffect(() => {
-    window.addEventListener("ws:manuscripts-loaded", bump);
-    return () => window.removeEventListener("ws:manuscripts-loaded", bump);
-  }, [bump]);
+  useEffect(() => WsManuStore.subscribe(bump), [bump]);
   return { snapshot: manuSnapshotOf(chapter), bump };
 }
 
@@ -69,23 +68,17 @@ export function manuDownload(name, content, mime) {
   } catch (e) { return false; }
 }
 
-const IDLE_BUSY = { aggregate: false, workflow: false, export: false };
+const IDLE_BUSY = { workflow: false, export: false };
 const IDLE_STATUS = { busy: IDLE_BUSY, message: null };
 
-/* 章级流转。参数：picked（成稿中心的章行）、chapter（对应的目录章）、canonical（它的快照）、
-   bump（重读快照）、book（{ title, kind }）、chapters（整份目录，导出本章用）、go（导航）。
-   status.message 是最近一次动作的结果：{ tone: "danger" | "ok", text, scope }——
-   以前三套 {busy, error, note} 按优先级拼成一条，旧的错误会压住新的成功提示。
-   状态按章存：刷新汇总、送审、导出都不在模态框里，作者可以在请求途中点左栏换章。
-   在途动作回来时写回它自己那一章（不报到新章头上）；回到那一章时，按钮仍按它的在途状态禁用。 */
-export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapters, go }) {
+/* 每章一个动作状态 { busy: { workflow, export }, message }。message 是最近一次动作的结果：
+   { tone: "danger" | "ok", text, scope }——以前三套 {busy, error, note} 按优先级拼成一条，旧的错误会压住新的成功提示。
+   状态按章存：送审、导出都不在模态框里，作者可以在请求途中点左栏换章。begin(scope) 在动作开始时锁定章 id，
+   finish / fail 写回这一章，不管作者此刻在看哪一章；回到那一章时，按钮仍按它的在途状态禁用。
+   换章时离开的那一章的旧消息清掉（在途动作的结果仍会落到它头上），忙碌标记保留。 */
+export function useChapterActionStatus(pickedId) {
   const [byChapter, setByChapter] = useState({}); // 章 id → { busy, message }
-  const [dialog, setDialog] = useState(null); // null | "return" | "approve" | "reopen"
-  const exportBusyRef = useRef(new Set()); // 防双击：state 在同一帧里还来不及变，按章记
   const leftRef = useRef(null);
-  const projectId = WsWorks.activeId();
-  const pickedId = picked ? picked.id : null;
-  const backendId = chapter && chapter.backendId;
   const status = (pickedId && byChapter[pickedId]) || IDLE_STATUS;
 
   const patch = (id, fn) => {
@@ -93,16 +86,12 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
     setByChapter((all) => ({ ...all, [id]: fn(all[id] || IDLE_STATUS) }));
   };
 
-  /* 换章：离开的那一章的旧消息清掉（回来时不再看到一句早就过时的话；在途动作的结果仍会落到它头上），
-     忙碌标记保留，对话框关上。 */
   useEffect(() => {
     const left = leftRef.current;
     leftRef.current = pickedId;
     if (left && left !== pickedId) patch(left, (s) => (s.message ? { ...s, message: null } : s));
-    setDialog(null);
   }, [pickedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* 动作开始时锁定章 id；收尾写回这一章，不管作者此刻在看哪一章。 */
   const begin = (scope) => {
     const id = pickedId;
     patch(id, (s) => ({ busy: { ...s.busy, [scope]: true }, message: null }));
@@ -113,24 +102,30 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
   };
   /* 动作还没开始就被拦下（前置条件不满足）：只报一句 */
   const refuse = (scope, text) => patch(pickedId, (s) => ({ ...s, message: { tone: "danger", text, scope } }));
+  /* 清掉这一章某一类动作留下的消息（重新打开对话框时不先看到上一次的错误） */
+  const clearMessage = (scope) => patch(pickedId, (s) => (s.message && s.message.scope === scope ? { ...s, message: null } : s));
+
+  return { status, begin, refuse, clearMessage };
+}
+
+/* 章级流转。参数：picked（成稿中心的章行）、chapter（对应的目录章）、canonical（它的快照）、
+   bump（重读快照）、book（{ title, kind }）、chapters（整份目录，导出本章用）、go（导航）。 */
+export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapters, go }) {
+  const [dialog, setDialog] = useState(null); // null | "return" | "approve" | "reopen"
+  const exportBusyRef = useRef(new Set()); // 防双击：state 在同一帧里还来不及变，按章记
+  const projectId = readyWorkId(WsWorks);
+  const pickedId = picked ? picked.id : null;
+  const backendId = chapter && chapter.backendId;
+  const { status, begin, refuse, clearMessage } = useChapterActionStatus(pickedId);
+
+  /* 换章：对话框关上 */
+  useEffect(() => { setDialog(null); }, [pickedId]);
 
   const refreshSources = async () => {
     await WsCatalog.__refresh(projectId);
-    await WsWorks.__refresh();
+    await WsWorks.retry("projects");
     if (backendId) await WsManuStore.refresh(backendId);
     bump();
-  };
-
-  const aggregate = async () => {
-    if (!backendId || status.busy.aggregate) return;
-    const run = begin("aggregate");
-    try {
-      const result = await WsManuStore.aggregate(backendId);
-      bump();
-      run.finish("ok", (result && result.status) === "created" ? "章节汇总已生成" : "章节汇总已刷新");
-    } catch (e) {
-      run.fail((e && e.message) || "章节汇总失败");
-    }
   };
 
   const retryCanonical = async () => {
@@ -171,28 +166,11 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
       run.fail((e && e.message) || "退回小修失败。");
       return;
     }
-    const head = chapterLabel(picked, { withTitle: false });
-    rvPush({
-      kind: "qc", priority: 1,
-      // 「退回小修：第 3 章 · 盐场」；章名是占位的「第 3 章」时不写两遍
-      title: `退回小修：${chapterLabel(picked, { maxTitle: Infinity })}`,
-      where: `${head}${sceneTitle ? " · " + sceneTitle : ""}`,
-      source: "成稿中心",
-      detail: reason,
-      actions: [
-        { label: "直达深改 · 定位本场", intent: "primary", op: "nav", to: "writer", scene: sid, posture: "deep" },
-        { label: "查看本章", intent: "ghost", op: "nav", to: "manuscripts" },
-        { label: "标记完成", intent: "quiet", op: "resolve" },
-      ],
-    });
+    rvPush(manuReturnTodo(picked, { reason, sid, sceneTitle }));
     setDialog(null);
     run.finish("ok", "已退回草稿，并生成修订待办。");
-    if (openDeep && go) {
-      go("writer", [
-        ...(sid ? [{ type: "ws:writer-scene", detail: sid }] : []),
-        { type: "ws:writer-posture", detail: "deep" },
-      ]);
-    }
+    /* 直达深改：定位到场时进那一场的深改姿态；没定位到场也照样进深改姿态 */
+    if (openDeep && go) go("writer", sid ? writerIntents(sid, { deep: true }) : [{ type: "ws:writer-posture", detail: "deep" }]);
   };
 
   const approveFinal = async ({ readNote, revisionNotes }) => {
@@ -259,7 +237,7 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
 
   /* 打开对话框时清掉上一次流转留下的错误：重新打开同一个对话框，不该先看到一句旧的「批准失败」。 */
   const openDialog = (kind) => {
-    patch(pickedId, (s) => (s.message && s.message.scope === "workflow" ? { ...s, message: null } : s));
+    clearMessage("workflow");
     setDialog(kind);
   };
   /* 服务端还在处理时不许关：否则作者会以为操作取消了，实际服务端还在做。 */
@@ -271,6 +249,6 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
   return {
     status, dialog, workflowError,
     openDialog, closeDialog,
-    aggregate, retryCanonical, submitToReview, returnToDraft, approveFinal, reopenFinal, exportChapter,
+    retryCanonical, submitToReview, returnToDraft, approveFinal, reopenFinal, exportChapter,
   };
 }

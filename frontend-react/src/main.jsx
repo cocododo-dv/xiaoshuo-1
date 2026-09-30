@@ -13,6 +13,7 @@ import "./ws-library.css";
 import "./ws-author.css";
 import "./ws-review.css";
 import "./ws-quality.css";
+import "./ws-cost.css";
 import "./ws-deep.css";
 import "./ws-scene-design.css";
 import "./ws-styleref.css";
