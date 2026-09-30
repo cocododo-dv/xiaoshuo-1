@@ -43,11 +43,10 @@ const DOCUMENTED_BREAKPOINTS = new Set(["max-width: 1440px", "max-width: 1280px"
 // 刻度外、暂时留着的断点（"文件: 条件"）。棘轮：只删不加——挪到刻度上会改变 1440 / 1100 两档
 // 之外某个真实宽度的布局，要逐个看过再挪。
 const KNOWN_OFF_SCALE_BREAKPOINTS = [
-  "wr-desk.css: max-width: 1199px",
-  "wr-desk.css: max-width: 999px",
-  "wr-desk.css: min-width: 1000px",
   "wr-recovery.css: max-width: 760px",
-  "wr-redesign.css: max-width: 999px",
+  "wr-room.css: max-width: 1199px",
+  "wr-room.css: max-width: 999px",
+  "wr-room.css: min-width: 1000px",
   "ws-author.css: max-width: 1180px",
   "ws-author.css: max-width: 1360px",
   "ws-library.css: max-width: 820px",
@@ -67,7 +66,7 @@ const KNOWN_OFF_SCALE_BREAKPOINTS = [
 // 颜料字压在同色 -wash 底上、但容器里只有 aria-hidden 图标的规则（"文件: 选择器"）。图形只需 3:1，
 // 颜料在自己的 wash 上够用；容器里一旦放字，就得换成 --*-ink 并从这里删掉。
 const ICON_ONLY_PIGMENT_ON_WASH = [
-  "wr-redesign.css: .wr-tray-spark",
+  "wr-room.css: .wr-tray-spark",
 ];
 // JSX / JS（非测试）里写死颜色的行数上限（棘轮，只降不升；现在是 0）。
 const MAX_JSX_RAW_COLOURS = 0;
