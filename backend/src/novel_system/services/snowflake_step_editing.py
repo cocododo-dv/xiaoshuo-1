@@ -328,6 +328,9 @@ class SnowflakeStepEditingMixin:
             roster=self._character_roster(project.project_id, latest_by_step),
             mint_missing=True,
         )
+        # R11（批准 #18a）：07 的章表是分章结果的只读镜像、章表行只有一个写入方——恢复一版旧的 07 只恢复它的文字，
+        # 章结构（章行、分章面板 / 写作台起的章名、场景归属）保留现表，与整步生成同一条规矩（复核 P04-R3，主管决定）
+        chapters_kept = step_key == "long_synopsis" and keep_live_chapter_table(self.session, project.project_id, draft)
         refs = self._input_refs(step_key, latest_by_step)
         refs["restored_from_step_run_id"] = source_run.step_run_id
         run = self._runs.new_run(
@@ -339,10 +342,10 @@ class SnowflakeStepEditingMixin:
             input_refs=refs,
         )
         self.session.flush()
-        sync_notice = self._sync_structured_step_data(project, step_key, draft, run)
+        sync_notice = None if chapters_kept else self._sync_structured_step_data(project, step_key, draft, run)
         if sync_notice:
-            # 恢复一版旧的 07 可能让章表变短：尾部的章连同场景归属一起没了——与生成同一条路，挂进健康度，
-            # 回包也如实带着（R15a：恢复界面要在这里告诉作者）。
+            # 同步落库时才知道、作者必须知道的事实与生成同一条路挂进健康度，回包也如实带着（R15a：恢复界面要在这里
+            # 告诉作者）。已经分过章时恢复 07 不再动章表（见上），也就不会再报「章表收缩」；这条回报的路留着。
             run.health_json = self._step_health(
                 step_key, draft, "pending_review", generation_source="history_restore", generation_notice=sync_notice
             )

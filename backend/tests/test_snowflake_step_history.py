@@ -1,7 +1,8 @@
 """R15a（2026-09-30 作者批准 #24a）：构思「历史」页「服务器上保存的版本」的后端前提。
 
-- 恢复一版旧的 07 可能让章表变短（尾部的章连同场景归属一起没了）：恢复与整步生成同一条路，把「章表收缩」的
-  事实挂进健康度，回包也如实带着（以前恢复把它吞掉，作者看到的是一次悄无声息的「恢复成功」）；
+- 恢复一版旧的 07 只恢复它的文字：章表是分章结果的只读镜像（R11），章表行、章名、场景归属保留现表，恢复出来的
+  草稿里的章表就是现表（以前把那一版当时的章表同步回来：改过的章名退回、后来的章被软删、场退回「未分章」，回包
+  再报一句「章表收缩」，复核 P04-R3）；
 - 版本列表不带草稿，预览某一版时按 ``step_run_id`` 只取那一版的草稿；
 - 抹空保护新起的那一版记着它保住的是哪一版，界面可以据此一键取回。
 """
@@ -20,9 +21,20 @@ def _chapter(title: str, **extra) -> dict:
     return {"act": 1, "title": title, "summary": f"{title}的摘要", "chapter_goal": f"推进{title}", **extra}
 
 
-def test_restoring_an_older_07_reports_the_chapter_table_shrink(session) -> None:
+def test_restoring_an_older_07_keeps_the_live_chapter_table(session) -> None:
+    """R11（批准 #18a）：07 的章表是分章结果的只读镜像，章表行只有一个写入方（分章面板 / 确认写入）。恢复一版旧的 07
+    只恢复它的文字：章表行、章名（分章面板 / 写作台起的名字）、场景归属原样，恢复出来的草稿里的章表——连同前端写穿
+    缓存里的那一份——是现在这张章表，也就没有「章表收缩」可报。以前恢复把那一版当时的章表同步回章表行：改过的章名
+    退回旧名、后来加的章被软删、挂在上面的场退回「未分章」（复核 P04-R3，主管决定）。"""
+    from sqlalchemy import select
+
+    from novel_system.db.models import SnowflakeScenePlan
+    from novel_system.services.snowflake_chapter_table import live_chapter_plans
+    from tests.test_snowflake_chaptering_story_order import _payload
+
     service = _seed(session)
-    # 一版确认过的旧 07：只有一章（直接落库——示例作品的前六步没有确认，走不到 07 的确认闸门）
+    # 一版确认过的旧 07：只有一章，前端写穿缓存里也是那时候的一章（直接落库——示例作品的前六步没有确认）
+    old_table = [_chapter("第一章", row_uid="ch-a")]
     session.add(
         SnowflakeStepRun(
             step_run_id="run-07-v1",
@@ -30,7 +42,11 @@ def test_restoring_an_older_07_reports_the_chapter_table_shrink(session) -> None
             step_key="long_synopsis",
             version=1,
             status="approved",
-            draft_json={"paragraphs": ["第一段", "", "", "", ""], "chapters": [_chapter("第一章", row_uid="ch-a")]},
+            draft_json={
+                "paragraphs": ["第一段", "", "", "", ""],
+                "chapters": old_table,
+                "fe_scaffold": {"expansions": {"setup": "第一段"}, "chapters": [{"row_uid": "ch-a", "id": "01", "act": 1, "title": "第一章"}]},
+            },
             health_json={},
             input_refs_json={},
         )
@@ -39,19 +55,44 @@ def test_restoring_an_older_07_reports_the_chapter_table_shrink(session) -> None
     service.update_step(
         PROJECT_ID,
         "long_synopsis",
-        {"draft": {"paragraphs": ["第一段"], "chapters": [_chapter("第一章", row_uid="ch-a"), _chapter("第二章")]}},
+        {"draft": {"paragraphs": ["改过的第一段"], "chapters": [*old_table, _chapter("第二章")]}},
     )
-    SnowflakeChapteringService(session).autoassign(PROJECT_ID, "even")
+    chaptering = SnowflakeChapteringService(session)
+    chaptering.autoassign(PROJECT_ID, "even")
     session.flush()
+    # 分章面板「只保存章表」给两章起名
+    payload = _payload(chaptering.preview(PROJECT_ID, {"strategy": "keep_current"}))
+    payload["chapters"][0]["title"] = "旧信回城"
+    payload["chapters"][1]["title"] = "雨夜对质"
+    service.save_chapter_plan(PROJECT_ID, payload)
+    session.flush()
+
+    def table() -> list[tuple[str, str, str]]:
+        return [(row.row_uid, row.title, row.status) for row in live_chapter_plans(session, PROJECT_ID)]
+
+    def bindings() -> dict[str, str | None]:
+        plans = session.execute(select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == PROJECT_ID)).scalars()
+        return {plan.scene_plan_id: plan.chapter_plan_id for plan in plans}
+
+    before_table, before_bindings = table(), bindings()
+    assert [title for _uid, title, _status in before_table] == ["旧信回城", "雨夜对质"]
+    assert len(set(before_bindings.values())) == 2 and all(before_bindings.values())
 
     result = service.restore_step(PROJECT_ID, "long_synopsis", {"step_run_id": "run-07-v1"})
 
-    notice = result["notice"]
-    assert notice["code"] == "CHAPTER_PLAN_SHRUNK"
-    assert notice["unbound_scene_count"] >= 1
-    assert "第二章" in notice["message"]
-    assert result["step"]["health"]["generation_notice"]["code"] == "CHAPTER_PLAN_SHRUNK"
+    assert "notice" not in result
+    assert "generation_notice" not in result["step"]["health"]
     assert result["step"]["health"]["generation_source"] == "history_restore"
+    session.expire_all()
+    assert table() == before_table, "恢复旧 07 改动了章表行 / 章名"
+    assert bindings() == before_bindings, "恢复旧 07 改动了场景归属"
+    restored = session.get(SnowflakeStepRun, result["step_run"]["step_run_id"])
+    assert restored.draft_json["paragraphs"][0] == "第一段"  # 文字是那一版的
+    assert [(item["row_uid"], item["title"]) for item in restored.draft_json["chapters"]] == [
+        (uid, title) for uid, title, _status in before_table
+    ]
+    assert [item["title"] for item in restored.draft_json["fe_scaffold"]["chapters"]] == ["旧信回城", "雨夜对质"]
+    assert restored.draft_json["fe_scaffold"]["expansions"] == {"setup": "第一段"}
 
 
 def test_restoring_without_a_shrink_carries_no_notice(session) -> None:
