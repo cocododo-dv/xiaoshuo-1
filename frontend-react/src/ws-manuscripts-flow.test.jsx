@@ -60,6 +60,9 @@ vi.mock("./ws-fidelity-store.js", () => ({
   fidLoadProject: (...args) => fidFx.load(...args),
   fidProject: () => (fidFx.project ? { phase: "ready", data: fidFx.project, error: null } : null),
 }));
+/* 「对比」的版本 store（写作台的 WrDocVersions，ES 导入；以前读 window 上的同名全局） */
+const versionsFx = vi.hoisted(() => ({ list: vi.fn(), paras: vi.fn(), diff: vi.fn() }));
+vi.mock("./wr-doc-store.jsx", () => ({ WrDocVersions: versionsFx }));
 vi.mock("./ws-manuscripts-store.jsx", () => ({
   WsManuStore: flow,
   manuscriptChapterEligible: () => true,
@@ -149,7 +152,9 @@ beforeEach(() => {
   flow.extractSceneCanon.mockResolvedValue({});
   catalogRefresh.mockResolvedValue({});
   worksRefresh.mockResolvedValue({});
-  delete window.WrDocVersions;
+  versionsFx.list.mockResolvedValue([]);
+  versionsFx.paras.mockResolvedValue([]);
+  versionsFx.diff.mockReturnValue({ paras: [], adds: 0, dels: 0 });
   fidFx.project = null;
 });
 
@@ -321,14 +326,30 @@ describe("成稿中心权威章节流", () => {
     });
   });
 
+  it("刷新后直接进成稿中心（写作台还没加载过）「对比」也列得出这一场的版本，并逐句比对最新两版", async () => {
+    versionsFx.list.mockResolvedValue([
+      { revisionNo: 3, at: "2026-09-21T14:05:00", words: 1200 },
+      { revisionNo: 2, at: "2026-09-20T10:00:00", words: 1100 },
+    ]);
+    versionsFx.paras.mockImplementation(async (sid, rev) => [rev === 3 ? "新的一句。" : "旧的一句。"]);
+    versionsFx.diff.mockReturnValue({ paras: [{ segs: [{ t: "del", text: "旧的一句。" }, { t: "add", text: "新的一句。" }] }], adds: 1, dels: 1 });
+    const host = await renderPage("review");
+    await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(versionsFx.list).toHaveBeenCalledWith("ch01s1");
+    expect(host.textContent).not.toContain("这一场还没有可对比的历史版本");
+    expect(host.querySelector('select[aria-label="新版本"]').value).toBe("3");
+    expect(host.querySelector('select[aria-label="旧版本"]').value).toBe("2");
+    expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 2);
+    expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 3);
+    expect(host.querySelector(".ms-diff-body .d-add").textContent).toBe("新的一句。");
+  });
+
   it("版本历史请求失败会显示错误并可重试", async () => {
-    window.WrDocVersions = {
-      list: vi.fn()
-        .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
-        .mockResolvedValueOnce([]),
-      paras: vi.fn(),
-      diff: vi.fn(),
-    };
+    versionsFx.list
+      .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
+      .mockResolvedValueOnce([]);
     const host = await renderPage("review");
     const diffTab = [...host.querySelectorAll("button")].find(node => node.textContent === "对比");
     await click(diffTab);
@@ -336,16 +357,12 @@ describe("成稿中心权威章节流", () => {
 
     expect(host.textContent).toContain("版本服务暂时不可用");
     await click(host.querySelector('[data-testid="manuscript-diff-history-retry"]'));
-    expect(window.WrDocVersions.list).toHaveBeenCalledTimes(2);
+    expect(versionsFx.list).toHaveBeenCalledTimes(2);
   });
 
   it("开发模式连跑两遍挂载 effect 也只拉一次版本列表；幂等冲突说成中文", async () => {
     let rejectList;
-    window.WrDocVersions = {
-      list: vi.fn(() => new Promise((resolve, reject) => { rejectList = reject; })),
-      paras: vi.fn(),
-      diff: vi.fn(),
-    };
+    versionsFx.list.mockImplementation(() => new Promise((resolve, reject) => { rejectList = reject; }));
     fixture.catalog = [chapter("review")];
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -354,7 +371,7 @@ describe("成稿中心权威章节流", () => {
     await act(async () => root.render(<React.StrictMode><WsManuscripts go={vi.fn()} /></React.StrictMode>));
     await act(async () => Promise.resolve());
     await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
-    expect(window.WrDocVersions.list).toHaveBeenCalledTimes(1);
+    expect(versionsFx.list).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       rejectList(Object.assign(new Error("request with the same idempotency key is still running"), { code: "IDEMPOTENCY_REQUEST_IN_PROGRESS" }));
@@ -715,7 +732,6 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
   });
 
   it("停在「对比」上退回小修：本章没有对比了就回到正文，不留一个没有选中项的分段", async () => {
-    window.WrDocVersions = { list: vi.fn().mockResolvedValue([]), paras: vi.fn(), diff: vi.fn() };
     const host = await renderPage("review");
     const checked = () => host.querySelector('.ms-reader-tools [role="radio"][aria-checked="true"]');
     await click(button(host.querySelector(".ms-reader-tools"), "对比"));

@@ -2,11 +2,13 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { dayTimeLabel } from "./lib/format.js";
 import { Notice } from "./ws-ui.jsx";
+import { WrDocVersions } from "./wr-doc-store.jsx";
 
 /* ==========================================================
    对比：一场正文的两个历史版本逐句比对。
-   数据源是写作台的版本 store（window.WrDocVersions：list / paras / diff）——
-   成稿中心只读它，不另存版本。
+   数据源是写作台的版本 store（WrDocVersions：list / paras / diff，ES 导入）——
+   成稿中心只读它，不另存版本。以前读 window.WrDocVersions：那只在写作台或 AI 起草台加载过之后才有，
+   刷新页面直接进成稿中心时「对比」一律说这一场还没有历史版本。
    ========================================================== */
 
 const { useEffect, useState } = React;
@@ -55,9 +57,8 @@ function ManuDiff({ picked, chapter }) {
   useEffect(() => {
     let on = true;
     setVers(null); setDiff(null); setSelNew(null); setSelOld(null); setHistoryError(""); setDiffError("");
-    const versions = window.WrDocVersions;
-    if (!sid || !versions) { setVers([]); return undefined; }
-    listVersions(versions, sid).then((items) => {
+    if (!sid) { setVers([]); return undefined; }
+    listVersions(WrDocVersions, sid).then((items) => {
       if (!on) return;
       setVers(items);
       if (items.length >= 2) { setSelNew(items[0].revisionNo); setSelOld(items[1].revisionNo); }
@@ -72,10 +73,9 @@ function ManuDiff({ picked, chapter }) {
   useEffect(() => {
     let on = true;
     setDiff(null); setDiffError("");
-    const versions = window.WrDocVersions;
-    if (!sid || selNew == null || selOld == null || !versions) return undefined;
-    Promise.all([versions.paras(sid, selOld), versions.paras(sid, selNew)])
-      .then(([a, b]) => { if (on) setDiff(versions.diff(a, b)); })
+    if (!sid || selNew == null || selOld == null) return undefined;
+    Promise.all([WrDocVersions.paras(sid, selOld), WrDocVersions.paras(sid, selNew)])
+      .then(([a, b]) => { if (on) setDiff(WrDocVersions.diff(a, b)); })
       .catch((error) => {
         if (!on) return;
         setDiff(null);
