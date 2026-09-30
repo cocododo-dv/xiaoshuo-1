@@ -54,31 +54,6 @@
    "near_eval0_artifact_execution_id": "idempotency:checkpoint-format",
    "near_eval0_bundle_hash": "<hex#2>",
    "near_eval0_bundle_id": "bundle_CH_RESUME_SC01_v1",
-   "near_eval0_candidate_snapshot": {
-    "apply_mode": "manual_or_regenerate",
-    "author_decision_note": null,
-    "chapter_id": "CH_RESUME",
-    "created_by": "near_final_acceptance",
-    "diff_summary": {
-     "failure_class": "reference_safety"
-    },
-    "evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_0",
-    "instruction": [
-     {
-      "action": "rewrite once",
-      "dimension": "prose_freshness"
-     }
-    ],
-    "object_id": "CH_RESUME_SC01",
-    "object_type": "scene",
-    "patches": [],
-    "proposed_text": "她没有立刻回答，只用指尖抹去杯沿的水痕，等走廊重新安静。",
-    "revision_type": "near_final_scene_rewrite",
-    "scene_id": "CH_RESUME_SC01",
-    "source_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1",
-    "status": "candidate",
-    "target_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1"
-   },
    "near_eval0_control": {
     "branch": "human_review_proposal",
     "rewrite_allowed": false,
@@ -731,7 +706,6 @@
     "near_eval0_artifact_execution_id",
     "near_eval0_bundle_hash",
     "near_eval0_bundle_id",
-    "near_eval0_candidate_snapshot",
     "near_eval0_control",
     "near_eval0_evaluation_id",
     "near_eval0_execution_step_key",

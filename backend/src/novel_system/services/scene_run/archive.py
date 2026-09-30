@@ -58,6 +58,37 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+# 第 4 步产品（终稿归档）的格式：v2 只记四份行快照的哈希（检查点格式 v2，B01-12 / B01-14 / B03-07）
+ARCHIVE_CORE_SCHEMA_VERSION = 2
+# 产品里的快照字段 → 检查点 artifact_hashes 里它的哈希键（v1 时 artifact_refs 里还有同名的一份快照本身）
+ARCHIVE_CORE_SNAPSHOT_KEYS = {
+    "final_scene_snapshot": "archive_final_scene_snapshot",
+    "scene_memory_snapshot": "archive_scene_memory_snapshot",
+    "rolling_note_snapshot": "archive_rolling_note_snapshot",
+    "archive_attempt_snapshot": "archive_attempt_snapshot",
+}
+_ARCHIVE_CORE_BASE_KEYS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "outcome",
+        "execution_id",
+        "scene_id",
+        "chapter_id",
+        "step_key",
+        "input_hash",
+        "final_scene_row_id",
+        "scene_memory_row_id",
+        "chapter_rolling_note_row_id",
+        "archive_attempt_id",
+    }
+)
+_ARCHIVE_CORE_PRODUCT_KEYS = {
+    1: _ARCHIVE_CORE_BASE_KEYS | set(ARCHIVE_CORE_SNAPSHOT_KEYS),
+    2: _ARCHIVE_CORE_BASE_KEYS | {f"{name}_hash" for name in ARCHIVE_CORE_SNAPSHOT_KEYS},
+}
+
+
 @dataclass(frozen=True)
 class ArchiveStage:
     """归档尾段的一步（``near_final_ready`` 的子游标）。归档清单、驱动与前缀复验都照 :data:`ARCHIVE_STAGES` 走。
@@ -270,8 +301,8 @@ class ArchiveCheckpointMixin:
         soft_qc,
         carry_notes: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """归档第 4 步：终稿归档（SceneMemory / 章滚动笔记 / 归档尝试），四份行快照随产品一起存；返回核对过的
-        三个行 id（与续跑时 ``_validate_archive_core_checkpoint`` 读回的一样）。"""
+        """归档第 4 步：终稿归档（SceneMemory / 章滚动笔记 / 归档尝试），四份行快照的哈希随产品一起存；返回核对过
+        的三个行 id（与续跑时 ``_validate_archive_core_checkpoint`` 读回的一样）。"""
         archive_result = self.archiver.archive_final_scene(
             scene.scene_id,
             final_scene.row_id,
@@ -282,34 +313,40 @@ class ArchiveCheckpointMixin:
             # 检查点在 progress < 11 时自己在 archive:style_drift:0 槽位里记读数
             record_fidelity_reading=False,
         )
+        snapshots = {
+            "final_scene_snapshot": archive_final_scene_snapshot(final_scene),
+            "scene_memory_snapshot": archive_scene_memory_snapshot(
+                self.session.get(SceneMemory, archive_result["scene_memory_row_id"])
+            ),
+            "rolling_note_snapshot": archive_rolling_note_snapshot(
+                self.session.get(
+                    ChapterRollingNote,
+                    archive_result["chapter_rolling_note_row_id"],
+                )
+            ),
+            "archive_attempt_snapshot": archive_attempt_snapshot(
+                self.session.get(
+                    AttemptTracker,
+                    archive_result["archive_attempt_id"],
+                )
+            ),
+        }
+        snapshot_hashes = {name: self._json_hash(snapshot) for name, snapshot in snapshots.items()}
+        # 检查点格式 v2：四份行快照（其中三份带整场正文）只记哈希，不再把快照本身存进产品、再单独存一遍
         archive_core_product = self._archive_product(
             scene=scene,
             kind="core_archive",
             outcome="completed",
             step_key="archive:core:0",
             input_hash=self._text_hash(final_scene.content),
+            schema_version=ARCHIVE_CORE_SCHEMA_VERSION,
             final_scene_row_id=final_scene.row_id,
             scene_memory_row_id=archive_result["scene_memory_row_id"],
             chapter_rolling_note_row_id=archive_result[
                 "chapter_rolling_note_row_id"
             ],
             archive_attempt_id=archive_result["archive_attempt_id"],
-            final_scene_snapshot=archive_final_scene_snapshot(final_scene),
-            scene_memory_snapshot=archive_scene_memory_snapshot(
-                self.session.get(SceneMemory, archive_result["scene_memory_row_id"])
-            ),
-            rolling_note_snapshot=archive_rolling_note_snapshot(
-                self.session.get(
-                    ChapterRollingNote,
-                    archive_result["chapter_rolling_note_row_id"],
-                )
-            ),
-            archive_attempt_snapshot=archive_attempt_snapshot(
-                self.session.get(
-                    AttemptTracker,
-                    archive_result["archive_attempt_id"],
-                )
-            ),
+            **{f"{name}_hash": digest for name, digest in snapshot_hashes.items()},
         )
         validated = self._validate_archive_core_checkpoint(
             scene=scene,
@@ -324,33 +361,13 @@ class ArchiveCheckpointMixin:
             artifact_refs={
                 "scene_memory_row_id": archive_result["scene_memory_row_id"],
                 "archive_core": archive_core_product,
-                "archive_final_scene_snapshot": archive_core_product[
-                    "final_scene_snapshot"
-                ],
-                "archive_scene_memory_snapshot": archive_core_product[
-                    "scene_memory_snapshot"
-                ],
-                "archive_rolling_note_snapshot": archive_core_product[
-                    "rolling_note_snapshot"
-                ],
-                "archive_attempt_snapshot": archive_core_product[
-                    "archive_attempt_snapshot"
-                ],
             },
             artifact_hashes={
                 "archive_core": self._json_hash(archive_core_product),
-                "archive_final_scene_snapshot": self._json_hash(
-                    archive_core_product["final_scene_snapshot"]
-                ),
-                "archive_scene_memory_snapshot": self._json_hash(
-                    archive_core_product["scene_memory_snapshot"]
-                ),
-                "archive_rolling_note_snapshot": self._json_hash(
-                    archive_core_product["rolling_note_snapshot"]
-                ),
-                "archive_attempt_snapshot": self._json_hash(
-                    archive_core_product["archive_attempt_snapshot"]
-                ),
+                **{
+                    ARCHIVE_CORE_SNAPSHOT_KEYS[name]: digest
+                    for name, digest in snapshot_hashes.items()
+                },
             },
         )
         return validated
@@ -553,10 +570,11 @@ class ArchiveCheckpointMixin:
         outcome: str,
         step_key: str,
         input_hash: str,
+        schema_version: int = 1,
         **details: Any,
     ) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": schema_version,
             "kind": kind,
             "outcome": outcome,
             "execution_id": self._execution_id,
@@ -580,28 +598,14 @@ class ArchiveCheckpointMixin:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         product = product or refs.get("archive_core")
+        # 两种格式都认：v2 只记四份行快照的哈希；v1（格式 v2 上线前写下的检查点）连快照本身一起存，另外每份还
+        # 单独存一遍（部署时正停在半路的运行照样续跑）
+        version = product.get("schema_version") if isinstance(product, dict) else None
         if (
             not isinstance(product, dict)
-            or set(product)
-            != {
-                "schema_version",
-                "kind",
-                "outcome",
-                "execution_id",
-                "scene_id",
-                "chapter_id",
-                "step_key",
-                "input_hash",
-                "final_scene_row_id",
-                "scene_memory_row_id",
-                "chapter_rolling_note_row_id",
-                "archive_attempt_id",
-                "final_scene_snapshot",
-                "scene_memory_snapshot",
-                "rolling_note_snapshot",
-                "archive_attempt_snapshot",
-            }
-            or product.get("schema_version") != 1
+            or not isinstance(version, int)
+            or version not in _ARCHIVE_CORE_PRODUCT_KEYS
+            or set(product) != _ARCHIVE_CORE_PRODUCT_KEYS[version]
             or product.get("kind") != "core_archive"
             or product.get("outcome") != "completed"
             or product.get("execution_id") != self._execution_id
@@ -623,24 +627,14 @@ class ArchiveCheckpointMixin:
         )
         attempt = self.session.get(AttemptTracker, product["archive_attempt_id"])
         state = self._active_checkpoint_state()
-        snapshot_refs = {
-            "final_scene_snapshot": refs.get("archive_final_scene_snapshot"),
-            "scene_memory_snapshot": refs.get("archive_scene_memory_snapshot"),
-            "rolling_note_snapshot": refs.get("archive_rolling_note_snapshot"),
-            "archive_attempt_snapshot": refs.get("archive_attempt_snapshot"),
-        }
         if require_checkpoint_hash and any(
-            snapshot_refs[key] != product.get(key)
-            or self._json_hash(snapshot_refs[key])
-            != self._checkpoint_hash(
-                {
-                    "final_scene_snapshot": "archive_final_scene_snapshot",
-                    "scene_memory_snapshot": "archive_scene_memory_snapshot",
-                    "rolling_note_snapshot": "archive_rolling_note_snapshot",
-                    "archive_attempt_snapshot": "archive_attempt_snapshot",
-                }[key]
+            (
+                refs.get(key) != product.get(name)
+                or self._json_hash(refs.get(key)) != self._checkpoint_hash(key)
             )
-            for key in snapshot_refs
+            if version == 1
+            else product.get(f"{name}_hash") != self._checkpoint_hash(key)
+            for name, key in ARCHIVE_CORE_SNAPSHOT_KEYS.items()
         ):
             raise checkpoint_corrupt("archive core independent snapshot hashes are invalid")
         if memory is None or rolling is None or attempt is None:
@@ -655,15 +649,21 @@ class ArchiveCheckpointMixin:
                     )
                 )
             )
+        live_snapshots = {
+            "final_scene_snapshot": archive_final_scene_snapshot(final_scene),
+            "scene_memory_snapshot": archive_scene_memory_snapshot(memory),
+            "rolling_note_snapshot": archive_rolling_note_snapshot(rolling),
+            "archive_attempt_snapshot": archive_attempt_snapshot(attempt),
+        }
         if (
-            product.get("final_scene_snapshot")
-            != archive_final_scene_snapshot(final_scene)
-            or product.get("scene_memory_snapshot")
-            != archive_scene_memory_snapshot(memory)
-            or product.get("rolling_note_snapshot")
-            != archive_rolling_note_snapshot(rolling)
-            or product.get("archive_attempt_snapshot")
-            != archive_attempt_snapshot(attempt)
+            any(
+                (
+                    product.get(name) != snapshot
+                    if version == 1
+                    else product.get(f"{name}_hash") != self._json_hash(snapshot)
+                )
+                for name, snapshot in live_snapshots.items()
+            )
             or final_scene.status != "archived"
             or (
                 state.scene_status != "archived"

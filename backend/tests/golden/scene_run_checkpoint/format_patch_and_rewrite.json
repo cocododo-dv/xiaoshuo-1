@@ -61,53 +61,6 @@
    "style_work_items": "<hex#49>"
   },
   "artifact_refs": {
-   "archive_attempt_snapshot": {
-    "attempt_id": 11,
-    "chapter_id": "CH_RESUME",
-    "created_at": "<ts#1>",
-    "details_json": {
-     "execution_id": "idempotency:checkpoint-format",
-     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-     "final_text_gate": {
-      "archivable": true,
-      "archive_blockers": [],
-      "author_confirmed_final": false,
-      "auto_promotable": false,
-      "content_hash": "<hex#18>",
-      "content_safety": {
-       "acknowledged_codes": [],
-       "findings": [],
-       "mode": "review",
-       "schema_version": 1
-      },
-      "literary_scores": {
-       "character_scene_core": 0.2308,
-       "choice_pressure": 0.0,
-       "ending_drive": 0.0
-      },
-      "literary_warnings_unresolved": true,
-      "promotion_blockers": [
-       "literary:character_scene_core",
-       "literary:ending_drive",
-       "literary:choice_pressure"
-      ],
-      "risky_dimensions": [
-       "no_choice_scene",
-       "choice_pressure",
-       "ending_drive",
-       "painless_scene"
-      ],
-      "safe_to_archive": true,
-      "schema_version": 4,
-      "source_bundle_id": "bundle_CH_RESUME_SC01_v1"
-     },
-     "qc_report_id": "qc_CH_RESUME_SC01_soft_qc_1"
-    },
-    "scene_id": "CH_RESUME_SC01",
-    "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-    "status": "completed",
-    "step": "archive"
-   },
    "archive_chapter_evaluation_product": {
     "chapter_id": "CH_RESUME",
     "evaluation": null,
@@ -137,98 +90,20 @@
    },
    "archive_core": {
     "archive_attempt_id": 11,
-    "archive_attempt_snapshot": {
-     "attempt_id": 11,
-     "chapter_id": "CH_RESUME",
-     "created_at": "<ts#1>",
-     "details_json": {
-      "execution_id": "idempotency:checkpoint-format",
-      "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-      "final_text_gate": {
-       "archivable": true,
-       "archive_blockers": [],
-       "author_confirmed_final": false,
-       "auto_promotable": false,
-       "content_hash": "<hex#18>",
-       "content_safety": {
-        "acknowledged_codes": [],
-        "findings": [],
-        "mode": "review",
-        "schema_version": 1
-       },
-       "literary_scores": {
-        "character_scene_core": 0.2308,
-        "choice_pressure": 0.0,
-        "ending_drive": 0.0
-       },
-       "literary_warnings_unresolved": true,
-       "promotion_blockers": [
-        "literary:character_scene_core",
-        "literary:ending_drive",
-        "literary:choice_pressure"
-       ],
-       "risky_dimensions": [
-        "no_choice_scene",
-        "choice_pressure",
-        "ending_drive",
-        "painless_scene"
-       ],
-       "safe_to_archive": true,
-       "schema_version": 4,
-       "source_bundle_id": "bundle_CH_RESUME_SC01_v1"
-      },
-      "qc_report_id": "qc_CH_RESUME_SC01_soft_qc_1"
-     },
-     "scene_id": "CH_RESUME_SC01",
-     "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-     "status": "completed",
-     "step": "archive"
-    },
+    "archive_attempt_snapshot_hash": "<hex#1>",
     "chapter_id": "CH_RESUME",
     "chapter_rolling_note_row_id": "rolling_CH_RESUME_SC01",
     "execution_id": "idempotency:checkpoint-format",
     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-    "final_scene_snapshot": {
-     "chapter_id": "CH_RESUME",
-     "content": "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
-     "created_at": "<ts#2>",
-     "generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
-     "row_id": "final_scene_CH_RESUME_SC01_v1",
-     "scene_id": "CH_RESUME_SC01",
-     "source_bundle_hash": "<hex#16>",
-     "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-     "status": "archived"
-    },
+    "final_scene_snapshot_hash": "<hex#6>",
     "input_hash": "<hex#18>",
     "kind": "core_archive",
     "outcome": "completed",
-    "rolling_note_snapshot": {
-     "chapter_id": "CH_RESUME",
-     "note_text": "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
-     "revision_no": 1,
-     "row_id": "rolling_CH_RESUME_SC01",
-     "scene_id": "CH_RESUME_SC01",
-     "source_scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-     "updated_at": "<ts#3>"
-    },
+    "rolling_note_snapshot_hash": "<hex#10>",
     "scene_id": "CH_RESUME_SC01",
     "scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "scene_memory_snapshot": {
-     "active_flag": 1,
-     "carry_notes_json": [],
-     "chapter_id": "CH_RESUME",
-     "content": "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
-     "created_at": "<ts#4>",
-     "effective_at": null,
-     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-     "row_id": "scene_memory_CH_RESUME_SC01_v1",
-     "runtime_eligibility_basis": "direct_read",
-     "runtime_eligible": 1,
-     "scene_id": "CH_RESUME_SC01",
-     "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-     "source_review_id": null
-    },
-    "schema_version": 1,
+    "scene_memory_snapshot_hash": "<hex#12>",
+    "schema_version": 2,
     "step_key": "archive:core:0"
    },
    "archive_drift_product": {
@@ -241,17 +116,6 @@
     "scene_id": "CH_RESUME_SC01",
     "schema_version": 1,
     "step_key": "archive:style_drift:0"
-   },
-   "archive_final_scene_snapshot": {
-    "chapter_id": "CH_RESUME",
-    "content": "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
-    "created_at": "<ts#2>",
-    "generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
-    "row_id": "final_scene_CH_RESUME_SC01_v1",
-    "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#16>",
-    "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-    "status": "archived"
    },
    "archive_manifest": [
     {
@@ -328,15 +192,6 @@
     "schema_version": 1,
     "step_key": "archive:prose_event_extract:0"
    },
-   "archive_rolling_note_snapshot": {
-    "chapter_id": "CH_RESUME",
-    "note_text": "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
-    "revision_no": 1,
-    "row_id": "rolling_CH_RESUME_SC01",
-    "scene_id": "CH_RESUME_SC01",
-    "source_scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "updated_at": "<ts#3>"
-   },
    "archive_rule_event_ids": [],
    "archive_rule_events": [],
    "archive_rule_product": {
@@ -350,21 +205,6 @@
     "scene_id": "CH_RESUME_SC01",
     "schema_version": 1,
     "step_key": "archive:rule_events:0"
-   },
-   "archive_scene_memory_snapshot": {
-    "active_flag": 1,
-    "carry_notes_json": [],
-    "chapter_id": "CH_RESUME",
-    "content": "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
-    "created_at": "<ts#4>",
-    "effective_at": null,
-    "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-    "row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "runtime_eligibility_basis": "direct_read",
-    "runtime_eligible": 1,
-    "scene_id": "CH_RESUME_SC01",
-    "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-    "source_review_id": null
    },
    "archive_vector_product": {
     "chapter_id": "CH_RESUME",
@@ -424,31 +264,6 @@
    "near_eval0_artifact_execution_id": "idempotency:checkpoint-format",
    "near_eval0_bundle_hash": "<hex#16>",
    "near_eval0_bundle_id": "bundle_CH_RESUME_SC01_v1",
-   "near_eval0_candidate_snapshot": {
-    "apply_mode": "manual_or_regenerate",
-    "author_decision_note": null,
-    "chapter_id": "CH_RESUME",
-    "created_by": "near_final_acceptance",
-    "diff_summary": {
-     "failure_class": "prose_model_voice"
-    },
-    "evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_0",
-    "instruction": [
-     {
-      "action": "rewrite once",
-      "dimension": "prose_freshness"
-     }
-    ],
-    "object_id": "CH_RESUME_SC01",
-    "object_type": "scene",
-    "patches": [],
-    "proposed_text": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-    "revision_type": "near_final_scene_rewrite",
-    "scene_id": "CH_RESUME_SC01",
-    "source_text_ref": "source_draft:draft_style_patch_CH_RESUME_SC01_v1",
-    "status": "superseded",
-    "target_text_ref": "source_draft:draft_style_patch_CH_RESUME_SC01_v1"
-   },
    "near_eval0_control": {
     "branch": "rewrite",
     "rewrite_allowed": true,
@@ -488,7 +303,6 @@
    "near_eval1_artifact_execution_id": "idempotency:checkpoint-format",
    "near_eval1_bundle_hash": "<hex#16>",
    "near_eval1_bundle_id": "bundle_CH_RESUME_SC01_v1",
-   "near_eval1_candidate_snapshot": null,
    "near_eval1_evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_1",
    "near_eval1_execution_step_key": "near_final_acceptance:1",
    "near_eval1_llm_call_id": "llm_CH_RESUME_SC01_near_final_acceptance_1",
@@ -547,7 +361,7 @@
     "chapter_architecture": {
      "artifact_type": "chapter_story_architecture",
      "chapter_id": "CH_RESUME",
-     "created_at": "<ts#5>",
+     "created_at": "<ts#1>",
      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#54>",
      "object_id": "CH_RESUME",
      "object_type": "chapter",
@@ -574,7 +388,7 @@
     "character_pressure": {
      "artifact_type": "character_pressure_blueprint",
      "chapter_id": "CH_RESUME",
-     "created_at": "<ts#6>",
+     "created_at": "<ts#2>",
      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
      "object_id": "CH_RESUME_SC01",
      "object_type": "scene",
@@ -597,7 +411,7 @@
    "planning_chapter_architecture": {
     "artifact_type": "chapter_story_architecture",
     "chapter_id": "CH_RESUME",
-    "created_at": "<ts#5>",
+    "created_at": "<ts#1>",
     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#54>",
     "object_id": "CH_RESUME",
     "object_type": "chapter",
@@ -629,7 +443,7 @@
    "planning_character_pressure": {
     "artifact_type": "character_pressure_blueprint",
     "chapter_id": "CH_RESUME",
-    "created_at": "<ts#6>",
+    "created_at": "<ts#2>",
     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
     "object_id": "CH_RESUME_SC01",
     "object_type": "scene",
@@ -658,7 +472,7 @@
    "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#60>",
    "planning_scene_blueprint_reused": false,
    "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#61>",
-   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#7>_<hex#62>",
+   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#62>",
    "resolution_code": "hard_pass",
    "scene_blueprint": {
     "blueprint_json": {
@@ -673,7 +487,7 @@
      "visible_desire": "secure the immediate objective"
     },
     "chapter_id": "CH_RESUME",
-    "created_at": "<ts#8>",
+    "created_at": "<ts#4>",
     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#60>",
     "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#61>",
     "scene_id": "CH_RESUME_SC01",
@@ -1200,7 +1014,6 @@
     "near_eval0_artifact_execution_id",
     "near_eval0_bundle_hash",
     "near_eval0_bundle_id",
-    "near_eval0_candidate_snapshot",
     "near_eval0_control",
     "near_eval0_evaluation_id",
     "near_eval0_execution_step_key",
@@ -1241,12 +1054,10 @@
    ],
    "node_key": "near_final_ready",
    "refs": [
-    "near_eval0_candidate_snapshot",
     "near_eval0_revision_candidate_id",
     "near_eval1_artifact_execution_id",
     "near_eval1_bundle_hash",
     "near_eval1_bundle_id",
-    "near_eval1_candidate_snapshot",
     "near_eval1_evaluation_id",
     "near_eval1_execution_step_key",
     "near_eval1_llm_call_id",
@@ -1298,11 +1109,7 @@
    ],
    "node_key": "near_final_ready",
    "refs": [
-    "archive_attempt_snapshot",
     "archive_core",
-    "archive_final_scene_snapshot",
-    "archive_rolling_note_snapshot",
-    "archive_scene_memory_snapshot",
     "scene_memory_row_id"
    ],
    "strategy": null,

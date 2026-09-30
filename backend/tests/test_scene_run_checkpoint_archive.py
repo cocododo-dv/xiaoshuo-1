@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -586,7 +587,11 @@ def test_archived_fast_path_revalidates_full_manifest_before_return(session) -> 
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
 
 
-def test_archive_core_checkpoint_contains_full_independently_hashed_snapshots(session) -> None:
+def test_archive_core_checkpoint_keeps_independent_snapshot_hashes_not_the_bodies(session) -> None:
+    """检查点格式 v2：第 4 步的四份行快照（终稿、场景记忆、章滚动笔记、归档尝试）各记一个独立的哈希，快照本身
+    不进检查点——以前产品里存一份、另外每份再单独存一遍，整场正文在这一步就出现六次，之后每次存检查点都整份重写；
+    准终稿评审的修订候选快照（带整份来源稿）也只记哈希。续跑时按库里的行重算快照核对哈希（改了任何一行都判损坏，
+    见下一条）。"""
     _seed_resume_scene(session)
     execution_id = "idempotency:archive-core-snapshots"
     Orchestrator(
@@ -598,21 +603,27 @@ def test_archive_core_checkpoint_contains_full_independently_hashed_snapshots(se
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     refs = state.run_checkpoint_json["artifact_refs"]
     hashes = state.run_checkpoint_json["artifact_hashes"]
-    assert {
+    snapshot_keys = {
         "archive_final_scene_snapshot",
         "archive_scene_memory_snapshot",
         "archive_rolling_note_snapshot",
         "archive_attempt_snapshot",
-    }.issubset(refs)
+    }
+    assert snapshot_keys.issubset(hashes)
+    assert not snapshot_keys & set(refs)
+    core = refs["archive_core"]
+    assert core["schema_version"] == 2
     assert {
-        "archive_final_scene_snapshot",
-        "archive_scene_memory_snapshot",
-        "archive_rolling_note_snapshot",
-        "archive_attempt_snapshot",
-    }.issubset(hashes)
-    assert refs["archive_scene_memory_snapshot"]["runtime_eligibility_basis"] == "direct_read"
-    assert refs["archive_rolling_note_snapshot"]["revision_no"] == 1
-    assert "qc_report_id" in refs["archive_attempt_snapshot"]["details_json"]
+        core["final_scene_snapshot_hash"],
+        core["scene_memory_snapshot_hash"],
+        core["rolling_note_snapshot_hash"],
+        core["archive_attempt_snapshot_hash"],
+    } == {hashes[key] for key in snapshot_keys}
+    final_text = session.get(FinalScene, refs["final_scene_row_id"]).content
+    assert final_text and final_text not in json.dumps(core, ensure_ascii=False)
+    # 准终稿评审的修订候选同理：只记哈希，不再存带整份来源稿的快照
+    assert not {"near_eval0_candidate_snapshot", "near_eval1_candidate_snapshot"} & set(refs)
+    assert {"near_eval0_candidate", "near_eval1_candidate"} & set(hashes)
 
 
 @pytest.mark.parametrize(

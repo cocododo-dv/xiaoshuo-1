@@ -58,51 +58,6 @@
    "style_work_items": "<hex#47>"
   },
   "artifact_refs": {
-   "archive_attempt_snapshot": {
-    "attempt_id": 9,
-    "chapter_id": "CH_RESUME",
-    "created_at": "<ts#1>",
-    "details_json": {
-     "execution_id": "idempotency:checkpoint-format",
-     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-     "final_text_gate": {
-      "archivable": true,
-      "archive_blockers": [],
-      "author_confirmed_final": false,
-      "auto_promotable": false,
-      "content_hash": "<hex#19>",
-      "content_safety": {
-       "acknowledged_codes": [],
-       "findings": [],
-       "mode": "review",
-       "schema_version": 1
-      },
-      "literary_scores": {
-       "character_scene_core": 0.2308,
-       "choice_pressure": 0.0,
-       "ending_drive": 1.0
-      },
-      "literary_warnings_unresolved": true,
-      "promotion_blockers": [
-       "literary:character_scene_core",
-       "literary:choice_pressure"
-      ],
-      "risky_dimensions": [
-       "no_choice_scene",
-       "choice_pressure",
-       "painless_scene"
-      ],
-      "safe_to_archive": true,
-      "schema_version": 4,
-      "source_bundle_id": "bundle_CH_RESUME_SC01_v1"
-     },
-     "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#2>_<hex#48>"
-    },
-    "scene_id": "CH_RESUME_SC01",
-    "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-    "status": "completed",
-    "step": "archive"
-   },
    "archive_chapter_evaluation_product": {
     "chapter_id": "CH_RESUME",
     "evaluation": null,
@@ -132,103 +87,20 @@
    },
    "archive_core": {
     "archive_attempt_id": 9,
-    "archive_attempt_snapshot": {
-     "attempt_id": 9,
-     "chapter_id": "CH_RESUME",
-     "created_at": "<ts#1>",
-     "details_json": {
-      "execution_id": "idempotency:checkpoint-format",
-      "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-      "final_text_gate": {
-       "archivable": true,
-       "archive_blockers": [],
-       "author_confirmed_final": false,
-       "auto_promotable": false,
-       "content_hash": "<hex#19>",
-       "content_safety": {
-        "acknowledged_codes": [],
-        "findings": [],
-        "mode": "review",
-        "schema_version": 1
-       },
-       "literary_scores": {
-        "character_scene_core": 0.2308,
-        "choice_pressure": 0.0,
-        "ending_drive": 1.0
-       },
-       "literary_warnings_unresolved": true,
-       "promotion_blockers": [
-        "literary:character_scene_core",
-        "literary:choice_pressure"
-       ],
-       "risky_dimensions": [
-        "no_choice_scene",
-        "choice_pressure",
-        "painless_scene"
-       ],
-       "safe_to_archive": true,
-       "schema_version": 4,
-       "source_bundle_id": "bundle_CH_RESUME_SC01_v1"
-      },
-      "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#2>_<hex#48>"
-     },
-     "scene_id": "CH_RESUME_SC01",
-     "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-     "status": "completed",
-     "step": "archive"
-    },
+    "archive_attempt_snapshot_hash": "<hex#1>",
     "chapter_id": "CH_RESUME",
     "chapter_rolling_note_row_id": "rolling_CH_RESUME_SC01",
     "execution_id": "idempotency:checkpoint-format",
     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-    "final_scene_snapshot": {
-     "chapter_id": "CH_RESUME",
-     "content": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-     "created_at": "<ts#3>",
-     "generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
-     "row_id": "final_scene_CH_RESUME_SC01_v1",
-     "scene_id": "CH_RESUME_SC01",
-     "source_bundle_hash": "<hex#16>",
-     "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-     "status": "archived"
-    },
+    "final_scene_snapshot_hash": "<hex#6>",
     "input_hash": "<hex#19>",
     "kind": "core_archive",
     "outcome": "completed",
-    "rolling_note_snapshot": {
-     "chapter_id": "CH_RESUME",
-     "note_text": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-     "revision_no": 1,
-     "row_id": "rolling_CH_RESUME_SC01",
-     "scene_id": "CH_RESUME_SC01",
-     "source_scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-     "updated_at": "<ts#4>"
-    },
+    "rolling_note_snapshot_hash": "<hex#10>",
     "scene_id": "CH_RESUME_SC01",
     "scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "scene_memory_snapshot": {
-     "active_flag": 1,
-     "carry_notes_json": [
-      {
-       "failure_class": "scene_structure_failure",
-       "kind": "near_final_unresolved",
-       "recommended_action": "author_review_optional_fix",
-       "rewrite_count": 1
-      }
-     ],
-     "chapter_id": "CH_RESUME",
-     "content": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-     "created_at": "<ts#5>",
-     "effective_at": null,
-     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-     "row_id": "scene_memory_CH_RESUME_SC01_v1",
-     "runtime_eligibility_basis": "direct_read",
-     "runtime_eligible": 1,
-     "scene_id": "CH_RESUME_SC01",
-     "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-     "source_review_id": null
-    },
-    "schema_version": 1,
+    "scene_memory_snapshot_hash": "<hex#12>",
+    "schema_version": 2,
     "step_key": "archive:core:0"
    },
    "archive_drift_product": {
@@ -241,17 +113,6 @@
     "scene_id": "CH_RESUME_SC01",
     "schema_version": 1,
     "step_key": "archive:style_drift:0"
-   },
-   "archive_final_scene_snapshot": {
-    "chapter_id": "CH_RESUME",
-    "content": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-    "created_at": "<ts#3>",
-    "generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
-    "row_id": "final_scene_CH_RESUME_SC01_v1",
-    "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#16>",
-    "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-    "status": "archived"
    },
    "archive_manifest": [
     {
@@ -328,15 +189,6 @@
     "schema_version": 1,
     "step_key": "archive:prose_event_extract:0"
    },
-   "archive_rolling_note_snapshot": {
-    "chapter_id": "CH_RESUME",
-    "note_text": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-    "revision_no": 1,
-    "row_id": "rolling_CH_RESUME_SC01",
-    "scene_id": "CH_RESUME_SC01",
-    "source_scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "updated_at": "<ts#4>"
-   },
    "archive_rule_event_ids": [],
    "archive_rule_events": [],
    "archive_rule_product": {
@@ -350,28 +202,6 @@
     "scene_id": "CH_RESUME_SC01",
     "schema_version": 1,
     "step_key": "archive:rule_events:0"
-   },
-   "archive_scene_memory_snapshot": {
-    "active_flag": 1,
-    "carry_notes_json": [
-     {
-      "failure_class": "scene_structure_failure",
-      "kind": "near_final_unresolved",
-      "recommended_action": "author_review_optional_fix",
-      "rewrite_count": 1
-     }
-    ],
-    "chapter_id": "CH_RESUME",
-    "content": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-    "created_at": "<ts#5>",
-    "effective_at": null,
-    "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-    "row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "runtime_eligibility_basis": "direct_read",
-    "runtime_eligible": 1,
-    "scene_id": "CH_RESUME_SC01",
-    "source_bundle_id": "bundle_CH_RESUME_SC01_v1",
-    "source_review_id": null
    },
    "archive_vector_product": {
     "chapter_id": "CH_RESUME",
@@ -414,21 +244,21 @@
    "execution_step_key": "hard_qc:0",
    "final_generation_artifact_execution_id": "idempotency:checkpoint-format",
    "final_generation_execution_step_key": "near_final_rewrite:0",
-   "final_generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
+   "final_generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#48>",
    "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
    "hard_qc_artifact_execution_id": "idempotency:checkpoint-format",
    "hard_qc_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "hard_qc_execution_step_key": "hard_qc:0",
-   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
    "hard_qc_source_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
    "human_review_event_id": null,
-   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
    "llm_call_ids": [
-    "llm_call_CH_RESUME_SC01_<hex#51>"
+    "llm_call_CH_RESUME_SC01_<hex#50>"
    ],
    "near_completion": {
     "branch": "revision_required",
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
     "final_evaluation_round": 1,
     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
     "rewrite_count": 1,
@@ -438,46 +268,17 @@
    "near_eval0_artifact_execution_id": "idempotency:checkpoint-format",
    "near_eval0_bundle_hash": "<hex#16>",
    "near_eval0_bundle_id": "bundle_CH_RESUME_SC01_v1",
-   "near_eval0_candidate_snapshot": {
-    "apply_mode": "manual_or_regenerate",
-    "author_decision_note": null,
-    "chapter_id": "CH_RESUME",
-    "created_by": "operator",
-    "diff_summary": {
-     "failure_class": "scene_structure_failure",
-     "near_final_status": "revision_required",
-     "source_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1",
-     "summary": "Near-final acceptance requested a bounded full-scene literary rewrite."
-    },
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#53>",
-    "instruction": [
-     {
-      "action": "补足人物选择、已支付代价、关系位移和结尾动作，不要用总结句替代场景推进。",
-      "dimension": "story_necessity",
-      "priority": "high"
-     }
-    ],
-    "object_id": "CH_RESUME_SC01",
-    "object_type": "scene",
-    "patches": [],
-    "proposed_text": "她没有立刻回答，只用指尖抹去杯沿的水痕，等走廊重新安静。",
-    "revision_type": "near_final_scene_rewrite",
-    "scene_id": "CH_RESUME_SC01",
-    "source_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1",
-    "status": "candidate",
-    "target_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1"
-   },
    "near_eval0_control": {
     "branch": "rewrite",
     "rewrite_allowed": true,
     "rewrite_requested": true,
     "skip_reason": null
    },
-   "near_eval0_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#53>",
+   "near_eval0_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
    "near_eval0_execution_step_key": "near_final_acceptance:0",
-   "near_eval0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#54>",
+   "near_eval0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#53>",
    "near_eval0_payload": {
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#53>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
     "failure_class": "scene_structure_failure",
     "findings": [
      {
@@ -506,7 +307,7 @@
       "priority": "high"
      }
     ],
-    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#55>",
+    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#54>",
     "scores": {
      "author_voice_match": 0.08,
      "character_pressure": 0.08,
@@ -523,45 +324,16 @@
     },
     "should_rewrite": true
    },
-   "near_eval0_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#55>",
+   "near_eval0_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#54>",
    "near_eval0_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "near_eval1_artifact_execution_id": "idempotency:checkpoint-format",
    "near_eval1_bundle_hash": "<hex#16>",
    "near_eval1_bundle_id": "bundle_CH_RESUME_SC01_v1",
-   "near_eval1_candidate_snapshot": {
-    "apply_mode": "manual_or_regenerate",
-    "author_decision_note": null,
-    "chapter_id": "CH_RESUME",
-    "created_by": "operator",
-    "diff_summary": {
-     "failure_class": "scene_structure_failure",
-     "near_final_status": "revision_required",
-     "source_text_ref": "source_draft:draft_near_final_rewrite_CH_RESUME_SC01_v1",
-     "summary": "Near-final acceptance requested a bounded full-scene literary rewrite."
-    },
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
-    "instruction": [
-     {
-      "action": "补足人物选择、已支付代价、关系位移和结尾动作，不要用总结句替代场景推进。",
-      "dimension": "story_necessity",
-      "priority": "high"
-     }
-    ],
-    "object_id": "CH_RESUME_SC01",
-    "object_type": "scene",
-    "patches": [],
-    "proposed_text": "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
-    "revision_type": "near_final_scene_rewrite",
-    "scene_id": "CH_RESUME_SC01",
-    "source_text_ref": "source_draft:draft_near_final_rewrite_CH_RESUME_SC01_v1",
-    "status": "candidate",
-    "target_text_ref": "source_draft:draft_near_final_rewrite_CH_RESUME_SC01_v1"
-   },
-   "near_eval1_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+   "near_eval1_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
    "near_eval1_execution_step_key": "near_final_acceptance:1",
-   "near_eval1_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#56>",
+   "near_eval1_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
    "near_eval1_payload": {
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
     "failure_class": "scene_structure_failure",
     "findings": [
      {
@@ -590,7 +362,7 @@
       "priority": "high"
      }
     ],
-    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#57>",
+    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#56>",
     "scores": {
      "author_voice_match": 0.08,
      "character_pressure": 0.08,
@@ -607,10 +379,10 @@
     },
     "should_rewrite": true
    },
-   "near_eval1_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#57>",
+   "near_eval1_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#56>",
    "near_eval1_source_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1",
    "near_final": {
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
     "failure_class": "scene_structure_failure",
     "findings": [
      {
@@ -639,14 +411,14 @@
       "priority": "high"
      }
     ],
-    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#57>",
+    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#56>",
     "rewrite_count": 1,
     "should_rewrite": true
    },
    "near_final_branch": "revision_required",
    "near_final_evaluation_execution_id": "idempotency:checkpoint-format",
-   "near_final_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
-   "near_final_evaluation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#56>",
+   "near_final_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
+   "near_final_evaluation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
    "near_final_evaluation_step_key": "near_final_acceptance:1",
    "near_final_rewrite_count": 1,
    "near_final_skip_reason": null,
@@ -656,20 +428,20 @@
    "near_rewrite_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "near_rewrite_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1",
    "near_rewrite_execution_step_key": "near_final_rewrite:0",
-   "near_rewrite_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
+   "near_rewrite_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#48>",
    "near_rewrite_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
-   "near_rewrite_source_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#53>",
+   "near_rewrite_source_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
    "neutral_artifact_execution_id": "idempotency:checkpoint-format",
    "neutral_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
    "neutral_execution_step_key": "neutral_draft",
-   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
+   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
    "next_action": "pass",
    "planning": {
     "chapter_architecture": {
      "artifact_type": "chapter_story_architecture",
      "chapter_id": "CH_RESUME",
-     "created_at": "<ts#6>",
-     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#59>",
+     "created_at": "<ts#1>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
      "object_id": "CH_RESUME",
      "object_type": "chapter",
      "payload": {
@@ -686,17 +458,17 @@
        "the governing constraint is exposed"
       ]
      },
-     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#60>",
+     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#59>",
      "scene_id": null,
-     "source_bundle_hash": "<hex#61>",
+     "source_bundle_hash": "<hex#60>",
      "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
      "status": "active"
     },
     "character_pressure": {
      "artifact_type": "character_pressure_blueprint",
      "chapter_id": "CH_RESUME",
-     "created_at": "<ts#7>",
-     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#62>",
+     "created_at": "<ts#2>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
      "object_id": "CH_RESUME_SC01",
      "object_type": "scene",
      "payload": {
@@ -708,9 +480,9 @@
       "surface_goal": "finish the immediate task",
       "wrong_belief": "control can prevent every loss"
      },
-     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#63>",
+     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#62>",
      "scene_id": "CH_RESUME_SC01",
-     "source_bundle_hash": "<hex#64>",
+     "source_bundle_hash": "<hex#63>",
      "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
      "status": "active"
     }
@@ -718,8 +490,8 @@
    "planning_chapter_architecture": {
     "artifact_type": "chapter_story_architecture",
     "chapter_id": "CH_RESUME",
-    "created_at": "<ts#6>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#59>",
+    "created_at": "<ts#1>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
     "object_id": "CH_RESUME",
     "object_type": "chapter",
     "payload": {
@@ -736,22 +508,22 @@
       "the governing constraint is exposed"
      ]
     },
-    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#60>",
+    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#59>",
     "scene_id": null,
-    "source_bundle_hash": "<hex#61>",
+    "source_bundle_hash": "<hex#60>",
     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
     "status": "active"
    },
    "planning_chapter_architecture_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_chapter_architecture_execution_step_key": "planning:chapter_architecture",
-   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#59>",
+   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
    "planning_chapter_architecture_reused": false,
-   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#60>",
+   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#59>",
    "planning_character_pressure": {
     "artifact_type": "character_pressure_blueprint",
     "chapter_id": "CH_RESUME",
-    "created_at": "<ts#7>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#62>",
+    "created_at": "<ts#2>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
     "object_id": "CH_RESUME_SC01",
     "object_type": "scene",
     "payload": {
@@ -763,23 +535,23 @@
      "surface_goal": "finish the immediate task",
      "wrong_belief": "control can prevent every loss"
     },
-    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#63>",
+    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#62>",
     "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#64>",
+    "source_bundle_hash": "<hex#63>",
     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
     "status": "active"
    },
    "planning_character_pressure_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_character_pressure_execution_step_key": "planning:character_pressure",
-   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#62>",
+   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
    "planning_character_pressure_reused": false,
-   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#63>",
+   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#62>",
    "planning_scene_blueprint_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_scene_blueprint_execution_step_key": "scene_blueprint",
-   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#65>",
+   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#64>",
    "planning_scene_blueprint_reused": false,
-   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#66>",
-   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#8>_<hex#67>",
+   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#65>",
+   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#66>",
    "resolution_code": "hard_pass",
    "scene_blueprint": {
     "blueprint_json": {
@@ -794,11 +566,11 @@
      "visible_desire": "secure the immediate objective"
     },
     "chapter_id": "CH_RESUME",
-    "created_at": "<ts#9>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#65>",
-    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#66>",
+    "created_at": "<ts#4>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#64>",
+    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#65>",
     "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#68>",
+    "source_bundle_hash": "<hex#67>",
     "source_bundle_id": null,
     "status": "accepted"
    },
@@ -830,21 +602,21 @@
     "branch": "continue",
     "draft_row_id": "draft_style_CH_RESUME_SC01_v1",
     "final_qc_round": 0,
-    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#2>_<hex#48>",
+    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
     "skip_reason": "no_patch_requested"
    },
    "soft_completion_skip_reason": "no_patch_requested",
    "soft_final_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_final_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_final_execution_step_key": "style_draft:0",
-   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
    "soft_final_qc_round": 0,
    "soft_input_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_input_bundle_hash": "<hex#16>",
    "soft_input_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "soft_input_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_input_execution_step_key": "style_draft:0",
-   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
    "soft_input_provider_execution_mode": "online",
    "soft_input_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_qc0_artifact_execution_id": "idempotency:checkpoint-format",
@@ -860,14 +632,14 @@
     "human_review_event_id": null,
     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#69>",
     "next_action": "pass",
-    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#2>_<hex#48>",
+    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
     "resolution_code": "soft_pass",
     "should_continue": true,
     "stop_reason": null
    },
    "soft_qc0_execution_step_key": "soft_qc:0",
    "soft_qc0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#69>",
-   "soft_qc0_report_id": "qc_report_CH_RESUME_SC01_<ts#2>_<hex#48>",
+   "soft_qc0_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
    "soft_qc0_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_qc_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_qc_branch": "continue",
@@ -876,7 +648,7 @@
    "soft_qc_human_review_event_id": null,
    "soft_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#69>",
    "soft_qc_next_action": "pass",
-   "soft_qc_report_id": "qc_report_CH_RESUME_SC01_<ts#2>_<hex#48>",
+   "soft_qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
    "soft_qc_resolution_code": "soft_pass",
    "soft_qc_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_qc_stop_reason": null,
@@ -889,7 +661,7 @@
     "idempotency:checkpoint-format"
    ],
    "style_candidate_llm_call_ids": [
-    "llm_call_CH_RESUME_SC01_<hex#51>"
+    "llm_call_CH_RESUME_SC01_<hex#50>"
    ],
    "style_candidate_rankings": [
     null
@@ -906,7 +678,7 @@
     "style_draft:0"
    ],
    "style_initial_candidate_count": 1,
-   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
    "style_work_items": [
     {
      "base": {
@@ -915,7 +687,7 @@
       "bundle_id": "bundle_CH_RESUME_SC01_v1",
       "content_hash": "<hex#38>",
       "execution_step_key": "style_draft:0",
-      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
       "phase": "base",
       "row_id": "draft_style_CH_RESUME_SC01_v1",
       "source_base_row_id": null,
@@ -931,7 +703,7 @@
       "bundle_id": "bundle_CH_RESUME_SC01_v1",
       "content_hash": "<hex#38>",
       "execution_step_key": "style_draft:0",
-      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
       "phase": "final",
       "row_id": "draft_style_CH_RESUME_SC01_v1",
       "source_base_row_id": "draft_style_CH_RESUME_SC01_v1",
@@ -1276,7 +1048,6 @@
     "near_eval0_artifact_execution_id",
     "near_eval0_bundle_hash",
     "near_eval0_bundle_id",
-    "near_eval0_candidate_snapshot",
     "near_eval0_control",
     "near_eval0_evaluation_id",
     "near_eval0_execution_step_key",
@@ -1317,12 +1088,10 @@
    ],
    "node_key": "near_final_ready",
    "refs": [
-    "near_eval0_candidate_snapshot",
     "near_eval0_revision_candidate_id",
     "near_eval1_artifact_execution_id",
     "near_eval1_bundle_hash",
     "near_eval1_bundle_id",
-    "near_eval1_candidate_snapshot",
     "near_eval1_evaluation_id",
     "near_eval1_execution_step_key",
     "near_eval1_llm_call_id",
@@ -1374,11 +1143,7 @@
    ],
    "node_key": "near_final_ready",
    "refs": [
-    "archive_attempt_snapshot",
     "archive_core",
-    "archive_final_scene_snapshot",
-    "archive_rolling_note_snapshot",
-    "archive_scene_memory_snapshot",
     "scene_memory_row_id"
    ],
    "strategy": null,
