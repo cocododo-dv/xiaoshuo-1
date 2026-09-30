@@ -346,6 +346,48 @@ def test_chapter_set_review_matches_protected_term_variants_like_the_copy_gate(c
     assert payload["scores"]["reference_safety"] == 0.0
 
 
+def test_chapter_set_protected_term_scan_normalizes_each_text_once(monkeypatch) -> None:
+    """章组复审的受保护专名：每段文字只规范化一次、所有词一起找——以前逐词各找一遍，规范化的开销乘上词数，
+    十章配二十个词要十几秒。报出来的照旧是每段文字、每个传入的词各一条（按传入的词序，重复的词照报），
+    取最早的一处；字面命中按词取摘录，变体命中按命中的位置取。"""
+    from novel_system.services.literary_quality import chapter_set
+
+    calls: list[str] = []
+    real = chapter_set.find_protected_term_spans
+
+    def counting(text, terms):  # noqa: ANN001, ANN202
+        calls.append(text)
+        return real(text, terms)
+
+    monkeypatch.setattr(chapter_set, "find_protected_term_spans", counting)
+    rows = [
+        {"object_type": "scene", "object_id": "S1", "chapter_id": "C1", "scene_id": "S1", "source_ref": "r1",
+         "content": "林昭在灰 港-学院门口停下。欧文把旧信递给她，欧文没有走。"},
+        {"object_type": "scene", "object_id": "S2", "chapter_id": "C1", "scene_id": "S2", "source_ref": "r2",
+         "content": "雨城的钟响了三下。灰港学院的灯还亮着。"},
+        {"object_type": "chapter", "object_id": "C1", "chapter_id": "C1", "scene_id": None, "source_ref": "r3",
+         "content": "案卷里没有这些名字。"},
+    ]
+    terms = ["欧文", "灰港学院", "镜湖档案馆", "欧文", " 灰港学院 "]
+
+    findings = chapter_set._reference_safety_findings(rows, terms)
+
+    assert calls == [row["content"] for row in rows]  # 逐词各找时是 3 × 5 = 15 次
+    assert [(row["object_id"], row["term"]) for row in findings] == [
+        ("S1", "欧文"), ("S1", "灰港学院"), ("S1", "欧文"), ("S1", " 灰港学院 "),
+        ("S2", "灰港学院"), ("S2", " 灰港学院 "),
+    ]
+    by_key = {(row["object_id"], row["term"]): row for row in findings}
+    assert "灰 港-学院" in by_key[("S1", "灰港学院")]["evidence_excerpt"]
+    assert by_key[("S2", "灰港学院")]["evidence_excerpt"].startswith("雨城的钟响了三下")
+    assert by_key[("S1", "欧文")]["source_ref"] == "r1"
+
+    calls.clear()
+    assert chapter_set._reference_safety_findings(rows, []) == []
+    assert chapter_set._reference_safety_findings(rows, ["", "  "]) == []
+    assert calls == []  # 没有要查的词就不规范化
+
+
 def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(client, session) -> None:
     final_row_id = _seed_quality_scene(session, chapter_id="LQSET_LAYER", scene_id="LQSET_LAYER_SC01")
     scene_draft = AuthorDraft(

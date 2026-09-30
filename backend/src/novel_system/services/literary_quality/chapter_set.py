@@ -80,15 +80,28 @@ def _reference_safety_findings(source_rows: list[dict[str, Any]], protected_term
     """作者给的受保护专名在复审文字里的出现，每段文字每个词报一次（按传入的词序）。
 
     与抄袭门同一套匹配（``source_safety.find_protected_term_spans``：插空格、换标点、繁体、大小写都认得出，批准#12
-    的「一种匹配」）；以前这里是裸的 ``term in text``，「灰 港学院」就漏了。"""
+    的「一种匹配」）；以前这里是裸的 ``term in text``，「灰 港学院」就漏了。
+
+    每段文字只规范化一次、所有词一起找，再按传入的词序各取最早的一处——逐词各找一遍时，规范化的开销要乘上词数，
+    十来章配十来个词就是十几秒。"""
     findings: list[dict[str, Any]] = []
+    wanted = [term for term in protected_terms if isinstance(term, str) and term.strip()]
+    if not wanted:
+        return findings
     for row in source_rows:
         text = str(row.get("content") or "")
+        first_span: dict[str, tuple[int, int]] = {}
+        for span_term, span_start, span_end in find_protected_term_spans(text, wanted):
+            first_span.setdefault(span_term, (span_start, span_end))
+        if not first_span:
+            continue
+        lowered = text.lower()
         for term in protected_terms:
-            spans = find_protected_term_spans(text, [term]) if term else []
-            if not spans:
+            # 匹配器按去掉首尾空白的词报命中
+            span = first_span.get(term.strip()) if isinstance(term, str) else None
+            if span is None:
                 continue
-            _term, start, end = spans[0]
+            start, end = span
             findings.append(
                 {
                     "term": term,
@@ -100,7 +113,7 @@ def _reference_safety_findings(source_rows: list[dict[str, Any]], protected_term
                     # 字面命中照旧按词取摘录；变体命中按命中的位置取
                     "evidence_excerpt": (
                         _excerpt(text, term)
-                        if term.lower() in text.lower()
+                        if term.lower() in lowered
                         else _compact_ws(text[max(0, start - 70) : end + 70])
                     ),
                 }

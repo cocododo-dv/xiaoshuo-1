@@ -122,3 +122,30 @@ def test_protected_term_spans_survive_variants_and_point_into_the_text() -> None
     assert text[4:10] == "青 銅與熱泉" and text[16:21] == "青铜与热泉"
     assert find_protected_term_spans(text, ["不相干"]) == []
 
+
+def test_protected_term_spans_map_folded_characters_back_to_the_text() -> None:
+    """逐字规范化按不同的字符各做一次：一个字可能折成两个（ß → ss、ﬁ → fi），也可能整个去掉（零宽字符、间隔号）；
+    几个词一次查，命中位置照样指回原文、按位置排好。"""
+    from novel_system.services.source_safety import find_protected_term_spans, normalize_for_term_match
+
+    text = "旧信上写着 Straße 与 ﬁle，灰​港·学院在雨城。"
+    spans = find_protected_term_spans(text, ["灰港学院", "strasse", "FILE", "不相干"])
+
+    assert [(term, text[start:end]) for term, start, end in spans] == [
+        ("strasse", "Straße"),
+        ("FILE", "ﬁle"),
+        ("灰港学院", "灰​港·学院"),
+    ]
+    assert normalize_for_term_match("ＡＢ　Straße，ﬁ·龍") == "abstrassefi龙"
+
+
+def test_protected_term_spans_skip_the_offset_map_when_nothing_matches(monkeypatch) -> None:
+    """原文下标只在真有命中时才算：一章几万字、专名大多不出现，不必为每段文字都铺一张下标表。"""
+    from novel_system.services import source_safety
+
+    def fail(*_args):  # noqa: ANN002, ANN202
+        raise AssertionError("offsets built without a match")
+
+    monkeypatch.setattr(source_safety, "_raw_offsets", fail)
+    assert source_safety.find_protected_term_spans("雨城的钟响了三下。" * 200, ["灰港学院", "欧文"]) == []
+

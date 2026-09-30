@@ -52,25 +52,42 @@ def _normalize_for_match(text: str) -> str:
     return "".join(cleaned)
 
 
-def _normalize_for_match_with_offsets(text: str) -> tuple[str, list[int]]:
-    """与 :func:`_normalize_for_match` 同一规则（NFKC、繁→简、去分隔 / 标点 / 格式字符）再 casefold，
-    逐字进行并返回每个规范化字符在原文里的下标——命中位置要能映射回作者自己的正文。"""
-    chars: list[str] = []
+def _fold_char(raw: str) -> str:
+    """一个原文字符规范化之后的样子：与 :func:`_normalize_for_match` 同一规则（NFKC、繁→简、去分隔 / 标点 / 格式
+    字符）再 casefold，逐字进行（可能为空，也可能不止一个字符）。"""
+    kept: list[str] = []
+    for ch in unicodedata.normalize("NFKC", raw).translate(_TRAD_SIMP_TABLE):
+        category = unicodedata.category(ch)
+        if category[0] in ("Z", "P") or category in ("Cf", "Cc"):
+            continue
+        kept.append(ch.casefold())
+    return "".join(kept)
+
+
+def _fold_table(text: str) -> dict[int, str]:
+    """``text`` 里每个不同的字符 → 规范化之后的样子（``str.translate`` 的表）。
+
+    逐字规范化只按不同的字符各做一次：一章几万字、用到的字也就几千个，每个字都走一遍 NFKC 与类别判断要慢上
+    几倍（章组复审、抄袭门的专名检查都走这里）。"""
+    return {ord(raw): _fold_char(raw) for raw in set(text)}
+
+
+def _raw_offsets(text: str, table: dict[int, str]) -> list[int]:
+    """规范化文字里每个字符在原文里的下标（命中位置要能映射回作者自己的正文）。"""
     offsets: list[int] = []
-    for index, raw in enumerate(str(text or "")):
-        for ch in unicodedata.normalize("NFKC", raw).translate(_TRAD_SIMP_TABLE):
-            category = unicodedata.category(ch)
-            if category[0] in ("Z", "P") or category in ("Cf", "Cc"):
-                continue
-            for folded in ch.casefold():
-                chars.append(folded)
-                offsets.append(index)
-    return "".join(chars), offsets
+    for index, raw in enumerate(text):
+        size = len(table[ord(raw)])
+        if size == 1:
+            offsets.append(index)
+        elif size:
+            offsets.extend([index] * size)
+    return offsets
 
 
 def normalize_for_term_match(text: str) -> str:
     """受保护专名比对用的规范化（与 :func:`find_protected_term_spans` 同一口径，不带下标）。"""
-    return _normalize_for_match_with_offsets(text)[0]
+    content = str(text or "")
+    return content.translate(_fold_table(content))
 
 
 def find_protected_term_spans(
@@ -79,20 +96,27 @@ def find_protected_term_spans(
     """``terms`` 在 ``text`` 里的每一处出现 ``(term, start, end)``（原文下标，end 不含）。
 
     匹配口径与 :func:`scan_source_safety` 相同（挡得住插空格 / 换标点 / 繁体的规避）；风格参考 v3 的
-    抄袭门用它报位置——位置指向作者自己的正文，报告里不必再写出这个词。
+    抄袭门用它报位置——位置指向作者自己的正文，报告里不必再写出这个词。一段文字只规范化一次，要查几个词就一次
+    传进来；原文下标只在真有命中时才算。
     """
-    normalized, offsets = _normalize_for_match_with_offsets(text)
+    content = str(text or "")
+    table = _fold_table(content)
+    normalized = content.translate(table)
     if not normalized:
         return []
-    spans: list[tuple[str, int, int]] = []
+    found: list[tuple[str, int, int]] = []
     for term in _unique_strings(terms):
         needle = _normalize_for_match(term).casefold()
         if not needle:
             continue
         position = normalized.find(needle)
         while position >= 0:
-            spans.append((term, offsets[position], offsets[position + len(needle) - 1] + 1))
+            found.append((term, position, position + len(needle)))
             position = normalized.find(needle, position + len(needle))
+    if not found:
+        return []
+    offsets = _raw_offsets(content, table)
+    spans = [(term, offsets[start], offsets[end - 1] + 1) for term, start, end in found]
     spans.sort(key=lambda item: (item[1], item[2]))
     return spans
 
