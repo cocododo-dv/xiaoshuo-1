@@ -315,7 +315,7 @@ def test_confirming_a_proposal_replaces_the_placeholder_table_and_mirrors_it(ses
     assert [item["title"] for item in run.draft_json["chapters"]] == ["旧日志", "第 2 章", "第 3 章", "第 4 章"]
     assert [item["row_uid"] for item in run.draft_json["chapters"]] == [chapter.row_uid for chapter in chapters]
     # R11（批准 #18a）：07 的章表只读、前端从规范的 chapters 水合——写穿缓存里的第二份章表不再维护，旧副本去掉
-    #（它曾在新浏览器里优先于规范字段，把两行「（待补）」又同步回来）；写穿缓存的其余部分原样
+    #（它曾在新浏览器里优先于规范字段，把两行占位旧章又同步回来）；写穿缓存的其余部分原样
     assert "chapters" not in run.draft_json["fe_scaffold"]
     assert run.draft_json["fe_scaffold"]["expansions"] == {}
 

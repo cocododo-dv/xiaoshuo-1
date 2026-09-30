@@ -71,13 +71,13 @@ def test_only_system_made_titles_count_as_unnamed(title: str, auto: bool) -> Non
 
 
 def test_saving_the_table_numbers_every_system_made_title_by_the_same_rule(client, session) -> None:
-    """B07-14：「系统起的章名」只有一条规则。确认整张章表时，按章序重编的不只是「第 N 章」——「（待补）」
-    「未命名章节」这类占位同样是系统的，不能原样物化进目录；作者起的名字一个字都不动。"""
+    """B07-14：「系统起的章名」只有一条规则。确认整张章表时，按章序重编的不只是「第 N 章」——带「待补」标记的
+    占位与「未命名章节」同样是系统起的，不能原样物化进目录；作者起的名字一个字都不动。"""
     project_id = _create_project(client, "titles-placeholder-save")
     _seed(client, project_id)
     payload = _payload(_preview(client, project_id, scenes_per_chapter=3))
     payload["chapters"][0]["title"] = "旧日志"
-    payload["chapters"][1]["title"] = "（待补）"
+    payload["chapters"][1]["title"] = "待补·第二章"
     payload["chapters"][2]["title"] = "未命名章节"
     saved = client.patch(f"{_base(project_id)}/chapter-plan", json=payload)
     assert saved.status_code == 200, saved.text
