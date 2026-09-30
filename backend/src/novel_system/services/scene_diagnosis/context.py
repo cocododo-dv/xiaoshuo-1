@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import FinalScene, SceneCard, SceneDraft, WriterEvaluation
-from novel_system.services.manuscript_html import manuscript_paragraphs
+from novel_system.services.manuscript_html import manuscript_paragraphs, plain_manuscript_text
 from novel_system.services.scene_diagnosis.text import DiagnosisText
 from novel_system.services.scene_diagnosis.vocabulary import (
     LITERARY_REVISION_PASSAGE_RUBRIC_ID,
@@ -174,7 +174,7 @@ class DiagnosisContext:
         frozen = self.frozen.get(key)
         value = None
         if frozen is not None:
-            value = compact_ws(" ".join(part for part in manuscript_paragraphs(frozen.content or "") if part.strip()))
+            value = compact_ws(plain_manuscript_text(frozen.content))
         self._reviewed[key] = value
         return value
 

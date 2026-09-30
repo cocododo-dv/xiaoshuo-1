@@ -616,11 +616,11 @@ def test_reference_craft_calibration_raises_the_paragraph_limit_and_drops_the_au
     assert stats["paragraphs"] == 45 and stats["long_paragraph_p95"] == 300
     assert stats["echo_per_1k"] > CRAFT_ECHO_HABIT_PER_1K and stats["same_opening_per_1k"] > CRAFT_SAME_OPENING_HABIT_PER_1K
 
-    calibration = calibration_from_reference(profile_id="prof", book_id="book", book_title="龙族", stats=stats, deliberate_repetition=False)
+    calibration = calibration_from_reference(profile_id="prof", book_id="book", book_title="旧信", stats=stats, deliberate_repetition=False)
     assert calibration.source == "reference"
     assert calibration.long_paragraph_chars == 300
     assert calibration.flag_echo is False and calibration.flag_same_opening is False
-    assert "《龙族》" in calibration.note and "300" in calibration.note and "常这么写" in calibration.note
+    assert "《旧信》" in calibration.note and "300" in calibration.note and "常这么写" in calibration.note
 
     text = DiagnosisText(layer="author_draft", ref=None, content="", paragraphs=["门外很安静，安静到能听见潮水。", _distinct_chars(200), "她走了。她停了。她笑了。"])
     assert {item["dimension"] for item in craft_findings(text)} == {"adjacent_echo", "long_paragraph", "same_opening"}
@@ -641,7 +641,7 @@ def test_reference_craft_calibration_raises_the_paragraph_limit_and_drops_the_au
 def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClient, session, monkeypatch) -> None:
     _seed_scene(session)
     reference = ["门外很安静，安静到能听见潮水。"] * 30 + ["她走了。她停了。她笑了。"] * 5 + [_distinct_chars(300)] * 10
-    session.add(StyleReferenceBook(book_id="book_diag", title="龙族", source_kind="upload", cloud_policy="segments_only", text_checksum="diag"))
+    session.add(StyleReferenceBook(book_id="book_diag", title="旧信", source_kind="upload", cloud_policy="segments_only", text_checksum="diag"))
     session.add(StyleReferenceRun(run_id="run_diag", book_id="book_diag", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=["language"]))
     session.add_all(
         [
@@ -663,7 +663,7 @@ def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClie
             profile_id="prof_diag",
             book_id="book_diag",
             run_id="run_diag",
-            title="龙族画像",
+            title="旧信画像",
             profile_json={"voice_signature": {"deliberate_repetition": False}},
         )
     )
@@ -678,10 +678,10 @@ def test_diagnosis_calibrates_craft_to_the_bound_reference_book(client: TestClie
     payload = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert payload["style_bound"] is True
     calibration = payload["craft_calibration"]
-    assert calibration["source"] == "reference" and calibration["book_title"] == "龙族" and calibration["paragraphs"] == 45
+    assert calibration["source"] == "reference" and calibration["book_title"] == "旧信" and calibration["paragraphs"] == 45
     assert calibration["long_paragraph_chars"] == 300
     assert calibration["flag_echo"] is False and calibration["flag_same_opening"] is False
-    assert calibration["note"].startswith("按《龙族》校准")
+    assert calibration["note"].startswith("按《旧信》校准")
     assert not [item for item in payload["findings"] if item["source"] == "craft"], "叠句与句首重复是这位作者的习惯"
     assert all(item["house_taste"] for item in payload["findings"] if item["source"] == "rules")
     # 第二次读走进程缓存：结果一致

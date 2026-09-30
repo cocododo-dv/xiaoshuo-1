@@ -201,7 +201,7 @@ def test_endings_come_from_chapters_scene_breaks_or_transitions_and_are_honest_w
 
 
 def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_breaks: list[int] | None = None, deliberate: bool = False) -> None:
-    session.add(StyleReferenceBook(book_id="book_r3", title="龙族", source_kind="upload", cloud_policy="segments_only", text_checksum="r3", stats_json={"scene_breaks": scene_breaks or []}))
+    session.add(StyleReferenceBook(book_id="book_r3", title="旧信", source_kind="upload", cloud_policy="segments_only", text_checksum="r3", stats_json={"scene_breaks": scene_breaks or []}))
     session.add(StyleReferenceRun(run_id="run_r3", book_id="book_r3", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=["language"]))
     session.add_all(
         [
@@ -218,7 +218,7 @@ def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_b
             for index, text in enumerate(paragraphs)
         ]
     )
-    session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="龙族画像", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
+    session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="旧信画像", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
     session.commit()
     # 风格参考 v3：诊断按 StylePolicy 判绑定（校准看 bound，房风标记看「让位」）；画像的刻意复沓从库里读
     monkeypatch.setattr(

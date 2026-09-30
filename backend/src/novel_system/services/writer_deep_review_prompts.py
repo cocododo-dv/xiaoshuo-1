@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from novel_system.db.models import AuthorDraft, SceneCard, WriterEvaluation
-from novel_system.services.manuscript_html import manuscript_paragraphs
+from novel_system.services.manuscript_html import visible_paragraphs
 from novel_system.services.scene_diagnosis import locate_in_paragraphs
 from novel_system.services.value_coercion import optional_text
 from novel_system.services.writer_deep_review_output import split_paragraphs
@@ -25,7 +25,7 @@ def _prompt_text(content: Any) -> str:
     text = str(content or "")
     if "<" not in text:
         return text
-    return "\n\n".join(part for part in manuscript_paragraphs(text) if part.strip())
+    return "\n\n".join(visible_paragraphs(text))
 
 
 def _passage_review_user_prompt(
@@ -162,7 +162,7 @@ def patch_seams(draft_content: str | None, excerpt: str) -> dict[str, str] | Non
 
     以前给模型的是整份作者稿 HTML 的头尾各 700 字（带标签），与选区在哪儿无关（重评 R12 复核补充 6）。"""
 
-    paragraphs = [paragraph for paragraph in manuscript_paragraphs(draft_content or "") if paragraph.strip()]
+    paragraphs = visible_paragraphs(draft_content)
     pieces = split_paragraphs(excerpt)
     if not paragraphs or not pieces:
         return None
