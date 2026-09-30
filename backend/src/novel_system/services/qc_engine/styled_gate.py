@@ -359,8 +359,8 @@ def _styled_gate_report(
     生成期禁用词、学习作业写的受保护专名、环境变量的全局词），同一套规范化匹配。冻结契约里的禁用词只用来渲染
     提示词的红线，不参与判定：作者删掉一个误收的词，这里立刻不再认它（以前冻结的词会让已建场景一直被拦）。
     绑定的书查不到 / 策略降级 → ``unavailable_reason``（这一道门没有查成，调用方报 unavailable，不当作通过）。
-    返回与旧校验报告同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典（``quantitative_json`` 恒为空：
-    旧校验层的量化回测随校验层删了，诊断字典已不再带它；只剩一个风格参考测试还读这个属性）。
+    返回与旧校验报告同形的对象（旧校验层的量化回测随校验层删了，它不再带 ``quantitative_json``），
+    交给 :func:`_styled_gate_result` 压成诊断字典。
 
     没查成的缘故（``missing_books`` / ``unavailable_reasons``）有才读：``check_reference_copy`` 按模块属性现查，
     换上去的结果可以不带这两项——没说自己没查成，就是查成了。
@@ -405,6 +405,5 @@ def _styled_gate_report(
             ],
         },
         forbidden_hits_json=forbidden,
-        quantitative_json=[],
         unavailable_reason=unavailable_reason,
     )

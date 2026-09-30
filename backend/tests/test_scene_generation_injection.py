@@ -726,7 +726,6 @@ def test_plagiarism_notice_reports_true_hit_count_not_the_truncated_evidence_lis
     report = SimpleNamespace(
         plagiarism_json={"passed": False, "hits": hits},
         forbidden_hits_json=forbidden,
-        quantitative_json=[],
         verdict="plagiarism",
     )
     gate = _styled_gate_result(
