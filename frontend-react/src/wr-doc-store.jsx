@@ -68,6 +68,15 @@ function entrySceneSid(entry) {
   return bySceneId || sid;
 }
 
+/* 「恢复」找不到能存进去的那一场。记录是乐观新建一场时写下的（临时 sid、不知道后端 scene_id）：那一场也许已经建好、只是这里认不出
+   它现在是目录里的哪一场——照实说，不说它「不在目录里了」（复核七 W1-R7B-1） */
+function sceneUnavailableError(entry) {
+  const message = /^tmp_/.test((entry && entry.sid) || "") && !(entry && entry.sceneId)
+    ? "这份记录是新建一场时写下的，这里认不出它现在是目录里的哪一场，恢复不了；这份记录还在，可以复制文字贴进那一场，或导出。"
+    : "这一场不在目录里了（也许已移到回收站），恢复不了；这份记录还在，可以复制文字或导出。";
+  return Object.assign(new Error(message), { code: "RECOVERY_SCENE_UNAVAILABLE" });
+}
+
 /* 这一场已经持久地备份过的、和 html 一模一样的那份作者稿（没有就是 null） */
 function sameAuthorBackup(sid, workId, html) {
   const wanted = sanitizeManuscriptHTML(html || "");
@@ -131,20 +140,20 @@ const WrRecovery = {
     const entry = recoveryList().find(item => item.id === id);
     if (!entry) throw Object.assign(new Error("恢复记录已不存在"), { code: "RECOVERY_NOT_FOUND" });
     assertRecoveryWork(entry);
-    const sid = entrySceneSid(entry);
+    let sid = entrySceneSid(entry);
     // 章已批准锁定：写作台对它只读、也不替它保存，恢复进去的字不会同步——先停下，说清要先重新打开本章（复核二 W1-R2A-2）
     if (WrDocs.locked(sid)) throw lockedRestoreError();
     // 先和服务端对齐（这一场这次还没打开过、或冲突后服务端版本还没读到时）：下面自动备份的「当前正文」
     // 就是服务端眼下那一版，不是这台电脑上可能过时的缓存；读不到服务器就停下，不盲目覆盖。
     await WrDocs.hydrate(sid);
+    // 等水合的时候目录可能给这一场换了名字（乐观新建的临时 sid → 稳定的 scene_id；WrDocs 的状态机、本机缓存、恢复记录都跟了过去）：
+    // 下面读「当前正文」、找已有的备份、留备份都按它现在的名字（复核七 W1-R7A-1：过去按旧名字读到的是空，没留备份，就把作者刚交出去、
+    // 还没存上的字换掉了）
+    sid = WrDocs.sceneSid(sid);
     // 目录里没有这一场的后端 id（删到回收站了、或还没同步到后端）：没有地方可存，不动编辑器和本机缓存
     const docState = WrDocs.state(sid);
-    if (!docState || !docState.draftId) {
-      throw Object.assign(new Error("这一场不在目录里了（也许已移到回收站），恢复不了；这份记录还在，可以复制文字或导出。"), {
-        code: "RECOVERY_SCENE_UNAVAILABLE",
-      });
-    }
-    const current = cacheRead(sid) || "";
+    if (!docState || !docState.draftId) throw sceneUnavailableError(entry);
+    const current = WrDocs.cachedHTML(sid) || "";
     const hasCurrent = countChars(htmlToParagraphs(current).join("")) > 0;
     let replacedBackup = null;
     if (hasCurrent && current !== (entry.html || "")) {

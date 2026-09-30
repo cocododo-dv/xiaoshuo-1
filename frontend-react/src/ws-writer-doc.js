@@ -124,7 +124,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     saveToWork(sceneId, html, workRef.current);
   };
 
-  /* 把编辑器里的字交给 WrDocs 并等结果 → "saved" | "conflict" | "refused" | "failed" | "locked" | "dirty"（等的时候又敲了字）| "none" */
+  /* 把编辑器里的字交给 WrDocs 并等结果 → "saved" | "conflict" | "adopted" | "refused" | "failed" | "locked" | "dirty"（等的时候又敲了字）| "none"。
+     adopted：等着的时候作者自己在起草台的采纳落了地，编辑器已换成采纳的稿（WrDocs 说过了那几句在哪） */
   const settle = async (options) => {
     const sceneId = activeScene;
     const el = editorRef.current;
@@ -146,9 +147,9 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       setSaved("saved");
       setSavedAt(Date.now());
       setCanonicalStatus(canonicalFromStore(sceneId));
-    } else if (outcome === "refused") {
+    } else if (outcome === "refused" || outcome === "adopted") {
       dirtyRef.current = false;
-      setSaved("loaded"); // 服务端拒绝了：WrDocs 已换回服务端版本、告诉了作者
+      setSaved("loaded"); // 服务端拒绝了 / 换成了作者自己采纳的稿：WrDocs 已换稿、告诉了作者
     } else {
       setSaved("failed"); // 冲突中 / 保存失败：编辑器里的字不动，dirty 不清
     }
@@ -320,6 +321,18 @@ export function canonicalPromotionErrorMessage(error) {
   if (code === "AUTHOR_DRAFT_UNSAVED") {
     return "提升途中你又改了几句，还没确认保存到服务端；这次没有提升。等草稿保存成功后再点一次「提升为权威正文」。";
   }
+  // 最后那一次保存的回包没回来，服务端眼下多半就是那一稿（章锁定 / 服务端拒绝之后编辑器换回了上次确认存上的一版）：不是别处的改动（复核七 W1-R7A-2）
+  if (code === "AUTHOR_DRAFT_UNCONFIRMED") {
+    return "最后那一次保存的回包没回来，还没能确认它存上了没有（服务端上可能已经是那一稿）；这次没有提升。连上服务器、编辑器换成服务端上的正文后再点一次「提升为权威正文」。";
+  }
+  // 提升途中作者自己在 AI 起草台的采纳落了地（它在一个事务里存下并提升了采纳的稿）：不是别处的改动（复核七 W1-R7B-5）
+  if (code === "AUTHOR_DRAFT_ADOPTED") {
+    return "这一场刚换成了你在 AI 起草台采纳归档的稿，它已经是权威正文；这次没有提升。";
+  }
+  // 确认之后编辑器被这一页自己这边换了一版（章锁定之后换回、读到自己那一次回包丢了的保存、恢复……）：不是别处的改动（复核七 W1-R7A-2）
+  if (code === "AUTHOR_DRAFT_REPLACED") {
+    return "编辑器刚换了一版正文，你确认的是换之前的那一稿；这次没有提升。看过之后再点一次「提升为权威正文」。";
+  }
   // 章锁定那一刻写的几句还没存上（那一次保存 / 采纳还没结果，本章这期间又重新打开了）：不是别处的改动（复核五 W1-R5A-3）
   if (code === "AUTHOR_DRAFT_LOCK_PENDING") {
     return "本章锁定那一刻你写的几句还没保存到服务端（在「同步与恢复」里，路上那一次有了结果就会接着保存）；这次没有提升。等草稿保存成功后再点一次「提升为权威正文」。";
@@ -351,11 +364,12 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
   const [error, setError] = useState("");
   const { setSaved, setCanonicalStatus, dirtyRef, settle, cancelPendingSave, shownHTML } = doc;
 
-  /* 提升没成之后权威正文的状态：作者自己接着写、草稿已往前走（MOVED_BY_SELF）或还没确认存上（UNSAVED）是「待更新」，
-     不是「提升失败」 */
+  /* 提升没成之后权威正文的状态：作者自己接着写、草稿已往前走（MOVED_BY_SELF）或还没确认存上（UNSAVED / UNCONFIRMED）、
+     换成了作者自己采纳的稿（ADOPTED）、编辑器被这一页自己这边换了一版（REPLACED）照 WrDocs 说，不是「提升失败」 */
   const failedCanonicalStatus = (sceneId, code) => {
     if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") return "reconcile";
     return code === "AUTHOR_DRAFT_MOVED_BY_SELF" || code === "AUTHOR_DRAFT_UNSAVED" || code === "AUTHOR_DRAFT_LOCK_PENDING"
+      || code === "AUTHOR_DRAFT_UNCONFIRMED" || code === "AUTHOR_DRAFT_ADOPTED" || code === "AUTHOR_DRAFT_REPLACED"
       ? canonicalStatusOf(sceneId)
       : "error";
   };
@@ -371,6 +385,11 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
     if (dirtyRef.current || (state && (state.dirty || state.conflictPending))) {
       setSaved("saving");
       const outcome = await settle();
+      if (outcome === "adopted") {
+        // 这一稿等着的时候，作者自己在起草台的采纳落了地（它已经是权威正文）：照实说是那次采纳，不说「在别处更新」（复核七 W1-R7B-5）
+        storeAlert(null, canonicalPromotionErrorMessage({ code: "AUTHOR_DRAFT_ADOPTED" }));
+        return;
+      }
       if (outcome === "conflict") {
         // 409：编辑器已换成（或正要换成）服务端版本，本机的字在同步与恢复——说的是冲突，不是「还没保存」
         storeAlert(null, canonicalPromotionErrorMessage({ code: "AUTHOR_DRAFT_CONFLICT" }));

@@ -41,7 +41,8 @@ const NEW_CHAPTER = {
   scenes: [{ slug: "s9", scene_id: "s9", title: "新场景", kind: "proactive", state: "writing", words: 0, brief: {} }],
 };
 
-/* chapterAnswer：建章请求放行之后服务端回什么（默认建好了 c9）。conflicts：撞上 409 的 PATCH 数 */
+/* chapterAnswer：建章请求放行之后服务端回什么（默认建好了 c9）。sceneAnswer：建场请求回什么（默认建好了 s9、回包带着它；
+   给了就用它，例如服务端建好了、回包却没把 scene id 带回来）。conflicts：撞上 409 的 PATCH 数 */
 function newWorld() {
   return {
     catalog: [], gate: deferred(), chapterAnswer: { chapter: { chapter_id: "c9", slug: "ch01" } },
@@ -61,6 +62,7 @@ function installWorld(client, w) {
   client.apiPost.mockImplementation((url) => {
     if (/\/catalog\/chapters$/.test(url)) return w.gate.promise.then(() => w.chapterAnswer);
     if (/\/catalog\/chapters\/c9\/scenes$/.test(url)) {
+      if (w.sceneAnswer) return w.sceneAnswer();
       w.catalog = [NEW_CHAPTER];
       return Promise.resolve({ scene: { scene_id: "s9", slug: "s9" } });
     }
@@ -291,7 +293,9 @@ describe("复核六 · 创建第一章后马上动笔、这一章没建成，目
     await act(async () => { w.gate.resolve(); });
     await vi.waitFor(() => expect(window.WsCatalog.get().length).toBe(0), T);
     await vi.waitFor(() => expect(ctx.WrRecovery.list().some((entry) => plain(entry.html).includes("先写下的第一段"))).toBe(true), T);
-    expect(alerts().filter((message) => message.includes("不在目录里了"))).toHaveLength(1);
+    // 乐观新建的场：新建也许没成、也许建好了只是这里认不出——照实说是新建时写下的字，不说「不在目录里了」（复核七 W1-R7B-1）
+    expect(alerts().filter((message) => message.includes("新建这一场时写下"))).toHaveLength(1);
+    expect(alerts().filter((message) => message.includes("不在目录里了"))).toEqual([]);
     expect(ctx.WrRecovery.list().filter((entry) => plain(entry.html).includes("先写下的第一段"))).toEqual([expect.objectContaining({ durable: true })]);
     expect(Object.keys(window.localStorage).filter((key) => key.startsWith("wr-doc") && String(window.localStorage.getItem(key)).includes("先写下的第一段"))).toEqual([]);
     await unmountAll();
@@ -300,5 +304,65 @@ describe("复核六 · 创建第一章后马上动笔、这一章没建成，目
     const second = await render(<again.WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(room(again, second.host).createButton()).toBeTruthy(), T);
     expect(again.WrRecovery.list().filter((entry) => plain(entry.html).includes("先写下的第一段"))).toHaveLength(1);
+  }, LONG);
+});
+
+/* ==========================================================
+   W1 复核七：乐观新建的一场，这一页认不出它后来的正式编号（建场的回包丢了 / 建场途中刷新了页面）（W1-R7B-1 · W1-R7B-2）
+   ========================================================== */
+
+describe("复核七 · 创建第一章后马上动笔；场景建到了服务端，建场的回包却没把 scene id 带回来（NB7-1a · W1-R7B-1）", () => {
+  it("NB7-1a 写下的一段持久地进了同步与恢复，提示照实说是新建时写下的字——不说这一场「不在目录里了」（它在目录里，只是这里认不出）", async () => {
+    const w = newWorld();
+    w.sceneAnswer = () => { w.catalog = [NEW_CHAPTER]; return Promise.resolve({}); };
+    const ctx = await loadWriter(w);
+    const { host } = await render(<ctx.WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, host);
+    await vi.waitFor(() => expect(r.createButton()).toBeTruthy(), T);
+    await act(async () => { r.createButton().click(); });
+    await vi.waitFor(() => expect(String((window.WsCatalog.writingScene() || { scene: {} }).scene.sid || "")).toMatch(/^tmp_/), T);
+    await wait(100);
+    await r.type("<p>第一句写在新场景里。</p>");
+    await wait(1400);                                                       // 900 ms 的自动保存把它交给了 WrDocs（它在等后端 id）
+    await act(async () => { w.gate.resolve(); });
+    await vi.waitFor(() => expect(window.WsCatalog.sceneById("s9")).toBeTruthy(), T);
+    await vi.waitFor(() => expect(ctx.WrRecovery.list().some((entry) => plain(entry.html).includes("第一句"))).toBe(true), T);
+    await wait(300);
+    expect(alerts().filter((message) => message.includes("不在目录里了"))).toEqual([]);
+    expect(alerts().filter((message) => message.includes("新建这一场时写下"))).toHaveLength(1);
+    expect(ctx.WrRecovery.list().filter((entry) => plain(entry.html).includes("第一句"))).toEqual([expect.objectContaining({ durable: true })]);
+  }, LONG);
+});
+
+describe("复核七 · 创建第一章后马上动笔，建章还在路上时刷新了页面；服务端其实建好了（NB7-1b · W1-R7B-1 · W1-R7B-2）", () => {
+  it("NB7-1b 刷新之后不说这一场「不在目录里了」（刚写的、认不出是哪一场的这种标记先不动）；那一段还在这台电脑的本机存储里，没有丢", async () => {
+    const w = newWorld();
+    const ctx = await loadWriter(w);
+    const first = await render(<ctx.WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, first.host);
+    await vi.waitFor(() => expect(r.createButton()).toBeTruthy(), T);
+    await act(async () => { r.createButton().click(); });
+    const writing = () => { const hit = window.WsCatalog.writingScene(); return hit && hit.scene ? hit.scene.sid : null; };
+    await vi.waitFor(() => expect(String(writing() || "")).toMatch(/^tmp_/), T);
+    const tmp = writing();
+    await wait(100);
+    await r.type("<p>第一句写在新场景里，写完就刷新了页面。</p>");
+    await wait(300);
+    await act(async () => { window.dispatchEvent(new Event("pagehide")); }); // 页面要走了：没交出去的字交给 WrDocs
+    const heldKeys = () => Object.keys(window.localStorage).filter((key) => key.includes(tmp) && plain(window.localStorage.getItem(key)).includes("第一句"));
+    expect(heldKeys()).toHaveLength(1);
+    // 旧的一页没了（它的建章请求永远停在路上）；服务端其实建好了
+    await unmountAll();
+    w.catalog = [NEW_CHAPTER];
+    vi.resetModules();
+    const again = await loadWriter(w, { needScene: "s9" });
+    const second = await render(<again.WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(room(again, second.host).editor()).toBeTruthy(), T);
+    await wait(1500);
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await wait(200);
+    expect(alerts().filter((message) => message.includes("不在目录里了"))).toEqual([]);
+    expect(heldKeys()).toHaveLength(1);                                      // 没被当成孤儿扔掉
+    expect(Object.keys(window.localStorage).some((key) => key.startsWith("wr-doc-pending:") && key.includes(tmp))).toBe(true);
   }, LONG);
 });

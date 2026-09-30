@@ -47,32 +47,58 @@ function textFingerprint(html) {
 }
 
 /* 未同步标记里记下的：共用读缓存里那一稿写在服务端哪一版上（draft / revision，不知道时都是 null）、是哪一段字（fp，
-   没有指纹的旧版标记是 null）。没有标记 → null */
+   没有指纹的旧版标记是 null）、这一场的后端 scene_id（sceneId，不知道 / 旧版标记是 null）、标记是什么时候写的（at，毫秒；
+   读不出来是 null）。没有标记 → null */
 function pendingBase(m) {
   const raw = pendingRead(m);
   if (!raw) return null;
-  const [, revision, draft, fp] = String(raw).split("|");
+  const [time, revision, draft, fp, sceneId] = String(raw).split("|");
   const rev = Number(revision);
   const known = !!draft && revision !== "" && Number.isInteger(rev);
-  return { draft: known ? draft : null, revision: known ? rev : null, fp: fp || null };
+  const at = Number(time);
+  return {
+    draft: known ? draft : null,
+    revision: known ? rev : null,
+    fp: fp || null,
+    sceneId: sceneId || null,
+    at: Number.isFinite(at) && at > 0 ? at : null,
+  };
+}
+
+/* 标记里的后端 scene_id 这一栏（去掉分隔符；不知道是空） */
+function sceneField(sceneId) {
+  return sceneId ? String(sceneId).replace(/\|/g, "") : "";
 }
 
 /* 未同步标记：dirty 只在内存，重启浏览器即丢；标记跨会话存活，下次水合据此先留冲突副本，不让服务端旧稿静默盖掉本机较新的稿。
-   值是「时刻|修订号|草稿 id 的尾巴|指纹」：共用读缓存里那一稿（html；没给就是眼下存在那里的那一份）是哪一段字、写在服务端
+   值是「时刻|修订号|草稿 id 的尾巴|指纹|后端 scene_id」：共用读缓存里那一稿（html；没给就是眼下存在那里的那一份）是哪一段字、写在服务端
    哪一版上（base { draftId 或 draft, revision }）——下次打开时服务端若还停在那一版、作者又正是在这段字上接着写的，那就是那一版的
    下一稿，照常保存。不知道写在哪一版上（base 为空）就空着，不沿用原来那个标记的：它说的是另一段字（复核四 W1-R4A-2）。
+   后端 scene_id 取 m.sceneId（知道时）：乐观新建的场先用临时 sid，刷新之后（或另一个标签页里）目录不再认得那个名字，凭它还能找到
+   这一场（复核七 W1-R7A-3）。
    → { ok, error }：本机存储满了写不进去时 ok=false——调用方据此决定这一稿算不算在本机落了地（复核四 W1-R4B-1） */
 function pendingWrite(m, base, html) {
   const text = html === undefined ? readStored(m.workId, m.sid) : html;
   const draft = base ? (base.draft || draftTail(base.draftId)) : "";
   const known = !!draft && Number.isInteger(base && base.revision);
-  const value = `${Date.now()}|${known ? base.revision : ""}|${known ? draft : ""}|${textFingerprint(text)}`;
+  const value = `${Date.now()}|${known ? base.revision : ""}|${known ? draft : ""}|${textFingerprint(text)}|${sceneField(m.sceneId)}`;
   try {
     localStorage.setItem(pendingKeyOf(m), value);
     return { ok: true, error: null };
   } catch (error) {
     return { ok: false, error: storageFailure(error) };
   }
+}
+
+/* 标记写下时还不知道这一场的后端 scene_id（乐观新建的场，建场的回包还没回来），之后知道了：补进去，别的不动 */
+function pendingStampScene(m, sceneId) {
+  const raw = pendingRead(m);
+  if (!raw || !sceneId) return;
+  const parts = String(raw).split("|");
+  if (parts[4]) return;
+  while (parts.length < 4) parts.push("");
+  parts[4] = sceneField(sceneId);
+  try { localStorage.setItem(pendingKeyOf(m), parts.join("|")); } catch (e) { /* 写不进去：标记照旧，只是刷新之后凭它找不到这一场 */ }
 }
 
 /* 把未同步标记放回先前那个值（raw 为 null = 先前没有标记）：新的那一稿没写进读缓存，标记还得说那里原有的那一份 */
@@ -324,5 +350,6 @@ function sameManuscriptText(a, b) {
 
 export {
   cacheRead, cacheReadForWork, cacheWrite, docText, draftTail, dropSceneKeys, pendingBase, pendingClear, pendingRead, pendingRestore,
-  pendingSids, pendingWrite, readCache, readSlot, rememberInSession, renameSceneKeys, sameManuscriptText, textFingerprint, toDocHTML,
+  pendingSids, pendingStampScene, pendingWrite, readCache, readSlot, rememberInSession, renameSceneKeys, sameManuscriptText,
+  textFingerprint, toDocHTML,
 };

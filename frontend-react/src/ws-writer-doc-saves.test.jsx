@@ -2441,3 +2441,147 @@ describe("复核六 · 保存 500 停着、章在别处批准、后端仍不稳�
     expect(ctx.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null });
   }, LONG);
 });
+
+/* ==========================================================
+   W1 复核七：两路复核在 44db456 上复现的房间级顺序（真的写作台 + WrDocs），断言照实、安全的结果。
+   ========================================================== */
+
+describe("复核七 · 自己那一稿回包丢了（其实存上了），章在别处批准、这边知道之后窗口重新聚焦（R7A-2 · W1-R7A-2）", () => {
+  it("R7A-2 换稿之前先读一次服务端：读到之前编辑器照旧是作者写的那一稿，不先换回更早的一版、不说那几句没存上；本章重新打开、作者接着写，读取随后才回来——不说「在别处有更新」，接着写的照常存上", async () => {
+    const chap = twoScenes();
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(300);
+    srv.hooks.patch = (url, body, apply) => { srv.hooks.patch = null; return apply(url, body).then(() => Promise.reject(offline())); };
+    await r.type("<p>起点正文，一</p>");
+    await vi.waitFor(() => expect(srv.drafts.s1).toMatchObject({ revision: 2, content: "<p>起点正文，一</p>" }), T); // 存上了，回包丢了
+    await vi.waitFor(() => expect(r.status()).toBe("草稿保存失败"), T);
+    srv.locked = true;                                                        // 另一台设备上读过、批准了本章（批准的正文里有「一」）
+    chap.state = "approved";
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    const hold = deferred();
+    srv.hooks.ensure = (sid, current) => (sid === "s1" ? hold.promise.then(current) : current()); // 后台读取慢
+    await act(async () => { window.dispatchEvent(new Event("focus")); });    // 作者回到这个窗口
+    await wait(300);
+    expect(r.editor().textContent).toBe("起点正文，一");                     // 读到之前不先换回更早的一版
+    expect(noticeTexts()).not.toMatch(/改动不会保存/);
+    srv.locked = false;                                                       // 本章又在别处重新打开
+    chap.state = "writing";
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(false), T);
+    await r.append("，二");                                                   // 作者接着写（还没到自动保存）
+    await wait(200);
+    srv.hooks.ensure = null;
+    await act(async () => { hold.resolve(); });                               // 读取这时才回来：服务端上是这一页自己存上的「一」
+    await vi.waitFor(() => expect(srv.drafts.s1).toMatchObject({ revision: 3, content: "<p>起点正文，一，二</p>" }), T);
+    await vi.waitFor(() => expect(r.status()).toBe("草稿已保存"), T);
+    expect(r.editor().textContent).toBe("起点正文，一，二");
+    expect(noticeTexts()).not.toMatch(/别处有更新|别处被修改/);
+    expect(ctx.WrRecovery.list()).toEqual([]);
+    r.expectNoOlderPatch();
+  }, LONG);
+});
+
+describe("复核七 · 提升为权威正文与作者自己在起草台的采纳赛跑（NB7-5 · W1-R7B-5）", () => {
+  /* 写作台开着这一场；同一页里在 AI 起草台点「采纳并归档」：服务端在一个事务里存下并提升了采纳的稿（rev 2），回包慢 */
+  async function adoptionAnswering(srv) {
+    const answer = deferred();
+    srv.hooks.adoptAnswer = answer.promise;
+    const api = await import("./ws-scene-api.js");
+    const adopting = api.scnAdoptToDoc("ch01s1", ADOPT_DRAFT, null, { mode: "overwrite", confirmed: true });
+    await vi.waitFor(() => expect(srv.drafts.s1).toMatchObject({ revision: 2, content: `<p>${ADOPTED_TEXT}</p>` }), T);
+    return { answer, adopting };
+  }
+
+  it("NB7-5a 采纳还在回包时作者又写了一句、点「提升」：不说「在别处更新」，照实说换成了自己采纳的稿、这次没有提升；那一句在同步与恢复；什么也没提升", async () => {
+    const ctx = await loadWriter();
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(200);
+    const { answer, adopting } = await adoptionAnswering(srv);
+    await r.type("<p>起点正文，采纳还在路上时写作台里接着写的一句。</p>");
+    await wait(1300);                                                         // 自动保存：交给 WrDocs，排在采纳后面
+    const before = alertTexts().length;
+    await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
+    await wait(300);
+    await act(async () => { answer.resolve(); });
+    await act(async () => { await adopting; });
+    await wait(500);
+    const notices = alertTexts().slice(before);
+    expect(notices.filter((message) => message.includes("在别处更新"))).toEqual([]);
+    expect(notices.filter((message) => message.includes("采纳归档的稿") && message.includes("没有提升"))).toHaveLength(1);
+    expect(srv.promoted).toEqual([]);
+    expect(r.recoveryHas("写作台里接着写的一句")).toBe(true);
+    expect(r.editor().textContent).toBe(ADOPTED_TEXT);
+    expect(srv.drafts.s1).toMatchObject({ revision: 2 });
+  }, LONG);
+
+  it("NB7-5b 没写字、采纳还在回包时点「提升」（提升带的修订号被采纳赶在了前面）：等采纳有了结果再说——照实说是那次采纳，不说「在别处更新」；什么也没提升", async () => {
+    const ctx = await loadWriter();
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(200);
+    const { answer, adopting } = await adoptionAnswering(srv);
+    const before = alertTexts().length;
+    await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
+    await vi.waitFor(() => expect(ctx.client.apiPost.mock.calls.filter(([url]) => /promote-canonical$/.test(url))).toHaveLength(1), T);
+    await wait(300);
+    expect(alertTexts().slice(before)).toEqual([]);                          // 采纳还在回包：不先下结论
+    await act(async () => { answer.resolve(); });
+    await act(async () => { await adopting; });
+    await wait(500);
+    const notices = alertTexts().slice(before);
+    expect(notices.filter((message) => message.includes("在别处更新"))).toEqual([]);
+    expect(notices.filter((message) => message.includes("采纳归档的稿") && message.includes("没有提升"))).toHaveLength(1);
+    expect(srv.promoted).toEqual([]);
+    expect(r.editor().textContent).toBe(ADOPTED_TEXT);
+  }, LONG);
+});
+
+describe("复核七 · 采纳还在回包时回到写作台、立刻动笔；后台复核读到的正是作者自己采纳的那一稿（NB7-6 · W1-R7B-6）", () => {
+  it("NB7-6 刚写的那一句留进同步与恢复，提示说的是采纳（不是「在别处有更新」）；什么都没存在采纳的稿上面", async () => {
+    const ctx = await loadWriter();
+    const srv = casServer3(ctx.client);
+    const first = await render(<WriterRoom0 ctx={ctx} />);
+    await vi.waitFor(() => expect(first.host.querySelector(".wr-editor").textContent).toContain("起点正文"), T);
+    await wait(200);
+    await unmount(first.entry);                                               // 作者去了 AI 起草台
+    const answer = deferred();
+    srv.hooks.adoptAnswer = answer.promise;
+    const api = await import("./ws-scene-api.js");
+    const adopting = api.scnAdoptToDoc("ch01s1", ADOPT_DRAFT, null, { mode: "overwrite", confirmed: true });
+    await vi.waitFor(() => expect(srv.drafts.s1.revision).toBe(2), T);       // 服务端存下并提升了，回包慢
+    const read = deferred();
+    srv.hooks.ensure = (sid, current) => (sid === "s1" ? read.promise.then(current) : current()); // 写作台的后台复核排在采纳后面
+    const second = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => second.host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，写作台里马上接着写的一句。</p>");
+    await wait(300);                                                          // 远在 900 ms 的自动保存之前
+    const before = alertTexts().length;
+    srv.hooks.ensure = null;
+    await act(async () => { read.resolve(); });                               // 复核落地：rev 2 就是采纳的稿
+    await wait(300);
+    expect(r.editor().textContent).toBe(ADOPTED_TEXT);
+    expect(r.recoveryHas("写作台里马上接着写的一句")).toBe(true);
+    let notices = alertTexts().slice(before);
+    expect(notices.filter((message) => message.includes("在别处有更新") || message.includes("别处被修改"))).toEqual([]);
+    expect(notices.filter((message) => message.includes("采纳归档的 AI 稿"))).toHaveLength(1);
+    await act(async () => { answer.resolve(); });
+    await act(async () => { await adopting; });
+    await wait(1200);
+    notices = alertTexts().slice(before);
+    expect(notices.filter((message) => message.includes("在别处有更新") || message.includes("别处被修改"))).toEqual([]);
+    expect(srv.drafts.s1).toMatchObject({ revision: 2, content: `<p>${ADOPTED_TEXT}</p>` });
+    expect(patchesTo(ctx.client, "d1")).toEqual([]);
+    expect(r.editor().textContent).toBe(ADOPTED_TEXT);
+  }, LONG);
+});

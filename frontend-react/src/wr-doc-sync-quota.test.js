@@ -315,3 +315,61 @@ describe("复核六 · 本机存储满了时这一页自己的冲突稿：作者
     expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === MINE)).toEqual([expect.objectContaining({ durable: false })]);
   });
 });
+
+/* ==========================================================
+   W1 复核七 · W1-R7A-4 · W1-R7B-3：冲突时同步与恢复放不下，这一页自己的冲突稿只进了会话（共用读缓存里那一份是唯一的持久副本）；
+   之后作者腾出了空间（删掉几条旧记录）。那一稿持久地留下是对的，但它是这一页自己这一次的冲突稿——不说它是「另一个标签页
+   （或上次打开时）」留下的，也不另起一条「未同步稿」。
+   ========================================================== */
+
+describe("复核七 · 冲突稿当时只放进了会话，之后腾出了空间（W1-R7A-4 · W1-R7B-3）", () => {
+  const MINE = "<p>起点，这一页刚写、没存上的一大段。</p>";
+  const alerts = () => window.alert.mock.calls.map(([message]) => String(message));
+
+  async function conflictWithQuotaFull() {
+    const shared = { revision: 1, content: "<p>起点</p>" };
+    const tab = await loadDocs(shared, { cas: true });
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    const realSet = Storage.prototype.setItem;
+    const quota = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (String(key).startsWith("wr-recovery:v1:")) throw Object.assign(new Error("full"), { name: "QuotaExceededError" });
+      return realSet.call(this, key, value);
+    });
+    shared.revision = 2;                                                     // 另一台设备存了一版：这一页的自动保存 409
+    shared.content = "<p>另一台设备的正文</p>";
+    await tab.mod.WrDocs.save("ch01s1", MINE).catch(() => {});
+    await vi.waitFor(() => expect(tab.events.some((event) => event.kind === "conflict-resolved")).toBe(true), T);
+    expect(alerts().filter((message) => message.includes("只留在本次会话"))).toHaveLength(1);
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === MINE)).toEqual([expect.objectContaining({ durable: false })]);
+    return { shared, tab, quota };
+  }
+
+  const keptOnce = (tab) => tab.mod.WrRecovery.list().filter((entry) => entry.html === MINE);
+
+  it("R7A-3 / NB7-3b 另一台设备又存了一版、作者只是重新打开：那一稿持久地留下一次（照它自己那一次冲突的原因），不说是「另一个标签页」的", async () => {
+    const { shared, tab, quota } = await conflictWithQuotaFull();
+    quota.mockRestore();                                                     // 作者清掉了几条旧记录，空间有了
+    const before = alerts().length;
+    shared.revision = 3;
+    shared.content = "<p>另一台设备又改了一句</p>";
+    tab.mod.WrDocs.load("ch01s1");
+    await vi.waitFor(() => expect(tab.events.some((event) => event.kind === "loaded" && event.html === "<p>另一台设备又改了一句</p>")).toBe(true), T);
+    expect(keptOnce(tab)).toEqual([expect.objectContaining({ durable: true, type: "conflict" })]);
+    expect(keptOnce(tab)[0].reason).not.toMatch(/另一个标签页/);
+    expect(alerts().slice(before).filter((message) => message.includes("另一个标签页"))).toEqual([]);
+    expect(window.localStorage.getItem(CACHE)).toBe("<p>另一台设备又改了一句</p>");     // 持久地留下之后，本机缓存才换成服务端版本
+    expect(window.localStorage.getItem(PENDING)).toBeNull();
+  });
+
+  it("NB7-3a 作者在服务端版本上接着写、存上了：同上——那一稿持久地留下一次，不说是「另一个标签页」的；接着写的存上了", async () => {
+    const { shared, tab, quota } = await conflictWithQuotaFull();
+    quota.mockRestore();
+    const before = alerts().length;
+    const NEXT = "<p>另一台设备的正文，在它上面接着写</p>";
+    await tab.mod.WrDocs.save("ch01s1", NEXT);
+    expect(shared).toMatchObject({ revision: 3, content: NEXT });
+    expect(keptOnce(tab)).toEqual([expect.objectContaining({ durable: true, type: "conflict" })]);
+    expect(alerts().slice(before).filter((message) => message.includes("另一个标签页"))).toEqual([]);
+  });
+});

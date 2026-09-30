@@ -459,7 +459,8 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   // 采纳在路上：WrDocs 不再发写作台的保存，路上那一次这期间撞上的 409（多半就是采纳撞的）先按住，
   // 采纳成了随 acceptCanonical 作废，没成（endAdoption）再照常核对 / 冲突——不为作者自己的采纳提示「在别处被修改」。
   // 记号带着这一场：作者在采纳途中换了作品，收尾照样落在原来那一场上（复核四 W1-R4A-1）
-  const adopting = WrDocs.beginAdoption(sid);
+  // 记号也带着采纳的那一稿：采纳的回包回来之前，写作台的后台复核若先读到了它，说的是这次采纳，不是「在别处有更新」（复核七 W1-R7B-6）
+  const adopting = WrDocs.beginAdoption(sid, { html });
   let adoption = null;
   try {
     adoption = await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {
