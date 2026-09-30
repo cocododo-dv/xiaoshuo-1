@@ -65,9 +65,20 @@ SCENE_PLAN_STATE_KEYS: frozenset[str] = frozenset(
 )
 
 
+# 位置不是内容：章内序号按 09 的行序重算（``renumber_scene_seq``），在前面插进 / 删掉一场，后面几场都挪一格
+SCENE_PLAN_POSITION_KEYS: frozenset[str] = frozenset({"scene_seq"})
+
+
 def scene_plan_content_signature(scene: SnowflakeScenePlan) -> str:
-    """场景计划行的**内容**签名（去掉状态 / 失效留痕 / 诊断 / 身份）；同步时据此判断这一行有没有真的改。"""
-    payload = {key: value for key, value in scene_plan_payload(scene).items() if key not in SCENE_PLAN_STATE_KEYS}
+    """场景计划行的**内容**签名（去掉状态 / 失效留痕 / 诊断 / 身份与章内位置）；同步时据此判断这一行有没有真的改。
+
+    以前签名里带着章内序号：草稿里在一章前面插进 / 删掉一场，同章后面每一场都被当成「改了」，打回 draft、
+    复核留痕清零（S1 18）。"""
+    payload = {
+        key: value
+        for key, value in scene_plan_payload(scene).items()
+        if key not in SCENE_PLAN_STATE_KEYS and key not in SCENE_PLAN_POSITION_KEYS
+    }
     return stable_json(payload)
 
 
