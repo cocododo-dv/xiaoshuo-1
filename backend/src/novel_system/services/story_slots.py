@@ -4,6 +4,11 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
+# The goal the old catalog wrote into every new scene card. A hand-made
+# placeholder chapter whose scene still carries it counts as untouched
+# (catalog_placeholders), and it is one of the scaffolds below.
+SCENE_GOAL_SCAFFOLD = "（本场目标待规划）"
+
 # Historical UI scaffolds that were once persisted as if they were authored
 # story facts. Matching is exact after trim: prose that merely contains one
 # of these words is never altered.
@@ -14,7 +19,7 @@ EMPTY_STORY_SLOT_VALUES = frozenset(
         "待定",
         "（待规划）",
         "(待规划)",
-        "（本场目标待规划）",
+        SCENE_GOAL_SCAFFOLD,
         "(本场目标待规划)",
         "待补",
     }

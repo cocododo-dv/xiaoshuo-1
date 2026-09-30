@@ -82,7 +82,7 @@ from novel_system.services.scene_design_ownership import (  # noqa: F401  (re-ex
     plan_owned_scene_ids,
     scene_order_owned_by_plan_action,
 )
-from novel_system.services.scene_lookup import require_project, require_project_chapter, scene_project_id
+from novel_system.services.scene_lookup import require_project, require_project_chapter, require_scene
 
 # narrative_json 里由目录 API 维护的字段。章级的张力 / 视角 / 时间 / 地点 / 入口 / 出口 / 衔接 / 线索（批准 #17a）
 # 没有任何地方能填、也没有程序写它们，不再读、不再写、不再下发——库里已有的旧值原样留着；
@@ -259,7 +259,7 @@ class CatalogService(CatalogReader):
         return {"chapter": self.chapter_payload(project, chapter, index)}
 
     def update_scene(self, project_id: str, scene_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        scene = self._require_scene(project_id, scene_id)
+        scene = require_scene(self.session, scene_id, project_id=project_id)
         chapter = require_project_chapter(self.session, project_id, scene.chapter_id)
         body = payload or {}
         brief = dict(scene.writer_brief_json or {})
@@ -661,14 +661,6 @@ class CatalogService(CatalogReader):
         return import_catalog(self.session, project_id, payload)
 
     # ---------- internals ----------
-
-    def _require_scene(self, project_id: str, scene_id: str) -> SceneCard:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None or scene.trashed_flag == 1:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        if scene_project_id(self.session, scene) != project_id:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found in project", status_code=404)
-        return scene
 
     def _insert_scene(
         self,

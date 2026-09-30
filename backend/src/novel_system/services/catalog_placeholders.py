@@ -1,4 +1,4 @@
-"""手建的空白占位章（阶段 X，2026-09-19）——叶子模块，只依赖 ORM 模型与 ``chapter_approval``。
+"""手建的空白占位章（阶段 X，2026-09-19）——叶子模块，只依赖 ORM 模型、``chapter_approval`` 与 ``story_slots``。
 
 作者常常在雪花做完之前先进过一次写作台，点了「创建第一章 · 开场」——目录里于是躺着一章
 「第 1 章 / 开场」，一个字没写。雪花的章物化进来只能排在它后面（不挪动计划之外的章）：
@@ -29,12 +29,14 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.chapter_approval import is_chapter_approved
+from novel_system.services.story_slots import SCENE_GOAL_SCAFFOLD
 
 #: 「雪花整理进目录时，被系统移走的手建空白占位章」的标记（``trashed_by``）
 AUTO_TRASHED_PLACEHOLDER_CHAPTER = "snowflake_placeholder"
 _AUTO_CHAPTER_TITLE = re.compile(r"^第\s*\d+\s*章$")
 _PLACEHOLDER_SCENE_TITLES = frozenset({"开场", "新场景"})
-_PLACEHOLDER_SCENE_GOALS = frozenset({"", "（本场目标待规划）"})
+#: 空白占位场的目标：没填，或者还是旧目录写进去的占位（story_slots 的脚手架之一）
+_PLACEHOLDER_SCENE_GOALS = frozenset({"", SCENE_GOAL_SCAFFOLD})
 #: 作者稿里由系统生成的脚手架行（旧版 ensure 会把场景卡抄成这样的正文）
 _DRAFT_SCAFFOLD_LINE = re.compile(r"^【(章节目标|场景目标|地点|节拍|结尾变化|读者钩子)】")
 

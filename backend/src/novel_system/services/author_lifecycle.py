@@ -30,12 +30,11 @@ from novel_system.services.chapter_approval import (
     approved_chapter_block,
     is_chapter_approved,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )
-from novel_system.services.scene_lookup import get_chapter_or_404, get_scene_or_404
+from novel_system.services.scene_lookup import require_chapter, require_scene
 
 TRASH_BLOCK_REASON_HAS_TRASHED_SCENES = "章节下已有单独移入回收站的场景"
 SCENE_RUNTIME_ARTIFACTS_REASON = "场景已有下游运行产物"
@@ -49,24 +48,12 @@ class AuthorLifecycleService:
         self.session = session
 
     def require_active_chapter(self, chapter_id: str) -> ChapterGoal:
-        chapter = get_chapter_or_404(self.session, chapter_id)
-        if chapter.trashed_flag == 1:
-            raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash")
-        self._require_active_parent_project(chapter.project_id)
-        return chapter
+        """作者生命周期的口径：进了回收站是 409 CHAPTER_TRASHED，所属作品不可用是 404 PROJECT_TRASHED。"""
+        return require_chapter(self.session, chapter_id, trashed_as_conflict=True, with_parents=True)
 
     def require_active_scene(self, scene_id: str) -> SceneCard:
-        scene = get_scene_or_404(self.session, scene_id)
-        if scene.trashed_flag == 1:
-            raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        if chapter is not None and chapter.trashed_flag == 1:
-            raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
-        if chapter is not None:
-            self._require_active_parent_project(chapter.project_id)
-        elif scene.project_id:
-            self._require_active_parent_project(scene.project_id)
-        return scene
+        """作者生命周期的口径：场景或所在的章进了回收站是 409 SCENE_TRASHED，所属作品不可用是 404 PROJECT_TRASHED。"""
+        return require_scene(self.session, scene_id, trashed_as_conflict=True, with_parents=True)
 
     def list_active_chapters(self) -> list[dict]:
         chapters = self.session.execute(
@@ -91,18 +78,6 @@ class AuthorLifecycleService:
             .order_by(ChapterGoal.chapter_id.asc())
         ).scalars().all()
         return [self.serialize_chapter_summary(chapter) for chapter in chapters]
-
-    def _require_active_parent_project(self, project_id: str | None) -> None:
-        # Legacy chapter rows may predate project ownership and remain readable.
-        if not project_id:
-            return
-        project = self.session.get(StoryProject, project_id)
-        if project is None or project.trashed_flag == 1:
-            raise DomainError(
-                "PROJECT_TRASHED",
-                "chapter or scene belongs to an unavailable project",
-                status_code=404,
-            )
 
     def serialize_chapter_summary(self, chapter: ChapterGoal) -> dict:
         chapter_state = self.session.get(ChapterState, chapter.chapter_id)
