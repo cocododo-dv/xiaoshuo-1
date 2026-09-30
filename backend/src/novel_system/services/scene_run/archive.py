@@ -10,8 +10,8 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -37,7 +37,7 @@ from novel_system.services.llm_accounting import (
     validate_product_call,
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
-from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
+from novel_system.services.scene_archive_effects import SceneArchiveEffects
 from novel_system.services.scene_run.results import apply_finality, merged_warnings, qc_decision_payload
 from novel_system.services.scene_run.snapshots import (
     archive_attempt_snapshot,
@@ -49,6 +49,7 @@ from novel_system.services.scene_run.snapshots import (
     narrative_event_snapshot,
     volume_snapshot,
 )
+from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
@@ -1722,3 +1723,73 @@ class ArchiveCheckpointMixin:
         for stage in ARCHIVE_PRODUCT_STAGES:
             if through >= stage.sub_index:
                 self._validate_archive_stage_product(stage, scene, final_scene)
+
+    # ---- 归档效果（叙事事件 / 正文抽取 / 读数）：SceneArchiveEffects 每次调用新建，同簇互调经 dispatch=self 回到编排器
+
+    def _archive_effects(self) -> SceneArchiveEffects:
+        """Build the archive-effects worker for the CURRENT run.
+
+        ``_execution_id`` / ``_run_job_id`` are set per run_scene/resume call, so
+        the worker is constructed at call time — never cached — and it dispatches
+        cluster-internal cross-calls back through ``self`` so instance-level
+        overrides (a test seam) keep intercepting sibling recorder calls.
+        """
+        return SceneArchiveEffects(
+            self.session,
+            self.llm_runner,
+            execution_id=self._execution_id,
+            run_job_id=self._run_job_id,
+            dispatch=self,
+        )
+
+    def _record_narrative_events(
+        self,
+        scene: SceneCard,
+        contract,
+        content: str,
+        *,
+        include_prose: bool = True,
+        degrade_errors: bool = True,
+        final_scene_row_id: str | None = None,
+    ) -> list[str]:
+        return self._archive_effects()._record_narrative_events(
+            scene,
+            contract,
+            content,
+            include_prose=include_prose,
+            degrade_errors=degrade_errors,
+            final_scene_row_id=final_scene_row_id,
+        )
+
+    def _resolve_scene_project_id(self, scene: SceneCard, contract=None) -> str:
+        return self._archive_effects()._resolve_scene_project_id(scene, contract)
+
+    def _archive_event_base(self, scene: SceneCard, contract) -> dict[str, str]:
+        return self._archive_effects()._archive_event_base(scene, contract)
+
+    def _record_prose_events(
+        self,
+        log,
+        scene: SceneCard,
+        base: dict,
+        content: str,
+        *,
+        final_scene_row_id: str | None = None,
+        return_event_ids: bool = False,
+    ) -> ProseExtractionResult | tuple[ProseExtractionResult, list[str]]:
+        return self._archive_effects()._record_prose_events(
+            log,
+            scene,
+            base,
+            content,
+            final_scene_row_id=final_scene_row_id,
+            return_event_ids=return_event_ids,
+        )
+
+    def _record_archive_fidelity_reading(self, scene: SceneCard) -> dict[str, Any]:
+        """编排器归档检查点的读数槽位（source=pipeline）；读数是观察，失败只降级（带错误码），不阻断归档。"""
+        try:
+            return self._archive_effects()._record_archive_fidelity_reading(scene, source="pipeline")
+        except Exception as exc:  # noqa: BLE001 — 读数失败不影响归档
+            _LOGGER.warning("archive fidelity reading degraded for scene %s", scene.scene_id, exc_info=True)
+            return {"outcome": "degraded", "error_code": str(getattr(exc, "code", None) or type(exc).__name__)}
