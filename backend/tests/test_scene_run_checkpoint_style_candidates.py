@@ -1,4 +1,8 @@
-"""Scene-run checkpoint resume · de-template, candidate and progressive top-up checkpoints."""
+"""Scene-run checkpoint resume · de-template checkpoints.
+
+2026-09-30 [批准#2]：先中性后润色的多稿（候选去模板、渐进补候选）整套删掉，它的三条续跑用例随之删掉；作者手笔直起的
+多稿续跑见 test_candidate_selection_gate.py 与 test_scene_run_checkpoint_planning_drafting.py。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,6 @@ from sqlalchemy import func, select
 from novel_system.db.models import (
     AttemptTracker,
     LlmCall,
-    SceneCard,
     SceneDraft,
     SceneRunState,
 )
@@ -24,7 +27,6 @@ from tests.support.checkpoint_fakes import _accounted_online_default_orchestrato
 from tests.support.checkpoint_fakes import (
     _CountingGenerationClient,
     _FailDeTemplateClient,
-    _FailFourthGenerationClient,
     _HardPassClient,
     _FailAfterStyle,
     _PassSoftQc,
@@ -36,7 +38,7 @@ from tests.support.checkpoint_fakes import (
 def test_de_template_selected_soft_input_resumes_from_sub0(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -78,7 +80,7 @@ def test_de_template_selected_soft_input_resumes_from_sub0(session, monkeypatch)
 def test_style_base_checkpoint_resumes_only_de_template_after_interruption(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -163,7 +165,7 @@ def test_style_base_checkpoint_resumes_only_de_template_after_interruption(sessi
 def test_failed_de_template_is_a_durable_final_outcome_and_is_not_replayed(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -219,7 +221,7 @@ def test_failed_de_template_recovery_rejects_error_code_detached_from_parent_cal
 ) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,
@@ -282,166 +284,10 @@ def test_failed_de_template_recovery_rejects_error_code_detached_from_parent_cal
     assert len(generation_client.requests) == provider_calls
 
 
-def test_best_of_n_resumes_candidate_de_template_without_replaying_its_base(session, monkeypatch) -> None:
-    _seed_resume_scene(session)
-    monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
-        lambda *args, **kwargs: {
-            "triggered": True,
-            "rewrite_pass": 1,
-            "score": 0.0,
-            "risk_dimensions": ["model_voice"],
-            "quality_signal_ids": ["quality:candidate-resume-base"],
-            "findings": [],
-        },
-    )
-    generation_client = _CountingGenerationClient()
-    execution_id = "idempotency:candidate-base-de-template-resume"
-    first = Orchestrator(
-        session,
-        scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-        soft_qc_engine=_FailAfterStyle(),
-    )
-    original_reconcile = first._reconcile_execution_step
-
-    def interrupt_first_candidate_de_template(step_key: str) -> None:
-        original_reconcile(step_key)
-        if step_key == "style_draft:0:de_template":
-            raise RuntimeError("interrupt candidate after base")
-
-    first._reconcile_execution_step = interrupt_first_candidate_de_template
-    with pytest.raises(RuntimeError, match="interrupt candidate after base"):
-        first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
-
-    state = session.get(SceneRunState, "CH_RESUME_SC01")
-    items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    assert state.run_checkpoint_json["sub_index"] == 0
-    assert [(item["slot_key"], item["final"]) for item in items] == [("initial:0", None)]
-
-    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
-        Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-            soft_qc_engine=_FailAfterStyle(),
-        ).run_scene("CH_RESUME_SC01", execution_id=execution_id)
-
-    session.refresh(state)
-    items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    assert [item["slot_key"] for item in items] == ["initial:0", "initial:1"]
-    assert all(item["de_template_outcome"]["status"] == "completed" for item in items)
-    assert [request.node_id for request in generation_client.requests].count("style_draft") == 2
-    assert [request.node_id for request in generation_client.requests].count("style_patch") == 2
-
-
-def test_completed_candidate_de_template_survives_next_candidate_failure(session, monkeypatch) -> None:
-    _seed_resume_scene(session)
-    monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
-        lambda *args, **kwargs: {
-            "triggered": True,
-            "rewrite_pass": 1,
-            "score": 0.0,
-            "risk_dimensions": ["model_voice"],
-            "quality_signal_ids": ["quality:next-candidate-failure"],
-            "findings": [],
-        },
-    )
-    generation_client = _FailFourthGenerationClient()
-    execution_id = "idempotency:de-template-then-next-candidate-fails"
-
-    def orchestrator() -> Orchestrator:
-        return Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-            soft_qc_engine=_FailAfterStyle(),
-        )
-
-    with pytest.raises(ValueError, match="next candidate failed after de-template"):
-        orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
-
-    state = session.get(SceneRunState, "CH_RESUME_SC01")
-    items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    assert state.run_checkpoint_json["sub_index"] == 1
-    assert len(items) == 1
-    assert items[0]["de_template_outcome"]["status"] == "completed"
-    completed_row_id = items[0]["final"]["row_id"]
-    provider_calls = len(generation_client.requests)
-
-    with pytest.raises(DomainError) as exc_info:
-        orchestrator().run_scene("CH_RESUME_SC01", execution_id=execution_id)
-    assert exc_info.value.code == "RUN_CHECKPOINT_OUTPUT_MISSING"
-    assert len(generation_client.requests) == provider_calls
-    session.refresh(state)
-    assert state.run_checkpoint_json["artifact_refs"]["style_work_items"][0]["final"]["row_id"] == completed_row_id
-
-
-def test_progressive_topup_resumes_its_locked_base_without_replay(session, monkeypatch) -> None:
-    _seed_resume_scene(session)
-    scene = session.get(SceneCard, "CH_RESUME_SC01")
-    scene.constraint_intensity = 0.5
-    session.commit()
-    monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
-    monkeypatch.setattr("novel_system.services.scene_generation._candidate_dispersion", lambda contents: 0.0)
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
-        lambda *args, **kwargs: {
-            "triggered": True,
-            "rewrite_pass": 1,
-            "score": 0.0,
-            "risk_dimensions": ["model_voice"],
-            "quality_signal_ids": ["quality:topup-resume"],
-            "findings": [],
-        },
-    )
-    generation_client = _CountingGenerationClient()
-    execution_id = "idempotency:topup-base-de-template-resume"
-    first = Orchestrator(
-        session,
-        scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-        soft_qc_engine=_FailAfterStyle(),
-    )
-    original_reconcile = first._reconcile_execution_step
-
-    def interrupt_topup_de_template(step_key: str) -> None:
-        original_reconcile(step_key)
-        if step_key == "style_draft:topup:1:de_template":
-            raise RuntimeError("interrupt topup after base")
-
-    first._reconcile_execution_step = interrupt_topup_de_template
-    with pytest.raises(RuntimeError, match="interrupt topup after base"):
-        first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
-
-    state = session.get(SceneRunState, "CH_RESUME_SC01")
-    items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    assert state.run_checkpoint_json["sub_index"] == 4
-    assert [item["slot_key"] for item in items] == ["initial:0", "initial:1", "topup:1"]
-    assert items[-1]["final"] is None
-
-    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
-        Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-            soft_qc_engine=_FailAfterStyle(),
-        ).run_scene("CH_RESUME_SC01", execution_id=execution_id)
-
-    session.refresh(state)
-    items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    assert items[-1]["de_template_outcome"]["status"] == "completed"
-    assert [request.node_id for request in generation_client.requests].count("style_draft") == 3
-    assert [request.node_id for request in generation_client.requests].count("style_patch") == 3
-
-
 def test_no_anti_template_trigger_persists_base_equals_final(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": False,
             "rewrite_pass": 0,
@@ -482,7 +328,7 @@ def test_completed_de_template_recovery_validates_its_base_lineage(
 ) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: {
             "triggered": True,
             "rewrite_pass": 1,

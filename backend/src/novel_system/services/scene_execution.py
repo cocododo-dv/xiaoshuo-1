@@ -16,6 +16,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.qc_constraints import strip_reference_policy
+from novel_system.services.scene_form import form_alias
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
     normalize_story_slot,
@@ -59,9 +60,7 @@ class SceneExecutionContractService:
         if cached is not None:
             return cached
 
-        payload, missing_fields, blocking_fields = self._assemble_payload(
-            scene, chapter, project, blueprint, reference_rules
-        )
+        payload, missing_fields, blocking_fields = self._payload(scene, chapter, blueprint, reference_rules)
         return SceneExecutionContract(
             contract_id=None,
             scene_id=scene.scene_id,
@@ -80,9 +79,7 @@ class SceneExecutionContractService:
         if cached is not None:
             return cached
 
-        payload, missing_fields, blocking_fields = self._assemble_payload(
-            scene, chapter, project, blueprint, reference_rules
-        )
+        payload, missing_fields, blocking_fields = self._payload(scene, chapter, blueprint, reference_rules)
         status = "active" if not blocking_fields else "blocked"
 
         rows = self.session.execute(
@@ -126,8 +123,8 @@ class SceneExecutionContractService:
         scene = require_scene(self.session, scene_id)
         chapter = require_chapter(self.session, scene.chapter_id)
         project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
-        blueprint = self._latest_blueprint(scene_id)
-        reference_rules = self._reference_rules(project)
+        blueprint = latest_scene_blueprint(self.session, scene_id)
+        reference_rules = {key: list(value) for key, value in EMPTY_REFERENCE_RULES.items()}
         snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
         snapshot_hash = sha256_json_normalized(snapshot)
         latest = self.latest(scene_id)
@@ -137,20 +134,6 @@ class SceneExecutionContractService:
             else None
         )
         return scene, chapter, project, blueprint, reference_rules, snapshot_hash, cached
-
-    def _assemble_payload(
-        self,
-        scene: SceneCard,
-        chapter: ChapterGoal,
-        project: StoryProject | None,
-        blueprint: SceneBlueprint | None,
-        reference_rules: dict[str, list[str]],
-    ) -> tuple[dict[str, Any], list[str], list[str]]:
-        """组装契约 payload，返回 (payload, missing_fields, blocking_fields)。"""
-        payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
-
-        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
-        return payload, missing_fields, blocking_fields
 
     @staticmethod
     def serialize(row: SceneExecutionContract | None) -> dict[str, Any] | None:
@@ -178,7 +161,8 @@ class SceneExecutionContractService:
         chapter: ChapterGoal,
         blueprint: SceneBlueprint | None,
         reference_rules: dict[str, list[str]],
-    ) -> tuple[dict[str, Any], list[str]]:
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        """组装契约 payload，返回 (payload, missing_fields, blocking_fields)——带 ``(advisory)`` 的缺项不挡起草。"""
         brief = normalize_story_slot_mapping(scene.writer_brief_json or {})
         blueprint_json = dict(blueprint.blueprint_json or {}) if blueprint is not None else {}
         scene_mode = _infer_scene_mode(scene, brief)
@@ -313,7 +297,8 @@ class SceneExecutionContractService:
             }
         payload = {**common_payload, **mode_payload}
         missing_fields = self._missing_fields(payload)
-        return payload, missing_fields
+        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
+        return payload, missing_fields, blocking_fields
 
     def _missing_fields(self, payload: dict[str, Any]) -> list[str]:
         missing = []
@@ -342,9 +327,6 @@ class SceneExecutionContractService:
         if payload.get("tension_target") is None:
             missing.append("tension_target(advisory)")
         return missing
-
-    def _latest_blueprint(self, scene_id: str) -> SceneBlueprint | None:
-        return latest_scene_blueprint(self.session, scene_id)
 
     def _source_snapshot(
         self,
@@ -384,10 +366,6 @@ class SceneExecutionContractService:
             "contract_version": EXECUTION_CONTRACT_VERSION,
         }
 
-
-    def _reference_rules(self, project: StoryProject | None) -> dict[str, list[str]]:
-        return {key: list(value) for key, value in EMPTY_REFERENCE_RULES.items()}
-
     def _reference_profile_ids(self, project: StoryProject) -> list[str]:
         """来源快照里登记的参考画像 id：作品级绑定按 ``style_policy_live``（轻量路径）解析（S3）。
 
@@ -401,22 +379,22 @@ class SceneExecutionContractService:
         return [str(policy.profile_id)] if policy.profile_id else []
 
 
+def _declared_scene_forms(scene: SceneCard, brief: dict[str, Any]) -> list[str]:
+    """契约沿用的显式形态写法：``scene_mode`` / ``scene_form`` / 场景卡 ``scene_type``，含 ``reaction`` / ``goal``
+    两个别名（:func:`~novel_system.services.scene_form.form_alias`）。契约 payload 与来源快照哈希靠它们不变。"""
+    return [form for form in (form_alias(value) for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type)) if form]
+
+
 def _infer_scene_mode(scene: SceneCard, brief: dict[str, Any]) -> str:
-    for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type):
-        text = str(value or "").strip().lower()
-        if text in {"reactive", "reaction"}:
-            return "reactive"
-        if text in {"proactive", "goal"}:
-            return "proactive"
+    declared = _declared_scene_forms(scene, brief)
+    if declared:
+        return declared[0]
+    # 没有显式声明：契约一向按「填了反应或决定就是反应场」推断（与结构简报按三拍组推断不同，保持契约哈希不变）
     return "reactive" if brief.get("reaction") or brief.get("decision") else "proactive"
 
 
 def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bool:
-    for value in (brief.get("scene_mode"), brief.get("scene_form"), scene.scene_type):
-        text = str(value or "").strip().lower()
-        if text in {"proactive", "reactive", "reaction", "goal"}:
-            return True
-    return False
+    return bool(_declared_scene_forms(scene, brief))
 
 
 def _first_text(*values: Any) -> str:

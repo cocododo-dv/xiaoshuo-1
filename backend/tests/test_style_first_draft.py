@@ -27,16 +27,15 @@ from novel_system.services.qc_engine import STYLED_DRAFT_GATE_STAGES
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_policy import style_policy_for_bundle
-from novel_system.services.style_reference.inject.bindings import resolve_binding_layers
 from novel_system.services.style_reference.runtime_contract import (
     DRAFT_MODE_NEUTRAL_FIRST,
     DRAFT_MODE_STYLE_FIRST,
-    build_style_runtime_contract,
     resolve_draft_mode,
     validate_style_runtime_contract,
 )
 from tests.real_llm_fakes import install_online_pipeline
 from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
+from tests.support.style_first_fixtures import frozen_bundle as _frozen_bundle
 
 
 @pytest.fixture(autouse=True)
@@ -64,32 +63,6 @@ def _seed_binding(seed: str, *, project_id: str, config_json: dict | None = None
         )
         session.commit()
     return book_id, profile_id
-
-
-def _frozen_bundle(project_id: str, scene_id: str, chapter_id: str) -> dict:
-    """按 bundle_builder 的冻结方式（status=frozen + inline contract）造一份 bundle。"""
-    with SessionLocal() as session:
-        layers = resolve_binding_layers(session, project_id, "scene_generation", character_ids=[], scene_id=scene_id)
-        contract = build_style_runtime_contract(StyleReferenceRepository(session), layers, task_type="scene_generation")
-    return {
-        "bundle_id": f"bundle_{scene_id}_sfd",
-        "bundle_snapshot_hash": "bundle_hash_sfd",
-        "snapshot": {
-            "contract_version": "BSHASH_v1",
-            "stage_allowlist_name": "bundle_build_allowlist_v1",
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "source_version_refs": {
-                "style_reference_runtime_contract_status": "frozen",
-                "style_reference_runtime_contract_version": contract["contract_version"],
-                "style_reference_runtime_contract_hash": contract["contract_hash"],
-            },
-            "inline_digests": {
-                "scene_card": "Reveal the letter without explaining it.",
-                "_style_reference_runtime_contract": json.dumps(contract, ensure_ascii=False, sort_keys=True),
-            },
-        },
-    }
 
 
 def _seed_scene(session, *, project_id: str, scene_id: str, chapter_id: str, band: str = "short") -> SceneCard:
@@ -339,6 +312,60 @@ def test_style_first_repair_keeps_the_prefix_and_label(session) -> None:
     assert "keep the reference author's manner" in repair_call["user_prompt"]
 
 
+def test_style_first_repair_failure_records_the_repair_prompt_it_sent(session) -> None:
+    """B02-20：首稿修复那一遍调用失败时，失败尝试记的是修复这一遍实际发出的提示（按修复提示重新注入过、
+    审计不同），不是首稿那一份。"""
+    from novel_system.services.llm_task_runner import LLMNodeExecutionError
+
+    _seed_binding("sfd_d3f", project_id="proj_sfd_d3f")
+    scene = _seed_scene(session, project_id="proj_sfd_d3f", scene_id="SFD_D3F_SC01", chapter_id="SFD_D3F")
+    bundle = _frozen_bundle("proj_sfd_d3f", scene.scene_id, scene.chapter_id)
+
+    class _FailingRepairRunner(_Runner):
+        def run(self, **kwargs):  # noqa: ANN003
+            if kwargs.get("step") == "neutral_draft_repair":
+                self.calls.append(kwargs)
+                raise LLMNodeExecutionError(
+                    llm_call_id="llm_call_sfd_repair_failed",
+                    error_code="LLM_PROVIDER_ERROR",
+                    message="provider unavailable",
+                    request_summary={},
+                    response_summary={},
+                )
+            return super().run(**kwargs)
+
+    # 首稿漏了必含项「信封」→ 一次修复，修复这一遍调用失败
+    runner = _FailingRepairRunner(outputs={"neutral_draft": "脚步在门外停了；他什么也没放下。"}, default=_VOICED_TEXT)
+    service = SceneGenerationService(session, llm_runner=runner)
+    passes: list[int] = []
+    original_inject = service._inject_style_reference
+
+    def tagging_inject(prompt, scene_card, **kwargs):  # noqa: ANN001, ANN003
+        injected = dict(original_inject(prompt, scene_card, **kwargs))
+        passes.append(len(passes) + 1)
+        injected["_style_reference_runtime_audit"] = {
+            **dict(injected.get("_style_reference_runtime_audit") or {}),
+            "probe_pass": passes[-1],
+        }
+        return injected
+
+    service._inject_style_reference = tagging_inject
+    with pytest.raises(LLMNodeExecutionError):
+        service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+
+    assert passes == [1, 2], "首稿与修复各注入一次"
+    failed = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.scene_id == scene.scene_id,
+            AttemptTracker.step == "neutral_draft_repair",
+            AttemptTracker.status == "failed",
+        )
+    ).scalars().one()
+    assert failed.details_json["style_reference_runtime"]["probe_pass"] == 2
+    assert failed.details_json["template_name"] == "style_first_draft"
+
+
 def test_style_draft_step_labels_the_source_as_first_draft_under_style_first(session, monkeypatch) -> None:
     """风格参考 v3（P5b，L1）：作者手笔直起时风格步不再「复读」——首稿越界才做定向修改，来源稿仍标成首稿。"""
     _seed_binding("sfd_d4", project_id="proj_sfd_d4")
@@ -438,16 +465,16 @@ def test_neutral_first_neutral_draft_never_anchors_voice(session) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_length_band_widens_only_inside_a_style_bound_context() -> None:
+def test_length_band_widens_only_for_a_style_bound_bundle() -> None:
     _seed_binding("sfd_l1", project_id="proj_sfd_l1")
     bound = _frozen_bundle("proj_sfd_l1", "SFD_L1_SC01", "SFD_L1")
+    scene = SimpleNamespace(target_length_band="1200-1800", writer_brief_json={})
     assert sg._parse_numeric_length_band("1200-1800") == (1200, 1800)
-    with sg._length_band_slack_for(bound):
-        assert sg._parse_numeric_length_band("1200-1800") == (600, 2700)
-        assert sg._parse_numeric_length_band("1200-1800", slack=0.0) == (1200, 1800)
-    assert sg._parse_numeric_length_band("1200-1800") == (1200, 1800)
-    with sg._length_band_slack_for({"snapshot": {}}):
-        assert sg._parse_numeric_length_band("1200-1800") == (1200, 1800)
+    widened = sg.LengthPolicy.for_scene(bound, scene)
+    assert widened.hard_range() == (600, 2700)
+    assert widened.planned_range() == (1200, 1800)
+    assert sg.LengthPolicy.plain(scene).hard_range() == (1200, 1800)
+    assert sg.LengthPolicy.for_scene({"snapshot": {}}, scene).hard_range() == (1200, 1800)
 
 
 def test_style_first_accepts_the_authors_scale_where_neutral_first_rejects_it(session) -> None:
@@ -456,14 +483,13 @@ def test_style_first_accepts_the_authors_scale_where_neutral_first_rejects_it(se
     bundle = _frozen_bundle("proj_sfd_l2", scene.scene_id, scene.chapter_id)
     short_but_complete = ("脚步在门外停了；他将信封搁到桌上——也不说话，只等着。" * 40)[:900]
     assert 600 <= sg._visible_char_count(short_but_complete) < 1200
-    with sg._length_band_slack_for(bundle):
-        assessment = sg._assess_neutral_draft(scene, short_but_complete)
+    widened = sg.LengthPolicy.for_scene(bundle, scene)
+    assessment = sg._assess_neutral_draft(scene, short_but_complete, widened)
     assert assessment["accepted"], assessment
     assert assessment["target_length_range"] == [600, 2700]
-    assert not sg._assess_neutral_draft(scene, short_but_complete)["accepted"]
+    assert not sg._assess_neutral_draft(scene, short_but_complete, sg.LengthPolicy.plain(scene))["accepted"]
     # 首稿的长度指引告诉模型:计划带 vs 硬范围,作者尺度优先
-    with sg._length_band_slack_for(bundle):
-        guide = sg._style_first_length_instruction(scene)
+    guide = sg._style_first_length_instruction(widened)
     assert "planned 1200-1800" in guide and "hard range 600-2700" in guide
     assert "this author's own means" in guide
 
@@ -500,14 +526,9 @@ _HOUSE_TASTE_TEXT = "脚步在门外停了；他将信封搁到桌上——也�
 
 
 def test_house_taste_gate_is_recorded_but_never_rewrites_under_style_first(session, monkeypatch) -> None:
+    # 这份稿子会触发房风门（neutral_first 下要去模板）；作者手笔直起时风格步让位于参考，不跑它
     gate = sg._anti_template_quality_gate(_HOUSE_TASTE_TEXT, scene_id="s", chapter_id="c")
     assert gate["triggered"] and "summary_ending" in gate["risk_dimensions"]
-    deferred = sg._defer_house_taste_gate(gate)
-    assert deferred["triggered"] is False and deferred["rewrite_pass"] == 0
-    assert deferred["findings"] == [] and deferred["risk_dimensions"] == []
-    assert deferred["house_taste_gate"] == "deferred_to_reference"
-    assert "summary_ending" in deferred["advisory_risk_dimensions"]
-    assert len(deferred["advisory_findings"]) == len(gate["findings"]) >= 1
 
     _seed_binding("sfd_g1", project_id="proj_sfd_g1")
     scene = _seed_scene(session, project_id="proj_sfd_g1", scene_id="SFD_G1_SC01", chapter_id="SFD_G1")
@@ -552,21 +573,18 @@ def test_house_taste_gate_still_rewrites_under_neutral_first(session) -> None:
     assert "de_template" in steps, steps
 
 
-def test_de_template_regression_check_ignores_house_dims_when_deferred(session) -> None:
+def test_de_template_regression_check_counts_house_dims(session) -> None:
+    """去模板改写只在 neutral_first 的风格稿链上跑：改写新添了房风风险就判回退。"""
     scene = _seed_scene(session, project_id="proj_sfd_g3", scene_id="SFD_G3_SC01", chapter_id="SFD_G3")
     source_gate = sg._anti_template_quality_gate(_VOICED_TEXT, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
     strict = sg._assess_de_template_rewrite(
-        scene=scene, source_content=_VOICED_TEXT, rewritten_content=_HOUSE_TASTE_TEXT, source_quality_gate=source_gate
-    )
-    assert "anti_template_risks_increased" in strict["reasons"]
-    deferred = sg._assess_de_template_rewrite(
         scene=scene,
         source_content=_VOICED_TEXT,
         rewritten_content=_HOUSE_TASTE_TEXT,
         source_quality_gate=source_gate,
-        house_taste_deferred=True,
+        lengths=sg.LengthPolicy.plain(scene),
     )
-    assert not any(reason.startswith("anti_template") or reason.startswith("target_quality") for reason in deferred["reasons"])
+    assert "anti_template_risks_increased" in strict["reasons"]
 
 
 def test_near_final_deterministic_gates_defer_under_style_bound() -> None:
@@ -895,52 +913,61 @@ def test_neutral_first_accepts_the_style_draft_when_readings_are_unreliable_or_f
     assert refined3.content == _VOICED_TEXT and refined3.style_step["reason"] == "reading_unavailable"
 
 
-def test_neutral_first_candidate_style_score_comes_from_readings_and_unchecked_candidates_are_not_offered(
+def test_style_first_candidates_whose_copy_check_did_not_run_are_ranked_last_and_not_offered(
     session, monkeypatch
 ) -> None:
+    """作者手笔直起的候选排序（rank_style_first_candidates）先看抄袭门：没查成的（书已删 / 策略降级 / 检查出错）排在后面，
+    哪怕它读得更近，审计记 plagiarism_checked=False / plagiarism_passed=None。终选门只把查过、没查出重合的候选交给作者：
+    有绑定时没查成的剔除；全部没查成 → 不开门（管线继续）；未绑定照旧交付。"""
+    from novel_system.services import reference_copy_gate
     from novel_system.services.orchestrator import Orchestrator
+    from novel_system.services.style_policy import style_policy_for_bundle
 
-    scene, bundle = _neutral_first_scene(session, "sfd_s2d")
+    seed = "sfd_s2d"
+    _seed_binding(seed, project_id=f"proj_{seed}", config_json={"draft_mode": "style_first"})
+    scene = _seed_scene(session, project_id=f"proj_{seed}", scene_id=f"{seed.upper()}_SC01", chapter_id=seed.upper())
+    bundle = _frozen_bundle(f"proj_{seed}", scene.scene_id, scene.chapter_id)
     service = SceneGenerationService(session, llm_runner=_Runner(outputs={}, default=_VOICED_TEXT))
-    result = sg.StyleGenerationResult(
-        row_id="cand_a",
-        content=_VOICED_TEXT,
-        llm_call_id="llm_a",
-        bundle_id=bundle["bundle_id"],
-        bundle_hash=bundle["bundle_snapshot_hash"],
+    first_reading = _fixed_reading(1.0, 60.0)
+    _install_readings(monkeypatch, {_NEUTRAL_MARK: first_reading, _VOICED_MARK: _fixed_reading(0.8, 40.0)})
+    real_check = reference_copy_gate.check_reference_copy
+
+    def copy_check(session_arg, text, **kwargs):  # noqa: ANN001, ANN003
+        if _VOICED_MARK in str(text):
+            raise RuntimeError("copy index unavailable")
+        return real_check(session_arg, text, **kwargs)
+
+    monkeypatch.setattr(reference_copy_gate, "check_reference_copy", copy_check)
+
+    def candidate(row_id: str, content: str) -> sg.StyleGenerationResult:
+        return sg.StyleGenerationResult(
+            row_id=row_id,
+            content=content,
+            llm_call_id=f"llm_{row_id}",
+            bundle_id=bundle["bundle_id"],
+            bundle_hash=bundle["bundle_snapshot_hash"],
+        )
+
+    ranked = sg.best_of_n.rank_style_first_candidates(
+        service,
+        [(candidate("cand_first", _NEUTRAL_TEXT), 0), (candidate("cand_revised", _VOICED_TEXT), 1)],
+        policy=style_policy_for_bundle(bundle),
+        first_reading=first_reading,
+        first_row_id="cand_first",
     )
-    # 读数可信：style_score = 1 − percentile/100（四位小数）；抄袭门查过、没重合
-    _install_readings(monkeypatch, {_VOICED_MARK: _fixed_reading(1.0, 30.0)})
-    audit = service._candidate_style_assessment(bundle, result, 0.5, rank=0)
-    assert audit["style_score"] == 0.7 and audit["fidelity_distance"] == 1.0 and audit["fidelity_percentile"] == 30.0
-    assert audit["plagiarism_checked"] is True and audit["plagiarism_passed"] is True and audit["plagiarism_hit_count"] == 0
-    assert audit["rank"] == 0 and audit["selected"] is True and audit["selection_reason"] == "quality_order"
-    assert audit["quality_score"] == 0.5
-    assert audit["rerank"] == {"applied_mode": "off", "reason": None, "runtime_contract_mode": "frozen"}
-    # 读数不可信 → style_score None（抄袭门照查）
-    _install_readings(monkeypatch, {_VOICED_MARK: _fixed_reading(1.0, 30.0, reliable=False)})
-    unreliable = service._candidate_style_assessment(bundle, result, 0.5, rank=1)
-    assert unreliable["style_score"] is None and unreliable["plagiarism_checked"] is True
-    assert unreliable["rerank"]["reason"] == "reading_unreliable" and unreliable["selected"] is False
-    # 读数抛异常 → 没检查成：plagiarism_checked=False / plagiarism_passed=None，候选照常交付
-    _install_readings(monkeypatch, {_VOICED_MARK: RuntimeError})
-    unchecked = service._candidate_style_assessment(bundle, result, 0.5, rank=1)
+
+    assert [item.row_id for item in ranked] == ["cand_first", "cand_revised"]
+    checked, unchecked = (item.ranking_audit for item in ranked)
+    assert checked["plagiarism_checked"] is True and checked["plagiarism_passed"] is True
+    assert checked["selected"] is True and checked["fidelity_distance"] == 1.0
     assert unchecked["plagiarism_checked"] is False and unchecked["plagiarism_passed"] is None
-    assert unchecked["style_score"] is None and unchecked["rerank"]["reason"] == "assessment_internal_error"
-    assert unchecked["rerank"]["error_code"] == "RuntimeError"
-    # 未绑定的 bundle：不读、不查（照旧）
-    unbound = service._candidate_style_assessment({"snapshot": {}}, result, 0.5, rank=0)
-    assert unbound["style_score"] is None and unbound["plagiarism_checked"] is False and unbound["plagiarism_passed"] is None
-    # 终选门：有绑定时没检查成的候选不交给盲选；全部没检查成 → None（管线继续）；未绑定照旧交付
+    assert unchecked["fidelity_distance"] == 0.8 and unchecked["selected"] is False
+
     state = session.get(SceneRunState, scene.scene_id)
-    checked = SimpleNamespace(row_id="cand_ok", content=_NEUTRAL_TEXT, ranking_audit={**audit, "row_id": "cand_ok"})
-    unchecked_cand = SimpleNamespace(row_id="cand_unchecked", content=_VOICED_TEXT, ranking_audit=unchecked)
     orchestrator = Orchestrator(session)
-    assert orchestrator._offer_candidates_for_selection(scene, state, bundle, [unchecked_cand, checked]) == ["cand_ok"]
-    assert orchestrator._offer_candidates_for_selection(scene, state, bundle, [unchecked_cand]) is None
-    assert orchestrator._offer_candidates_for_selection(scene, state, {"snapshot": {}}, [unchecked_cand]) == [
-        "cand_unchecked"
-    ]
+    assert orchestrator._offer_candidates_for_selection(scene, state, bundle, ranked) == ["cand_first"]
+    assert orchestrator._offer_candidates_for_selection(scene, state, bundle, [ranked[1]]) is None
+    assert orchestrator._offer_candidates_for_selection(scene, state, {"snapshot": {}}, [ranked[1]]) == ["cand_revised"]
 
 
 def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(session, monkeypatch) -> None:
@@ -957,7 +984,7 @@ def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(
                 _VOICED_MARK: _fixed_reading(rewritten_d, 70.0, reliable=rewritten_reliable),
             },
         )
-        return sg._assess_style_rewrite_drift(
+        return sg.fidelity_probe.rewrite_drift(
             session, policy_or_bundle=policy_or_bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
         )
 
@@ -978,13 +1005,13 @@ def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(
     assert unreliable["unavailable_reason"] == "reading_unreliable"
     # 读数出错 → 不可比
     _install_readings(monkeypatch, {_NEUTRAL_MARK: RuntimeError, _VOICED_MARK: _fixed_reading(1.0, 60.0)})
-    failed = sg._assess_style_rewrite_drift(
+    failed = sg.fidelity_probe.rewrite_drift(
         session, policy_or_bundle=bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
     )
     assert failed["available"] is False and failed["comparable"] is False and failed["regressed"] is False
     assert failed["unavailable_reason"] == "reading_failed" and failed["source"] is None
     # 未绑定 → 不可比（去模板不拒、挽救补丁不采用——消费方语义不变）
-    unbound = sg._assess_style_rewrite_drift(
+    unbound = sg.fidelity_probe.rewrite_drift(
         session, policy_or_bundle={"snapshot": {}}, source_content=_NEUTRAL_TEXT, rewritten_content=_VOICED_TEXT
     )
     assert unbound["available"] is False and unbound["comparable"] is False and unbound["regressed"] is False
@@ -1002,7 +1029,7 @@ def test_style_rewrite_drift_reads_both_texts_and_flags_a_measurable_regression(
     _install_readings(monkeypatch, {_NEUTRAL_MARK: _fixed_reading(1.0, 60.0)})
     original = readings.reading_for_text
     monkeypatch.setattr(readings, "reading_for_text", counting)
-    same = sg._assess_style_rewrite_drift(
+    same = sg.fidelity_probe.rewrite_drift(
         session, policy_or_bundle=bundle, source_content=_NEUTRAL_TEXT, rewritten_content=_NEUTRAL_TEXT
     )
     assert len(calls) == 1 and same["regressed"] is False and same["comparable"] is True

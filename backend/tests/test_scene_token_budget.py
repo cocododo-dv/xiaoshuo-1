@@ -764,6 +764,28 @@ def test_disarmed_scene_budget_initializes_finite_sentinels(monkeypatch, session
     assert again.scene_token_budget == UNARMED_SCENE_TOKEN_BUDGET
 
 
+def test_disarmed_initialization_skips_the_baseline_estimate(monkeypatch, session) -> None:
+    """B02-10：哨兵预算用不上单发基线——解除武装时不再渲染一遍 style_draft 模板、查一遍路由去估它；依据里记 None，
+    单发当量回落到常量（只有预算断点会用它，解除武装的场景不会有预算断点）。"""
+    from novel_system.services import scene_budget
+
+    def must_not_estimate(*_args, **_kwargs):
+        raise AssertionError("disarmed initialization must not estimate a baseline")
+
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+    monkeypatch.setattr(scene_budget, "estimate_baseline_tokens", must_not_estimate)
+    monkeypatch.setattr(scene_budget, "_canonical_budget_candidate", must_not_estimate)
+    _seed_scene(session)
+
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    assert state.scene_budget_basis_json["baseline_tokens"] is None
+    assert state.scene_budget_basis_json["scene_budget_armed"] is False
+    assert scene_budget.baseline_tokens(state) is None
+    assert scene_budget.budget_unit(state) == FALLBACK_INPUT_TOKENS + FALLBACK_OUTPUT_TOKENS
+    # 再进一次公共校验器照旧通过
+    assert ensure_scene_budget_initialized(session, SCENE_ID).scene_budget_basis_json["baseline_tokens"] is None
+
+
 def test_disarmed_scene_lifecycle_budget_never_blocks_the_author(monkeypatch, session) -> None:
     """端到端跑一场：解除武装后不再抛 LLM_SCENE_TOKEN_BUDGET_EXHAUSTED，但记账照旧累计。"""
     from novel_system.services.scene_budget import (
@@ -844,6 +866,40 @@ def test_author_topup_expands_budget_with_audit(client, session) -> None:
     assert returned.scene_token_budget == 1500
 
 
+def test_apply_topup_is_the_service_entry_for_the_author_topup(session) -> None:
+    """B02-10：追加的整笔事务住在 scene_budget.apply_topup（路由只做入参校验与幂等）：确立依据、一条 CAS 追加、写审计；
+    超出有符号 64 位上限时 422、什么都不改；审计回放认它写的前缀。"""
+    from novel_system.services.errors import DomainError
+    from novel_system.services.scene_budget import LIFECYCLE_BUDGET_MAX, apply_topup
+
+    _seed_scene(session)
+    before = int(ensure_scene_budget_initialized(session, SCENE_ID).scene_token_budget)
+    result = apply_topup(
+        session, SCENE_ID, extra_tokens=500, extra_attempts=1, extra_provider_attempts=0, reason="多给一轮", actor_ref="author"
+    )
+    session.commit()
+    assert result["scene_token_budget"] == before + 500
+    audit = session.scalars(select(OperationLog).where(OperationLog.event_type == "scene_budget_topup")).one()
+    assert audit.object_ref == SCENE_ID
+    assert audit.payload_json["reason"] == "多给一轮" and audit.payload_json["actor_ref"] == "author"
+    assert audit.payload_json["scene_token_budget"] == before + 500
+
+    with pytest.raises(DomainError) as excinfo:
+        apply_topup(
+            session,
+            SCENE_ID,
+            extra_tokens=LIFECYCLE_BUDGET_MAX,
+            extra_attempts=0,
+            extra_provider_attempts=0,
+            reason="",
+            actor_ref="author",
+        )
+    assert excinfo.value.code == "INVALID_BUDGET_TOPUP" and excinfo.value.status_code == 422
+    session.rollback()
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    assert int(state.scene_token_budget) == before + 500
+
+
 def test_workbench_exposes_a_safe_lifecycle_budget_projection_for_author_topup(
     client, session
 ) -> None:
@@ -871,6 +927,75 @@ def test_workbench_exposes_a_safe_lifecycle_budget_projection_for_author_topup(
         "provider_attempt_budget": 32,
         "provider_attempts_used": 5,
     }
+
+
+# ---------- 单发基线：依据里记的那一份，不是「当前预算 ÷ 5」（B02-09） ----------
+
+def test_single_call_baseline_follows_the_armed_multiplier(monkeypatch, session) -> None:
+    """武装倍率不是 5：可选支出按一次生成调用当量算，成本看板的基线与倍数也按依据里的基线算。"""
+    from novel_system.services.cost_aggregation import _budget_view
+    from novel_system.services.scene_budget import baseline_tokens, budget_unit
+
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "10")
+    _seed_scene(session)
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    baseline = state.scene_budget_basis_json["baseline_tokens"]
+    assert state.scene_budget_basis_json["budget_multiplier"] == 10
+    assert state.scene_token_budget == 10 * baseline
+
+    assert baseline_tokens(state) == baseline
+    assert budget_unit(state) == baseline
+    state.scene_tokens_used = baseline
+    view = _budget_view(state)
+    assert view["baseline"] == baseline
+    assert view["multiplier_used"] == 1.0
+
+
+def test_single_call_baseline_survives_an_author_topup(client, session) -> None:
+    """作者追加只放大预算、不改基线：可选支出的当量、成本看板的基线、工作台的建议追加量都不跟着变大。"""
+    from novel_system.services.cost_aggregation import _budget_view
+    from novel_system.services.scene_budget import budget_unit
+
+    _seed_scene(session)
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    baseline = state.scene_budget_basis_json["baseline_tokens"]
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/budget/topup",
+        json={"extra_tokens": 3 * baseline, "reason": "关键场景需要再补几个候选"},
+        headers={"X-Idempotency-Key": "b02-09-topup-baseline"},
+    )
+    assert response.status_code == 200
+    session.refresh(state)
+    assert state.scene_token_budget == 8 * baseline
+
+    assert budget_unit(state) == baseline
+    assert _budget_view(state)["baseline"] == baseline
+    lifecycle = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]["scene_run_state"]["lifecycle_budget"]
+    assert lifecycle["baseline_tokens"] == baseline
+    assert lifecycle["recommended_topup_tokens"] == baseline
+
+
+def test_legacy_budget_without_a_recorded_baseline_divides_its_initial_budget(client, session) -> None:
+    """依据里没记基线的旧预算：基线按初始预算 ÷ 历史倍率 5 还原；追加过之后也不变（以前拿当前预算去除）。"""
+    from novel_system.services.scene_budget import budget_unit
+
+    _seed_scene(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 1000
+    session.commit()
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/budget/topup",
+        json={"extra_tokens": 500, "reason": "旧预算追加"},
+        headers={"X-Idempotency-Key": "b02-09-topup-legacy"},
+    )
+    assert response.status_code == 200
+    session.refresh(state)
+    assert state.scene_token_budget == 1500
+    assert state.scene_budget_basis_json["basis_type"] == "legacy_existing_scene_token_budget"
+
+    assert budget_unit(state) == 200
+    lifecycle = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]["scene_run_state"]["lifecycle_budget"]
+    assert lifecycle["baseline_tokens"] == 200
 
 
 @pytest.mark.parametrize(

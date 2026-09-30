@@ -63,9 +63,6 @@ REPO_PROMPTS = Path(__file__).resolve().parents[2] / "config" / "prompts.yaml"
 # 库里有活动 prompts 快照的实装现在仍带着它们——地板必须把这些数字顶上去。
 STALE_BUDGETS = {
     "near_final_acceptance_review": 2600,
-    "writer_scene_revision": 2600,
-    "writer_chapter_revision": 3600,
-    "author_structure_extract": 2600,
     "hard_qc": 2200,
     "style_draft": 2600,
 }
@@ -104,7 +101,7 @@ def _zh(target_chars: int, *, seed: int) -> str:
 SCENE_DRAFT = DRAFT_MARKER + "\n" + _prose(3000, seed=1)
 CHAPTER_TEXT = DRAFT_MARKER + "\n" + "\n\n".join(_prose(2500, seed=10 + index) for index in range(6))
 
-# 中等 bundle：一个已跑过蓝图与规划、有风格画像与作者偏好、有记忆摘要的在写项目
+# 中等 bundle：一个已跑过蓝图与规划、有风格画像、有事件态与记忆摘要的在写项目
 # （实测 11.3k–13.3k tok 的那一档）。
 _RICH_SECTION_CHARS = {
     "chapter_goal": 60,
@@ -116,16 +113,16 @@ _RICH_SECTION_CHARS = {
     "character_pressure": 500,
     "chapter_story_architecture": 800,
     "character_contract": 400,
-    "voice_card": 150,
+    "information_asymmetry": 150,
     "style_profile": 800,
-    "author_preference_profile": 400,
+    "narrative_state": 400,
     "style_rule": 300,
     "banned_rule": 200,
     "foreshadow": 200,
-    "similar_scene": 600,
+    "volume_summary": 600,
     "style_observation": 300,
     "calibration_line": 200,
-    "relation_card": 300,
+    "chapter_transition_buffer": 300,
     "world_rule": 300,
     "scene_memory": 500,
     "scene_summary": 300,
@@ -223,33 +220,6 @@ def _assert_fits(prompt: dict, final_user_prompt: str, *, stale_budget: int) -> 
     assert budget["continuity_warning"] is None, budget["continuity_warning"]
     assert budget["estimated_input_tokens"] <= budget["target_input_tokens"]
     return budget
-
-
-def _write_stale_prompts(tmp_path: Path) -> Path:
-    """一份「界面存过、估算器改版前」的快照：正文取仓库模板，预算是旧值。"""
-    repo = load_prompt_templates(REPO_PROMPTS)
-    payload = {"templates": {}}
-    for name, stale in STALE_BUDGETS.items():
-        template = repo[name]
-        payload["templates"][name] = {
-            "version": template.version,
-            "input_token_budget": stale,
-            "system_prompt": template.system_prompt,
-            "task_prompt": template.task_prompt,
-            "structured_schema": template.structured_schema,
-        }
-    payload["templates"]["project_outline_plan"] = {
-        "version": repo["project_outline_plan"].version,
-        "input_token_budget": 3000,
-        "system_prompt": repo["project_outline_plan"].system_prompt,
-        "task_prompt": repo["project_outline_plan"].task_prompt,
-        "structured_schema": repo["project_outline_plan"].structured_schema,
-    }
-    import yaml
-
-    path = tmp_path / "stale_prompts.yaml"
-    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    return path
 
 
 # ---------------------------------------------------------------------------

@@ -660,15 +660,13 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         ("services/near_final.py", "NearFinalPlanningService", "_generate_chapter_architecture"),
         ("services/near_final.py", "NearFinalPlanningService", "_generate_character_pressure"),
         ("services/near_final.py", "NearFinalAcceptanceService", "evaluate_scene"),
-        # 2026-09-12 风格直起:公共入口 generate_neutral_draft / _run_style_generation 只设长度带
-        # 放宽上下文再委派;真正调用 runner 的是这两个 inner 方法(调用点数量不变)。
-        ("services/scene_generation.py", "SceneGenerationService", "_generate_first_draft"),
-        ("services/scene_generation.py", "SceneGenerationService", "_run_style_generation_inner"),
-        ("services/scene_generation.py", "SceneGenerationService", "_run_de_template_pass"),
-        ("services/scene_generation.py", "SceneGenerationService", "_run_style_salvage_pass"),
+        ("services/scene_generation/first_draft.py", "", "generate_first_draft"),
+        ("services/scene_generation/neutral_style.py", "", "run_style_generation"),
+        ("services/scene_generation/neutral_style.py", "", "run_de_template_pass"),
+        ("services/scene_generation/neutral_style.py", "", "run_style_salvage_pass"),
         # 2026-09-23 风格参考 v3（P5b）：style_first 下风格步越界时的定向修改（style_targeted_revision，
         # 走 style_draft 节点路由），与风格稿同一条场景运行记账路径。
-        ("services/scene_generation.py", "SceneGenerationService", "_run_targeted_revision"),
+        ("services/scene_generation/style_first.py", "", "run_targeted_revision"),
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
         # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
         ("services/qc_engine.py", "", "_qc_run_node_with_degradation"),
@@ -727,7 +725,7 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
 
     # 2026-09-22 场景诊断第二轮：writer_deep_review.run_passage_review（「AI 看这一处」局部深评）是第 15 个调用点，
     # 带 context（scene 作用域）——与整场深评 / 段落修补同一条记账路径。
-    # 2026-09-23 风格参考 v3（P5b）：SceneGenerationService._run_targeted_revision 是第 16 个（场景运行派生 context）。
+    # 2026-09-23 风格参考 v3（P5b）：scene_generation.style_first.run_targeted_revision 是第 16 个（场景运行派生 context）。
     assert len(calls) == 16
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context

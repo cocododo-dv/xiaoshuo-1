@@ -14,21 +14,23 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     AttemptTracker,
-    ChapterGoal,
     FinalScene,
     SceneCard,
     SceneDraft,
     SceneRunState,
-    StoryProject,
     StyleFidelityReading,
 )
 from novel_system.services import scene_generation as sg
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference import readings as R
 from novel_system.services.style_reference import style_step as S
-from novel_system.services.style_reference.fidelity import FidelityReading
 from tests.style_reference_inject_helpers import bind, seed_reference
-from tests.test_style_first_draft import _Runner, _frozen_bundle
+from tests.support.style_first_fixtures import PACING_OUT
+from tests.support.style_first_fixtures import bound_scene as _bound_scene
+from tests.support.style_first_fixtures import seed_scene as _seed_scene
+from tests.support.style_first_fixtures import install_readings as _install_readings
+from tests.support.style_first_fixtures import reading as _reading
+from tests.test_style_first_draft import _Runner
 
 LONG_FIRST = ("窗外的雨下了一整夜，他把茶杯推到桌角，信封就压在杯底。" * 30)
 REVISED = ("雨下了一夜。他把茶杯往桌角一推，信封压在杯底，谁也没去碰。" * 30)
@@ -38,97 +40,6 @@ OTHER_REVISED = ("那一夜的雨没停过，他推开茶杯，杯底压着信�
 # ---------------------------------------------------------------------------
 # 夹具
 # ---------------------------------------------------------------------------
-
-
-def _reading(
-    distance: float,
-    percentile: float,
-    *,
-    reliable: bool = True,
-    out_of_band: list[dict] | None = None,
-    emphasized: tuple[str, ...] = (),
-    chars: int = 1200,
-) -> FidelityReading:
-    return FidelityReading(
-        distance=distance,
-        percentile=percentile,
-        out_of_band=list(out_of_band or []),
-        dimension_scores={"narrative.pacing": 6.0, "language.punctuation": 8.5},
-        feature_z={},
-        char_count=chars,
-        window_count=28,
-        reliable=reliable,
-        kernel_version="measure_v1",
-        reference_version="ref_test",
-        emphasized_dimensions=emphasized,
-    )
-
-
-PACING_OUT = [
-    {
-        "feature": "para_len_mean",
-        "dimension": "narrative.pacing",
-        "z": 3.1,
-        "direction": "high",
-        "phrase": "段落比作者长，换段太少",
-        "value": 180.0,
-        "author_typical": 60.0,
-    }
-]
-
-
-def _install_readings(monkeypatch, table: dict[str, FidelityReading], default: FidelityReading | None = None) -> None:
-    """``readings.reading_for_text`` 的替身：文字里含哪个记号就给哪个读数（未绑定照旧 None）。"""
-
-    def fake(session, policy, text):  # noqa: ANN001
-        if policy is None or not getattr(policy, "bound", False) or not str(text or "").strip():
-            return None
-        for marker, reading in table.items():
-            if marker in text:
-                return reading
-        return default
-
-    monkeypatch.setattr(R, "reading_for_text", fake)
-
-
-def _seed_scene(session, *, project_id: str, scene_id: str, chapter_id: str, band: str = "short", must: str = "信封") -> SceneCard:
-    session.add(StoryProject(project_id=project_id, title="读数", outline_text=""))
-    session.add(ChapterGoal(chapter_id=chapter_id, project_id=project_id, planned_scene_count=1, chapter_goal="g"))
-    scene = SceneCard(
-        scene_id=scene_id,
-        chapter_id=chapter_id,
-        project_id=project_id,
-        scene_seq=1,
-        pov_character_id="CHAR_A",
-        onstage_chars_json=["CHAR_A"],
-        location="茶馆",
-        scene_goal="把信交出去",
-        beats_json=["到场"],
-        must_include_text=must,
-        target_length_band=band,
-        scene_type="reveal",
-        is_chapter_last=0,
-    )
-    session.add(scene)
-    session.add(SceneRunState(scene_id=scene_id, scene_status="ready"))
-    session.commit()
-    return scene
-
-
-def _bound_scene(session, key: str, *, draft_mode: str = "style_first", card: bool = True, **scene_kwargs):
-    project_id = f"proj_{key}"
-    book_id, profile_id = seed_reference(session, key, card=card, chapters=14, per_chapter=100)
-    bind(
-        session,
-        profile_id,
-        binding_id=f"bind_{key}",
-        scope="project",
-        scope_ref_id=project_id,
-        config_json={"draft_mode": draft_mode},
-    )
-    scene = _seed_scene(session, project_id=project_id, scene_id=f"{key.upper()}_SC01", chapter_id=f"{key.upper()}_CH", **scene_kwargs)
-    bundle = _frozen_bundle(project_id, scene.scene_id, scene.chapter_id)
-    return scene, bundle, book_id, profile_id
 
 
 class _SeqRunner(_Runner):
@@ -644,6 +555,75 @@ def test_best_of_n_ranks_copy_blocked_candidates_last(session, monkeypatch) -> N
     assert session.get(SceneRunState, scene.scene_id).current_style_draft_row_id == candidates[0].row_id
 
 
+def _copy_gate_could_not_run(monkeypatch) -> None:
+    """抄袭门的一边没有查成（冻结之后绑定的书被删 / 策略降级），也没有查出命中。"""
+    from novel_system.services import reference_copy_gate
+
+    monkeypatch.setattr(
+        reference_copy_gate,
+        "check_reference_copy",
+        lambda _session, _text, **_kwargs: reference_copy_gate.CopyCheck(blocked=False, missing_books=("book_gone",)),
+    )
+
+
+def test_targeted_revision_is_not_adopted_when_its_copy_check_could_not_run(session, monkeypatch) -> None:
+    """B02-08：抄袭门没查成不是「查过、没重合」——更像的定向修改稿也不采用（保留首稿，fail-closed），原因与提示
+    如实说「没能检查」，而不是说它照抄了。"""
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_copyna")
+    runner = _Runner(outputs={"style_draft": REVISED}, default=LONG_FIRST)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {"窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT), "雨下了一夜": _reading(1.10, 60.0)},
+    )
+    _copy_gate_could_not_run(monkeypatch)
+
+    result = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+
+    assert result.content == LONG_FIRST
+    step = _style_attempt(session, scene.scene_id).details_json["style_step"]
+    assert step["decision"] == S.DECISION_REVISION_REJECTED
+    assert step["reason"] == sg.REASON_COPY_UNCHECKED
+    notice = next(item for item in result.notices if item["code"] == sg.STYLE_NOTICE_REVISION_REJECTED)
+    assert notice["reason"] == sg.REASON_COPY_UNCHECKED and "没能检查" in notice["message"]
+
+
+def test_best_of_n_never_reports_an_unchecked_candidate_as_copy_checked(session, monkeypatch) -> None:
+    """B02-08：作者手笔直起的候选排序不能把「没查成」记成 plagiarism_checked=True——否则匿名终选门会把从没核对过
+    原文的候选交给作者盲选。"""
+    from novel_system.services.orchestrator import Orchestrator
+
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_bonna")
+    runner = _SeqRunner([LONG_FIRST, OTHER_REVISED, REVISED])
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {
+            "窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT),
+            "那一夜的雨": _reading(1.30, 90.5),
+            "雨下了一夜": _reading(1.10, 60.0),
+        },
+    )
+    _copy_gate_could_not_run(monkeypatch)
+
+    candidates = service.generate_style_draft_candidates(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content, n_candidates=3
+    )
+    session.commit()
+
+    assert [c.ranking_audit["plagiarism_checked"] for c in candidates] == [False, False, False]
+    assert [c.ranking_audit["plagiarism_passed"] for c in candidates] == [None, None, None]
+    state = session.get(SceneRunState, scene.scene_id)
+    assert Orchestrator(session)._offer_candidates_for_selection(scene, state, bundle, candidates) is None
+
+
 def test_best_of_n_resume_keeps_every_already_produced_slot(session, monkeypatch) -> None:
     """L1：续跑时首稿读数变了（这次读不出 / 不可信），槽位数不能缩回 1——已经落下检查点的槽位一个都不能丢，
     否则检查点里的工作项对不上（RUN_CHECKPOINT_CORRUPT）；也不能为它们重新调模型。"""
@@ -833,10 +813,11 @@ def test_first_draft_uses_the_blueprint_situation_tags_frozen_in_the_bundle(sess
     assert captured[0]["role"] == "draft" and list(captured[0]["situation_tags"]) == ["对峙审问"]
 
 
-@pytest.mark.parametrize("pass_kind", ["salvage", "de_template", "safety_repair", "length_patch"])
+@pytest.mark.parametrize("pass_kind", ["salvage", "de_template"])
 def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, monkeypatch, pass_kind) -> None:
-    """注入口径：救稿 / 去模板 / 安全修复 / 长度补丁都只是改稿，按改稿角色渲染（不是「写这一场」的起草口径，
-    也不带近期常见偏差）。以前这四处不传角色，适配器按落点推成起草。"""
+    """注入口径：救稿 / 去模板只是改稿，按改稿角色渲染（不是「写这一场」的起草口径，也不带近期常见偏差）。
+    以前这两处不传角色，适配器按落点推成起草。（安全修复 / 长度补丁不带参考前缀；它们只在 neutral_first 的
+    风格稿链上跑——作者手笔直起在入口就分流到风格步。）"""
     captured: list[dict] = []
     real = sg.inject_style_reference_prefix
 
@@ -845,14 +826,15 @@ def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, mon
         return real(*args, **kwargs)
 
     monkeypatch.setattr(sg, "inject_style_reference_prefix", spy)
-    draft_mode = "style_first" if pass_kind in {"safety_repair", "length_patch"} else "neutral_first"
-    band = "200-400" if pass_kind == "length_patch" else "short"
-    scene, bundle, _book, _profile = _bound_scene(session, f"fid_role_{pass_kind}", draft_mode=draft_mode, band=band)
+    scene, bundle, _book, _profile = _bound_scene(session, f"fid_role_{pass_kind}", draft_mode="neutral_first")
     service = SceneGenerationService(session, llm_runner=_Runner(outputs={}, default=LONG_FIRST))
     state = session.get(SceneRunState, scene.scene_id)
-    common = dict(scene=scene, state=state, bundle=bundle, execution_step_key=None)
+    common = dict(
+        scene=scene, state=state, bundle=bundle, execution_step_key=None, lengths=sg.LengthPolicy.for_scene(bundle, scene)
+    )
     if pass_kind == "salvage":
-        service._run_style_salvage_pass(
+        sg.neutral_style.run_style_salvage_pass(
+            service,
             **common,
             checkpoint_base_row_id="row_base",
             rejected_style_row_id="row_rejected",
@@ -862,20 +844,16 @@ def test_patch_and_repair_passes_render_the_reference_as_a_revision(session, mon
             quality_gate={"base_safety": {"accepted": False, "reasons": ["required_facts_missing"]}},
         )
     else:
-        reasons = ["target_length_not_met"] if pass_kind == "length_patch" else ["required_facts_missing"]
-        service._run_de_template_pass(
+        sg.neutral_style.run_de_template_pass(
+            service,
             **common,
             base_prompt=service._prompt_builder().build(bundle["snapshot"], "style_draft"),
             checkpoint_base_row_id="row_base",
             source_row_id="row_source",
             source_content=REVISED,
-            authoritative_row_id=None if pass_kind == "de_template" else "row_neutral",
-            authoritative_content=None if pass_kind == "de_template" else LONG_FIRST,
-            quality_gate={
-                "base_safety": {"accepted": pass_kind == "de_template", "reasons": [] if pass_kind == "de_template" else reasons},
-                "findings": [],
-                "risk_dimensions": [],
-            },
+            authoritative_row_id=None,
+            authoritative_content=None,
+            quality_gate={"base_safety": {"accepted": True, "reasons": []}, "findings": [], "risk_dimensions": []},
         )
     assert captured, "这一处带了参考"
     assert captured[-1]["role"] == "revise"

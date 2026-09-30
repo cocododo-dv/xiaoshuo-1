@@ -8,7 +8,6 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     AttemptTracker,
-    AuthorPreferenceProfile,
     ChapterGoal,
     ChapterState,
     FinalScene,
@@ -38,13 +37,16 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import (
+    LengthPolicy,
     SceneGenerationService,
-    StyleGenerationResult,
     _apply_style_length_patch,
     _apply_style_salvage_patch,
     _assess_de_template_rewrite,
+    _assess_neutral_draft,
+    _assess_style_base_rewrite,
     _extract_scene_text,
     _neutral_length_instruction,
+    _neutral_repair_brief,
     _scene_text_integrity_markers,
     _style_repair_length_instruction,
 )
@@ -787,7 +789,7 @@ def test_neutral_repair_keeps_an_already_valid_source_in_a_local_length_window()
     scene = SimpleNamespace(target_length_band="700-1350 Chinese characters")
 
     instruction = _neutral_length_instruction(
-        scene,
+        LengthPolicy.plain(scene),
         previous_length=900,
         retry=True,
     )
@@ -795,6 +797,70 @@ def test_neutral_repair_keeps_an_already_valid_source_in_a_local_length_window()
     assert "previous length already passed" in instruction
     assert "within 810-990 visible characters" in instruction
     assert "smallest localized edits" in instruction
+
+
+_LEGACY_POLICY_SENTENCE = "不得复制参考书原文表达、人物、设定或桥段。"
+
+
+def test_legacy_reference_policy_sentence_is_not_a_forbidden_word_list() -> None:
+    """B04-05：旧卡的 forbidden_text 还带着防抄袭政策句——那不是禁用词表，「人物」不是禁用词；
+    中性稿验收、修复简报与两个改写验收都只经 qc_constraints.forbidden_terms 读这个字段。"""
+    scene = SimpleNamespace(
+        scene_id="SC_POLICY",
+        chapter_id="CH_POLICY",
+        must_include_text="",
+        forbidden_text=_LEGACY_POLICY_SENTENCE,
+        target_length_band=None,
+    )
+    content = "这号人物站在雨里，手里攥着那封旧信，一句话也没说。" * 3
+    source = "他站在雨里，手里什么也没拿，一句话也没说。" * 3
+
+    assessment = _assess_neutral_draft(scene, content, LengthPolicy.plain(scene))
+    assert "forbidden_content_present" not in assessment["reasons"]
+    assert assessment["forbidden_hit_count"] == 0
+    assert "人物" not in _neutral_repair_brief(scene, source_content=content, assessment=assessment)
+    base = _assess_style_base_rewrite(
+        scene=scene, source_content=source, rewritten_content=content, lengths=LengthPolicy.plain(scene)
+    )
+    assert "forbidden_content_added" not in base["reasons"]
+    rewrite = _assess_de_template_rewrite(
+        scene=scene,
+        lengths=LengthPolicy.plain(scene),
+        source_content=source,
+        rewritten_content=content,
+        source_quality_gate={"score": 0.0, "findings": []},
+    )
+    assert "forbidden_content_added" not in rewrite["reasons"]
+
+    # 作者真写的禁用词照样拦——哪怕接在政策句后面
+    scene.forbidden_text = _LEGACY_POLICY_SENTENCE + "旧信"
+    assessment = _assess_neutral_draft(scene, content, LengthPolicy.plain(scene))
+    assert "forbidden_content_present" in assessment["reasons"]
+    assert "旧信" in _neutral_repair_brief(scene, source_content=content, assessment=assessment)
+    assert "forbidden_content_added" in _assess_style_base_rewrite(
+        scene=scene, source_content=source, rewritten_content=content, lengths=LengthPolicy.plain(scene)
+    )["reasons"]
+
+
+def test_scene_card_forbidden_text_is_only_split_by_qc_constraints() -> None:
+    """B04-05 守卫：场景卡 forbidden_text 只经 qc_constraints.forbidden_terms / strip_reference_policy 读——
+    别处不许用 constraint_terms(...) 直接拆它（防抄袭政策句会被拆成「人物」这样的假禁用词）。"""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "novel_system"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "qc_constraints.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name == "constraint_terms" and "forbidden" in ast.unparse(node):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []
 
 
 def test_neutral_draft_repairs_missing_alternative_even_without_length_band(session) -> None:
@@ -871,62 +937,6 @@ def test_neutral_draft_fails_closed_when_the_only_repair_is_still_invalid(
     assert attempt.details_json["error_code"] == "NEUTRAL_DRAFT_REPAIR_INVALID"
     assert attempt.details_json["validation"]["accepted"] is False
     assert session.get(SceneRunState, "CH100_SC01").current_neutral_draft_row_id is None
-
-
-def test_bundle_and_style_prompt_include_only_approved_runtime_author_preference(session) -> None:
-    _seed_scene(session)
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_draft_ignored",
-            scope_type="global",
-            scope_ref_id="global",
-            status="draft",
-            runtime_eligible=0,
-            summary_json={"preferred_revision_moves": ["draft preference should stay out of runtime prompts"]},
-            source_patch_ids_json=[],
-        )
-    )
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_approved_runtime",
-            scope_type="global",
-            scope_ref_id="global",
-            status="approved",
-            runtime_eligible=1,
-            summary_json={
-                "preferred_revision_moves": ["sharper rhetorical questions"],
-                "rejected_revision_moves": ["expository dialogue"],
-                "ai_trace_terms_to_watch": ["somehow meaningful"],
-            },
-            source_patch_ids_json=["patch_runtime_pref"],
-        )
-    )
-    session.commit()
-
-    bundle = BundleBuilder(session).build("CH100_SC01")
-    snapshot = bundle["snapshot"]
-
-    assert snapshot["source_version_refs"]["author_preference_profile_id"] == "author_pref_approved_runtime"
-    assert "author_preference_profile" in snapshot["inline_digests"]
-    assert "sharper rhetorical questions" in snapshot["inline_digests"]["author_preference_profile"]
-    assert "draft preference should stay out" not in snapshot["inline_digests"]["author_preference_profile"]
-
-    fake_client = FakeSceneClient()
-    request = SceneGenerationService(session, llm_client=fake_client).generate_style_draft(
-        "CH100_SC01",
-        bundle,
-        neutral_draft_row_id="draft_neutral_CH100_SC01",
-        neutral_content="Approved neutral draft.",
-    )
-
-    style_prompt = fake_client.requests[0].messages[1]["content"]
-    assert "sharper rhetorical questions" in style_prompt
-    assert "expository dialogue" in style_prompt
-    assert "draft preference should stay out" not in style_prompt
-    style_call = session.get(LlmCall, request.llm_call_id)
-    assert style_call is not None
-    prompt_summary = style_call.request_payload_summary or {}
-    assert "author_preference_profile" in prompt_summary["token_budget"]["included_sections"]
 
 
 def test_author_instruction_is_frozen_into_bundle_and_reaches_neutral_prompt(session) -> None:
@@ -1320,7 +1330,7 @@ def test_extreme_underlength_style_uses_bounded_neutral_salvage(
     # 未绑定的场景没有读数（挽救补丁不可比 → 不采用，见 test_style_salvage_is_never_adopted_without_comparable_readings）；
     # 这里把「改写不退步」定死为可比且没退步，只看补丁本身的接线
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._assess_style_rewrite_drift",
+        "novel_system.services.scene_generation.fidelity_probe.rewrite_drift",
         lambda *_args, **_kwargs: {
             "available": True,
             "comparable": True,
@@ -1378,7 +1388,7 @@ def test_style_salvage_patch_rejects_protected_ending_segment() -> None:
         _apply_style_salvage_patch(
             source_content=source,
             response=response,
-            scene=SimpleNamespace(target_length_band="120-260 Chinese characters"),
+            lengths=LengthPolicy(band="120-260 Chinese characters"),
             llm_call_id="llm_salvage_protected_ending",
         )
 
@@ -1397,6 +1407,7 @@ def test_safety_repair_does_not_reject_safe_text_for_quality_score_drop(session)
 
     assessment = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content="红色信封在她手中。",
         authoritative_content="她接过红色信封，确认门外有人，随后把信封收好。",
         rewritten_content=rewritten,
@@ -1437,7 +1448,7 @@ def test_style_repair_length_guard_targets_nearest_safe_boundary(
     scene = SimpleNamespace(target_length_band=target_length_band)
 
     instruction = _style_repair_length_instruction(
-        scene,
+        LengthPolicy.plain(scene),
         source_length=source_length,
     )
 
@@ -1470,7 +1481,7 @@ def test_exact_style_length_patch_applies_non_overlapping_expansion() -> None:
     patched, audit = _apply_style_length_patch(
         source_content=source,
         response=response,
-        scene=SimpleNamespace(target_length_band="100-200 Chinese characters"),
+        lengths=LengthPolicy(band="100-200 Chinese characters"),
         llm_call_id="llm_patch_expand",
     )
 
@@ -1507,7 +1518,7 @@ def test_exact_style_length_patch_uses_segment_id_to_disambiguate_repeated_span(
     patched, audit = _apply_style_length_patch(
         source_content=source,
         response=response,
-        scene=SimpleNamespace(target_length_band="100-130 Chinese characters"),
+        lengths=LengthPolicy(band="100-130 Chinese characters"),
         llm_call_id="llm_patch_disambiguated_compress",
     )
 
@@ -1540,7 +1551,7 @@ def test_exact_style_length_patch_selects_safe_subset_of_oversized_insertions() 
     patched, audit = _apply_style_length_patch(
         source_content=source,
         response=response,
-        scene=SimpleNamespace(target_length_band="700-1350 Chinese characters"),
+        lengths=LengthPolicy(band="700-1350 Chinese characters"),
         llm_call_id="llm_patch_subset_expand",
     )
 
@@ -1563,6 +1574,7 @@ def test_ordinary_de_template_rejects_measurable_frozen_style_regression(session
 
     assessment = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content=source,
         rewritten_content=rewritten,
         source_quality_gate={"score": 0.0, "findings": []},
@@ -1595,12 +1607,13 @@ def test_ordinary_de_template_requires_actionable_target_defect_reduction(
         "findings": [{"dimension": "model_voice"}],
     }
     monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
+        "novel_system.services.scene_generation.text_gates._anti_template_quality_gate",
         lambda *args, **kwargs: unchanged_gate,
     )
 
     assessment = _assess_de_template_rewrite(
         scene=scene,
+        lengths=LengthPolicy.plain(scene),
         source_content="她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关灯。",
         rewritten_content="她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关了灯。",
         source_quality_gate=unchanged_gate,
@@ -1660,82 +1673,6 @@ def test_style_salvage_is_never_adopted_without_comparable_readings(session) -> 
     assert "paragraph_shape_normalization" not in style_attempt.details_json
     assert "style_step" not in style_attempt.details_json  # 未绑定：没有读数决定
 
-
-
-class _FakeBestOfNDeTemplateClient(AccountedGenerateMixin):
-    """每个候选的 style 稿都返回触发反模板闸的模板文本，去模板稿返回各异的清理文本。"""
-
-    def __init__(self) -> None:
-        self.requests: list[LLMRequest] = []
-        self._style_n = 0
-        self._patch_n = 0
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        self.requests.append(request)
-        if request.node_id == "style_patch":
-            self._patch_n += 1
-            structured_output = {
-                "scene_text": (
-                    f"清理稿{self._patch_n}：她把钥匙扣进掌心，拔掉录音线；门缝里的光灭了，"
-                    f"走廊尽头响起第{self._patch_n}声敲门，她没有回头。"
-                ),
-                "style_notes": ["removed repeated action template"],
-            }
-            request_id = f"resp_fake_de_template_{self._patch_n}"
-            model = "fake-patch-model"
-        else:
-            self._style_n += 1
-            structured_output = {
-                "scene_text": (
-                    "她低头看着钥匙，沉默了片刻。"
-                    "他低头看着录音，沉默了片刻。"
-                    "她低头看着门缝，沉默了片刻。"
-                    f"她知道真相必须公开。候选{self._style_n}。"
-                ),
-                "style_notes": ["kept an unsafe template"],
-            }
-            request_id = f"resp_fake_style_template_{self._style_n}"
-            model = "fake-style-model"
-        return LLMResponse(
-            request_id=request_id,
-            provider="fake-provider",
-            model=model,
-            text=__import__("json").dumps(structured_output),
-            structured_output=structured_output,
-            response_format="json_object",
-            raw_response={"id": request_id, "model": model, "usage": {}, "finish_reason": "stop"},
-            usage={"input_tokens": 80, "output_tokens": 30, "total_tokens": 110},
-            finish_reason="stop",
-        )
-
-
-def test_best_of_n_multiple_candidates_de_template_no_pk_collision(session) -> None:
-    """QA3 回归：Best-of-N 下 ≥2 个候选都触发去模板时，去模板稿 row_id 必须互异，
-    不得因共用 row_id 撞 SceneDraft 主键抛 IntegrityError 致整跑崩溃。"""
-    _seed_scene(session)
-    bundle = {
-        "bundle_id": "bundle_CH100_SC01",
-        "bundle_snapshot_hash": "bundle_hash_demo",
-        "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
-    }
-    fake_client = _FakeBestOfNDeTemplateClient()
-
-    # 修复前：第二个候选的去模板稿与第一个共用 row_id → flush 抛 IntegrityError。
-    results = SceneGenerationService(session, llm_client=fake_client).generate_style_draft_candidates(
-        "CH100_SC01",
-        bundle,
-        neutral_draft_row_id="draft_neutral_CH100_SC01",
-        neutral_content="Approved neutral draft.",
-        n_candidates=2,
-    )
-    assert results, "应至少产出一个候选"
-
-    de_template_drafts = session.execute(
-        select(SceneDraft).where(SceneDraft.stage == "de_template")
-    ).scalars().all()
-    assert len(de_template_drafts) >= 2, f"应有 ≥2 条去模板稿(每候选一条)，实得 {len(de_template_drafts)}"
-    row_ids = [d.row_id for d in de_template_drafts]
-    assert len(set(row_ids)) == len(row_ids), f"去模板稿 row_id 必须互异，实得 {row_ids}"
 
 
 def test_generate_style_draft_blocks_provider_when_scene_must_split(session) -> None:
@@ -1857,11 +1794,43 @@ def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state
     state = session.get(SceneRunState, "CH100_SC01")
 
     assert llm_call.step == "neutral_draft"
+    assert llm_call.node_id == "neutral_draft"
     assert llm_call.error_code == "PromptConfigurationError"
     assert attempt.status == "failed"
     assert state.current_neutral_draft_row_id is None
     assert state.current_qc_report_id is None
     assert state.soft_patch_count == 0
+
+
+def test_prompt_builder_failure_records_the_node_the_step_routes_to(session, monkeypatch) -> None:
+    """B02-20：装配提示词就失败时，账本行记的是这一步本该派发到的节点——软补丁走 style_patch 路由，
+    不是步名 soft_patch（成本看板按节点归类，步名在节点表里查不到）。"""
+    _seed_scene(session)
+
+    def failing_prompt_builder(self):
+        raise PromptConfigurationError("prompts config missing")
+
+    monkeypatch.setattr(SceneGenerationService, "_prompt_builder", failing_prompt_builder)
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+    }
+    service = SceneGenerationService(session, llm_client=FakeSceneClient())
+    with pytest.raises(PromptConfigurationError):
+        service.generate_style_patch(
+            "CH100_SC01",
+            bundle,
+            source_style_draft_row_id="draft_style_CH100_SC01",
+            source_style_content="旧稿。",
+            rewrite_brief=["补一处动作"],
+            source_qc_report_id="qc_report_CH100_SC01",
+        )
+    session.commit()
+
+    llm_call = session.execute(select(LlmCall).where(LlmCall.step == "soft_patch")).scalars().one()
+    assert llm_call.node_id == "style_patch"
+    assert llm_call.accounting_status == "rejected"
 
 
 def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
@@ -1974,35 +1943,40 @@ def test_online_draft_cannot_advance_when_neutral_repair_still_misses_required_f
     assert all(llm_call.finish_reason == "stop" for llm_call in llm_calls)
 
 
-def test_generate_style_draft_candidates_returns_sorted_list(session) -> None:
+def test_best_of_n_without_style_first_drafts_one_candidate(session) -> None:
+    """2026-09-30 [批准#2]：先中性后润色的多稿整套删掉——没绑作者手笔直起的作品，开关打开、要 3 份也只起一稿，
+    与编排器的单稿路径同一个结果：同一个步位与续跑基稿、不按温度展开、不补候选、不写分散度。"""
     _seed_scene(session, must_include_text=None)
-    fake_client = FakeSceneClient()
-    service = SceneGenerationService(session, llm_client=fake_client)
-    bundle_builder = BundleBuilder(session)
-    bundle = bundle_builder.build("CH100_SC01")
-
+    service = SceneGenerationService(session, llm_client=FakeSceneClient())
+    bundle = BundleBuilder(session).build("CH100_SC01")
     neutral = service.generate_neutral_draft("CH100_SC01", bundle)
+    reconciled: list[str] = []
+
     candidates = service.generate_style_draft_candidates(
         "CH100_SC01",
         bundle,
         neutral_draft_row_id=neutral.row_id,
         neutral_content=neutral.content,
         n_candidates=3,
+        max_candidates=5,
+        step_reconciler=reconciled.append,
     )
     session.commit()
 
-    assert len(candidates) >= 1
-    assert all(isinstance(c, StyleGenerationResult) for c in candidates)
-    assert all(c.content for c in candidates)
-
-    attempts = session.execute(
-        select(AttemptTracker).where(AttemptTracker.step == "style_draft")
+    assert len(candidates) == 1
+    assert reconciled[:1] == ["style_draft:0"]
+    style_rows = session.execute(
+        select(SceneDraft.row_id).where(SceneDraft.scene_id == "CH100_SC01", SceneDraft.stage == "style_draft")
     ).scalars().all()
-    candidate_indices = [a.details_json.get("candidate_index") for a in attempts if a.details_json.get("candidate_index") is not None]
-    assert len(candidate_indices) >= 1
-
+    assert [row_id for row_id in style_rows if "_cand_" in row_id] == []
+    attempts = session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == "CH100_SC01", AttemptTracker.step == "style_draft")
+    ).scalars().all()
+    assert len(attempts) == 1
+    assert "candidate_index" not in (attempts[0].details_json or {})
     state = session.get(SceneRunState, "CH100_SC01")
     assert state.current_style_draft_row_id == candidates[0].row_id
+    assert state.candidate_dispersion_score is None
 
 
 def test_adversarial_rank_score_lower_for_ai_heavy_text() -> None:

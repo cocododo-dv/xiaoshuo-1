@@ -1,3 +1,20 @@
+"""把提示词模板 + bundle 快照拼成一次模型请求（系统提示词、用户提示词、结构化 schema、``token_budget`` 审计）。
+
+预算地图——系统里有四套互不替代的「预算」，别把它们混成一套：
+
+1. **提示词输入阶梯**（:mod:`.context_budget`）：场景 / 规划 / 章节三族的提示词按具名段落（``SECTION_SPECS``）
+   拼装，超出模板的 ``input_token_budget``（或下面的运行时下限 / ``NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET``）时按
+   ``BUDGET_LADDER`` 逐级压缩 / 省略软段落，事实段永不动；本模块调用它。
+2. **雪花工作台的 JSON 降载阶梯**（:mod:`.snowflake_prompt_budget`）：载荷是步骤契约 + 上游步骤 + 当前草稿的 JSON，
+   按与本批焦点成员的相关性逐级降到参照级；预算单独由 ``NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET`` 覆盖。
+3. **风格样例装箱**（``style_reference.inject.fit``）：把渲染好的参考（样例窗、文风卡、声音）贪心地压进本次请求
+   剩下的输入预算，按整窗 / 整条去。
+4. **场景生命周期预算**（:mod:`.scene_budget`）：一场从起草到归档累计的 token 与重试次数（``N × 单发基线``），
+   默认解除武装（``NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=0``）；它管的是花了多少，不管一次请求多长。
+
+前三套都用 :mod:`.token_estimate` 的同一把尺估算；记账以 provider 报的 usage 为准。
+"""
+
 from __future__ import annotations
 
 import copy
@@ -123,24 +140,18 @@ STYLE_CHARACTER_CONTINUITY_INSTRUCTION = (
     "a name, a gesture, or context — not by mechanically repeating names."
 )
 _STYLE_CONTINUITY_TEMPLATES = frozenset({"style_draft", "style_first_draft", "style_targeted_revision"})
+# 按模板归任务类型（决定预算审计里记哪组策略、中性稿 / 硬 QC 先省略哪些 section）。
+# 只列 config/prompts.yaml 里真有的模板（test_prompt_builder 核对）。
 DRAFTING_TEMPLATE_NAMES = {
     "neutral_draft",
     "style_draft",
     "style_first_draft",
     "style_targeted_revision",
     "scene_literary_rewrite",
-    "near_final_rewrite",
-    "project_outline_plan",
     "scene_blueprint",
     "scene_blueprint_facts",
     "chapter_story_architecture",
     "character_pressure_blueprint",
-    "snowflake_generate_logline",
-    "snowflake_generate_one_paragraph",
-    "snowflake_generate_character_lineup",
-    "snowflake_generate_plot_beats",
-    "snowflake_generate_scene_plan",
-    "snowflake_generate_character_plan",
     "snowflake_workspace_assistant",
     "snowflake_scene_triage_suggest",
 }
@@ -152,8 +163,6 @@ HARD_QC_TEMPLATE_NAMES = {
 CHAPTER_REVIEW_TEMPLATE_NAMES = {
     "chapter_summary",
     "chapter_near_final_review",
-    "writer_chapter_diagnosis",
-    "writer_chapter_revision",
     "writer_deep_review",
 }
 

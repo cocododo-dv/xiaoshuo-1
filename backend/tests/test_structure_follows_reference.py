@@ -187,31 +187,23 @@ def _scale_payload(**overrides) -> dict:
 
 
 def test_length_band_upper_bound_rises_to_the_reference_scale_under_style_first() -> None:
-    scene = SimpleNamespace(target_length_band="1200-1500")
-    slack_token = sg._LENGTH_BAND_SLACK.set(0.5)
-    scale_token = sg._REFERENCE_SCENE_SCALE.set(_scale_payload())
-    try:
-        assert sg._parse_numeric_length_band("1200-1500") == (600, 5000)
-        # 显式 slack（计划值）不看参考尺度
-        assert sg._parse_numeric_length_band("1200-1500", slack=0.0) == (1200, 1500)
-        # 作者自己的带已经高于参考尺度：放宽后的带更大，取大
-        assert sg._parse_numeric_length_band("4000-4800") == (2000, 7200)
-        guide = sg._style_first_length_instruction(scene)
-        assert "planned 1200-1500" in guide and "hard range 600-5000" in guide
-        assert "a chapter runs about 17,948 characters (8,559–33,371 is normal)" in guide
-        assert "this chapter has 5 scenes, so a scene of this author's is about 3,590 visible characters" in guide
-        style_guide = sg._style_length_instruction(scene, source_length=1400, style_first=True)
-        assert "hard range 600-5000" in style_guide and "about 3,590 visible characters" in style_guide
-    finally:
-        sg._REFERENCE_SCENE_SCALE.reset(scale_token)
-        sg._LENGTH_BAND_SLACK.reset(slack_token)
+    lengths = sg.LengthPolicy(band="1200-1500", slack=0.5, reference_scale=_scale_payload())
+    assert lengths.hard_range() == (600, 5000)
+    # 计划值（不放宽）不看参考尺度
+    assert lengths.planned_range() == (1200, 1500)
+    # 作者自己的带已经高于参考尺度：放宽后的带更大，取大
+    assert sg.LengthPolicy(band="4000-4800", slack=0.5, reference_scale=_scale_payload()).hard_range() == (2000, 7200)
+    guide = sg._style_first_length_instruction(lengths)
+    assert "planned 1200-1500" in guide and "hard range 600-5000" in guide
+    assert "a chapter runs about 17,948 characters (8,559–33,371 is normal)" in guide
+    assert "this chapter has 5 scenes, so a scene of this author's is about 3,590 visible characters" in guide
+    style_guide = sg._style_length_instruction(lengths, source_length=1400, style_first=True)
+    assert "hard range 600-5000" in style_guide and "about 3,590 visible characters" in style_guide
     # 没有参考尺度：现状（600–2250）；neutral_first（slack 0）：带原样
-    slack_token = sg._LENGTH_BAND_SLACK.set(0.5)
-    try:
-        assert sg._parse_numeric_length_band("1200-1500") == (600, 2250)
-        assert "Measured on the reference book" not in sg._style_first_length_instruction(scene)
-    finally:
-        sg._LENGTH_BAND_SLACK.reset(slack_token)
+    unscaled = sg.LengthPolicy(band="1200-1500", slack=0.5)
+    assert unscaled.hard_range() == (600, 2250)
+    assert "Measured on the reference book" not in sg._style_first_length_instruction(unscaled)
+    assert sg.LengthPolicy(band="1200-1500").hard_range() == (1200, 1500)
     assert sg._parse_numeric_length_band("1200-1500") == (1200, 1500)
 
 
@@ -221,17 +213,19 @@ def test_reference_scale_sentence_for_explicit_scene_breaks() -> None:
     assert sg._reference_scale_sentence(None) == "" and sg._reference_scale_sentence({"derived_scene_chars": 0}) == ""
 
 
-def test_length_band_context_reads_the_scale_from_the_bundle_only_when_slack_applies(monkeypatch) -> None:
+def test_length_policy_reads_the_scale_from_the_bundle_only_when_slack_applies(monkeypatch) -> None:
+    from novel_system.services.scene_generation import length_policy
+
     bundle = {"inline_digests": {"_style_reference_scene_scale": json.dumps(_scale_payload())}}
-    monkeypatch.setattr(sg, "_style_first_length_slack", lambda _bundle, _scene=None: 0.5)
-    with sg._length_band_slack_for(bundle):
-        assert sg._REFERENCE_SCENE_SCALE.get()["derived_scene_chars"] == 3590
-        assert sg._parse_numeric_length_band("1200-1500") == (600, 5000)
-    assert sg._REFERENCE_SCENE_SCALE.get() is None
-    monkeypatch.setattr(sg, "_style_first_length_slack", lambda _bundle, _scene=None: 0.0)
-    with sg._length_band_slack_for(bundle):
-        assert sg._REFERENCE_SCENE_SCALE.get() is None
-        assert sg._parse_numeric_length_band("1200-1500") == (1200, 1500)
+    scene = SimpleNamespace(target_length_band="1200-1500", writer_brief_json={})
+    monkeypatch.setattr(length_policy, "_style_first_length_slack", lambda _bundle, _scene=None: 0.5)
+    widened = sg.LengthPolicy.for_scene(bundle, scene)
+    assert widened.reference_scale["derived_scene_chars"] == 3590
+    assert widened.hard_range() == (600, 5000)
+    monkeypatch.setattr(length_policy, "_style_first_length_slack", lambda _bundle, _scene=None: 0.0)
+    plain = sg.LengthPolicy.for_scene(bundle, scene)
+    assert plain.reference_scale is None
+    assert plain.hard_range() == (1200, 1500)
     # 坏摘要不炸
     assert sg._reference_scene_scale_from_bundle({"inline_digests": {"_style_reference_scene_scale": "{bad"}}) is None
     assert sg._reference_scene_scale_from_bundle({"inline_digests": {"_style_reference_scene_scale": json.dumps({"derived_scene_chars": 0})}}) is None
@@ -649,8 +643,10 @@ def test_bundle_wrapper_shape_is_read_for_the_scale_and_the_summary_exemption(mo
 
     from novel_system.services.style_policy import StylePolicy
 
+    from novel_system.services.scene_generation import length_policy
+
     monkeypatch.setattr(
-        sg,
+        length_policy,
         "style_policy_for_bundle",
         lambda _bundle, **_kwargs: StylePolicy(bound=True, style_first=True, mode="frozen"),
     )

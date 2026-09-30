@@ -55,7 +55,6 @@ def _bundle_snapshot() -> dict:
                 '[{"character_id":"CHAR_A","display_name":"Mira","pronouns":["she"],'
                 '"role":"archivist","aliases":["M"]}]}'
             ),
-            "voice_card": "Short clipped lines; pressure makes the tone harder.",
             "style_rule": "Keep emotion in gesture and pause.",
             "banned_rule": "Do not explain the whole backstory at reunion time.",
             "style_observation": (
@@ -63,15 +62,16 @@ def _bundle_snapshot() -> dict:
                 "End paragraphs on pressure, not exposition. Keep the emotional turn tactile."
             ),
             "calibration_line": "The door closed like a sentence left unfinished.",
-            "relation_card": "Reunion tension; B knows slightly more than A.",
             "world_rule": "Public spellcasting inside the city is forbidden.",
             "foreshadow": "The old letter sender clue is now in play.",
             "scene_memory": "Previous scene memory digest about the hidden sender.",
             "scene_summary": "Current scene summary digest about the reunion beat.",
             "chapter_summary": "Chapter summary digest about guarded trust replacing suspicion.",
-            "similar_scene": (
-                "Similar-scene reference: another gate reunion leaned too heavily on explanation "
-                "and lost pressure halfway through."
+            # 软背景：超预算时第一个让路的 section（压成要点：只留一句话概括，删视角故事）
+            "scene_design_context": (
+                "Book logline: A reunion on the clocktower roof forces two old allies to trade secrets.\n"
+                "POV story so far (视角故事, excerpt): Mira has spent three years pretending the letter never "
+                "arrived, and every archive shift since has been a way of not reading it."
             ),
         },
     }
@@ -196,8 +196,8 @@ def test_prompt_builder_enforces_budget_using_rendered_prompt_shape() -> None:
 
     assert payload["token_budget"]["estimated_input_tokens"] <= threshold
     assert (
-        payload["token_budget"]["section_status"]["similar_scene_context"]["status"]
-        == "omitted"
+        payload["token_budget"]["section_status"]["scene_design_context"]["status"]
+        == "compressed"
     )
 
 
@@ -323,13 +323,10 @@ def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
     )
 
     assert hard_qc["token_budget"]["task_kind"] == "hard_qc"
-    assert (
-        "drop_style_context_before_fact_context"
-        in hard_qc["token_budget"]["continuity_policy"]
-    )
+    assert "omit_scene_design_context" in hard_qc["token_budget"]["continuity_policy"]
     assert drafting["token_budget"]["task_kind"] == "drafting"
     assert (
-        "preserve_style_profile_author_preference_and_calibration"
+        "preserve_author_instruction"
         in drafting["token_budget"]["continuity_policy"]
     )
     assert chapter_review["token_budget"]["task_kind"] == "chapter_review"
@@ -704,7 +701,7 @@ def test_neutral_draft_prompt_sees_narrative_mechanisms_only() -> None:
     assert "关键信息放段首一次给出" in user_prompt
     assert "Previous Scene Voice Anchor" not in user_prompt
     assert "Style Drift Calibration" not in user_prompt
-    # 语言层：style_observations / calibration_lines 仍被中性稿屏蔽
+    # 旧 bundle 残留的语言层 digest（style_observation / calibration_line）没有任何 section 渲染
     assert "Gesture before explanation" not in user_prompt
     assert "The door closed like a sentence" not in user_prompt
     assert "[STYLE_REFERENCE]" not in payload["system_prompt"]
@@ -1103,3 +1100,14 @@ def test_bundle_builder_never_carries_drift_calibration(session) -> None:
     assert not any(key.startswith("style_drift_calibration") for key in snapshot["source_version_refs"])
     assert not any(item["slot"] == "style_drift_calibration" for item in snapshot["ordered_injections"])
     assert "逗号再密一点" not in PromptBuilder().build(snapshot, "style_draft")["user_prompt"]
+
+
+def test_task_kind_template_sets_only_name_shipped_templates() -> None:
+    """B02-12：按模板归任务类型的名单与输入预算地板只列 config/prompts.yaml 里真有的模板（旧名单里留着 10 个
+    早就删掉的名字：near_final_rewrite / project_outline_plan / 六个 v1 雪花模板 / 两个章级改写模板）。"""
+    from novel_system.services import prompt_builder as pb
+
+    shipped = set(pb.load_prompt_templates(pb._default_prompts_config_path()))
+    for name in ("DRAFTING_TEMPLATE_NAMES", "HARD_QC_TEMPLATE_NAMES", "CHAPTER_REVIEW_TEMPLATE_NAMES"):
+        assert getattr(pb, name) <= shipped, (name, sorted(getattr(pb, name) - shipped))
+    assert set(pb.RUNTIME_MIN_INPUT_BUDGETS) <= shipped

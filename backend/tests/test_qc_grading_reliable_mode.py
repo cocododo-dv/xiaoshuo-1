@@ -192,13 +192,13 @@ def _allow_legacy_neutral_required_fact_gap(monkeypatch: pytest.MonkeyPatch) -> 
 
     original = scene_generation_module._assess_neutral_draft
 
-    def assess(scene, content):  # noqa: ANN001, ANN202
-        result = original(scene, content)
+    def assess(scene, content, lengths):  # noqa: ANN001, ANN202
+        result = original(scene, content, lengths)
         if set(result.get("reasons") or []) == {"required_facts_missing"}:
             return {**result, "accepted": True, "reasons": []}
         return result
 
-    monkeypatch.setattr(scene_generation_module, "_assess_neutral_draft", assess)
+    monkeypatch.setattr(scene_generation_module.text_gates, "_assess_neutral_draft", assess)
 
 
 # ---------- G-03 核心：软性意见不再断头 ----------

@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
@@ -52,6 +52,7 @@ from novel_system.services.reference_copy_gate import (
     copy_block_author_action,
 )
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_budget import apply_topup, budget_unit
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_notes import SceneNotesService
@@ -1060,102 +1061,16 @@ def topup_scene_budget(
     reason = str(body.get("reason") or "").strip()[:300]
 
     def _topup(session: Session) -> dict[str, Any]:
-        from novel_system.db.models import OperationLog
-        from novel_system.services.scene_budget import ensure_scene_budget_initialized
-
         AuthorLifecycleService(session).require_active_scene(scene_id)
-        ensure_scene_budget_initialized(session, scene_id)
-        updated_budgets = session.execute(
-            update(SceneRunState)
-            .where(
-                SceneRunState.scene_id == scene_id,
-                SceneRunState.scene_token_budget.is_not(None),
-                SceneRunState.scene_token_budget <= INT64_MAX - extra_tokens,
-                SceneRunState.attempt_budget <= INT64_MAX - extra_attempts,
-                SceneRunState.provider_attempt_budget
-                <= INT64_MAX - extra_provider_attempts,
-            )
-            .values(
-                scene_token_budget=SceneRunState.scene_token_budget + extra_tokens,
-                attempt_budget=SceneRunState.attempt_budget + extra_attempts,
-                provider_attempt_budget=(
-                    SceneRunState.provider_attempt_budget + extra_provider_attempts
-                ),
-            )
-            .returning(
-                SceneRunState.scene_token_budget,
-                SceneRunState.attempt_budget,
-                SceneRunState.provider_attempt_budget,
-            )
-            .execution_options(synchronize_session=False)
-        ).one_or_none()
-        if updated_budgets is None:
-            current = session.execute(
-                select(
-                    SceneRunState.scene_token_budget,
-                    SceneRunState.attempt_budget,
-                    SceneRunState.provider_attempt_budget,
-                ).where(SceneRunState.scene_id == scene_id)
-            ).one()
-            details = {
-                "extra_tokens": extra_tokens,
-                "scene_token_budget": current.scene_token_budget,
-                "max_scene_token_budget": INT64_MAX,
-            }
-            if extra_attempts or extra_provider_attempts:
-                details.update(
-                    {
-                        "extra_attempts": extra_attempts,
-                        "attempt_budget": current.attempt_budget,
-                        "extra_provider_attempts": extra_provider_attempts,
-                        "provider_attempt_budget": current.provider_attempt_budget,
-                        "max_lifecycle_budget": INT64_MAX,
-                    }
-                )
-            raise DomainError(
-                "INVALID_BUDGET_TOPUP",
-                "lifecycle budget topup exceeds the signed 64-bit limit",
-                status_code=422,
-                details=details,
-            )
-        new_budget, new_attempt_budget, new_provider_attempt_budget = map(
-            int, updated_budgets
+        return apply_topup(
+            session,
+            scene_id,
+            extra_tokens=extra_tokens,
+            extra_attempts=extra_attempts,
+            extra_provider_attempts=extra_provider_attempts,
+            reason=reason,
+            actor_ref=actor_ref,
         )
-        state = session.get(SceneRunState, scene_id)
-        assert state is not None
-        session.refresh(state)
-        session.add(
-            OperationLog(
-                event_type="scene_budget_topup",
-                object_type="scene",
-                object_ref=scene_id,
-                payload_json={
-                    "extra_tokens": extra_tokens,
-                    "extra_attempts": extra_attempts,
-                    "extra_provider_attempts": extra_provider_attempts,
-                    "reason": reason,
-                    "actor_ref": actor_ref,
-                    "scene_token_budget": new_budget,
-                    "scene_tokens_used": int(state.scene_tokens_used or 0),
-                    "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
-                    "attempt_budget": new_attempt_budget,
-                    "total_attempt_count": int(state.total_attempt_count or 0),
-                    "provider_attempt_budget": new_provider_attempt_budget,
-                    "provider_attempts_used": int(state.provider_attempts_used or 0),
-                },
-            )
-        )
-        session.flush()
-        return {
-            "scene_id": scene_id,
-            "scene_token_budget": new_budget,
-            "scene_tokens_used": int(state.scene_tokens_used or 0),
-            "scene_tokens_reserved": int(state.scene_tokens_reserved or 0),
-            "attempt_budget": new_attempt_budget,
-            "total_attempt_count": int(state.total_attempt_count or 0),
-            "provider_attempt_budget": new_provider_attempt_budget,
-            "provider_attempts_used": int(state.provider_attempts_used or 0),
-        }
 
     return idempotent_response(
         request,
@@ -1197,17 +1112,8 @@ def _scene_lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | No
     budget = int(state.scene_token_budget)
     used = int(state.scene_tokens_used or 0)
     reserved = int(state.scene_tokens_reserved or 0)
-    basis = (
-        state.scene_budget_basis_json
-        if isinstance(state.scene_budget_basis_json, dict)
-        else {}
-    )
-    raw_baseline = basis.get("baseline_tokens")
-    baseline = (
-        int(raw_baseline)
-        if type(raw_baseline) is int and raw_baseline > 0
-        else max(1, budget // 5)
-    )
+    # 单发基线：依据里记的优先，旧依据按初始预算 ÷ 当时的倍率还原（不拿追加过的当前预算去除）
+    baseline = budget_unit(state)
     return {
         "scene_token_budget": budget,
         "scene_tokens_used": used,

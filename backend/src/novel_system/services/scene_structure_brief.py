@@ -26,20 +26,22 @@ must_withhold`` 写进 ``SceneCard.writer_brief_json``，但写作侧一律经
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import Any
+from collections.abc import Iterable
 
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard, StoryCharacter
+from novel_system.services.scene_form import (
+    PROACTIVE_BEATS,
+    REACTIVE_BEATS,
+    scene_form,
+)
+from novel_system.services.scene_form import text as _text
+from novel_system.services.scene_form import writer_brief as _brief
 from novel_system.settings import get_settings
 
 SCENE_STRUCTURE_SECTION_KEY = "scene_structure_brief"
 SCENE_STRUCTURE_SECTION_LABEL = "Scene Structure (Snowflake)"
-
-PROACTIVE_BEATS: tuple[str, ...] = ("goal", "conflict", "setback")
-REACTIVE_BEATS: tuple[str, ...] = ("reaction", "dilemma", "decision")
-SCENE_FORMS: tuple[str, ...] = ("proactive", "reactive")
 
 _BEAT_LABELS: dict[str, str] = {
     "goal": "Goal (目标)",
@@ -63,20 +65,9 @@ def structure_brief_enabled() -> bool:
 
 
 def scene_structure_form(scene: SceneCard) -> str | None:
-    """这一场的形态。显式声明优先（简报 ``scene_form`` / ``primary_form``、场景卡 ``scene_type``），
-    否则按填了哪一组三拍推断；两组都空返回 ``None``。"""
-    brief = _brief(scene)
-    for candidate in (brief.get("scene_form"), brief.get("primary_form"), getattr(scene, "scene_type", None)):
-        text = _text(candidate).lower()
-        if text in SCENE_FORMS:
-            return text
-    has_proactive = any(_text(brief.get(key)) for key in PROACTIVE_BEATS)
-    has_reactive = any(_text(brief.get(key)) for key in REACTIVE_BEATS)
-    if has_reactive and not has_proactive:
-        return "reactive"
-    if has_proactive:
-        return "proactive"
-    return None
+    """这一场的形态（:func:`novel_system.services.scene_form.scene_form`）：显式声明优先（简报 ``scene_form`` /
+    ``primary_form``、场景卡 ``scene_type``），否则按填了哪一组三拍推断；两组都空返回 ``None``。"""
+    return scene_form(scene)
 
 
 def scene_has_structure(scene: SceneCard) -> bool:
@@ -225,19 +216,6 @@ def _chapter_position_line(scene: SceneCard) -> str:
     if last:
         return f"Chapter position: last scene of the chapter (scene {seq}) — it closes the chapter"
     return f"Chapter position: scene {seq} of the chapter (neither opening nor closing it)"
-
-
-def _brief(scene: SceneCard) -> dict[str, Any]:
-    raw = getattr(scene, "writer_brief_json", None)
-    return dict(raw) if isinstance(raw, Mapping) else {}
-
-
-def _text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, (list, dict)):
-        return ""
-    return str(value).strip()
 
 
 def _character_names(session: Session | None, character_ids: Iterable[str]) -> dict[str, str]:

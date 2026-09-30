@@ -6,6 +6,10 @@
 - 盲化视图：默认按 blinded_order 输出全文、剥离机器分数；主动展开不重排；
 - 终选一次写入：同选幂等、异选 409，显式重开后方可改选（审计留痕）；
 - 选择后 resume-after-selection 从批判修订/QC 继续，安全归档，终稿=选中稿。
+
+2026-09-30 [批准#2]：多稿只剩作者手笔直起——候选 = 首稿 + 定向修改（按读数排序）。这里的场景都绑一本合成参考书
+（style_first），读数由替身按正文记号给；首稿带参考样例窗，生命周期预算解除武装（产品默认本来就是解除武装）。
+先中性后润色那一套特有的去模板候选谱系用例随那一套删掉。
 """
 
 from __future__ import annotations
@@ -23,12 +27,10 @@ from novel_system.db.models import (
     HumanReviewEvent,
     LlmCall,
     QcReport,
-    RelationProfile,
     SceneCard,
     SceneDraft,
     SceneRunState,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_accounting import LLMAccountingRejected
@@ -42,6 +44,7 @@ from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import SceneGenerationService
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.real_llm_fakes import ScenePipelineOnlineFake
+from tests.support.style_first_fixtures import bind_style_first, install_readings, reading
 
 
 import pytest as _pytest_ap
@@ -57,14 +60,17 @@ def _auto_online_pipeline(monkeypatch):
 PROJECT_ID = "PROJECT300"
 SCENE_ID = "CH300_SC01"
 CHAPTER_ID = "CH300"
+# 产品里一场的运行总是经幂等路由（或场景作业）发起；选后续跑只认这两种来源的产物归属
+#（scene_run_checkpoint._checkpoint_execution_owner_matches），所以首跑也用一个幂等执行 id。
+ORIGIN_EXECUTION_ID = "idempotency:w3-origin-run"
 
 
 @pytest.fixture(autouse=True)
 def _multi_candidate_authorization_for_candidate_gate_tests(monkeypatch) -> None:
-    """Candidate-gate mechanics run with three authorized candidates.
+    """Candidate-gate mechanics run with three authorized candidates (first draft + two targeted revisions).
 
-    Production always drafts a single candidate; these tests exercise the
-    downstream multi-candidate selection state machine.
+    Production drafts a single candidate unless the Best-of-N switch is on and the work is bound
+    style_first; these tests exercise the downstream multi-candidate selection state machine.
     """
 
     from novel_system.services.orchestrator import Orchestrator
@@ -76,6 +82,14 @@ def _multi_candidate_authorization_for_candidate_gate_tests(monkeypatch) -> None
         return 3
 
     monkeypatch.setattr(Orchestrator, "_best_of_n_count", _three_candidates)
+
+
+@pytest.fixture(autouse=True)
+def _style_first_scene_defaults(monkeypatch) -> None:
+    """首稿读数可信（修改槽位照改、候选按读数排序），第一份修改稿（供应商第 2 次回稿）读得最近、排第一——终选清单的
+    第一份是一份真正的修改稿；生命周期预算解除武装（首稿带参考样例窗，套件默认的武装预算装不下）。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+    install_readings(monkeypatch, {"draft #2": reading(0.5, 30.0)}, default=reading(1.0, 60.0))
 
 
 def _response(payload: dict, *, request_id: str) -> LLMResponse:
@@ -174,28 +188,8 @@ def _seed_scene(session, *, constraint_intensity: float | None = 0.9) -> None:
         )
     )
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready"))
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_VOICE_CHAR_A_v1",
-            voice_profile_id="VOICE_CHAR_A",
-            version=1,
-            character_id="CHAR_A",
-            content="tight internal narration",
-            active_flag=1,
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_REL_CHAR_A_CHAR_B_v1",
-            relation_profile_id="REL_CHAR_A_CHAR_B",
-            left_character_id="CHAR_A",
-            right_character_id="CHAR_B",
-            version=1,
-            content="they mistrust each other but still care",
-            active_flag=1,
-        )
-    )
     session.commit()
+    bind_style_first(session, "gate300", project_id=PROJECT_ID)
 
 
 def _make_orchestrator(session) -> Orchestrator:
@@ -231,16 +225,12 @@ def _selection_gate(session) -> HumanReviewEvent:
 
 
 class _IdenticalCandidatesClient(FakeSceneClient):
-    """中性稿之后，每一份风格候选都回同一段字（作者手笔直起时没过门的修改槽位保留首稿原文，就是这种情形）。"""
+    """每一份定向修改都回首稿那一段字（作者手笔直起时没过门的修改槽位保留首稿原文，就是这种情形）。"""
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
         index = len(self.requests)
-        text = (
-            "Provider-generated draft #1 for terminal selection."
-            if index == 1
-            else "Every candidate came back with the very same scene text."
-        )
+        text = "Every candidate came back with the very same scene text."
         return _response({"scene_text": text, "continuity_notes": []}, request_id=f"resp_scene_{index:03d}")
 
 
@@ -251,7 +241,7 @@ def test_critical_scene_does_not_pause_on_candidates_that_share_one_text(session
     orchestrator = _make_orchestrator(session)
     orchestrator.scene_generation_service = SceneGenerationService(session, llm_client=_IdenticalCandidatesClient())
 
-    result = orchestrator.run_scene(SCENE_ID)
+    result = orchestrator.run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
 
     assert result["scene_status"] != "awaiting_candidate_selection"
@@ -274,7 +264,7 @@ def test_critical_scene_pauses_before_selection(session) -> None:
     _seed_scene(session)
     orchestrator = _make_orchestrator(session)
 
-    result = orchestrator.run_scene(SCENE_ID)
+    result = orchestrator.run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
 
     state = session.get(SceneRunState, SCENE_ID)
@@ -298,10 +288,11 @@ def test_critical_scene_pauses_before_selection(session) -> None:
     )
     rankings = state.run_checkpoint_json["artifact_refs"]["style_candidate_rankings"]
     assert len(rankings) == len(details["candidate_row_ids"])
-    assert all(
-        item["rerank"]["reason"] == "bundle_has_no_style_profile" for item in rankings
-    )
-    assert all(item["rerank"]["applied_mode"] == "off" for item in rankings)
+    # 作者手笔直起的排序：先抄袭门、再读数 distance（读得最近的修改稿在前，平手时首稿在前）
+    assert all(item["selection_reason"] == "fidelity_distance" for item in rankings)
+    assert all(item["rerank"]["applied_mode"] == "fidelity_distance" for item in rankings)
+    assert all(item["plagiarism_checked"] is True and item["plagiarism_passed"] is True for item in rankings)
+    assert [item["slot_index"] for item in rankings] == [1, 0, 2]
     assert details["decision_status"] == "awaiting"
     assert details["candidate_row_ids"]
     assert sorted(details["blinded_order"]) == sorted(details["candidate_row_ids"])
@@ -314,7 +305,7 @@ def test_explicit_style_selection_reason_is_recorded_in_decision_history(
     session,
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     selected_row_id = gate.details_json["candidate_row_ids"][0]
@@ -384,7 +375,7 @@ def test_standard_scene_does_not_pause(session) -> None:
     _seed_scene(session, constraint_intensity=0.5)  # standard：机器下限自动选择
     orchestrator = _make_orchestrator(session)
 
-    result = orchestrator.run_scene(SCENE_ID)
+    result = orchestrator.run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
 
     assert result["scene_status"] == "archived"
@@ -392,7 +383,7 @@ def test_standard_scene_does_not_pause(session) -> None:
 
 def test_adopt_refuses_before_selection(client, session) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
 
     response = client.post(
@@ -506,7 +497,7 @@ def test_select_outside_gate_candidates_rejected(client, session) -> None:
 
 def test_resume_requires_selection(client, session) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
 
     response = client.post(
@@ -520,7 +511,7 @@ def test_resume_requires_selection(client, session) -> None:
 
 def test_select_then_resume_archives_the_chosen_candidate(client, session) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
 
     gate = _selection_gate(session)
@@ -593,7 +584,7 @@ def test_selection_resume_surfaces_lifecycle_budget_boundary_as_recoverable_payl
     monkeypatch,
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -633,200 +624,12 @@ def test_selection_resume_surfaces_lifecycle_budget_boundary_as_recoverable_payl
     assert state.scene_status == "awaiting_candidate_selection"
 
 
-def test_select_then_resume_accepts_completed_de_template_candidate_without_replaying_style_provider(
-    client,
-    session,
-    monkeypatch,
-) -> None:
-    _seed_scene(session)
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
-        lambda *args, **kwargs: {
-            "triggered": True,
-            "rewrite_pass": 1,
-            "score": 0.0,
-            "risk_dimensions": ["model_voice"],
-            "quality_signal_ids": ["quality:selection-resume-de-template"],
-            "findings": [],
-        },
-    )
-    _make_orchestrator(session).run_scene(SCENE_ID)
-    session.commit()
-
-    gate = _selection_gate(session)
-    offered_row_ids = gate.details_json["candidate_row_ids"]
-    chosen = next(
-        session.get(SceneDraft, row_id)
-        for row_id in offered_row_ids
-        if session.get(SceneDraft, row_id).stage == "de_template"
-    )
-    state = session.get(SceneRunState, SCENE_ID)
-    work_items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    chosen_item = next(
-        item for item in work_items if item["final"]["row_id"] == chosen.row_id
-    )
-    assert chosen_item["de_template_outcome"]["status"] == "completed"
-    assert chosen_item["base"]["row_id"] != chosen_item["final"]["row_id"]
-
-    assert (
-        client.post(
-            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen.row_id}/select",
-            json={},
-            headers={"X-Idempotency-Key": "w3-select-de-template"},
-        ).status_code
-        == 200
-    )
-    style_rows_before = list(
-        session.execute(
-            select(SceneDraft.row_id)
-            .where(
-                SceneDraft.scene_id == SCENE_ID,
-                SceneDraft.stage.in_(("style_draft", "de_template")),
-            )
-            .order_by(SceneDraft.row_id)
-        ).scalars()
-    )
-    style_call_ids_before = list(
-        session.execute(
-            select(LlmCall.llm_call_id)
-            .where(
-                LlmCall.scene_id == SCENE_ID,
-                LlmCall.step.in_(("style_draft", "de_template")),
-            )
-            .order_by(LlmCall.llm_call_id)
-        ).scalars()
-    )
-
-    resumed = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
-        json={},
-        headers={"X-Idempotency-Key": "w3-resume-de-template"},
-    )
-
-    assert resumed.status_code == 200, resumed.text
-    assert resumed.json()["data"]["scene_status"] == "archived"
-    assert (
-        list(
-            session.execute(
-                select(SceneDraft.row_id)
-                .where(
-                    SceneDraft.scene_id == SCENE_ID,
-                    SceneDraft.stage.in_(("style_draft", "de_template")),
-                )
-                .order_by(SceneDraft.row_id)
-            ).scalars()
-        )
-        == style_rows_before
-    )
-    assert (
-        list(
-            session.execute(
-                select(LlmCall.llm_call_id)
-                .where(
-                    LlmCall.scene_id == SCENE_ID,
-                    LlmCall.step.in_(("style_draft", "de_template")),
-                )
-                .order_by(LlmCall.llm_call_id)
-            ).scalars()
-        )
-        == style_call_ids_before
-    )
-
-
-def test_rejected_de_template_is_audited_and_checkpoint_resume_uses_base_fallback(
-    client,
-    session,
-    monkeypatch,
-) -> None:
-    _seed_scene(session)
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation._anti_template_quality_gate",
-        lambda *args, **kwargs: {
-            "triggered": True,
-            "rewrite_pass": 1,
-            "score": 0.0,
-            "risk_dimensions": ["model_voice"],
-            "quality_signal_ids": ["quality:selection-rejected-de-template"],
-            "findings": [],
-        },
-    )
-    monkeypatch.setattr(
-        "novel_system.services.scene_generation._assess_de_template_rewrite",
-        lambda **kwargs: {
-            "accepted": False,
-            "reasons": ["test_rejection"],
-        },
-    )
-
-    _make_orchestrator(session).run_scene(SCENE_ID)
-    session.commit()
-
-    gate = _selection_gate(session)
-    offered_row_ids = gate.details_json["candidate_row_ids"]
-    state = session.get(SceneRunState, SCENE_ID)
-    work_items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    assert work_items
-    assert all(item["de_template_outcome"]["status"] == "rejected" for item in work_items)
-    assert all(item["final"]["row_id"] == item["base"]["row_id"] for item in work_items)
-    rejected_row_ids = {
-        item["de_template_outcome"]["row_id"] for item in work_items
-    }
-    assert rejected_row_ids.isdisjoint(offered_row_ids)
-    assert all(
-        session.get(SceneDraft, row_id).stage == "de_template"
-        and session.get(SceneDraft, row_id).status == "rejected"
-        for row_id in rejected_row_ids
-    )
-
-    chosen_row_id = offered_row_ids[0]
-    assert (
-        client.post(
-            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-            json={},
-            headers={"X-Idempotency-Key": "w3-select-rejected-de-template"},
-        ).status_code
-        == 200
-    )
-    style_call_ids_before = list(
-        session.execute(
-            select(LlmCall.llm_call_id)
-            .where(
-                LlmCall.scene_id == SCENE_ID,
-                LlmCall.step.in_(("style_draft", "de_template")),
-            )
-            .order_by(LlmCall.llm_call_id)
-        ).scalars()
-    )
-
-    resumed = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
-        json={},
-        headers={"X-Idempotency-Key": "w3-resume-rejected-de-template"},
-    )
-
-    assert resumed.status_code == 200, resumed.text
-    assert resumed.json()["data"]["scene_status"] == "archived"
-    assert (
-        list(
-            session.execute(
-                select(LlmCall.llm_call_id)
-                .where(
-                    LlmCall.scene_id == SCENE_ID,
-                    LlmCall.step.in_(("style_draft", "de_template")),
-                )
-                .order_by(LlmCall.llm_call_id)
-            ).scalars()
-        )
-        == style_call_ids_before
-    )
-
-
 def test_resume_rejects_selected_candidate_with_non_style_lineage_stage_without_provider_replay(
     client,
     session,
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -861,7 +664,7 @@ def test_selection_resume_validates_budget_checkpoint_before_provider_work(
     mutation: str,
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -898,7 +701,7 @@ def test_resume_rejects_selected_candidate_whose_durable_source_was_tampered(
     client, session
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -926,7 +729,7 @@ def test_resume_reports_missing_checkpoint_candidate_without_provider_replay(
     client, session
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -957,7 +760,7 @@ def test_resume_validates_neutral_prefix_before_post_selection_provider_work(
     client, session
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -990,7 +793,7 @@ def test_resume_validates_hard_qc_report_content_hash_before_provider_work(
     client, session
 ) -> None:
     _seed_scene(session)
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
@@ -1021,17 +824,18 @@ def test_resume_validates_hard_qc_report_content_hash_before_provider_work(
     assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
 
 
-def test_resume_uses_contiguous_hashes_when_first_generated_candidate_is_filtered(
+def test_resume_uses_contiguous_hashes_when_the_top_ranked_candidate_is_filtered(
     client,
     session,
     monkeypatch,
 ) -> None:
+    """排第一的候选（读数最近的那份修改稿）被来源安全过滤掉：终选清单与候选排序不再同序，续跑按终选清单的连续哈希核对。"""
     from novel_system.services import source_safety
 
     _seed_scene(session)
     original_scan = source_safety.scan_source_safety
 
-    def _filter_first_style_candidate(
+    def _filter_top_ranked_candidate(
         text: str, *args, **kwargs
     ):  # noqa: ANN002, ANN003, ANN202
         if "draft #2" in text:
@@ -1039,14 +843,9 @@ def test_resume_uses_contiguous_hashes_when_first_generated_candidate_is_filtere
         return original_scan(text, *args, **kwargs)
 
     monkeypatch.setattr(
-        source_safety, "scan_source_safety", _filter_first_style_candidate
+        source_safety, "scan_source_safety", _filter_top_ranked_candidate
     )
-    monkeypatch.setattr(
-        Orchestrator,
-        "_best_of_n_count",
-        staticmethod(lambda contract, criticality=None: 2),
-    )
-    _make_orchestrator(session).run_scene(SCENE_ID)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
     gate = _selection_gate(session)
     offered = gate.details_json["candidate_row_ids"]
@@ -1071,3 +870,38 @@ def test_resume_uses_contiguous_hashes_when_first_generated_candidate_is_filtere
     )
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["data"]["scene_status"] == "archived"
+
+
+def test_selecting_the_first_draft_candidate_then_resume_archives_it(client, session, monkeypatch) -> None:
+    """作者手笔直起的候选里首稿永远在（槽位 0，它没有自己的模型调用，沿用首稿那次调用的谱系）；作者选它，续跑照常
+    归档，终稿就是首稿。"""
+    _seed_scene(session)
+    install_readings(monkeypatch, {"draft #1": reading(0.5, 30.0)}, default=reading(1.0, 60.0))
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    state = session.get(SceneRunState, SCENE_ID)
+    rankings = state.run_checkpoint_json["artifact_refs"]["style_candidate_rankings"]
+    first_draft_row_id = next(item["row_id"] for item in rankings if item["slot_index"] == 0)
+    assert gate.details_json["candidate_row_ids"][0] == first_draft_row_id
+    first_draft_content = session.get(SceneDraft, first_draft_row_id).content
+
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{first_draft_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-first-draft"},
+        ).status_code
+        == 200
+    )
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-first-draft"},
+    )
+
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["data"]["scene_status"] == "archived"
+    session.expire_all()
+    final = session.get(FinalScene, session.get(SceneRunState, SCENE_ID).current_final_scene_row_id)
+    assert final is not None and final.content == first_draft_content

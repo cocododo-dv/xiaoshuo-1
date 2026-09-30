@@ -1,7 +1,7 @@
 """Scene criticality classification — blueprint §13 cost differentiation.
 
 Classifies scenes as critical / standard / transition based on structural
-signals. Critical scenes get full pipeline (N=5, critique pass, human gate);
+signals. Critical scenes get full pipeline (Best-of-N N=3, critique pass, human gate);
 transition scenes skip multi-path and critique for cost savings.
 """
 from __future__ import annotations
@@ -13,10 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard
+from novel_system.services.scene_form import text
 
 
-CRITICAL_FUNCTION_TAGS = frozenset({"turn", "reveal"})
-HIGH_TENSION_THRESHOLD = 7
 GOLDEN_CHAPTER_COUNT = 3
 
 
@@ -27,8 +26,8 @@ class SceneCriticality:
     best_of_n: int  # 候选上限（= max_best_of_n；保留旧字段名兼容既有消费方）
     skip_critique: bool  # advisory: transition scenes may skip proactive editor passes
     human_gate: bool  # critical scenes pause for author terminal selection (Wave 3 §5.5)
-    # Wave 3（治理 §5.5 成本分配）：初始候选数——关键先 3 补到 5、标准先 2 补到 3、
-    # 过渡恒 1；低分散时按预算逐个补到 best_of_n 上限（渐进补候选）。
+    # Wave 3（治理 §5.5 成本分配）：Best-of-N 的候选数——关键 3、标准 2、过渡恒 1（只有作者手笔直起才出多稿）。
+    # 2026-09-30 [批准#2] 删了低分散补候选，上限 best_of_n（5 / 3）不再补到，只剩编排器的上限转手还在读。
     initial_best_of_n: int = 1
 
     @property
@@ -46,12 +45,14 @@ def classify_scene(
     """Classify a scene's criticality from its spec fields.
 
     Signals that elevate to critical:
-    - Function tag is turn/reveal
-    - Tension target >= 7
     - is_chapter_last (chapter climax position)
     - scene_crucible is substantial (>30 chars — complex dramatic premise)
-    - Writer brief flags (expected_reader_emotion contains strong markers)
+    - proactive scene form
     - Golden chapter (first 3 chapters — §10 黄金三章)
+
+    ``function_tag`` / ``tension_target`` 曾经也算信号，但只有已退役的 v1 规划器写过它们（写作简报的 v2 归一化
+    也不留这两个键），2026-09-29 删掉。``constraint_intensity``（§16 呼吸阀）是场景卡上的一列，产品里没有写入者，
+    只在测试里设。
 
     Returns criticality with recommended pipeline settings.
     """
@@ -67,16 +68,6 @@ def classify_scene(
         score += 2
         reasons.append("golden_chapter")
 
-    function_tag = writer_brief.get("function_tag") or ""
-    if function_tag in CRITICAL_FUNCTION_TAGS:
-        score += 3
-        reasons.append(f"function_tag={function_tag}")
-
-    tension_target = writer_brief.get("tension_target")
-    if isinstance(tension_target, (int, float)) and tension_target >= HIGH_TENSION_THRESHOLD:
-        score += 2
-        reasons.append(f"tension={tension_target}")
-
     if scene.is_chapter_last == 1:
         score += 2
         reasons.append("chapter_climax")
@@ -86,8 +77,10 @@ def classify_scene(
         score += 1
         reasons.append("substantial_crucible")
 
-    scene_form = writer_brief.get("scene_form") or scene.scene_type or ""
-    if scene_form == "proactive":
+    # 只认显式声明的形态（简报 scene_form、场景卡 scene_type），不按三拍推断：关键度还决定过渡场跳不跳批判，
+    # 推断会把只填了三拍的手写场升一档。
+    declared_form = text(writer_brief.get("scene_form")) or text(scene.scene_type)
+    if declared_form == "proactive":
         score += 1
         reasons.append("proactive_scene")
 
