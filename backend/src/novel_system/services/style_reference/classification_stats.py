@@ -1,7 +1,7 @@
-"""分类结果 → ``stats_json`` 里跟段落分类绑定的键(叶子模块,ingest 与 import_job 共用)。
+"""分类结果 → ``stats_json`` 里跟段落分类绑定的键(叶子模块,ingest 与分类作业的处理器 ``classify_run`` 共用)。
 
-2026-09-15:整本 LLM 分类由后台任务(``import_job``)在最后一步从段落行算这些统计;抽成叶子
-模块是为了不让 ``import_job`` 反向依赖 ``ingest``(``ingest`` 已经按需导入 ``import_job``)。
+2026-09-15:整本 LLM 分类由后台作业在最后一步从段落行算这些统计;抽成叶子模块是为了不让分类作业反向依赖
+``ingest``(``ingest`` 已经按需导入分类作业的接口 ``import_job``)。
 2026-09-24(风格参考 v3 S2):v2 的 21 指标 / 段落形状块(``metrics`` / ``prose_shape_metrics``,``MetricsEngine``)
 随指标包络删除——「像不像」只看读数(``fidelity``);这里只剩分类器校准与段型分布。
 """

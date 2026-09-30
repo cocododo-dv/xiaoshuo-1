@@ -2,7 +2,7 @@
 
 产品路由的导入 / 重新分类必须有 LLM:测试用确定性的假分类器临时顶替路由的运行时客户端,
 并等分类作业把书置 ``ready``。v3 起分类作业在**作业开始时**按当前配置取客户端
-(``import_job.resolve_classification_client``,不在请求里捕获),所以假客户端要同时顶替路由与作业两处,
+(``classify_run.resolve_classification_client``,不在请求里捕获),所以假客户端要同时顶替路由与作业两处,
 并且在作业开始之前一直有效:``import_book`` 在 ``fake_import_llm`` 里面等书就绪;要在用例整个生命周期里
 都有效(例如先导入、之后再发重新分类 / 继续分类)用 ``install_fake_classifier(monkeypatch, fake)``。
 """
@@ -41,28 +41,28 @@ def _default_fake() -> Any:
 def fake_import_llm(fake: Any | None = None):
     """在 with 块内让风格参考路由与分类作业都把 ``fake`` 当作已启用的运行时 LLM(默认建一个假分类器)。"""
     import novel_system.api.routes.style_reference as sr_routes
-    from novel_system.services.style_reference import import_job
+    from novel_system.services.style_reference import classify_run
 
     client = fake if fake is not None else _default_fake()
     original_route = sr_routes._get_llm_client_and_enabled
-    original_job = import_job.resolve_classification_client
+    original_job = classify_run.resolve_classification_client
     sr_routes._get_llm_client_and_enabled = lambda: (client, True)
-    import_job.resolve_classification_client = lambda: (client, True)
+    classify_run.resolve_classification_client = lambda: (client, True)
     try:
         yield client
     finally:
         sr_routes._get_llm_client_and_enabled = original_route
-        import_job.resolve_classification_client = original_job
+        classify_run.resolve_classification_client = original_job
 
 
 def install_fake_classifier(monkeypatch: Any, fake: Any | None = None) -> Any:
     """整个用例里(monkeypatch 撤销前)让路由与分类作业都用 ``fake``;返回它。"""
     import novel_system.api.routes.style_reference as sr_routes
-    from novel_system.services.style_reference import import_job
+    from novel_system.services.style_reference import classify_run
 
     client = fake if fake is not None else _default_fake()
     monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (client, True))
-    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (client, True))
+    monkeypatch.setattr(classify_run, "resolve_classification_client", lambda: (client, True))
     return client
 
 

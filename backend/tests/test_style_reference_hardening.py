@@ -158,7 +158,7 @@ def test_reclassify_blocked_for_local_only_book():
 def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic(monkeypatch):
     """2026-09-15 严格 LLM:local_only 的段落不送云,也没有启发式兜底——分类节点走云端接入时直接拒绝,
     LLM client 一次都不许被调用;分类节点走本机模型(打桩 node_route_is_local)才建分类作业、由模型分类。"""
-    from novel_system.services.style_reference import import_job
+    from novel_system.services.style_reference import classify_run
     from novel_system.services.style_reference import policy as policy_module
     from novel_system.services.style_reference.jobs import run_job_inline
 
@@ -185,7 +185,7 @@ def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic(monkeypatch
 
     fake = build_fake_paragraph_classifier()(rule="default")
     monkeypatch.setattr(policy_module, "node_route_is_local", lambda *_a, **_k: True)
-    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (fake, True))
+    monkeypatch.setattr(classify_run, "resolve_classification_client", lambda: (fake, True))
     with SessionLocal() as session:
         service = IngestService(session, llm_client=fake, llm_enabled=True)
         result = service.ingest_upload(

@@ -38,7 +38,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.prompt_builder import load_prompt_templates
-from novel_system.services.style_reference import import_job
+from novel_system.services.style_reference import classify_run, import_job
 from novel_system.services.style_reference import policy as policy_module
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.jobs import StyleJobService, run_job_inline
@@ -167,12 +167,12 @@ def _small_batches(monkeypatch):
     """60 段的书:锚定集 25 段、每批至多 5 段 → 强模型 5 批 + 快模型 5 批 + 余段 7 批;退避不等待。"""
     monkeypatch.setattr(seg, "ANCHOR_SIZE", 25)
     monkeypatch.setattr(seg, "BATCH_MAX_PARAGRAPHS", 5)
-    monkeypatch.setattr(import_job, "BATCH_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
-    monkeypatch.setattr(import_job, "WAIT_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(classify_run, "BATCH_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(classify_run, "WAIT_POLL_SECONDS", 0.05)
 
 
 def _use(monkeypatch, fake) -> ScriptedClassifier:
-    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (fake, True))
+    monkeypatch.setattr(classify_run, "resolve_classification_client", lambda: (fake, True))
     return fake
 
 
@@ -361,7 +361,7 @@ def test_a_batch_that_keeps_failing_fails_the_job_and_resume_finishes_only_the_r
     assert job.error_json["code"] == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
     details = job.error_json["details"]
     assert details["reason_code"] == "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED"
-    assert details["phase"] == "rest" and details["attempts"] == import_job.BATCH_ATTEMPTS == 3
+    assert details["phase"] == "rest" and details["attempts"] == classify_run.BATCH_ATTEMPTS == 3
     assert details["author_action"]["view"] == "systemConfig"
     assert job.error_json["retryable"] is True
     assert _book(book_id).status == "failed"
@@ -404,7 +404,7 @@ def test_control_plane_failures_are_not_retried(session, monkeypatch) -> None:
 
 
 def test_job_without_llm_fails_with_llm_required(session, monkeypatch) -> None:
-    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (None, False))
+    monkeypatch.setattr(classify_run, "resolve_classification_client", lambda: (None, False))
     book_id, job_id = _ingest(session)
     run_job_inline(job_id)
     job = _job(job_id)
@@ -568,7 +568,7 @@ def test_app_startup_sweeps_and_finishes_a_job_left_by_a_dead_process(session, m
     with TestClient(create_app()) as client:
         assert jobs._SWEEPER is not None and jobs._SWEEPER.is_alive()
         # lifespan 先 install_workers() 再起清扫线程：处理器是显式登记的，不靠导入副作用
-        assert jobs._HANDLERS.get("classify") is import_job.run_classification_job
+        assert jobs._HANDLERS.get("classify") is classify_run.run_classification_job
         book = wait_book_status(client, book_id)
     assert jobs._SWEEPER is None and jobs._SWEEPER_STOP.is_set()
     assert book["classification"]["state"] == "succeeded" and book["classification"]["attempt"] == 2
@@ -1074,7 +1074,7 @@ def test_an_unclassifiable_paragraph_fails_the_job_without_losing_the_rest_of_it
     assert job.state == "failed" and job.error_json["code"] == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
     details = job.error_json["details"]
     assert details["unresolved"] == 1 and details["first_unresolved_index"] == target["index"]
-    assert details["attempts"] == import_job.BATCH_ATTEMPTS
+    assert details["attempts"] == classify_run.BATCH_ATTEMPTS
     # 同一批里其余的段已经收下、记在游标里;失败的那一批不算「完成一批」
     done_rest = {pos for start, end in job.cursor_json["done"]["rest"] for pos in range(start, end + 1)}
     assert set(last_batch[1:]) <= done_rest and target["index"] not in done_rest
@@ -1096,14 +1096,14 @@ def test_in_flight_batches_are_drained_and_applied_when_another_batch_fails(sess
     机器再忙,也不会在失败被看见之前先回来一批、腾出位置去派发第 4 批。"""
     target: dict[str, list[int]] = {}
     failure_applied = threading.Event()
-    real_apply = import_job._ClassificationRun._apply
+    real_apply = classify_run._ClassificationRun._apply
 
     def apply_and_signal(self, phase, positions, outcome):  # noqa: ANN001
         real_apply(self, phase, positions, outcome)
         if outcome.failure is not None:
             failure_applied.set()
 
-    monkeypatch.setattr(import_job._ClassificationRun, "_apply", apply_and_signal)
+    monkeypatch.setattr(classify_run._ClassificationRun, "_apply", apply_and_signal)
 
     def fail_first_rest_batch_hold_others(node, indexes, _call_no):
         if node != seg.NODE_BULK:
