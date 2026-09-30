@@ -3495,6 +3495,69 @@ describe("复核七 · 服务端在比对修订号之前就拒绝了这一次，
   });
 });
 
+describe("复核 I3-2 · 回包未明的一稿停着、之后才知道章已批准锁定，换稿之前那一次读取读到的是另一台设备存上的更新版本", () => {
+  const MINE = "<p>起点，这一页写的一句</p>";
+  const OTHER = "<p>起点，另一台设备接着写的几句</p>";
+
+  /* 这一页：「起点」上写的一稿发出去没等到回包（其实没存上）——它也许存上了（unsure），停着等再发。另一台设备这期间存了几版
+     （rev 5），又在那边批准了本章，这一页的目录知道了 */
+  async function unsureThenOtherDeviceThenLocked(shared, chap) {
+    const tab = await openTab(shared, { opts: { catalog: [chap] } });
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    shared.hooks.patch = () => { shared.hooks.patch = null; return Promise.reject(offlineError()); };
+    await expect(tab.mod.WrDocs.save("ch01s1", MINE)).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+    expect(shared).toMatchObject({ revision: 1, content: "<p>起点</p>" });
+    shared.revision = 5;
+    shared.content = OTHER;
+    shared.locked = true;
+    chap.state = "approved";
+    await window.WsCatalog.__refresh();
+    await vi.waitFor(() => expect(tab.mod.WrDocs.locked("ch01s1")).toBe(true), T);
+    return tab;
+  }
+
+  it("读取回来之前本章在别处重新打开：本机那一稿不接在作者没见过的 rev 5 后面发出去——带着旧修订号撞上 409、走冲突：编辑器换成另一台设备的版本，本机那一稿在同步与恢复，提示照实说在别处被修改过，另一台设备的正文还在服务端", async () => {
+    const chap = chapterCopy();
+    const shared = sharedServer("<p>起点</p>");
+    const { mod, client, events } = await unsureThenOtherDeviceThenLocked(shared, chap);
+    // 重新打开这一场：停着的那一稿也许存上了，换稿之前先读一次服务端（verifyUnsure）——这一次读取先按住
+    const read = deferred();
+    shared.hooks.ensure = (current) => read.promise.then(current);
+    expect(mod.WrDocs.load("ch01s1")).toBe(MINE);
+    await tick(50);
+    shared.locked = false;                                                   // 读取回来之前，本章在别处重新打开了
+    chap.state = "writing";
+    await window.WsCatalog.__refresh();
+    await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
+    shared.hooks.ensure = null;
+    read.resolve();                                                          // 读到的是另一台设备存上的 rev 5
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "conflict-resolved" && event.html === OTHER)).toBe(true), T);
+    // 本机那一稿发过的每一次都带着作者见过的 rev 1；服务端上还是另一台设备的正文，没有被盖掉
+    expect(draftPatches(client).filter((body) => body.content === MINE).map((body) => body.base_revision_no)).toEqual([1, 1]);
+    expect(shared).toMatchObject({ revision: 5, content: OTHER, applied: [] });
+    expect(mod.WrDocs.cachedHTML("ch01s1")).toBe(OTHER);
+    expect(recoveryHtml(mod)).toContain(MINE);
+    expect(alertTexts().filter((message) => message.includes("在别处被修改过") && message.includes("同步与恢复"))).toHaveLength(1);
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ revision: 5, dirty: false, conflictPending: false, lastSaveError: null });
+  });
+
+  it("本章一直锁着：本机那一稿留进同步与恢复（锁定的提示），编辑器最后是另一台设备存上的那一版；什么也不再发", async () => {
+    const chap = chapterCopy();
+    const shared = sharedServer("<p>起点</p>");
+    const { mod, client } = await unsureThenOtherDeviceThenLocked(shared, chap);
+    mod.WrDocs.load("ch01s1");
+    await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe(OTHER), T);
+    expect(recoveryHtml(mod)).toContain(MINE);
+    expect(alertTexts().filter((message) => message.includes("已批准锁定") && message.includes("同步与恢复"))).toHaveLength(1);
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ revision: 5, dirty: false, lastSaveError: null });
+    window.dispatchEvent(new Event("focus"));
+    await tick(100);
+    expect(draftPatches(client)).toHaveLength(1);
+    expect(shared).toMatchObject({ revision: 5, content: OTHER, applied: [] });
+  });
+});
+
 describe("复核七 · 刷新之后目录不再认得乐观新建时的临时 sid（W1-R7A-3）", () => {
   it("R7A-5 最后一稿还没存上时刷新、刷新之前没等到目录换名：凭未同步标记里记下的后端 scene_id 找到这一场——不说「不在目录里了」，本机这一层跟到新名字下；打开它时那一稿照跨会话的路径留进同步与恢复，能恢复", async () => {
     const TMP = "tmp_ch01_r7_5";

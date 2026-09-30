@@ -76,6 +76,8 @@ import {
      是它就认作这一页自己存上的、编辑器换成它，不说那几句没存上；读不到就照这一页知道的换，提示照实说还没能确认，之后读到了照
      自己存上的换稿（reason own / locked），不说「在别处有更新」。服务端明确拒绝、同一个修订号上又有一稿没等到回包时照常马上换回
      （作者之后接着写的字不在那一次拒绝里），提示照实说还没能确认，随后的后台读取读到它就照自己存上的换稿（复核七 W1-R7A-2）。
+     读到的是别处存上的一版（不是自己那几稿）、这一页还有没存上的字：不接它的修订号——之后换稿，或这期间本章重新打开了、接着发，
+     发出去的都带着作者见过的旧修订号，撞上 409 走冲突，绝不接在作者没见过的一版后面把它盖掉（复核 I3-2）。
    · 提升（promote）只提升作者眼前的那一稿：调用方给出作者确认时编辑器里的那一稿（expectedText，确认框开着的时候水合 /
      复核可能落地、在后面把编辑器换掉）；还没水合的先水合；作者确认的那一稿、编辑器这一份、服务端存下的那一版三者文字
      不同就不提升（AUTHOR_DRAFT_CONFLICT：作者没看过它，复核二 W1-R2A-4 · W1-R2B-1，复核三 W1-R3A-1 · W1-R3B-5）。
@@ -1723,7 +1725,8 @@ function startOwnCheck(m, flight, error) {
 
 /* 换稿之前先弄清没等到回包的那几稿（unsure，写在眼下这个修订号上）是不是其实存上了（章在别处批准锁定时，见 releaseLock）：
    读一次服务端——眼下正是其中一稿、修订号正好往前一步，就是这一页自己存上的，接上那个修订号；
-   是别的一版就按它（没存上，或别处又存过）；还停在那个修订号上就还没存上（unsure 留着：它也许还在路上）。读的期间这一场不发任何
+   是别的一版（没存上，或别处又存过）：这一页没有没存上的字时按它，有就不接它的修订号（见 finishVerify，复核 I3-2）；
+   还停在那个修订号上就还没存上（unsure 留着：它也许还在路上）。读的期间这一场不发任何
    保存（m.checking，同核对）。读完（read=true）或读不到（read=false：断网、服务端出错；不重试，照这一页知道的换）调 then(read)
    （复核七 W1-R7A-2） */
 function verifyUnsure(m, then) {
@@ -1753,9 +1756,16 @@ function finishVerify(m, check, data) {
   const sameDraft = !m.draftId || draft.draft_id === m.draftId;
   const own = sameDraft && draft.revision_no === check.base + 1
     && check.candidates.some((html) => sameManuscriptText(html, toDocHTML(draft.content || "")));
-  absorbServerState(m, data, { own });
+  // 服务端已经不在那个修订号上（别处存过 / 换了一份草稿），存下的又不是这一页自己那几稿
+  const movedElsewhere = !own && (!sameDraft || draft.revision_no !== check.base);
+  // 读到的是别处存上的一版、这一页还有没存上的字（停着 / 排队的一稿）：不吸收——修订号留在作者见过的那一版上。之后不管是换稿
+  // （还锁着：留进同步与恢复，refuseLocal 的后台复核再换上别处那一版）还是接着发（这期间本章在别处重新打开了），发出去的都带着
+  // 旧修订号，服务端 409，走冲突：本机稿进同步与恢复、编辑器换成服务端版本、照实提示。与 applyRefresh 同一条规矩（这一页有本机
+  // 改动就不吸收，见 isClean）。复核 I3-2：过去这里接上了那一版，本章随后重新打开时排队的本机稿带着它发出去，把作者从没见过的
+  // 另一台设备的正文静默盖掉——编辑器没显示过它，同步与恢复里没有，也没有提示
+  if (!(movedElsewhere && (m.dirty || m.queued))) absorbServerState(m, data, { own });
   // 存上了，或服务端已经不在那个修订号上（别处存过 / 换了一份草稿：那几稿再也落不到那一版上了）：不必再记着它们
-  if (own || !sameDraft || draft.revision_no !== check.base) m.unsure = null;
+  if (own || movedElsewhere) m.unsure = null;
   check.verify(true);
 }
 
