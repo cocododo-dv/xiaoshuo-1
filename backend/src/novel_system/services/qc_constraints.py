@@ -111,18 +111,20 @@ def source_field_satisfied(source_text: str, content: str) -> bool:
     return False
 
 
-def required_groups_missing(must_include_text: Any, content: str) -> list[str]:
-    """``must_include_text`` 里在 ``content`` 中没有落实的组（按 :func:`constraint_terms` 分组，组内 ``A|B``
-    任一即可、容忍改写——同 :func:`source_field_satisfied`）。
-
-    起草、硬质检、分类器复核与成稿门都按组查（批准#11）：整段只要沾上两个三字片段就算满足的旧口径，会放过一整组
-    没写的正文（「主角交出钥匙，门外传来警笛」只写了前一半也算满足）。一整段分不出 ≥2 字的组时按整段查。"""
+def required_groups(must_include_text: Any) -> list[str]:
+    """``must_include_text`` 分出来的必写组（:func:`constraint_terms`）；一整段分不出 ≥2 字的组时整段算一组。"""
     if not isinstance(must_include_text, str) or not must_include_text.strip():
         return []
-    groups = constraint_terms(must_include_text)
-    if not groups:
-        return [] if source_field_satisfied(must_include_text, content) else [must_include_text.strip()]
-    return [group for group in groups if not source_field_satisfied(group, content)]
+    return constraint_terms(must_include_text) or [must_include_text.strip()]
+
+
+def required_groups_missing(must_include_text: Any, content: str) -> list[str]:
+    """``must_include_text`` 里在 ``content`` 中没有落实的组（:func:`required_groups`，组内 ``A|B`` 任一即可、
+    容忍改写——同 :func:`source_field_satisfied`）。
+
+    起草、硬质检、分类器复核与成稿门都按组查（批准#11）：整段只要沾上两个三字片段就算满足的旧口径，会放过一整组
+    没写的正文（「主角交出钥匙，门外传来警笛」只写了前一半也算满足）。"""
+    return [group for group in required_groups(must_include_text) if not source_field_satisfied(group, content)]
 
 
 def issue_mentions_source(issue_blob: str, source_text: str) -> bool:

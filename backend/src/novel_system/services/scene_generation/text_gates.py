@@ -16,14 +16,14 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from novel_system.db.models import SceneCard
-from novel_system.services.literary_quality import DIMENSION_WEIGHTS
+from novel_system.services.literary_quality import weighted_score
 from novel_system.services.literary_signals import rule_analysis
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.qc_constraints import (
-    constraint_terms,
     contains_forbidden_term,
     forbidden_terms as card_forbidden_terms,
-    source_field_satisfied,
+    required_groups,
+    required_groups_missing,
 )
 from novel_system.services.scene_generation.contracts import SceneGenerationPostprocessError
 from novel_system.services.scene_generation.length_policy import LengthPolicy, _length_fitness
@@ -157,12 +157,16 @@ class ConstraintSnapshot:
 
     @classmethod
     def read(cls, scene: Any, text: str, lengths: LengthPolicy | None) -> ConstraintSnapshot:
-        """``lengths`` 为 ``None``：调用方不关心长度（修复简报只看缺项、禁用词与完整性），``length_range`` 为空。"""
-        required = tuple(constraint_terms(scene.must_include_text or ""))
+        """``lengths`` 为 ``None``：调用方不关心长度（修复简报只看缺项、禁用词与完整性），``length_range`` 为空。
+
+        必写组与禁用词的判定与硬质检、分类器复核、成稿门同一处（``qc_constraints.required_groups_missing`` /
+        ``contains_forbidden_term``，批准#11）：一整段分不出 ≥2 字的组时整段算一组（与质检同口径）。"""
+        required = tuple(required_groups(scene.must_include_text))
+        missing = set(required_groups_missing(scene.must_include_text, text))
         forbidden = tuple(card_forbidden_terms(scene.forbidden_text))
         return cls(
             required_terms=required,
-            satisfied=frozenset(term for term in required if source_field_satisfied(term, text)),
+            satisfied=frozenset(term for term in required if term not in missing),
             forbidden_terms=forbidden,
             forbidden_present=frozenset(term for term in forbidden if contains_forbidden_term(term, text)),
             integrity_markers=tuple(_scene_text_integrity_markers(text)),
@@ -260,18 +264,8 @@ def _anti_template_quality_gate(
     text: str, *, scene_id: str, chapter_id: str
 ) -> dict[str, Any]:
     signals, findings = rule_analysis(text)
-    gate_weight_total = sum(
-        DIMENSION_WEIGHTS[dimension]
-        for dimension in ANTI_TEMPLATE_GATE_DIMENSIONS
-    )
-    score = round(
-        sum(
-            signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension]
-            for dimension in ANTI_TEMPLATE_GATE_DIMENSIONS
-        )
-        / gate_weight_total,
-        4,
-    )
+    # 这组维度的加权分，除以这组的权重和（B04-16：与文学质量视图、成稿门、对抗排名同一个公式）
+    score = weighted_score(signals, ANTI_TEMPLATE_GATE_DIMENSIONS, normalize=True)
     risky_findings = [
         {
             **finding,
