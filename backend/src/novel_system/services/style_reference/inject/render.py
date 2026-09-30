@@ -337,7 +337,7 @@ def render_stats(
     blocks: Mapping[str, Any],
     k: int,
 ) -> dict[str, int]:
-    """读数（``InjectionPreviewStats`` 的字段）：卡的正向条数 / 「作者不这么写」条数、声音行数、样例窗数与字数、
+    """读数（审计的 ``render_stats``；本场预览的 ``sizes`` 由它换算）：卡的正向条数 / 「作者不这么写」条数、声音行数、样例窗数与字数、
     前缀总字数、卡的字数、窗数上限。"""
     positive, avoid = count_card_lines(str(blocks.get("card") or ""))
     windows = list(blocks.get("windows") or [])
@@ -445,7 +445,8 @@ class _RenderPlan:
         """当前窗口索引的根哈希（索引还没建 / 已过期 → None：这一次会建索引，不查缓存）。"""
         if self.book is None or not marker_is_current(self.book.stats_json):
             return None
-        return str(mapping_or_empty(mapping_or_empty(self.book.stats_json).get("window_index")).get("root") or "") or None
+        index = mapping_or_empty(mapping_or_empty(self.book.stats_json).get("window_index"))
+        return str(index.get("root") or "") or None
 
 
 def _plan_render(session: Session, policy: Any, request: StyleRenderRequest) -> _RenderPlan:

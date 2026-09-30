@@ -290,7 +290,7 @@ def test_preview_is_judged_against_the_drafting_route(client, monkeypatch) -> No
     assert blocked.json()["error"]["code"] == "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED"
     _routes(monkeypatch, {"style_draft"})
     ok = client.post(url, json={})
-    assert ok.status_code == 200 and ok.json()["data"]["stats"]["few_shot_windows"] == 12
+    assert ok.status_code == 200 and ok.json()["data"]["sizes"]["sample_windows"] == 12
 
 
 # ---------------------------------------------------------------------------

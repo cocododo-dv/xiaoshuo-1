@@ -30,12 +30,7 @@ from novel_system.services.style_reference.errors import profile_not_found
 from novel_system.services.style_reference.inject.preview import preview_render
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.scene_preview import scene_preview_payload
-from novel_system.services.style_reference.schemas import (
-    InjectionPreviewRequest,
-    InjectionPreviewResponse,
-    InjectionPreviewStats,
-    SystemPromptFragments,
-)
+from novel_system.services.style_reference.schemas import InjectionPreviewRequest
 from novel_system.services.style_reference.summaries import profile_detail
 
 router = APIRouter(tags=ROUTE_TAGS)
@@ -178,20 +173,6 @@ def delete_banned_term(
 # ---------------------------------------------------------------------------
 
 
-def injection_preview_payload(result: dict[str, Any]) -> dict[str, Any]:
-    """预览端点的基础字段(``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs``)。"""
-    stats = result.get("stats") or {}
-    return InjectionPreviewResponse(
-        fragments=SystemPromptFragments(**result["fragments"]),
-        prefix=str(result.get("prefix") or ""),
-        user_tail=str(result.get("user_tail") or ""),
-        stats=InjectionPreviewStats(**stats) if stats else None,
-        window_refs=[dict(item) for item in result.get("window_refs") or []],
-        reference_mode=result.get("reference_mode"),
-        sample_windows=result.get("sample_windows"),
-    ).model_dump()
-
-
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/injection-preview")
 def dryrun_injection_preview(
     profile_id: str,
@@ -200,9 +181,10 @@ def dryrun_injection_preview(
     session: Session = Depends(get_session),
 ):
     """本场预览(dryrun,不写绑定、不写选窗冻结行):按入参的 v3 四键渲染——与起草同一套选窗、同一个块次序;
-    给了 ``scene_id`` 就是这一场起草时会拿到的窗。返回 ``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` /
-    ``window_refs`` + ``windows``(章 / 位置 / 标签 / 维度 / 梗概)、``blocks``、``sizes``、生效的 ``reference_mode`` 与
-    ``notices``(见 ``scene_preview``)。旧 ``strategy`` / ``intensity`` 入参不再收(2026-09-24)。"""
+    给了 ``scene_id`` 就是这一场起草时会拿到的窗。返回 ``windows``(章 / 位置 / 标签 / 维度 / 梗概)、``blocks``、
+    ``sizes``、生效的 ``reference_mode`` 与 ``notices``(见 ``scene_preview``)。旧 ``strategy`` / ``intensity`` 入参不再收
+    (2026-09-24);旧的 ``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs`` 不再回(2026-09-30,
+    界面一个都不读)。"""
     # idempotency-exempt: deterministic read-only preview; no binding / selection written (the
     # book's window index may be built once as a cache).
     _profile_or_404(session, profile_id)
@@ -222,14 +204,11 @@ def dryrun_injection_preview(
         scene_id=payload.scene_id,
         project_id=payload.project_id,
     )
-    data = injection_preview_payload(result)
-    data.update(
-        scene_preview_payload(
-            session,
-            profile_id,
-            result,
-            config=normalize_binding_config(config),
-            scene_id=payload.scene_id,
-        )
+    data = scene_preview_payload(
+        session,
+        profile_id,
+        result,
+        config=normalize_binding_config(config),
+        scene_id=payload.scene_id,
     )
     return ok(data, req_id=request_id_of(request))

@@ -11,9 +11,9 @@
   判，与起草同一个判定（H1）：「仅本机」的书遇云端起草路由 → 409 ``STYLE_REFERENCE_CLOUD_POLICY_BLOCKED``（界面把它
   当错误说出来：这一场起草时什么参考都拿不到）。
 
-返回预览端点的形状（``fragments`` / ``prefix`` / ``stats`` / ``window_refs``，``stats`` 的键即
-``InjectionPreviewStats``），外加 ``user_tail`` 与 ``reference_mode``。入参只有 v3 的四个绑定配置键
-（旧 ``strategy`` / ``intensity`` 不再收，2026-09-24）。
+返回渲染的内部形状（``fragments`` 四块 / ``prefix`` / ``user_tail`` / ``stats``（即 ``render_stats``）/ ``window_refs`` /
+``reference_mode`` / ``audit``）；``scene_preview.scene_preview_payload`` 把它整理成端点的载荷（2026-09-30 起端点只回
+界面读的那几样）。入参只有 v3 的四个绑定配置键（旧 ``strategy`` / ``intensity`` 不再收，2026-09-24）。
 """
 
 from __future__ import annotations

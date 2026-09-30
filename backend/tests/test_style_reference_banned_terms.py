@@ -178,8 +178,7 @@ def test_generation_banned_term_reaches_injection_redline() -> None:
             json={"reference_mode": "card_only"},
         )
         assert resp.status_code == 200
-        frags = resp.json()["data"]["fragments"]
-        assert "泪如雨下" in frags["anti_plagiarism_block"]
+        assert "泪如雨下" in resp.json()["data"]["blocks"]["red_line"]
 
 
 # ---------------------------------------------------------------------------
