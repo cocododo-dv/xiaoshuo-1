@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
+import { useWindowEvents } from "./lib/events.js";
 import { EmptyState, MenuButton, Spinner, Tag } from "./ws-ui.jsx";
 import {
   SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srLandingStage, srPickLandingBook,
@@ -57,29 +58,33 @@ export function WsStyleRef({ go }) {
       const w = srActiveWork();
       srRememberSession(w ? w.id : null, { bookId: id, stage: "book" });
     });
-    const onWorkChanged = () => {
+    return () => {
+      srSetViewMounted(false);
+      offImported();
+    };
+  }, []);
+  /* 换作品时页面整页重挂（外壳按作品 id 给 key）；这里接的是书架增减（新建 / 删除作品）也会发的 ws:work-changed：
+     重读当前作品的生效绑定与书库 */
+  useWindowEvents({
+    "ws:work-changed": () => {
       setWorkTick((n) => n + 1);
       const w = srActiveWork();
       if (w) srLoadProjectBinding(w.id, { force: true });
       srSyncBooks();
-    };
-    window.addEventListener("ws:work-changed", onWorkChanged);
-    return () => {
-      srSetViewMounted(false);
-      offImported();
-      window.removeEventListener("ws:work-changed", onWorkChanged);
-    };
-  }, []);
+    },
+  });
 
-  /* 落点：本次打开应用期间刚看过的那本 → 当前作品在用的 → 这部作品上次打开的 → 上次打开的 → 第一本 */
+  /* 落点：本次打开应用期间刚看过的那本 → 当前作品在用的 → 这部作品上次打开的 → 上次打开的 → 第一本。
+     只在书库、当前的书或作品变了时判（以前每次渲染都跑，在跑作业时每秒一遍） */
+  const booksPhase = booksState.phase;
   React.useEffect(() => {
-    if (book || booksState.phase !== "ready") return;
+    if (book || booksPhase !== "ready") return;
     if (!books.length) { if (bookId) setBookId(null); return; }
     const pick = srPickLandingBook(books, { prefs: srReadUiPrefs(), workId, session: srSessionUi(workId) });
     if (!pick) return;
     setBookId(pick.bookId);
     setStage(pick.stage || null);
-  });
+  }, [book, booksPhase, books, bookId, workId]);
 
   const running = book ? srRunningFor(book.id) : {};
   const states = book ? srStageStates(book, { running, workId }) : null;

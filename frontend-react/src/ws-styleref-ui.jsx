@@ -7,7 +7,7 @@ import { useStoreTick } from "./lib/store-utils.js";
 import { EmptyState } from "./ws-ui.jsx";
 import { srErrorInfo, srSceneIndex } from "./ws-styleref-model.js";
 import { srConfigureHost, srSubscribe } from "./ws-styleref-store.js";
-import { isRealWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    风格参考 · 各页共用的界面零件
@@ -28,16 +28,16 @@ export function srNotifyError(error, fallback) {
   srNotify(srErrorInfo(error, fallback).message);
 }
 
-/* 当前作品：书架还在加载（__loading__）或为空时返回 null */
+/* 当前作品：书架还在加载、为空、或新建的作品还没拿到正式 id 时返回 null（能拿去发请求的才算，见 lib/ready-work） */
 export function srActiveWork() {
+  const id = readyWorkId(WsWorks);
+  if (!id) return null;
+  let title = "";
   try {
-    const w = WsWorks && typeof WsWorks.active === "function" ? WsWorks.active() : null;
-    if (w && isRealWorkId(w.id)) return { id: w.id, title: w.title || "" };
-    const id = WsWorks && typeof WsWorks.activeId === "function" ? WsWorks.activeId() : null;
-    return isRealWorkId(id) ? { id, title: "" } : null;
-  } catch (e) {
-    return null;
-  }
+    const w = WsWorks.active();
+    if (w && w.id === id) title = w.title || "";
+  } catch (e) { /* 取不到书名就不说书名 */ }
+  return { id, title };
 }
 
 srConfigureHost({
