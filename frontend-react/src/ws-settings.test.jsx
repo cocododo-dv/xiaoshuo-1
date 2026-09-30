@@ -188,14 +188,17 @@ describe("设置页", () => {
     }
   });
 
-  it("高级路由用中文功能名，不再印后端的英文 label", async () => {
+  it("高级路由用中文功能名（与成本看板同一张表），不再印后端的英文 label", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "ai");
     const view = await mountSettings();
     try {
       await vi.waitFor(() => expect(view.host.querySelector(".set-advanced")).toBeTruthy());
       const adv = view.host.querySelector(".set-advanced");
       expect(adv.querySelector("summary").textContent.startsWith("高级路由")).toBe(true);
-      expect(adv.textContent).toContain("场景初稿");
+      const { llmNodeLabel } = await import("./labels/llm.js");
+      const neutral = adv.querySelector('.set-route-label[title="neutral_draft"]');
+      expect(neutral.textContent).toBe(llmNodeLabel("neutral_draft"));
+      expect(neutral.textContent).toBe("初稿");
       expect(adv.textContent).not.toContain("Neutral draft");
       expect(adv.textContent).toContain("密钥解不开");
     } finally {
