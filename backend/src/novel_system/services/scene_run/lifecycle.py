@@ -47,12 +47,7 @@ class RunLifecycleMixin:
         lease_renewer=None,
     ) -> dict:
         author_note = normalize_author_note(author_note)
-        get_scene_or_404(self.session, scene_id)
-        state = self.session.get(SceneRunState, scene_id)
-        if state is None:
-            state = SceneRunState(scene_id=scene_id, scene_status="ready")
-            self.session.add(state)
-            self.session.flush()
+        _scene, state = self._ensure_scene_and_state(scene_id)
 
         effective_execution_id = execution_id or f"direct:{scene_id}:{uuid4().hex}"
         checkpoints = SceneRunCheckpointService(self.session)
@@ -94,6 +89,17 @@ class RunLifecycleMixin:
             return self._run_with_terminal_outcome(
                 scene_id, effective_execution_id, checkpoints, author_note=author_note, run_policy=run_policy
             )
+
+    def _ensure_scene_and_state(self, scene_id: str) -> tuple[SceneCard, SceneRunState]:
+        """场景（没有 → 404 ``SCENE_NOT_FOUND``）与它的运行状态行：FE 目录直接建的场景没有状态行（scenes POST 才会建），
+        按同一约定补建（``ready``）。``run_scene`` 与管线的前奏共用（B01-17）。"""
+        scene = get_scene_or_404(self.session, scene_id)
+        state = self.session.get(SceneRunState, scene_id)
+        if state is None:
+            state = SceneRunState(scene_id=scene_id, scene_status="ready")
+            self.session.add(state)
+            self.session.flush()
+        return scene, state
 
     def _run_with_terminal_outcome(
         self,

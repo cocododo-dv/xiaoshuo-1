@@ -38,6 +38,7 @@ from novel_system.services.scene_run.constants import STYLE_PATCH_REVERTED_STOP_
 from novel_system.services.scene_run.context import ArchiveInputs, SceneRunContext
 from novel_system.services.scene_run.results import (
     apply_finality,
+    base_result,
     merged_warnings,
     near_final_result_payload,
     qc_decision_payload,
@@ -74,11 +75,7 @@ class PipelineMixin:
                 scene_id,
                 ctx.state,
                 {
-                    "scene_status": ctx.state.scene_status,
-                    "current_bundle_id": ctx.bundle["bundle_id"],
-                    "current_bundle_hash": ctx.bundle["bundle_snapshot_hash"],
-                    "current_qc_report_id": ctx.state.current_qc_report_id,
-                    "current_human_review_event_id": ctx.state.current_human_review_event_id,
+                    **base_result(ctx.state, ctx.bundle),
                     "hard_qc": qc_decision_payload(ctx.hard_qc),
                 },
             )
@@ -103,13 +100,7 @@ class PipelineMixin:
         self, scene_id: str, *, author_note: str | None, run_policy: str
     ) -> SceneRunContext:
         """场景与运行状态（没有就按同一约定补建）、执行合同闸、落本次运行的生效策略。"""
-        scene = get_scene_or_404(self.session, scene_id)
-        state = self.session.get(SceneRunState, scene_id)
-        if state is None:
-            # FE 目录直接建的场景没有运行时状态行（scenes POST 才会建）：按同一约定补建
-            state = SceneRunState(scene_id=scene_id, scene_status="ready")
-            self.session.add(state)
-            self.session.flush()
+        scene, state = self._ensure_scene_and_state(scene_id)
         contract = self.execution_contract_service.get_or_create(
             scene_id, actor_ref="orchestrator"
         )
@@ -645,11 +636,7 @@ class PipelineMixin:
             ctx.scene_id,
             state,
             {
-                "scene_status": state.scene_status,
-                "current_bundle_id": ctx.bundle["bundle_id"],
-                "current_bundle_hash": ctx.bundle["bundle_snapshot_hash"],
-                "current_qc_report_id": state.current_qc_report_id,
-                "current_human_review_event_id": state.current_human_review_event_id,
+                **base_result(state, ctx.bundle),
                 "hard_qc": qc_decision_payload(ctx.hard_qc),
                 "planning": ctx.planning,
                 "run_policy": ctx.run_policy,
@@ -716,11 +703,7 @@ class PipelineMixin:
                 scene_id,
                 state,
                 {
-                    "scene_status": state.scene_status,
-                    "current_bundle_id": bundle["bundle_id"],
-                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                    "current_qc_report_id": state.current_qc_report_id,
-                    "current_human_review_event_id": state.current_human_review_event_id,
+                    **base_result(state, bundle),
                     "hard_qc": hard_qc_payload,
                     "soft_qc": qc_decision_payload(soft_qc),
                     "planning": planning,
@@ -765,11 +748,7 @@ class PipelineMixin:
                     scene_id,
                     state,
                     {
-                        "scene_status": state.scene_status,
-                        "current_bundle_id": bundle["bundle_id"],
-                        "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                        "current_qc_report_id": state.current_qc_report_id,
-                        "current_human_review_event_id": state.current_human_review_event_id,
+                        **base_result(state, bundle),
                         "hard_qc": hard_qc_payload,
                         "soft_qc": qc_decision_payload(soft_qc),
                         "planning": planning,

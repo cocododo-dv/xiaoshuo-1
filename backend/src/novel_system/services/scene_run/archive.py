@@ -44,7 +44,12 @@ from novel_system.services.llm_accounting import (
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
 from novel_system.services.scene_run.context import ArchiveInputs
-from novel_system.services.scene_run.results import apply_finality, merged_warnings, qc_decision_payload
+from novel_system.services.scene_run.results import (
+    apply_finality,
+    base_result,
+    merged_warnings,
+    qc_decision_payload,
+)
 from novel_system.services.scene_run.snapshots import (
     archive_attempt_snapshot,
     archive_final_scene_snapshot,
@@ -260,12 +265,8 @@ class ArchiveCheckpointMixin:
             scene_id,
             state,
             {
-                "scene_status": state.scene_status,
-                "current_bundle_id": bundle["bundle_id"],
-                "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                **base_result(state, bundle),
                 "current_final_scene_row_id": final_scene.row_id,
-                "current_qc_report_id": state.current_qc_report_id,
-                "current_human_review_event_id": state.current_human_review_event_id,
                 "hard_qc": hard_qc_payload,
                 "soft_qc": qc_decision_payload(soft_qc),
                 "planning": planning,

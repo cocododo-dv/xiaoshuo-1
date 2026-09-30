@@ -1,14 +1,33 @@
-"""场景运行结果的装配：QC 决定的摘要、准终稿两种 payload、警告合并、finality 四件套。
+"""场景运行结果的装配：每个结果都带的公共键、QC 决定的摘要、准终稿两种 payload、警告合并、finality 四件套。
 
 ``near_final_result_payload`` 的形状随检查点冻结（``near_final_ready`` 的 ``near_final`` 引用与它的哈希），改键就是
 改检查点；``near_evaluation_payload`` 同样（``near_eval{0,1}_payload``）。其余是运行结果的字段（React 读
 ``scene_status`` / ``quality_warnings`` / ``hard_qc`` / ``soft_qc`` / ``near_final`` 等）。
+
+``recommended_actions`` 来自作者状态投影（``author_state.compute_author_state``，经 ``_with_author_projection`` 并进
+结果）；只有归档的结果在准终稿留了警告时再追加 ``author_review_optional_fix``（归档了，改不改由作者）。严格模式的
+停点（``quality_warning_pending_acceptance``）不追加（B01-15 的待定问题，定为不加）：它的投影已经是
+``adopt_or_patch``——稿子没归档，作者本来就要读完警告再采纳或改，这一条已经涵盖「可选的修改」；停点带的每条准终稿
+警告自己也写着 ``recommended_action``。前端的裁决条读的是工作台作者状态里的这份清单，不读运行结果顶层这一份。
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+
+
+def base_result(state, bundle: dict[str, Any]) -> dict[str, Any]:
+    """管线走完或停下时的运行结果（硬 QC 停点、终选暂停、软 QC 人工复核、严格停点、归档）都以这五个键开头：场景状态、
+    这次运行冻结的 bundle、当前 QC 报告与人工复核事件（B01-15）。已归档的重放只报运行状态上的归档指针、终选后续跑撞上
+    预算边界只报状态与 ``lifecycle_budget_block``，这两种结果的形状照旧、不用它。"""
+    return {
+        "scene_status": state.scene_status,
+        "current_bundle_id": bundle["bundle_id"],
+        "current_bundle_hash": bundle["bundle_snapshot_hash"],
+        "current_qc_report_id": state.current_qc_report_id,
+        "current_human_review_event_id": state.current_human_review_event_id,
+    }
 
 
 def qc_decision_payload(decision) -> dict[str, str | None]:
