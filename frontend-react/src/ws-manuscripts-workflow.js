@@ -5,6 +5,7 @@ import { rvPush } from "./ws-review-store.js";
 import { WsManuStore } from "./ws-manuscripts-store.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { writerIntents } from "./ws-finding-ui.jsx";
+import { readyWorkId } from "./lib/ready-work.js";
 import { chapterLabel } from "./labels/catalog.js";
 import {
   MANU_IDLE_SNAPSHOT, manuCanonicalBlockReason, manuCanonicalComplete, manuCompile, manuReturnTodo,
@@ -112,7 +113,7 @@ export function useChapterActionStatus(pickedId) {
 export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapters, go }) {
   const [dialog, setDialog] = useState(null); // null | "return" | "approve" | "reopen"
   const exportBusyRef = useRef(new Set()); // 防双击：state 在同一帧里还来不及变，按章记
-  const projectId = WsWorks.activeId();
+  const projectId = readyWorkId(WsWorks);
   const pickedId = picked ? picked.id : null;
   const backendId = chapter && chapter.backendId;
   const { status, begin, refuse, clearMessage } = useChapterActionStatus(pickedId);

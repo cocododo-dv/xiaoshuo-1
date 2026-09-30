@@ -19,6 +19,7 @@ import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog, ManuReturnDialog } from "./ws-manuscripts-dialogs.jsx";
 import { writerIntents } from "./ws-finding-ui.jsx";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    成稿中心 — 一本书在这里一章章成形：页头是整书进度与统一导出，
@@ -135,7 +136,7 @@ function WsManuscripts({ go }) {
           )}
 
           {view === "canon" && (
-            <ManuCanon projectId={WsWorks.activeId()} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
+            <ManuCanon projectId={readyWorkId(WsWorks)} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
           )}
           {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} fidelity={fidelity.finals} />}
           {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} fidelity={fidelity.finals} />}

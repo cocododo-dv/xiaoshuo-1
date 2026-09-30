@@ -2,7 +2,7 @@ import { apiGet, apiPost, apiPut } from "./lib/client.js";
 import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { realWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 import { dramaFieldLabel } from "./labels/catalog.js";
 
 /* ==========================================================
@@ -58,12 +58,8 @@ function cpBucket(chapterId) {
   return cpState[chapterId];
 }
 
-function cpProjectId() {
-  try {
-    const id = WsWorks ? WsWorks.activeId() : null;
-    return realWorkId(id);
-  } catch (e) { return null; }
-}
+/* 能发请求的当前作品 id（书架还在读、新建作品还在等正式 id 时为 null：不发请求） */
+const cpProjectId = () => readyWorkId(WsWorks);
 
 const cpBase = (pid, chid) => `/api/v2/projects/${pid}/catalog/chapters/${encodeURIComponent(chid)}`;
 
