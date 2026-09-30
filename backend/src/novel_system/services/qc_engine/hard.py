@@ -19,7 +19,6 @@ from novel_system.services.qc_engine.base import (
     _qc_apply_issue_tracking,
     _qc_clear_downstream_outputs,
     _qc_record_attempt,
-    _with_run_context,
 )
 from novel_system.services.qc_engine.degradation import _qc_run_node_with_degradation
 from novel_system.services.qc_engine.issues import (
@@ -54,6 +53,9 @@ HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
 
 
 class HardQcEngine(QcEngineBase):
+    QC_STEP = "hard_qc"
+    DRAFT_ROW_KEY = "neutral_draft_row_id"
+
     def evaluate(
         self,
         *,
@@ -485,7 +487,7 @@ class HardQcEngine(QcEngineBase):
     ) -> None:
         _qc_record_attempt(
             self.session,
-            step="hard_qc",
+            step=self.QC_STEP,
             scene_id=scene_id,
             chapter_id=chapter_id,
             source_bundle_id=source_bundle_id,
@@ -518,54 +520,19 @@ class HardQcEngine(QcEngineBase):
         error_code: str | None = None,
         retryable: bool | None = None,
     ) -> HardQcDecision:
-        replay_context = _with_run_context(
-            {
-                "scene_id": scene.scene_id,
-                "chapter_id": scene.chapter_id,
-                "source_bundle_id": bundle["bundle_id"],
-                "source_bundle_hash": bundle["bundle_snapshot_hash"],
-                "neutral_draft_row_id": neutral_draft_row_id,
-                "current_qc_report_id": qc_report.qc_report_id,
-                "scene_status_before_block": state.scene_status,
-                "total_attempt_count": state.total_attempt_count,
-            },
-            llm_call_id=llm_call_id,
-            error_code=error_code,
-            retryable=retryable,
-            continuity_warning=continuity_warning,
-        )
-        event = self._open_generation_blocker(
+        # 硬质检从不允许软风险接受；重放上下文多记这一场的总尝试数（熔断用）
+        return self._escalate(
             scene=scene,
             state=state,
+            bundle=bundle,
             draft_row_id=neutral_draft_row_id,
+            qc_report=qc_report,
             failure_reason=failure_reason,
             trigger_reason=trigger_reason,
-            replay_context=replay_context,
-        )
-        self._record_attempt(
-            scene_id=scene.scene_id,
-            chapter_id=scene.chapter_id,
-            source_bundle_id=bundle["bundle_id"],
-            branch="human_review_required",
-            qc_report_id=qc_report.qc_report_id,
-            resolution_code=qc_report.resolution_code or "",
-            next_action=qc_report.next_action or "",
-            human_review_event_id=event.event_id,
+            replay_extra={"total_attempt_count": state.total_attempt_count},
             llm_call_id=llm_call_id,
             execution_step_key=execution_step_key,
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
-        )
-        self.session.flush()
-        return HardQcDecision(
-            branch="human_review_required",
-            qc_report_id=qc_report.qc_report_id,
-            human_review_event_id=event.event_id,
-            resolution_code=qc_report.resolution_code or "",
-            next_action=qc_report.next_action or "",
-            should_continue=False,
-            stop_reason=trigger_reason,
-            llm_call_id=llm_call_id,
-            execution_step_key=execution_step_key,
         )

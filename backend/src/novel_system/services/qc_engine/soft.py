@@ -16,7 +16,6 @@ from novel_system.services.qc_engine.base import (
     _qc_apply_issue_tracking,
     _qc_clear_downstream_outputs,
     _qc_record_attempt,
-    _with_run_context,
 )
 from novel_system.services.qc_engine.degradation import _qc_run_node_with_degradation
 from novel_system.services.qc_engine.issues import (
@@ -79,7 +78,22 @@ def _soft_block_human(payload: dict[str, Any], *, issue: dict[str, Any], brief: 
     }
 
 
+def _soft_attempt_details(
+    source_draft_row_id: str, rewrite_brief: list[Any], details_extra: dict[str, Any] | None
+) -> dict[str, Any]:
+    """软质检尝试记录独有的 details_json 键（checkpoint 契约键名不变）：被复核的稿子、修改简报；v2 追加
+    style_reference_runtime / styled_draft_gate 等诊断键（可选）。"""
+    return {
+        "source_draft_row_id": source_draft_row_id,
+        "rewrite_brief": rewrite_brief,
+        **(details_extra or {}),
+    }
+
+
 class SoftQcEngine(QcEngineBase):
+    QC_STEP = "soft_qc"
+    DRAFT_ROW_KEY = "source_draft_row_id"
+
     def evaluate(
         self,
         *,
@@ -749,7 +763,7 @@ class SoftQcEngine(QcEngineBase):
     ) -> None:
         _qc_record_attempt(
             self.session,
-            step="soft_qc",
+            step=self.QC_STEP,
             scene_id=scene_id,
             chapter_id=chapter_id,
             source_bundle_id=source_bundle_id,
@@ -763,13 +777,7 @@ class SoftQcEngine(QcEngineBase):
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
-            # soft 侧独有的 details_json 键（checkpoint 契约键名不变）；v2 追加
-            # style_reference_runtime / styled_draft_gate 诊断键（可选）。
-            details_extra={
-                "source_draft_row_id": source_draft_row_id,
-                "rewrite_brief": rewrite_brief,
-                **(details_extra or {}),
-            },
+            details_extra=_soft_attempt_details(source_draft_row_id, rewrite_brief, details_extra),
         )
 
     def _escalate_existing_report(
@@ -791,64 +799,30 @@ class SoftQcEngine(QcEngineBase):
         source_draft_content_hash: str | None = None,
         details_extra: dict[str, Any] | None = None,
     ) -> SoftQcDecision:
-        replay_context = {
-            "scene_id": scene.scene_id,
-            "chapter_id": scene.chapter_id,
-            "source_bundle_id": bundle["bundle_id"],
-            "source_bundle_hash": bundle["bundle_snapshot_hash"],
-            "source_draft_row_id": source_draft_row_id,
-            "current_qc_report_id": qc_report.qc_report_id,
-            "scene_status_before_block": state.scene_status,
-            "soft_patch_count": state.soft_patch_count,
-        }
+        # 重放上下文多记补丁次数，和（有的话）这份稿子的内容哈希——软风险接受认的就是它
+        replay_extra: dict[str, Any] = {"soft_patch_count": state.soft_patch_count}
         if source_draft_content_hash is not None:
-            replay_context["source_draft_content_hash"] = source_draft_content_hash
-        event = self._open_generation_blocker(
+            replay_extra["source_draft_content_hash"] = source_draft_content_hash
+        return self._escalate(
             scene=scene,
             state=state,
+            bundle=bundle,
             draft_row_id=source_draft_row_id,
+            qc_report=qc_report,
             failure_reason=failure_reason,
             trigger_reason=trigger_reason,
-            replay_context=_with_run_context(
-                replay_context,
-                llm_call_id=llm_call_id,
-                error_code=error_code,
-                retryable=retryable,
-                continuity_warning=continuity_warning,
+            replay_extra=replay_extra,
+            attempt_extra=_soft_attempt_details(
+                source_draft_row_id, qc_report.rewrite_brief_json or [], details_extra
             ),
             # 软风险接受只给「阻断级软质检意见 / 软质检要人工」这两类，而且要有这份稿子的内容哈希
             allow_soft_risk_acceptance=(
                 source_draft_content_hash is not None
                 and trigger_reason in {"blocking_soft_qc_issue", "soft_qc_requested_human_review"}
             ),
-        )
-        self._record_attempt(
-            scene_id=scene.scene_id,
-            chapter_id=scene.chapter_id,
-            source_bundle_id=bundle["bundle_id"],
-            source_draft_row_id=source_draft_row_id,
-            branch="human_review_required",
-            qc_report_id=qc_report.qc_report_id,
-            resolution_code=qc_report.resolution_code or "",
-            next_action=qc_report.next_action or "",
-            human_review_event_id=event.event_id,
-            rewrite_brief=qc_report.rewrite_brief_json or [],
             llm_call_id=llm_call_id,
             execution_step_key=execution_step_key,
             error_code=error_code,
             retryable=retryable,
             continuity_warning=continuity_warning,
-            details_extra=details_extra,
-        )
-        self.session.flush()
-        return SoftQcDecision(
-            branch="human_review_required",
-            qc_report_id=qc_report.qc_report_id,
-            human_review_event_id=event.event_id,
-            resolution_code=qc_report.resolution_code or "",
-            next_action=qc_report.next_action or "",
-            should_continue=False,
-            stop_reason=trigger_reason,
-            llm_call_id=llm_call_id,
-            execution_step_key=execution_step_key,
         )

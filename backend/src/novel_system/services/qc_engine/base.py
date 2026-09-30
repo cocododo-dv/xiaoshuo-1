@@ -1,5 +1,5 @@
 """质检引擎的骨架：结论类型、报告号、尝试记录（details_json 键名是检查点契约）、引擎基类（构造、提示词装配与
-LLM 运行器、开生成阻断的人工复核事件）与两个引擎共用的状态记账。"""
+LLM 运行器、开生成阻断的人工复核事件、升级到人工复核的收尾）与两个引擎共用的状态记账。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cached_property
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy.orm import Session
 
@@ -122,10 +122,14 @@ def _qc_record_attempt(
 
 
 class QcEngineBase:
-    """硬 / 软质检共用的引擎骨架：构造、提示词装配与 LLM 运行器、开生成阻断的人工复核事件。
+    """硬 / 软质检共用的引擎骨架：构造、提示词装配与 LLM 运行器、开生成阻断的人工复核事件、升级到人工复核的收尾。
 
     两个引擎的分支逻辑各自保留——阻断词汇、熔断、软风险接受、重放上下文都不一样，合成一个引擎不会更简单。
     """
+
+    # 这一道质检在尝试记录里的 step，与重放上下文里被复核那份稿子的行号键（检查点契约的键名）
+    QC_STEP: ClassVar[str]
+    DRAFT_ROW_KEY: ClassVar[str]
 
     def __init__(
         self,
@@ -179,6 +183,86 @@ class QcEngineBase:
         state.current_human_review_event_id = event.event_id
         state.scene_status = "human_review_required"
         return event
+
+    def _escalate(
+        self,
+        *,
+        scene: SceneCard,
+        state: SceneRunState,
+        bundle: dict[str, Any],
+        draft_row_id: str,
+        qc_report: Any,
+        failure_reason: str,
+        trigger_reason: str,
+        replay_extra: dict[str, Any],
+        attempt_extra: dict[str, Any] | None = None,
+        allow_soft_risk_acceptance: bool = False,
+        llm_call_id: str | None = None,
+        execution_step_key: str,
+        error_code: str | None = None,
+        retryable: bool | None = None,
+        continuity_warning: dict[str, Any] | None = None,
+    ) -> QcDecision:
+        """已落库的质检报告升级到人工复核：开生成阻断事件、记一次 ``human_review_required`` 的尝试、给出停下的结论。
+
+        重放上下文 = 场景 / 章 / bundle 与哈希、被复核的稿子（``DRAFT_ROW_KEY``）、报告、阻断前的状态，再加引擎自己的
+        ``replay_extra``（硬质检的总尝试数；软质检的补丁次数与稿子哈希）和「有才写」的四个键——都在开事件、改状态之前取。
+        """
+        replay_context = _with_run_context(
+            {
+                "scene_id": scene.scene_id,
+                "chapter_id": scene.chapter_id,
+                "source_bundle_id": bundle["bundle_id"],
+                "source_bundle_hash": bundle["bundle_snapshot_hash"],
+                self.DRAFT_ROW_KEY: draft_row_id,
+                "current_qc_report_id": qc_report.qc_report_id,
+                "scene_status_before_block": state.scene_status,
+                **replay_extra,
+            },
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
+            continuity_warning=continuity_warning,
+        )
+        event = self._open_generation_blocker(
+            scene=scene,
+            state=state,
+            draft_row_id=draft_row_id,
+            failure_reason=failure_reason,
+            trigger_reason=trigger_reason,
+            replay_context=replay_context,
+            allow_soft_risk_acceptance=allow_soft_risk_acceptance,
+        )
+        _qc_record_attempt(
+            self.session,
+            step=self.QC_STEP,
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            source_bundle_id=bundle["bundle_id"],
+            branch="human_review_required",
+            qc_report_id=qc_report.qc_report_id,
+            resolution_code=qc_report.resolution_code or "",
+            next_action=qc_report.next_action or "",
+            human_review_event_id=event.event_id,
+            execution_step_key=execution_step_key,
+            llm_call_id=llm_call_id,
+            error_code=error_code,
+            retryable=retryable,
+            continuity_warning=continuity_warning,
+            details_extra=attempt_extra,
+        )
+        self.session.flush()
+        return QcDecision(
+            branch="human_review_required",
+            qc_report_id=qc_report.qc_report_id,
+            human_review_event_id=event.event_id,
+            resolution_code=qc_report.resolution_code or "",
+            next_action=qc_report.next_action or "",
+            should_continue=False,
+            stop_reason=trigger_reason,
+            llm_call_id=llm_call_id,
+            execution_step_key=execution_step_key,
+        )
 
 
 def _with_run_context(
