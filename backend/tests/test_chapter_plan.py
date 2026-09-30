@@ -152,6 +152,72 @@ def test_architecture_put_requires_promise(client) -> None:
     assert bad.json()["error"]["code"] == "CHAPTER_ARCHITECTURE_PROMISE_REQUIRED"
 
 
+def test_design_or_binding_changes_keep_the_authors_blueprint_and_say_so(client, session) -> None:
+    """B07-03：作者在章节编排里亲手写的蓝图，不因构思改动 / 换参考书被作废（下一次运行也不会拿 AI 版顶替它）；
+    AI 做的蓝图照旧作废重做。留下来的作者版带一个「设计在它之后改过」的提示。"""
+    from novel_system.services.scene_planning_staleness import (
+        supersede_for_binding_scope,
+        supersede_scene_planning_artifacts,
+    )
+
+    pid = _create_project(client)
+    authored = _create_chapter(client, pid, "旧信")
+    generated = _create_chapter(client, pid, "案卷")
+    put = client.put(f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture", json=_ARCH_PAYLOAD)
+    assert put.status_code == 200, put.text
+    author_row_id = put.json()["data"]["architecture"]["row_id"]
+    session.add(
+        GenerationPlanningArtifact(
+            row_id="planning_ai_architecture",
+            artifact_type="chapter_story_architecture",
+            object_type="chapter",
+            object_id=generated["chapter_id"],
+            chapter_id=generated["chapter_id"],
+            payload_json=dict(_ARCH_PAYLOAD),
+            llm_call_id="llm_call_ai_architecture",
+            status="active",
+            created_by="near_final_planning",
+        )
+    )
+    session.commit()
+    assert client.get(
+        f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture"
+    ).json()["data"]["architecture"]["design_changed"] is None
+
+    counts = supersede_scene_planning_artifacts(
+        session,
+        scene_ids=[],
+        chapter_ids=[authored["chapter_id"], generated["chapter_id"]],
+        reason="snowflake_step:scene_details",
+    )
+    session.commit()
+    assert counts["chapter_architecture"] == 1 and counts["author_architecture_kept"] == 1
+    session.expire_all()
+    assert session.get(GenerationPlanningArtifact, author_row_id).status == "active"
+    assert session.get(GenerationPlanningArtifact, "planning_ai_architecture").status == "superseded"
+
+    kept = client.get(f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture").json()["data"]
+    assert kept["architecture"]["row_id"] == author_row_id
+    hint = kept["architecture"]["design_changed"]
+    assert hint["reason"] == "snowflake_step:scene_details" and hint["at"] and hint["message"]
+
+    # 换参考书（绑定作用于整部作品）同样不动作者版
+    binding = supersede_for_binding_scope(session, scope="project", scope_ref_id=pid)
+    session.commit()
+    assert binding["author_architecture_kept"] == 1 and binding["chapter_architecture"] == 0
+    session.expire_all()
+    assert session.get(GenerationPlanningArtifact, author_row_id).status == "active"
+    latest = client.get(f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture").json()["data"]
+    assert latest["architecture"]["design_changed"]["reason"] == "style_binding_changed"
+
+    # 作者改写蓝图 = 新的一行，提示随旧行留在历史里
+    rewritten = client.put(
+        f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture",
+        json={**_ARCH_PAYLOAD, "chapter_promise": "改写后的承诺"},
+    ).json()["data"]["architecture"]
+    assert rewritten["row_id"] != author_row_id and rewritten["design_changed"] is None
+
+
 def test_generate_architecture_offline_author_action_no_placeholder(client, session) -> None:
     pid = _create_project(client)
     chid = _create_chapter(client, pid)["chapter_id"]

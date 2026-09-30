@@ -56,6 +56,7 @@ from novel_system.services.llm_client import LLMConfigurationError, build_llm_re
 from novel_system.services.llm_service_base import RuntimeLLMAccess, structured_prompt_hash
 from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.scene_lookup import require_project_chapter
+from novel_system.services.scene_planning_staleness import design_changed_since
 
 ARCHITECTURE_FIELDS = (
     "chapter_promise",
@@ -119,7 +120,7 @@ class ChapterPlanService(RuntimeLLMAccess):
     def get_architecture(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         require_project_chapter(self.session, project_id, chapter_id)
         artifact = latest_chapter_architecture(self.session, chapter_id)
-        return {"architecture": _serialize_architecture(artifact)}
+        return {"architecture": self._architecture_view(artifact)}
 
     def generate_architecture(
         self, project_id: str, chapter_id: str, *, actor_ref: str = "operator"
@@ -136,9 +137,7 @@ class ChapterPlanService(RuntimeLLMAccess):
             # 显式生成不落占位蓝图（占位会被场景 run 当真注入），只引导去配置。
             return {
                 "source": "fallback",
-                "architecture": _serialize_architecture(
-                    latest_chapter_architecture(self.session, chapter_id)
-                ),
+                "architecture": self._architecture_view(latest_chapter_architecture(self.session, chapter_id)),
                 "author_action": self._llm_action(),
                 "degraded_slots": context.degraded_slots,
             }
@@ -159,7 +158,7 @@ class ChapterPlanService(RuntimeLLMAccess):
         )
         return {
             "source": "llm",
-            "architecture": _serialize_architecture(artifact),
+            "architecture": self._architecture_view(artifact),
             "degraded_slots": context.degraded_slots,
             "context_fingerprint": context.context_fingerprint,
         }
@@ -193,7 +192,14 @@ class ChapterPlanService(RuntimeLLMAccess):
             actor_ref=actor_ref or "author",
             context=None,
         )
-        return {"architecture": _serialize_architecture(artifact)}
+        return {"architecture": self._architecture_view(artifact)}
+
+    def _architecture_view(self, artifact: GenerationPlanningArtifact | None) -> dict[str, Any] | None:
+        """蓝图回包：作者写的蓝图留下来之后设计 / 绑定又变过时带 ``design_changed``（B07-03），否则为 None。"""
+        view = _serialize_architecture(artifact)
+        if view is not None:
+            view["design_changed"] = design_changed_since(self.session, artifact)
+        return view
 
     def _persist_architecture(
         self,

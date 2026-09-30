@@ -9,6 +9,10 @@
 本模块是叶子（只依赖 ORM）：把受影响场景 / 章的规划产物置为 ``superseded``，让下一次运行按当前
 设计与绑定重新规划。调用点：``ProjectRuntimeInvalidationService``（设计变了）、
 ``binding_apply``（用于作品 / 改绑定配置 / 解除）与删书（参考变了）。作废只是状态翻转，不删行。
+
+作者在章节编排里亲手写的章蓝图（``llm_call_id`` 为空的那一行）不作废（B07-03）：它是作者的决定，不是按旧设计
+算出来的缓存——作废了，章节编排里它就没了，下一次场景运行还会拿一份 AI 写的蓝图顶替它。它原样留着，记一条
+「设计在它之后改过」（:data:`AUTHOR_ARCHITECTURE_KEPT_EVENT`），读蓝图时据此提示作者看一眼（:func:`design_changed_since`）。
 """
 
 from __future__ import annotations
@@ -21,13 +25,18 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     GenerationPlanningArtifact,
+    OperationLog,
     SceneBlueprint,
     SceneCard,
     StoryCharacter,
+    utcnow,
 )
 
 SUPERSEDED_STATUS = "superseded"
 _LIVE_BLUEPRINT_STATUSES: tuple[str, ...] = ("draft", "accepted")
+#: 作者写的章蓝图因设计 / 绑定变化本该作废、按 B07-03 留下时记的操作日志（读蓝图时据此给「设计改过」的提示）
+AUTHOR_ARCHITECTURE_KEPT_EVENT = "chapter_architecture_kept_after_design_change"
+_DESIGN_CHANGED_MESSAGE = "这份蓝图写好之后，构思或参考书又改过：蓝图照旧保留、照旧用于起草；需要时改写或重新生成。"
 
 
 def supersede_scene_planning_artifacts(
@@ -45,6 +54,7 @@ def supersede_scene_planning_artifacts(
         "scene_blueprints": 0,
         "character_pressure": 0,
         "chapter_architecture": 0,
+        "author_architecture_kept": 0,
     }
     if scenes:
         for row in session.execute(
@@ -72,11 +82,47 @@ def supersede_scene_planning_artifacts(
                 GenerationPlanningArtifact.status == "active",
             )
         ).scalars().all():
+            if row.llm_call_id is None:
+                # 作者亲手写的蓝图（B07-03）：留着，记一条「设计在它之后改过」
+                session.add(
+                    OperationLog(
+                        event_type=AUTHOR_ARCHITECTURE_KEPT_EVENT,
+                        object_type="generation_planning_artifact",
+                        object_ref=row.row_id,
+                        payload_json={"chapter_id": row.object_id, "reason": reason, "kept_at": utcnow()},
+                    )
+                )
+                counts["author_architecture_kept"] += 1
+                continue
             row.status = SUPERSEDED_STATUS
             counts["chapter_architecture"] += 1
-    if any(counts[key] for key in ("scene_blueprints", "character_pressure", "chapter_architecture")):
+    if any(
+        counts[key] for key in ("scene_blueprints", "character_pressure", "chapter_architecture", "author_architecture_kept")
+    ):
         session.flush()
     return counts
+
+
+def design_changed_since(session: Session, artifact: GenerationPlanningArtifact | None) -> dict[str, Any] | None:
+    """这份（作者写的）章蓝图留下来之后，设计 / 绑定又变过吗？变过 → 最近一次的 ``{reason, at, message}``。"""
+    if artifact is None or artifact.llm_call_id is not None:
+        return None
+    event = session.execute(
+        select(OperationLog)
+        .where(
+            OperationLog.event_type == AUTHOR_ARCHITECTURE_KEPT_EVENT,
+            OperationLog.object_ref == artifact.row_id,
+        )
+        .order_by(OperationLog.operation_id.desc())
+    ).scalars().first()
+    if event is None:
+        return None
+    payload = dict(event.payload_json or {})
+    return {
+        "reason": str(payload.get("reason") or ""),
+        "at": str(payload.get("kept_at") or event.created_at or ""),
+        "message": _DESIGN_CHANGED_MESSAGE,
+    }
 
 
 def supersede_for_binding_scope(
@@ -93,7 +139,13 @@ def supersede_for_binding_scope(
     """
     scope_value = str(scope or "").strip().lower()
     ref = str(scope_ref_id or "").strip()
-    empty = {"reason": reason, "scene_blueprints": 0, "character_pressure": 0, "chapter_architecture": 0}
+    empty = {
+        "reason": reason,
+        "scene_blueprints": 0,
+        "character_pressure": 0,
+        "chapter_architecture": 0,
+        "author_architecture_kept": 0,
+    }
     if not ref:
         return empty
     if scope_value == "scene":
@@ -124,7 +176,9 @@ def supersede_for_binding_scope(
 
 
 __all__ = [
+    "AUTHOR_ARCHITECTURE_KEPT_EVENT",
     "SUPERSEDED_STATUS",
+    "design_changed_since",
     "supersede_for_binding_scope",
     "supersede_scene_planning_artifacts",
 ]

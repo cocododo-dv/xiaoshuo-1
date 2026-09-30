@@ -353,6 +353,8 @@ def _seed_scene(session, *, suffix: str = "") -> tuple[str, str, str]:
             object_id=chapter_id,
             chapter_id=chapter_id,
             payload_json={},
+            # 场景运行做出来的（AI）蓝图——作者亲手写的蓝图不随设计 / 绑定作废（B07-03，见 test_chapter_plan）
+            llm_call_id=f"llm_call_ca_{chapter_id}",
             status="active",
         )
     )
