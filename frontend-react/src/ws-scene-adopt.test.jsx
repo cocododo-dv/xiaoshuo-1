@@ -670,3 +670,80 @@ describe("scnPrepareAdoption · 预检先等服务器上的作者稿", () => {
     expect(client.apiPost.mock.calls.filter(([url]) => /\/ensure$/.test(url))).toEqual([]);
   });
 });
+
+/* ---- 复核五 · 保护对话框开着时，服务端的作者稿在别处又存了一版（W1-R5A-1） ---- */
+describe("起草台「采纳并归档」：确认覆盖的是对话框里看过的那一稿（复核五 W1-R5A-1）", () => {
+  const casConflict = (current) => Object.assign(new Error("author draft has changed; refresh before saving"), {
+    code: "AUTHOR_DRAFT_CONFLICT", status: 409, details: { current_revision_no: current },
+  });
+
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(async () => {
+    while (mountedRoots.length) {
+      const { root, host } = mountedRoots.pop();
+      await act(async () => root.unmount());
+      host.remove();
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("R5A-1 对话框给作者看的是 X 的差异，勾选确认、点「确认覆盖并归档」之前另一台设备存下了 Y：不备份、不发采纳请求，Y 不被换掉，对话框照实说要重新看差异", async () => {
+    const X = "<p>作者亲写的开场 X：码头的灯还亮着。</p>";
+    const Y = "<p>作者亲写的开场 X：码头的灯还亮着。另一台设备补上的一句 Y：她把船票撕了。</p>";
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const server = { revision: 2, content: X, adopted: [] };
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (/\/api\/v1\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
+        return Promise.resolve({ draft: { draft_id: "author_draft_scene_s1", revision_no: server.revision, content: server.content, last_promoted_revision_no: null, last_promoted_final_scene_row_id: null, canonical_dirty: true }, runtime_final_ref: null });
+      }
+      if (/\/api\/v1\/scenes\/s1\/adopt-current$/.test(url)) {
+        const exact = body.exact_author_draft;
+        if (Number(exact.base_revision_no) !== server.revision) return Promise.reject(casConflict(server.revision));
+        server.adopted.push({ base: exact.base_revision_no, overwritten: server.content });
+        server.revision += 1;
+        server.content = exact.content;
+        return Promise.resolve({
+          scene_id: "s1", scene_status: "archived", final_scene_row_id: `f-${server.revision}`, content_hash: "h",
+          author_draft: { draft_id: "author_draft_scene_s1", revision_no: server.revision, content: server.content, last_promoted_revision_no: server.revision, canonical_dirty: false },
+        });
+      }
+      return basePost(url, body, options);
+    });
+    const cached = {
+      ...mod.scnQC([{ id: "p1", text: "AI 写下了另一种开场。" }]),
+      state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
+    };
+    mod.scnRunSave("ch01s1", cached);
+    await queueSceneIntent({ sid: "ch01s1" });
+    client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }));
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeTruthy(), T);
+    await click(view.host.querySelector('[data-testid="scene-archive"]'));
+    await vi.waitFor(() => expect(document.body.querySelector(".scn2-adopt")).toBeTruthy(), T);
+    const dialog = document.body.querySelector(".scn2-adopt");
+    expect(dialog.querySelector(".scn2-adopt-diff").textContent).not.toContain("她把船票撕了");   // 对话框里是 X 的差异
+
+    server.revision = 3;                                                     // 对话框开着：另一台设备存下了 Y
+    server.content = Y;
+
+    await act(async () => { dialog.querySelector(".scn2-adopt-confirm input").click(); });
+    const overwrite = dialog.querySelector('[data-testid="scene-confirm-overwrite"]');
+    await vi.waitFor(() => expect(overwrite.disabled).toBe(false), T);
+    await click(overwrite);
+    await vi.waitFor(() => expect(document.body.querySelector(".scn2-adopt-live").textContent).toContain("请关掉这个对话框"), T);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current$/.test(url))).toEqual([]);
+    expect(server).toMatchObject({ revision: 3, content: Y, adopted: [] });
+    expect(window.WrRecovery.list().filter((entry) => entry.type === "backup")).toEqual([]);
+    expect(document.body.querySelector(".scn2-adopt")).toBeTruthy();         // 对话框还开着，作者没被告知「已归档」
+  }, 40000);
+});

@@ -4,6 +4,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { sceneApiId } from "./ws-scene-id.js";
 import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { WrDocs, WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
+import { sameManuscriptText } from "./wr-doc-cache.js";
 import { escapeHtmlText, hasAuthorText, htmlToParagraphs, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { copyGateAdoptMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
@@ -332,7 +333,7 @@ function scnAdoptionPreview(sid, draft) {
 /* 预检先和服务器上的作者稿对齐（WrDocs.prepareAdoption）：与别处正在进行的水合共用一次（写作台的预热水合还在路上时
    等它落地，不把还没水合的缓存当成空稿）、冲突中的先读到服务端版本、保存失败后停着的一稿再发一次（回包丢了的那一稿
    其实存上了时接上修订号，采纳带的才是服务端眼下的修订号）；读不到服务器时抛错。 */
-async function scnPrepareAdoption(sid, draft) {
+async function scnAdoptionPreflight(sid, draft) {
   try {
     await WrDocs.prepareAdoption(sid);
   } catch (e) {
@@ -342,6 +343,34 @@ async function scnPrepareAdoption(sid, draft) {
     });
   }
   return scnAdoptionPreview(sid, draft);
+}
+
+/* 作者看过差异的那一稿（作品 id::sid → 预检交给他看的作者稿；没有作者正文时是 ""）。起草台的「采纳并归档」先调
+   scnPrepareAdoption，有作者正文就把这份差异放进保护对话框；「确认覆盖并归档」（以及随后的内容风险复核）只覆盖这一稿——
+   对话框开着时别处又存了一版（后台复核、预检的再读把它读了进来），作者没看过它，就不在「确认覆盖」的名义下把它换掉
+   （复核五 W1-R5A-1）。调用方给出 options.expectedExisting 时以它为准。 */
+const shownPreviews = new Map();
+function previewKeyOf(sid) {
+  let workId = "";
+  try { workId = WsWorks.activeId() || ""; } catch (e) {}
+  return `${workId}::${sid}`;
+}
+async function scnPrepareAdoption(sid, draft) {
+  const preview = await scnAdoptionPreflight(sid, draft);
+  shownPreviews.set(previewKeyOf(sid), preview.hasReal ? preview.existing : "");
+  return preview;
+}
+/* 作者确认覆盖时看过的那一稿（没给、也没交给他看过：undefined，不比） */
+function confirmedExisting(sid, options) {
+  if (Object.prototype.hasOwnProperty.call(options, "expectedExisting")) return options.expectedExisting || "";
+  const key = previewKeyOf(sid);
+  return shownPreviews.has(key) ? shownPreviews.get(key) : undefined;
+}
+/* 要换掉的作者稿已不是作者看过（或预检读到）的那一稿时的一句：确认框开着时请他关掉重看 */
+function movedReason(options) {
+  return options.confirmed === true
+    ? "服务器上的作者稿在你看差异之后又更新了（别处存下了新的一版），这次没有覆盖、也没有归档；请关掉这个对话框，重新点「采纳并归档」看最新的差异再决定。"
+    : "服务器上的作者稿刚又更新了一版，这次没有覆盖、也没有归档；请重新点「采纳并归档」，看过最新的差异再决定。";
 }
 async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   if (!sid) return { ok: false, reason: "没有场景卡" };
@@ -369,7 +398,7 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   };
   // 显式「存为候选」不碰作者稿，也就不必先核对服务器上的作者稿：服务器读不到时照样能把 AI 稿存下来
   if (requestedMode === "candidate") return saveCandidate(scnDraftHTML(draft));
-  const preview = await scnPrepareAdoption(sid, draft);
+  const preview = await scnAdoptionPreflight(sid, draft);
   const html = preview.html;
   const text = (draft || []).map(scnParaText).join("");
   const mode = requestedMode || (preview.hasReal ? "candidate" : "overwrite");
@@ -380,6 +409,26 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       reason: "需要先查看差异并明确确认覆盖；作者稿没有被改动",
       confirmationRequired: true,
     };
+  }
+  // 作者确认覆盖的是他看过差异的那一稿：这次预检读到的已经不是它（对话框开着时别处又存了一版），就不覆盖——不备份、不发请求，
+  // 交回眼下这份差异，让作者重新看过再定（复核五 W1-R5A-1：过去确认一份 X 的差异，换掉的却是作者没看过的 Y）
+  // 读到的作者稿就是这份 AI 稿（上一次采纳其实落了地、这次预检才读到）：换掉它什么都不会少，不必重看
+  const seen = options.confirmed === true ? confirmedExisting(sid, options) : undefined;
+  if (seen !== undefined && !sameManuscriptText(preview.hasReal ? preview.existing : "", seen)
+      && !sameManuscriptText(preview.existing, html)) {
+    return { ok: false, reason: movedReason(options), confirmationRequired: true, moved: true, preview };
+  }
+  // 目录里的后端 id 先取好：从下面核对作者稿、备份到发出采纳请求，中间不再等任何东西（作者稿不会在这中间又换一版）
+  let sceneId = null;
+  try { sceneId = await scnSceneIdOf(sid); } catch (e) {}
+  if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
+  const docState = WrDocs.state(sid);
+  if (!docState || !docState.draftId || !Number.isInteger(docState.revision) || docState.revision < 1) {
+    return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
+  }
+  // 预检之后作者稿又换了一版（后台读取在这之间落地）：要换掉的已不是预检读到、作者看过的那一稿——同样不覆盖
+  if (!sameManuscriptText(WrDocs.cachedHTML(sid) || "", preview.existing)) {
+    return { ok: false, reason: movedReason(options), confirmationRequired: true, moved: true, preview: scnAdoptionPreview(sid, draft) };
   }
   let authorBackup = null;
   if (preview.hasReal) {
@@ -407,13 +456,6 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   }
   // 1) 后端归档单入口：确切 HTML + 作者稿 revision + 当前 FinalScene 指针在一个事务中完成保存与提升，
   //    不再让服务端自行猜测浏览器选中了哪份稿。
-  let sceneId = null;
-  try { sceneId = await scnSceneIdOf(sid); } catch (e) {}
-  if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
-  const docState = WrDocs.state(sid);
-  if (!docState || !docState.draftId || !Number.isInteger(docState.revision) || docState.revision < 1) {
-    return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
-  }
   // 采纳在路上：WrDocs 不再发写作台的保存，路上那一次这期间撞上的 409（多半就是采纳撞的）先按住，
   // 采纳成了随 acceptCanonical 作废，没成（endAdoption）再照常核对 / 冲突——不为作者自己的采纳提示「在别处被修改」。
   // 记号带着这一场：作者在采纳途中换了作品，收尾照样落在原来那一场上（复核四 W1-R4A-1）
@@ -436,19 +478,37 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
     try { landed = await WrDocs.adoptionLanded(sid, adopting, html, e); } catch (readError) { landed = null; }
     if (!landed) {
       WrDocs.endAdoption(sid, adopting);
+      // 回包丢了、之后那一次读取也没读到服务端：采纳可能成了，也可能没成——照实说没能确认，不说「归档未通过」。写作台那边
+      // 之后按修订号撞上的 409 会先核对是不是这次采纳（复核五 W1-R5B-4）
+      if (adopting && adopting.unknown) {
+        return {
+          ok: false,
+          unknown: true,
+          reason: "网络中断，没能确认这次采纳是否已经归档（覆盖前的作者稿已备份到「同步与恢复」）。连上服务器后再点一次「采纳并归档」：已经归档的会直接认下，没有的照常归档。",
+          error: e,
+          authorBackup,
+        };
+      }
       // 抄袭门拦下（与参考书原文连续相同 / 用了它的专名）：说成作者读得懂的话，只给处数，不给参考原文
       if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
       const code = (e && e.code) || "";
-      // 作者稿在这之间被别处存过（按修订号拒绝）：说清楚、作者稿没动；再试一次时预检会先读到服务端眼下的那一版（复核四 W1-R4B-4）
+      // 作者稿在这之间被存过（按修订号拒绝）：说清楚、作者稿没动；再试一次时预检会先读到服务端眼下的那一版（复核四 W1-R4B-4）。
+      // 这期间存上的全是写作台这一页自己的保存（路上那一次先到了）：照实说是它，不说「在别处」（复核五 W1-R5B-5）
       if (code === "AUTHOR_DRAFT_CONFLICT") {
-        return { ok: false, reason: "服务器上的作者稿刚在别处更新过，这次没有覆盖，作者稿也没有被改动；再试一次会先读到最新的一版", error: e, authorBackup };
+        let own = false;
+        try { own = await WrDocs.adoptionOvertakenBySelf(sid, adopting, e); } catch (checkError) { own = false; }
+        const reason = own
+          ? "你在写作台刚写的一稿先存到了服务器，这次没有覆盖，作者稿也没有被改动；再点一次即可采纳"
+          : "服务器上的作者稿刚在别处更新过，这次没有覆盖，作者稿也没有被改动；再试一次会先读到最新的一版";
+        return { ok: false, reason, error: e, authorBackup, ...(own ? { overtakenBySelf: true } : {}) };
       }
       const msg = (e && e.message) || String(e || "");
       return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
     }
     adoption = landed;
   }
-  // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。
+  // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。作者看过的那份差异用掉了
+  shownPreviews.delete(previewKeyOf(sid));
   let cacheWarning = null;
   try {
     const synced = WrDocs.acceptCanonical(sid, html, adoption, { token: adopting });

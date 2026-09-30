@@ -222,7 +222,12 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     };
     const onState = (detail) => {
       setCanonicalStatus(detail.canonicalDirty === false ? "current" : "dirty");
-      if (detail.conflictPending || detail.lastSaveError) { setSaved("failed"); return; }
+      // 章已批准锁定、写作台已转只读（「终稿已锁定」）：锁定之前那一次保存、水合失败了，也不改说成「草稿保存失败」——
+      // 这一场什么都不会再存，交出来的字在同步与恢复里（复核五 W1-R5B-3）
+      if (detail.conflictPending || detail.lastSaveError) {
+        setSaved((prev) => (prev === "locked" && wrSceneIsApproved(sid) ? prev : "failed"));
+        return;
+      }
       if (!detail.dirty && editVersionRef.current === handedRef.current) {
         dirtyRef.current = false;
         // 章已批准锁定、写作台已转只读（「终稿已锁定」）：锁定之前那一次保存的回包、后台的读取不把它改说成「草稿已保存」
@@ -294,6 +299,10 @@ export function canonicalPromotionErrorMessage(error) {
   if (code === "AUTHOR_DRAFT_UNSAVED") {
     return "提升途中你又改了几句，还没确认保存到服务端；这次没有提升。等草稿保存成功后再点一次「提升为权威正文」。";
   }
+  // 章锁定那一刻写的几句还没存上（那一次保存 / 采纳还没结果，本章这期间又重新打开了）：不是别处的改动（复核五 W1-R5A-3）
+  if (code === "AUTHOR_DRAFT_LOCK_PENDING") {
+    return "本章锁定那一刻你写的几句还没保存到服务端（在「同步与恢复」里，路上那一次有了结果就会接着保存）；这次没有提升。等草稿保存成功后再点一次「提升为权威正文」。";
+  }
   if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
     return "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
   }
@@ -325,7 +334,9 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
      不是「提升失败」 */
   const failedCanonicalStatus = (sceneId, code) => {
     if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") return "reconcile";
-    return code === "AUTHOR_DRAFT_MOVED_BY_SELF" || code === "AUTHOR_DRAFT_UNSAVED" ? canonicalStatusOf(sceneId) : "error";
+    return code === "AUTHOR_DRAFT_MOVED_BY_SELF" || code === "AUTHOR_DRAFT_UNSAVED" || code === "AUTHOR_DRAFT_LOCK_PENDING"
+      ? canonicalStatusOf(sceneId)
+      : "error";
   };
 
   const promote = useWrEvent(async () => {

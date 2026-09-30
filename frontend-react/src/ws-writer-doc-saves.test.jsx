@@ -2180,3 +2180,196 @@ describe("复核四 · 提升途中自己的自动保存先到了服务端、回
     await vi.waitFor(() => expect(srv.promoted.map((entry) => entry.revision)).toEqual([3]), T);
   }, LONG);
 });
+
+/* ==========================================================
+   复核五（W1 第五轮复核）：两路复核在真实写作台上报出来的顺序（lens A 的 R5A-2 / R5A-3，lens B 的 R5-V1 / V3 / V4），
+   改成断言安全 / 照实结果的永久用例。服务端同复核三（casServer3）。
+   ========================================================== */
+
+const busy5 = () => Object.assign(new Error("database is busy"), { code: "DATABASE_BUSY", status: 503, retryable: true });
+
+describe("复核五 · 打开一场：本机有上次会话没同步上的字、服务端没被别处改过，水合回来之前作者敲了半句（R5A-2 · W1-R5A-2）", () => {
+  it("R5A-2 编辑器换成服务端版本；只有一条照实的提示（上次会话的本机稿），不说「这一场在别处有更新」；上次的字和刚敲的半句都在同步与恢复", async () => {
+    const ctx = await loadWriter();
+    const srv = casServer3(ctx.client);
+    const ensure = deferred();
+    let held = true;
+    srv.hooks.ensure = (sid, current) => (sid === "s1" && held ? ensure.promise.then(() => current()) : current());
+    window.localStorage.setItem(CACHE_KEY, "<p>起点正文，昨晚没存上的一段。</p>");
+    window.localStorage.setItem(PENDING_KEY, String(Date.now()));
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("昨晚没存上的一段"), T);
+    await r.type("<p>起点正文，昨晚没存上的一段。刚敲的半句</p>");        // 还没到 900 ms 的自动保存
+    await wait(200);
+    held = false;
+    await act(async () => { ensure.resolve(); });
+    await wait(400);
+    expect(r.editor().textContent).toBe("起点正文");
+    expect(r.recoveryHas("昨晚没存上的一段。刚敲的半句")).toBe(true);
+    expect(r.recoveryHas("昨晚没存上的一段。")).toBe(true);
+    expect(srv.drafts.s1).toMatchObject({ revision: 1, content: "<p>起点正文</p>" });
+    expect(noticeTexts()).not.toMatch(/别处有更新|别处被修改/);
+    expect(alertTexts().filter((message) => message.includes("上次会话"))).toEqual([
+      expect.stringContaining("你的本地稿和刚写的几句都放进了「同步与恢复」"),
+    ]);
+    await wait(1200);                                                        // 那一次自动保存的计时随换稿清掉：不补发
+    expect(patchesTo(ctx.client, "d1")).toEqual([]);
+  }, LONG);
+});
+
+describe("复核五 · 章锁定那一刻自动保存还在路上，回包之前章又在别处重新打开了（R5A-3 · W1-R5A-3 · W1-R5B-2）", () => {
+  async function lockedThenReopened(answer) {
+    const chap = twoScenes();
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    const slow = deferred();
+    srv.hooks.patch = (url, body, apply) => {
+      srv.hooks.patch = null;
+      return answer(url, body, apply, slow.promise);
+    };
+    await r.type("<p>起点正文，一</p>");
+    await wait(1300);                                                        // 自动保存：路上（回包慢）
+    await r.type("<p>起点正文，一，二</p>");                                  // 回包之前又写了一句（还没交出去）
+    srv.locked = true;                                                       // 另一台设备批准了本章
+    chap.state = "approved";
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    await wait(1300);                                                        // 自动保存到点：「二」交给 WrDocs → 章已锁定、那一次还在路上
+    expect(r.recoveryHas("起点正文，一，二")).toBe(true);
+    srv.locked = false;                                                      // 章又在别处重新打开了
+    chap.state = "writing";
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(false), T);
+    return { ctx, srv, r, slow };
+  }
+
+  it("R5A-3a 路上那一次存上了：接着存上的是编辑器里的那一稿——状态说「草稿已保存」时，编辑器里的就是服务端存下的", async () => {
+    const { ctx, srv, r, slow } = await lockedThenReopened((url, body, apply, gate) => {
+      const stored = apply(url, body);
+      return gate.then(() => stored);
+    });
+    await act(async () => { slow.resolve(); });
+    await vi.waitFor(() => expect(srv.drafts.s1).toMatchObject({ revision: 3, content: "<p>起点正文，一，二</p>" }), T);
+    await vi.waitFor(() => expect(r.status()).toBe("草稿已保存"), T);
+    expect(r.editor().textContent).toBe("起点正文，一，二");
+    expect(patchesTo(ctx.client, "d1").map(([, body]) => [body.base_revision_no, body.content]))
+      .toEqual([[1, "<p>起点正文，一</p>"], [2, "<p>起点正文，一，二</p>"]]);
+    r.expectNoOlderPatch();
+  }, LONG);
+
+  it("R5A-3b 路上那一次 500、之后窗口重新聚焦：发的是编辑器里的那一稿，不把较旧的「一」补发上去", async () => {
+    const { ctx, srv, r, slow } = await lockedThenReopened((url, body, apply, gate) => gate.then(() => Promise.reject(serverError())));
+    await act(async () => { slow.resolve(); });
+    await vi.waitFor(() => expect(r.status()).toBe("草稿保存失败"), T);
+    expect(r.editor().textContent).toBe("起点正文，一，二");
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await vi.waitFor(() => expect(srv.drafts.s1).toMatchObject({ revision: 2, content: "<p>起点正文，一，二</p>" }), T);
+    await vi.waitFor(() => expect(r.status()).toBe("草稿已保存"), T);
+    expect(patchesTo(ctx.client, "d1").map(([, body]) => [body.base_revision_no, body.content]))
+      .toEqual([[1, "<p>起点正文，一</p>"], [1, "<p>起点正文，一，二</p>"]]);
+    r.expectNoOlderPatch();
+  }, LONG);
+
+  it("R5-V4 锁定时核对还读不到服务端（自己那一稿回包丢了、下一稿 409）、重新打开之后联网：存上的是编辑器里的最新一稿，离开再回来还是它", async () => {
+    const chap = twoScenes();
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(300);
+    srv.hooks.patch = (url, body, apply) => { srv.hooks.patch = null; return apply(url, body).then(() => Promise.reject(offline())); };
+    await r.type("<p>起点正文，一</p>");
+    await vi.waitFor(() => expect(srv.drafts.s1.revision).toBe(2), T);      // 存上了，回包丢了
+    await wait(300);
+    srv.hooks.ensure = (sid, current) => (sid === "s1" ? Promise.reject(offline()) : current());
+    await r.type("<p>起点正文，一，二</p>");
+    await wait(1400);                                                        // 自动保存 → 409 → 核对（读不到）
+    await r.type("<p>起点正文，一，二，三</p>");
+    chap.state = "approved";                                                 // 章在别处批准了
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    await wait(1300);                                                        // 到点：「三」交给 WrDocs → 同步与恢复
+    expect(r.recoveryHas("起点正文，一，二，三")).toBe(true);
+    const atLock = patchesTo(ctx.client, "d1").length;
+    chap.state = "writing";                                                  // 联网之前又重新打开了
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(false), T);
+    srv.hooks.ensure = null;
+    await act(async () => { window.dispatchEvent(new Event("online")); });
+    await vi.waitFor(() => expect(srv.drafts.s1).toMatchObject({ revision: 3, content: "<p>起点正文，一，二，三</p>" }), T);
+    expect(patchesTo(ctx.client, "d1").slice(atLock).map(([, body]) => [body.base_revision_no, body.content]))
+      .toEqual([[2, "<p>起点正文，一，二，三</p>"]]);
+    await vi.waitFor(() => expect(r.status()).toBe("草稿已保存"), T);
+    expect(r.editor().textContent).toBe("起点正文，一，二，三");
+    expect(noticeTexts()).not.toMatch(/别处被修改|别处有更新/);
+    r.expectNoOlderPatch();
+    await openScene("ch01s2");                                               // 离开再回来
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
+    await openScene("ch01s1");
+    await vi.waitFor(() => expect(r.editor().textContent).toBe("起点正文，一，二，三"), T);
+  }, LONG);
+});
+
+describe("复核五 · 章锁定是在这一场第一次水合路上知道的，水合随后失败（R5-V1 · W1-R5A-4 · W1-R5B-3）", () => {
+  it("R5-V1 状态一直是「终稿已锁定」（不改说「草稿保存失败」）；后端好了之后只读的编辑器换回已存上的正文，敲的字都在同步与恢复", async () => {
+    const chap = twoScenes();
+    window.localStorage.setItem(CACHE_KEY, "<p>起点正文</p>");               // 上次会话存上了的
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const hold = deferred();
+    srv.hooks.ensure = (sid, current) => (sid === "s1" ? hold.promise.then(current) : current());
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);   // 读缓存；水合在路上
+    await r.type("<p>起点正文，锁定前敲的一句</p>");
+    await wait(1300);                                                        // 自动保存：排在水合后面
+    await r.type("<p>起点正文，锁定前敲的一句，又一句</p>");
+    srv.locked = true;                                                       // 另一台设备批准了本章
+    chap.state = "approved";
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    await wait(1300);                                                        // 到点：「又一句」交给 WrDocs → lockPending
+    expect(r.status()).toBe("终稿已锁定");
+    expect(r.recoveryHas("又一句")).toBe(true);
+    await act(async () => { hold.reject(busy5()); });                        // 第一次水合 503
+    await wait(300);
+    expect(r.status()).toBe("终稿已锁定");
+    srv.hooks.ensure = null;                                                 // 后端好了
+    await act(async () => { window.dispatchEvent(new Event("online")); window.dispatchEvent(new Event("focus")); });
+    await vi.waitFor(() => expect(r.editor().textContent).toBe("起点正文"), T);
+    expect(r.status()).toBe("终稿已锁定");
+    expect(r.recoveryHas("起点正文，锁定前敲的一句")).toBe(true);
+    expect(r.recoveryHas("又一句")).toBe(true);
+    expect(ctx.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, saving: false });
+    expect(patchesTo(ctx.client, "d1")).toEqual([]);
+  }, LONG);
+});
+
+describe("复核五 · 章已批准锁定、服务端是新建的空稿、本机有这一场没同步上的字（R5-V3 · W1-R5B-1）", () => {
+  it("R5-V3 打开时这段字进同步与恢复（照实提示），只读的编辑器是服务端上的正文；离开再回来它还在同步与恢复", async () => {
+    const chap = { ...twoScenes(), state: "approved" };
+    window.localStorage.setItem(CACHE_KEY, "<p>离线时写下、还没同步上的一段。</p>");
+    window.localStorage.setItem(PENDING_KEY, String(Date.now()));
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    srv.drafts.s1 = { id: "d1", revision: 1, content: "" };                 // ensure 刚建的空稿
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.recoveryHas("还没同步上的一段")).toBe(true), T);
+    await vi.waitFor(() => expect(r.editor().textContent).toBe(""), T);
+    expect(r.status()).toBe("终稿已锁定");
+    expect(alertTexts().filter((message) => message.includes("已批准锁定") && message.includes("没同步上服务端的正文"))).toHaveLength(1);
+    await openScene("ch01s2");
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
+    await openScene("ch01s1");
+    await wait(600);
+    expect(r.recoveryHas("还没同步上的一段")).toBe(true);
+    expect(r.editor().textContent).toBe("");
+    expect(patchesTo(ctx.client, "d1")).toEqual([]);
+  }, LONG);
+});
