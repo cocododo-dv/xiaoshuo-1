@@ -62,7 +62,6 @@ from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CL
 from novel_system.services.writer_deep_review_output import (
     DEEP_REVIEW_LENSES,
     LITERARY_REVISION_DIMENSIONS,
-    WriterDeepReviewOutputError,
     _lens_overall_score,
     _normalize_deep_review_output,
     _normalize_findings,
@@ -79,7 +78,7 @@ from novel_system.services.writer_deep_review_prompts import (
     PASSAGE_MAX_FOCUS_PARAGRAPHS,
     _carry_previous_scene_findings,
     _chapter_review_prompt_tail,
-    _compact_text,
+    _clip_middle,
     _passage_review_user_prompt,
     _previous_findings_by_scene,
     _prompt_text,
@@ -99,7 +98,6 @@ __all__ = [
     "DEEP_REVIEW_LENSES",
     "SCENE_FORMS",
     "PATCH_CATEGORIES",
-    "WriterDeepReviewOutputError",
     "WriterDeepReviewService",
     "_normalize_deep_review_output",
     "_normalize_patch_output",
@@ -554,9 +552,9 @@ class WriterDeepReviewService(PassagePatchMixin):
         normalized = _normalize_deep_review_output(node_result.response.structured_output or {})
         if extra_findings:
             # 未改的场沿用上一轮通读的发现（带 carried_from）；模型这次又说到同一处的，以模型的为准
-            seen = {(str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) for item in normalized["findings"]}
+            seen = {(str(item.get("dimension")), _clip_middle(str(item.get("evidence_excerpt") or ""), 200)) for item in normalized["findings"]}
             normalized["findings"] = list(normalized["findings"]) + [
-                item for item in extra_findings if (str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) not in seen
+                item for item in extra_findings if (str(item.get("dimension")), _clip_middle(str(item.get("evidence_excerpt") or ""), 200)) not in seen
             ]
         # 模型答完了才让旧的一轮退位：被拒绝 / 失败的一次不动历史
         for row in self.session.execute(
@@ -607,7 +605,7 @@ class WriterDeepReviewService(PassagePatchMixin):
                 evaluator_llm_call_id=node_result.llm_call_id,
                 lens=lens,
                 parent_evaluation_id=parent.evaluation_id,
-                overall_score=_lens_overall_score(payload.get("overall_score"), scores),
+                overall_score=_lens_overall_score(payload.get("overall_score")),
                 scores_json=scores,
                 findings_json=findings,
                 revision_brief_json=_normalize_revision_brief(payload.get("revision_brief"), findings),
@@ -636,6 +634,7 @@ class WriterDeepReviewService(PassagePatchMixin):
         run_chapter_id: str | None = None,
         ids_from_context: bool = False,
         style_role: str = "review",
+        adjust_schema: Callable[[dict[str, Any]], None] | None = None,
     ) -> Any:
         """写作台三个 LLM 流程共用的一次节点调用（审计 B05-10）：装配模板 → 用户消息尾 → 参考书注入（按接收节点的
         路由判云策略，「仅本机」的书遇云端路由整次 409）→ 计费上下文 → 运行器；运行器的失败只在这里翻译一次
@@ -643,6 +642,9 @@ class WriterDeepReviewService(PassagePatchMixin):
         运行器记账用的场 / 章 id 各流程照旧：深评与局部深评显式给出，局部改写（``ids_from_context``）取计费上下文里的。"""
 
         prompt = self.prompt_builder.build(snapshot, template)
+        if adjust_schema is not None:
+            # 发出去的 schema 按这一次请求收紧（build 给的是模板 schema 的副本）
+            adjust_schema(prompt["structured_schema"])
         user_prompt = finish_user_prompt(prompt["user_prompt"])
         prompt = self._inject_style_reference_prefix(
             prompt,

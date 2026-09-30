@@ -7,8 +7,6 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
-
 from novel_system.db.models import AuthorDraft, PassagePatchCandidate
 from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import plain_manuscript_text
@@ -18,14 +16,22 @@ from novel_system.services.reference_copy_gate import (
     introduced_copy,
 )
 from novel_system.services.scene_diagnosis import PATCH_CATEGORIES, candidate_category_for_dimension
+from novel_system.services.scene_text import current_author_draft
 from novel_system.services.style_prompt_injection import resolve_style_scope
 from novel_system.services.style_reference.readings import STAGE_PATCHED, record_author_draft_reading
+from novel_system.services.style_reference.text_utils import compact_ws
 from novel_system.services.value_coercion import optional_text
-from novel_system.services.writer_deep_review_output import WriterDeepReviewOutputError, _normalize_patch_output
+from novel_system.services.writer_deep_review_output import (
+    PATCH_LONG_SOURCE_CHARS,
+    WriterPassagePatchEmpty,
+    _normalize_patch_output,
+)
 from novel_system.services.writer_deep_review_prompts import _passage_patch_snapshot, _passage_patch_user_prompt
 
 # 写作台工具条的自由改写（没有对应的诊断维度）用这个维度键；指令本身走 instruction 字段
 AUTHOR_INSTRUCTION_DIMENSION = "author_instruction"
+# 一次改写最多送多少字（按码点数）：与写作台的 WR_REWRITE_MAX_CHARS 同一个数（重评 R12）
+PATCH_MAX_SOURCE_CHARS = 2000
 
 
 class PassagePatchMixin:
@@ -40,6 +46,15 @@ class PassagePatchMixin:
         """
 
         source_excerpt = _required_text(payload, "source_excerpt")
+        if len(source_excerpt) > PATCH_MAX_SOURCE_CHARS:
+            # 与写作台的上限同一个数（WR_REWRITE_MAX_CHARS，按码点数）：超了不截短、不发请求——以前只把前 2000 字
+            # 送去改，却把整段换掉（重评 R12）
+            raise DomainError(
+                "PASSAGE_PATCH_TOO_LONG",
+                f"选区太长（{len(source_excerpt)} 字），一次最多改写 {PATCH_MAX_SOURCE_CHARS} 字，请分段改写。",
+                status_code=400,
+                details={"length": len(source_excerpt), "limit": PATCH_MAX_SOURCE_CHARS},
+            )
         issue_dimension = _required_text(payload, "issue_dimension")
         object_type = _required_text(payload, "object_type")
         object_id = _required_text(payload, "object_id")
@@ -116,20 +131,14 @@ class PassagePatchMixin:
             (option for option in options if str(option.get("option_id")) == str(selected_option_id or "")),
             options[0] if options else None,
         )
-        replacement = str((chosen or {}).get("replacement_text") or "").strip()
-        draft = self._source_draft(row.source_draft_id)
-        if draft is None:
-            draft = self.session.execute(
-                select(AuthorDraft).where(
-                    AuthorDraft.object_type == "scene",
-                    AuthorDraft.object_id == scene_id,
-                    AuthorDraft.status == "current",
-                )
-            ).scalars().first()
+        # 比对按压缩空白的可见文字：作者稿的可见文字段落之间只隔一个空格，跨段的原句 / 改写（段与段之间是换行）
+        # 原样比永远对不上，读数就悄悄不记了（重评 R12 复核补充 7）
+        replacement = compact_ws(str((chosen or {}).get("replacement_text") or ""))
+        draft = self._source_draft(row.source_draft_id) or current_author_draft(self.session, "scene", scene_id)
         if draft is None or not replacement:
             return
-        current = plain_manuscript_text(draft.content or "")
-        excerpt = str(row.source_excerpt or "").strip()
+        current = compact_ws(plain_manuscript_text(draft.content or ""))
+        excerpt = compact_ws(str(row.source_excerpt or ""))
         if replacement in current:
             text = current
         elif excerpt and excerpt in current:
@@ -274,24 +283,22 @@ class PassagePatchMixin:
             bundle_id=snapshot["source_version_refs"]["target_text_ref"] or "writer_passage_patch",
             ids_from_context=True,
             execution_step_key=f"writer_passage_patch:{object_type}:{object_id}",
+            adjust_schema=lambda schema: _cap_patch_options(schema, source_excerpt),
         )
         try:
             normalized = _normalize_patch_output(
                 node_result.response.structured_output,
                 source_excerpt=source_excerpt,
                 issue_dimension=issue_dimension,
-                target_text_ref=target_text_ref,
             )
-        except WriterDeepReviewOutputError as exc:
+        except WriterPassagePatchEmpty as exc:
+            # 拒绝式：模型没给出一个能用的改写就报错，不拿写死的句子凑数；不带 author_action——这不是配置问题，
+            # 前端按码说「模型这次没有给出可用的结果」
             raise DomainError(
-                "WRITER_PASSAGE_PATCH_OUTPUT_INVALID",
-                f"writer passage patch returned an invalid payload: {exc}",
+                "WRITER_PASSAGE_PATCH_EMPTY",
+                "模型这次没有给出可用的改写。换个说法，或者稍后再试。",
                 status_code=502,
-                details={
-                    "llm_call_id": node_result.llm_call_id,
-                    "node_id": "writer_passage_patch",
-                    "validation_error": str(exc),
-                },
+                details={"llm_call_id": node_result.llm_call_id, "node_id": "writer_passage_patch", "reason": exc.reason},
             ) from exc
         generation_llm_call_id = str(node_result.llm_call_id or "").strip()
         if not generation_llm_call_id:
@@ -314,6 +321,18 @@ class PassagePatchMixin:
         if row is None:
             raise DomainError("PASSAGE_PATCH_NOT_FOUND", "passage patch candidate not found", status_code=404)
         return row
+
+
+def _cap_patch_options(schema: dict[str, Any], source_excerpt: str) -> None:
+    """原文超过 ``PATCH_LONG_SOURCE_CHARS`` 字时，发出去的 schema 只许两个选项（三个 2,000 字的改写放不进一次的
+    输出上限；只在提示词里说，模型照样回三个）。"""
+
+    if len(source_excerpt) <= PATCH_LONG_SOURCE_CHARS:
+        return
+    patches = (schema.get("properties") or {}).get("patches")
+    if isinstance(patches, dict):
+        patches["maxItems"] = 2
+        patches["minItems"] = min(int(patches.get("minItems") or 1), 2)
 
 
 def _candidate_category(payload: dict[str, Any], issue_dimension: str) -> str:

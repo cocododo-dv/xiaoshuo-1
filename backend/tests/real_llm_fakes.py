@@ -170,36 +170,30 @@ class WriterNodeOnlineFake(AccountedGenerateMixin):
                 "lens_evaluations": [],
             }
         elif node_id == "writer_passage_patch":
-            source_excerpt = _extract_prompt_marker(request, "Source Excerpt:") or "占位原句。"
-            target_ref = _extract_prompt_marker(request, "Target Text Ref:") or "ref-scene"
-            patch_common = {
-                "target_text_ref": target_ref,
-                "source_excerpt": source_excerpt,
-                "patch_type": "replace_excerpt",
-            }
+            # writer_passage_patch v4：每个选项回一组段落，不再把原文与 target_text_ref 抄回来
             payload = {
                 "patches": [
                     {
-                        **patch_common,
                         "tone": "shorter",
                         "label": "更短",
-                        "replacement_text": "她按住证据，没有解释。",
+                        "paragraphs": ["她按住证据，没有解释。"],
+                        "patch_type": "replace_excerpt",
                         "changed_dimensions": ["information_rhythm"],
                         "why_it_helps": "压掉解释余量，让动作自己承担压力。",
                     },
                     {
-                        **patch_common,
                         "tone": "sharper",
                         "label": "更狠",
-                        "replacement_text": "她收回手，话到嘴边又咽了回去。",
+                        "paragraphs": ["她收回手，话到嘴边又咽了回去。"],
+                        "patch_type": "replace_excerpt",
                         "changed_dimensions": ["relationship_tension"],
                         "why_it_helps": "让动作后果承担锋利感。",
                     },
                     {
-                        **patch_common,
                         "tone": "subtler",
                         "label": "更含蓄",
-                        "replacement_text": "她把证据分成两份，先看了一眼门缝。",
+                        "paragraphs": ["她把证据分成两份，先看了一眼门缝。"],
+                        "patch_type": "replace_excerpt",
                         "changed_dimensions": ["dialogue_subtext"],
                         "why_it_helps": "把明说转为回避，留出读者判断空间。",
                     },
@@ -210,19 +204,6 @@ class WriterNodeOnlineFake(AccountedGenerateMixin):
         else:
             raise AssertionError(f"unexpected writer-node online request: {node_id}")
         return _response(request, payload, len(self.requests))
-
-
-def _extract_prompt_marker(request: LLMRequest, marker: str) -> str | None:
-    for message in request.messages or []:
-        content = str(message.get("content", ""))
-        idx = content.find(marker)
-        if idx < 0:
-            continue
-        tail = content[idx + len(marker):].lstrip("\n ")
-        line = tail.split("\n", 1)[0].strip()
-        if line:
-            return line
-    return None
 
 
 _WRITER_NODE_RUNNER_MODULES = (

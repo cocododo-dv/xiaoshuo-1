@@ -112,41 +112,45 @@ def test_run_jobs_creates_job_without_500(client, session) -> None:
     assert poll.status_code == 200
 
 
-def test_normalize_patch_output_tops_up_single_llm_option_to_two() -> None:
-    """Fix B：真 LLM 仅回 1 个候选时，补足到 ≥2，且补足项可区分、不污染前端 offline 正则。"""
-    import re as _re
+def test_normalize_patch_output_never_tops_up_with_canned_prose() -> None:
+    """拒绝式（审计 B05-04）：模型只回一个能用的改写就给一个，一个都没有就报错——不再拿退役演示故事里写死的句子
+    （「证据袋」「门缝」）补足选项，那些句子会被作者插进正文。"""
+    import pytest as _pytest
+
     from novel_system.services.writer_deep_review import _normalize_patch_output
+    from novel_system.services.writer_deep_review_output import WriterPassagePatchEmpty
 
     out = _normalize_patch_output(
-        {"patches": [{"replacement_text": "她把证据袋按进掌心，没有解释。", "tone": "sharper", "label": "更狠"}], "rationale": "压缩解释余量"},
+        {"patches": [{"paragraphs": ["她把证据袋按进掌心，没有解释。"], "tone": "sharper", "label": "更狠"}], "rationale": "压缩解释余量"},
         source_excerpt="她把证据袋放回原处，转身解释了三句。",
-        issue_dimension="把这段改得更凝练",
-        target_text_ref="ref-1",
+        issue_dimension="author_instruction",
     )
     opts = out["replacement_options"]
-    assert len(opts) >= 2, "真 LLM 只回 1 个时必须补足到 ≥2"
-    llm = [o for o in opts if str(o["option_id"]).startswith("option_llm_")]
-    topup = [o for o in opts if o.get("is_fallback_topup")]
-    assert len(llm) == 1 and len(topup) >= 1, "应恰有 1 个真 LLM 候选 + ≥1 个可区分的补足项"
-    assert all(str(o["replacement_text"]).strip() for o in opts)
-    assert topup[0]["replacement_text"].strip() != llm[0]["replacement_text"].strip(), "补足项不得与真候选重复"
-    # 诚实但不冒充：rationale 整串不得匹配前端 /offline deterministic/i（否则真改写被整体丢弃）
-    assert not _re.search(r"offline deterministic", out["rationale"], _re.I)
+    assert [option["replacement_text"] for option in opts] == ["她把证据袋按进掌心，没有解释。"]
+    assert opts[0]["option_id"] == "option_llm_1" and opts[0]["paragraphs"] == ["她把证据袋按进掌心，没有解释。"]
+    assert out["rationale"] == "压缩解释余量"
+    assert not any(option.get("is_fallback_topup") for option in opts)
+
+    for payload in (None, "not json", {}, {"patches": []}, {"patches": [{"paragraphs": ["  "]}, {"replacement_text": ""}, "x"]}):
+        with _pytest.raises(WriterPassagePatchEmpty) as excinfo:
+            _normalize_patch_output(payload, source_excerpt="原句。", issue_dimension="dim")
+        assert excinfo.value.reason == "no_options"
 
 
 def test_normalize_patch_output_keeps_multi_llm_options_without_topup() -> None:
-    """Fix B 边界：模型已给 ≥2 个候选时，不补足、不加标记。"""
+    """模型已给 ≥2 个候选：原样收下；旧模板（v3）的 replacement_text 也认，按换行拆段。"""
     from novel_system.services.writer_deep_review import _normalize_patch_output
 
     out = _normalize_patch_output(
-        {"patches": [{"replacement_text": "甲版改写。"}, {"replacement_text": "乙版改写。"}], "rationale": "两版"},
+        {"patches": [{"replacement_text": "甲版改写。"}, {"paragraphs": ["乙版第一段。", "乙版第二段。"]}], "rationale": "两版"},
         source_excerpt="原句。",
         issue_dimension="dim",
-        target_text_ref="r",
     )
     opts = out["replacement_options"]
-    assert len(opts) == 2
-    assert not any(o.get("is_fallback_topup") for o in opts), "已有 ≥2 个真候选不应补足"
+    assert [option["paragraphs"] for option in opts] == [["甲版改写。"], ["乙版第一段。", "乙版第二段。"]]
+    assert opts[1]["replacement_text"] == "乙版第一段。\n乙版第二段。"
+    assert not any(option.get("is_fallback_topup") for option in opts), "已有 ≥2 个真候选不应补足"
+    assert all("source_excerpt" not in option and "target_text_ref" not in option for option in opts), "不再回显原文"
 
 
 def test_author_note_instruction_formatting() -> None:

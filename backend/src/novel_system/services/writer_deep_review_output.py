@@ -1,39 +1,41 @@
 """写作台深评 / 局部深评 / 局部改写的模型输出归一（从 writer_deep_review 拆出）：只收模板声明的形状，
-分数按模板声明的 0–1 刻度收、越界的丢掉。"""
+分数按模板声明的 0–1 刻度收、越界的丢掉；模型没给的不编（没给的维度就没有分、没给的总分就是空，前端显示「—」）。"""
 
 from __future__ import annotations
 
-from statistics import mean
 from typing import Any
 
 from novel_system.services.review_scores import normalize_score
-from novel_system.services.scene_diagnosis import PASSAGE_RELATION_KINDS, PASSAGE_VERDICTS
-
-LITERARY_REVISION_DIMENSIONS: tuple[str, ...] = (
-    "character_contradiction",
-    "choice_pressure",
-    "relationship_tension",
-    "dialogue_subtext",
-    "information_rhythm",
-    "voice_distinction",
-    "image_necessity",
-    "repetitive_expression",
-    "ending_drive",
-    "theme_pressure",
+from novel_system.services.scene_diagnosis import (
+    AI_DIMENSION_LABELS,
+    LENS_LABELS,
+    PASSAGE_RELATION_KINDS,
+    PASSAGE_VERDICTS,
 )
-DEEP_REVIEW_LENSES: tuple[str, ...] = ("story", "character", "prose", "reader", "theme")
+
+# 深评的十维与五个镜头：与诊断的中文名表同一份（顺序即表的顺序）
+LITERARY_REVISION_DIMENSIONS: tuple[str, ...] = tuple(AI_DIMENSION_LABELS)
+DEEP_REVIEW_LENSES: tuple[str, ...] = tuple(LENS_LABELS)
+# 没给维度的发现记成「评审意见」（与诊断读评审行时的兜底同一个键），不冒充某个具体维度
+REVIEW_NOTE_DIMENSION = "review_note"
+# 局部改写：原文超过这么多字时只要两个选项（三个 2,000 字的改写放不进一次的输出上限，重评 R12）
+PATCH_LONG_SOURCE_CHARS = 1000
 
 
-class WriterDeepReviewOutputError(ValueError):
-    """The provider completed a call but violated a writer output contract."""
+class WriterPassagePatchEmpty(ValueError):
+    """局部改写没有一个能用的选项（``reason``：``no_options`` 没给 / 全是空的；``paragraphs_collapsed`` 给的都把
+    几段挤成了一段）。拒绝式：不再拿写死的句子凑数。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
     findings = _normalize_findings(payload.get("findings"))
     scores = _normalize_scores(payload.get("scores"))
+    # 总分只用模型给的（合法的）：没给 / 越界 → 空，不拿各维分（以前还掺着编出来的 0.78）凑一个平均
     overall_score = _optional_score(payload.get("overall_score"))
-    if overall_score is None:
-        overall_score = round(mean(scores.values()), 2) if scores else None
     revision_brief = _normalize_revision_brief(payload.get("revision_brief"), findings)
     normalized_lenses = _normalize_lens_evaluations(payload.get("lens_evaluations"), findings)
     requires_human_review = bool(payload.get("requires_human_review"))
@@ -47,6 +49,7 @@ def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
         "requires_human_review": requires_human_review,
         "lens_evaluations": normalized_lenses,
     }
+
 
 def _normalize_lens_evaluations(value: Any, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # 模型直出的分组是权威来源（校验后采用）;缺失的镜头再从顶层 findings 的
@@ -81,28 +84,34 @@ def _normalize_lens_evaluations(value: Any, findings: list[dict[str, Any]]) -> l
         lens_findings = findings_by_lens[lens]
         if lens in by_lens or not lens_findings:
             continue
+        # 模型没分组的镜头按顶层发现重建：只有发现与改法，没有分数（以前按严重度编 0.42 / 0.58 / 0.72）
         by_lens[lens] = {
             "lens": lens,
-            "scores": _scores_for_findings(lens_findings),
+            "scores": {},
             "findings": lens_findings,
             "revision_brief": _revision_brief_from_findings(lens_findings),
         }
     return [by_lens[lens] for lens in DEEP_REVIEW_LENSES if lens in by_lens]
 
+
 def _coerce_lens(value: Any) -> str | None:
     lens = str(value or "").strip().lower()
     return lens if lens in DEEP_REVIEW_LENSES else None
 
+
 def _normalize_scores(value: Any) -> dict[str, float]:
-    scores = {dimension: 0.78 for dimension in LITERARY_REVISION_DIMENSIONS}
+    """模型给的各维分（只认十个维度、只收合法的分）；没给的维度就没有分——以前一律先填 0.78。"""
+
+    scores: dict[str, float] = {}
     if isinstance(value, dict):
         for dimension, raw_score in value.items():
-            if dimension not in scores:
+            if dimension not in LITERARY_REVISION_DIMENSIONS:
                 continue
             score = _optional_score(raw_score)
             if score is not None:
                 scores[dimension] = score
     return scores
+
 
 def _optional_score(value: Any) -> float | None:
     """深评 / 局部深评模板声明 0–1 分（``structured_schema`` 的 minimum / maximum）：按声明的刻度收，越界的分丢掉
@@ -111,12 +120,11 @@ def _optional_score(value: Any) -> float | None:
     score = normalize_score(value, 1.0)
     return None if score is None else round(score, 2)
 
-def _lens_overall_score(value: Any, scores: dict[str, float]) -> float | None:
-    """镜头行的总分：模型给了（合法的）就用它——0.0 也是分，不当作没给；没给才按各维分取平均。"""
-    score = _optional_score(value)
-    if score is not None:
-        return score
-    return round(mean(scores.values()), 2) if scores else None
+
+def _lens_overall_score(value: Any) -> float | None:
+    """镜头行的总分：模型给了（合法的）就用它——0.0 也是分，不当作没给；没给就是空。"""
+    return _optional_score(value)
+
 
 def _normalize_findings(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
@@ -132,15 +140,15 @@ def _normalize_findings(value: Any) -> list[dict[str, Any]]:
         finding["severity"] = severity
         finding["classification"] = str(finding.get("classification") or severity)
         finding["lens"] = _coerce_lens(finding.get("lens")) or "story"
-        finding["dimension"] = str(finding.get("dimension") or "choice_pressure")
+        finding["dimension"] = str(finding.get("dimension") or "").strip() or REVIEW_NOTE_DIMENSION
         finding["issue"] = str(finding.get("issue") or "")
         finding["recommendation"] = str(finding.get("recommendation") or "")
         finding["evidence_excerpt"] = str(finding.get("evidence_excerpt") or "")
         finding["evidence_location"] = str(finding.get("evidence_location") or "source text")
         finding["why_it_matters"] = str(finding.get("why_it_matters") or "")
-        finding["scene_form"] = str(finding.get("scene_form") or "plot_scene")
         findings.append(finding)
     return findings
+
 
 def _normalize_revision_brief(value: Any, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if isinstance(value, list):
@@ -149,19 +157,6 @@ def _normalize_revision_brief(value: Any, findings: list[dict[str, Any]]) -> lis
             return items
     return _revision_brief_from_findings(findings)
 
-def _scores_for_findings(findings: list[dict[str, Any]]) -> dict[str, float]:
-    scores = {dimension: 0.78 for dimension in LITERARY_REVISION_DIMENSIONS}
-    for finding in findings:
-        dimension = finding.get("dimension")
-        if dimension not in scores:
-            continue
-        if finding.get("severity") == "blocking":
-            scores[dimension] = min(scores[dimension], 0.42)
-        elif finding.get("severity") == "revision":
-            scores[dimension] = min(scores[dimension], 0.58)
-        elif finding.get("severity") == "taste":
-            scores[dimension] = min(scores[dimension], 0.72)
-    return scores
 
 def _revision_brief_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     brief: list[dict[str, Any]] = []
@@ -184,6 +179,7 @@ def _revision_brief_from_findings(findings: list[dict[str, Any]]) -> list[dict[s
             }
         )
     return brief
+
 
 def _normalize_passage_review_output(payload: Any, *, has_finding: bool) -> dict[str, Any]:
     if not isinstance(payload, dict):
@@ -215,30 +211,32 @@ def _normalize_passage_review_output(payload: Any, *, has_finding: bool) -> dict
         "rewrite_brief": str(payload.get("rewrite_brief") or "").strip(),
     }
 
-def _normalize_patch_output(
-    payload: Any,
-    *,
-    source_excerpt: str,
-    issue_dimension: str,
-    target_text_ref: str,
-) -> dict[str, Any]:
+
+def _normalize_patch_output(payload: Any, *, source_excerpt: str, issue_dimension: str) -> dict[str, Any]:
+    """局部改写的输出（``writer_passage_patch`` v4）：每个选项是一组段落（``paragraphs``，阅读顺序，一段一个字符串）；
+    ``replacement_text`` 是按换行拼起来的同一份字（旧的读取方照旧读它）。还没同步提示词快照的安装仍按 v3 回
+    ``replacement_text``：按换行拆段。
+
+    拒绝式（作者 2026-09-15「没有模型就不兜底」）：没有一个可用的选项 → :class:`WriterPassagePatchEmpty`，调用方回错；
+    只有一个就给一个——以前拿退役演示故事里写死的句子（「证据袋」「门缝」）补足三个 / 两个选项，会被作者插进正文。
+    把几段挤成了一段的选项（原文有两段以上，或者一段里挤进了好几句对白而原文没有这样写）不要，不去替作者拼。"""
+
     if not isinstance(payload, dict):
-        return {
-            "replacement_options": _replacement_options(source_excerpt, issue_dimension),
-            "rationale": "fallback because patch response was not an object",
-        }
+        raise WriterPassagePatchEmpty("no_options")
     patches = payload.get("patches")
-    if not isinstance(patches, list) or not patches:
-        return {
-            "replacement_options": _replacement_options(source_excerpt, issue_dimension),
-            "rationale": str(payload.get("rationale") or "fallback because patch list was empty"),
-        }
+    if not isinstance(patches, list):
+        raise WriterPassagePatchEmpty("no_options")
+    source_paragraphs = split_paragraphs(source_excerpt)
     options: list[dict[str, Any]] = []
+    collapsed = 0
     for index, patch in enumerate(patches[:3], start=1):
         if not isinstance(patch, dict):
             continue
-        replacement_text = patch.get("replacement_text")
-        if not isinstance(replacement_text, str) or not replacement_text.strip():
+        paragraphs = _option_paragraphs(patch)
+        if not paragraphs:
+            continue
+        if paragraphs_collapsed(source_paragraphs, paragraphs):
+            collapsed += 1
             continue
         changed_dimensions = patch.get("changed_dimensions") if isinstance(patch.get("changed_dimensions"), list) else []
         dimensions = [str(item) for item in changed_dimensions if isinstance(item, str) and item.strip()]
@@ -248,78 +246,46 @@ def _normalize_patch_output(
                 "option_id": f"option_llm_{index}",
                 "tone": tone,
                 "label": str(patch.get("label") or f"版本 {index}"),
-                "replacement_text": replacement_text.strip(),
+                "paragraphs": paragraphs,
+                "replacement_text": "\n".join(paragraphs),
                 "changed_dimensions": dimensions or [issue_dimension],
                 "why_it_helps": str(patch.get("why_it_helps") or patch.get("reason") or ""),
-                "target_text_ref": str(patch.get("target_text_ref") or target_text_ref),
-                "source_excerpt": str(patch.get("source_excerpt") or source_excerpt),
                 "patch_type": str(patch.get("patch_type") or "replace_excerpt"),
             }
         )
     if not options:
-        # 模型完全没给可用候选 → 确定性兜底(3 个)，沿用既有语义（离线测试覆盖）
-        options = _replacement_options(source_excerpt, issue_dimension)
-    elif len(options) < 2:
-        # Fix B：模型仅回 1 个合法候选时，用确定性变体补足到 ≥2，保留「多选改写」UX 契约。
-        # 诚实纪律：补足项 option_id 带 topup 前缀 + is_fallback_topup 标记可区分、不冒充模型产物；
-        # 且补足时 rationale 不得整串落入前端 /offline deterministic/i 正则
-        # （否则 ws-writer.jsx 会把整次真实改写误判为「模型不可用」而整体丢弃）。
-        existing = {opt["replacement_text"].strip() for opt in options}
-        for variant in _replacement_options(source_excerpt, issue_dimension):
-            if len(options) >= 2:
-                break
-            text = str(variant.get("replacement_text") or "").strip()
-            if not text or text in existing:
-                continue
-            options.append(
-                {
-                    "option_id": f"option_topup_{variant['option_id']}",
-                    "tone": str(variant.get("tone") or issue_dimension),
-                    "label": f"{variant.get('label') or '备选'}（确定性补足）",
-                    "replacement_text": text,
-                    "changed_dimensions": [*(variant.get("changed_dimensions") or []), "deterministic_topup"],
-                    "why_it_helps": str(variant.get("why_it_helps") or ""),
-                    "target_text_ref": target_text_ref,
-                    "source_excerpt": source_excerpt,
-                    "patch_type": "replace_excerpt",
-                    "is_fallback_topup": True,
-                }
-            )
-            existing.add(text)
+        raise WriterPassagePatchEmpty("paragraphs_collapsed" if collapsed else "no_options")
+    return {"replacement_options": options, "rationale": str(payload.get("rationale") or "")}
 
-    rationale = str(payload.get("rationale") or "")
-    if any(opt.get("is_fallback_topup") for opt in options):
-        rationale = (rationale + "（模型仅返回单个候选，已用确定性变体补足候选数；标注「确定性补足」的选项为非模型产物。）").strip()
-    return {
-        "replacement_options": options,
-        "rationale": rationale,
-    }
 
-def _replacement_options(source_excerpt: str, issue_dimension: str) -> list[dict[str, Any]]:
-    compressed = source_excerpt.strip().rstrip("。！？")
-    return [
-        {
-            "option_id": "option_shorter",
-            "tone": "shorter",
-            "label": "更短",
-            "replacement_text": f"{compressed}。",
-            "changed_dimensions": [issue_dimension, "information_rhythm"],
-            "why_it_helps": "压掉解释余量，让动作和停顿自己承担压力。",
-        },
-        {
-            "option_id": "option_sharper",
-            "tone": "sharper",
-            "label": "更狠",
-            "replacement_text": f"{compressed}。她没有补充理由，只把证据袋按进掌心。",
-            "changed_dimensions": [issue_dimension, "relationship_tension"],
-            "why_it_helps": "让角色拒绝解释，把锋利感放进动作后果。",
-        },
-        {
-            "option_id": "option_subtler",
-            "tone": "subtler",
-            "label": "更含蓄",
-            "replacement_text": f"{compressed}。话音落下后，她先看了一眼门缝。",
-            "changed_dimensions": [issue_dimension, "dialogue_subtext"],
-            "why_it_helps": "把明说转为观察和回避，保留读者自行判断的空间。",
-        },
-    ]
+def split_paragraphs(text: str) -> list[str]:
+    """一段选区 / 一个选项按换行拆成段（空行不算段）。"""
+
+    return [line.strip() for line in str(text or "").splitlines() if line.strip()]
+
+
+def _option_paragraphs(patch: dict[str, Any]) -> list[str]:
+    raw = patch.get("paragraphs")
+    if isinstance(raw, list):
+        return [part for item in raw if isinstance(item, str) for part in split_paragraphs(item)]
+    replacement = patch.get("replacement_text")
+    return split_paragraphs(replacement) if isinstance(replacement, str) else []
+
+
+_OPENING_QUOTES = ("“", "「", "『")
+
+
+def _utterances(paragraph: str) -> int:
+    return sum(paragraph.count(mark) for mark in _OPENING_QUOTES)
+
+
+def paragraphs_collapsed(source_paragraphs: list[str], option_paragraphs: list[str]) -> bool:
+    """这个选项是不是把几段挤成了一段（与起草的「整场挤成一段」同一个意思）：选项只有一段，而原文有两段以上；或者
+    这一段里挤进了两句以上的对白、原文却没有哪一段这样写（小说对白一句一段）。"""
+
+    if len(option_paragraphs) != 1:
+        return False
+    if len(source_paragraphs) >= 2:
+        return True
+    source_packs_dialogue = any(_utterances(paragraph) >= 2 for paragraph in source_paragraphs)
+    return _utterances(option_paragraphs[0]) >= 2 and not source_packs_dialogue

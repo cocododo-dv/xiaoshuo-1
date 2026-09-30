@@ -563,7 +563,8 @@ def test_patch_candidate_from_a_finding_learns_by_dimension_and_carries_the_inst
     assert "Issue Dimension: model_voice" in user_prompt
     assert f"Diagnosed Issue: {voice['issue']}" in user_prompt
     assert f"Author Instruction: {voice['recommendation']}" in user_prompt
-    assert "## Current Author Draft Context" in user_prompt and "许望没有回答" in user_prompt
+    # 改写要接得上的两头：选区在第 1 段末尾，下一段是「许望没有回答……」（重评 R12：接缝，不是整份作者稿的头尾）
+    assert "## Text Around The Passage" in user_prompt and "Paragraph After: 许望没有回答" in user_prompt
 
     # 工具条的自由改写：维度是 author_instruction，画像记作者的那句话
     free = WriterDeepReviewService(session, llm_client=llm).create_patch_candidate(

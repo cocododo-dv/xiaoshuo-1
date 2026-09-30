@@ -10,10 +10,13 @@ from novel_system.db.models import AuthorDraft, SceneCard, WriterEvaluation
 from novel_system.services.manuscript_html import manuscript_paragraphs
 from novel_system.services.scene_diagnosis import locate_in_paragraphs
 from novel_system.services.value_coercion import optional_text
+from novel_system.services.writer_deep_review_output import split_paragraphs
 
 PASSAGE_MAX_FOCUS_PARAGRAPHS = 40
 CHAPTER_DIGEST_EDGE_CHARS = 200
 CHAPTER_DIGEST_MAX_FINDINGS = 6
+# 局部改写：接缝处每一侧给模型看多少字
+PATCH_SEAM_CHARS = 600
 
 
 def _prompt_text(content: Any) -> str:
@@ -88,7 +91,7 @@ def _previous_findings_by_scene(
     for item in previous.findings_json or []:
         if not isinstance(item, dict):
             continue
-        excerpt = _compact_text(str(item.get("evidence_excerpt") or ""), 400)
+        excerpt = _clip_middle(str(item.get("evidence_excerpt") or ""), 400)
         if not excerpt:
             continue
         for scene, text in zip(scenes, texts):
@@ -133,13 +136,13 @@ def _chapter_review_prompt_tail(
         "Judge the chapter as a whole again (promise, escalation, payoff, ending) with the changed scenes in place.",
     ]
     if previous is not None:
-        located = {(str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) for item in carried}
+        located = {(str(item.get("dimension")), _clip_middle(str(item.get("evidence_excerpt") or ""), 200)) for item in carried}
         chapter_level = [
             item
             for item in (previous.findings_json or [])
             if isinstance(item, dict)
-            and (str(item.get("dimension")), _compact_text(str(item.get("evidence_excerpt") or ""), 200)) not in located
-            and not _compact_text(str(item.get("evidence_excerpt") or ""), 200)
+            and (str(item.get("dimension")), _clip_middle(str(item.get("evidence_excerpt") or ""), 200)) not in located
+            and not _clip_middle(str(item.get("evidence_excerpt") or ""), 200)
         ]
         if chapter_level:
             lines.extend(
@@ -153,6 +156,34 @@ def _chapter_review_prompt_tail(
     return "\n".join(lines)
 
 
+def patch_seams(draft_content: str | None, excerpt: str) -> dict[str, str] | None:
+    """选区两头的接缝（可见文字）：选区所在第一段里选区之前的那部分与再往前的一整段、最后一段里选区之后的那部分与
+    再往后的一整段——改写要与这两处接得上。跨段的选区有两处接缝。选区在作者稿里对不上 → None（不猜）。
+
+    以前给模型的是整份作者稿 HTML 的头尾各 700 字（带标签），与选区在哪儿无关（重评 R12 复核补充 6）。"""
+
+    paragraphs = [paragraph for paragraph in manuscript_paragraphs(draft_content or "") if paragraph.strip()]
+    pieces = split_paragraphs(excerpt)
+    if not paragraphs or not pieces:
+        return None
+    first = locate_in_paragraphs(paragraphs, pieces[0])
+    if first is None:
+        return None
+    start_index = int(first["paragraph_index"])
+    last = locate_in_paragraphs(paragraphs[start_index:], pieces[-1])
+    if last is None:
+        return None
+    end_index = start_index + int(last["paragraph_index"])
+    lead = paragraphs[start_index][: first["start"]] if first["start"] is not None else ""
+    trail = paragraphs[end_index][last["end"] :] if last["end"] is not None else ""
+    return {
+        "before": paragraphs[start_index - 1][-PATCH_SEAM_CHARS:] if start_index > 0 else "",
+        "lead": lead[-PATCH_SEAM_CHARS:],
+        "trail": trail[:PATCH_SEAM_CHARS],
+        "after": paragraphs[end_index + 1][:PATCH_SEAM_CHARS] if end_index + 1 < len(paragraphs) else "",
+    }
+
+
 def _passage_patch_snapshot(
     *,
     payload: dict[str, Any],
@@ -163,18 +194,18 @@ def _passage_patch_snapshot(
     instruction: str | None = None,
     issue_note: str | None = None,
 ) -> dict[str, Any]:
+    # 选区原文与它两头的接缝在用户消息尾里（Source Excerpt / Text Around The Passage），这里不再重复一份
     inline_digests = {
         "scene_summary": json.dumps(
             {
                 "object_type": payload.get("object_type"),
                 "object_id": payload.get("object_id"),
                 "target_text_ref": target_text_ref,
-                "source_excerpt": source_excerpt,
                 "issue_dimension": issue_dimension,
                 "instruction": instruction or "",
                 "issue_note": issue_note or "",
                 "source_draft_id": source_draft.draft_id if source_draft is not None else None,
-                "source_draft_context": _compact_text(source_draft.content if source_draft is not None else source_excerpt, 1200),
+                "source_paragraphs": len(split_paragraphs(source_excerpt)),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -216,21 +247,35 @@ def _passage_patch_user_prompt(
         target_lines.append(f"Diagnosed Issue: {issue_note}")
     if instruction:
         target_lines.append(f"Author Instruction: {instruction}")
+    paragraphs = split_paragraphs(source_excerpt)
+    target_lines.append(f"Source Paragraphs: {len(paragraphs)} (one line per paragraph below)")
+    seams = patch_seams(source_draft.content if source_draft is not None else None, source_excerpt)
+    if seams is None:
+        around = ["(not available — the passage could not be located in the current author draft)"]
+    else:
+        around = [
+            f"Paragraph Before: {seams['before'] or '(none — the passage opens the scene)'}",
+            f"Same Paragraph, Before The Passage: {seams['lead'] or '(none — the passage starts the paragraph)'}",
+            f"Same Paragraph, After The Passage: {seams['trail'] or '(none — the passage ends the paragraph)'}",
+            f"Paragraph After: {seams['after'] or '(none — the passage closes the scene)'}",
+        ]
     return "\n".join(
         [
             base_prompt,
             "",
             *target_lines,
             "Source Excerpt:",
-            source_excerpt,
+            "\n".join(paragraphs) if paragraphs else source_excerpt,
             "",
-            "## Current Author Draft Context",
-            _compact_text(source_draft.content if source_draft is not None else "", 1400),
+            "## Text Around The Passage",
+            *around,
         ]
     )
 
 
-def _compact_text(value: str, limit: int) -> str:
+def _clip_middle(value: str, limit: int) -> str:
+    """去掉首尾空白；超过 ``limit`` 字时只留头尾各一半、中间一行省略（发现去重的键、通读摘要里的引文）。
+    与压缩空白的 ``compact_ws`` 不是一回事（审计 B05-11：两个名字曾经只差一个后缀）。"""
     text = str(value or "").strip()
     if len(text) <= limit:
         return text

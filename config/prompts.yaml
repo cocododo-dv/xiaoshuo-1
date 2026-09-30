@@ -1756,7 +1756,11 @@ templates:
   writer_passage_patch:
     # 2026-09-14 保真修补 WP6.3 v3：项目 / 场景有风格绑定时补丁拿到 [STYLE_REFERENCE]（k≤3 样例窗口），在参考作者
     # 的手笔下改句；预算 8000 → 24000 给样例块留余量（prompt_builder 同步地板）。
-    version: "2026-09-14.v3"
+    # 2026-09-30 v4（重评 R12）：每个选项回 paragraphs（一段一个字符串，按阅读顺序）——跨段的选区按段换回、
+    # 对白一句一段，不再把几段挤进一个 JSON 字符串里的空行；不再让模型把原文与 target_text_ref 抄回来（选区一长，
+    # 抄回来的那份就把输出上限吃光）；原文超过 1,000 字只要两个选项（代码在发出去的 schema 里把 maxItems 收到 2）；
+    # 用户消息里给的是选区两头的接缝（Paragraph Before / After 等），不再是整份作者稿 HTML 的头尾。
+    version: "2026-09-30.v4"
     input_token_budget: 24000
     system_prompt: |
       You are preparing a local passage patch for a fiction author.
@@ -1764,10 +1768,11 @@ templates:
     task_prompt: |
       Given the source passage, selected issue, evidence, and target dimensions, produce replacement options.
       Return at least 2 and at most 3 distinct replacement options with different tones
-      (for example: shorter / sharper / subtler), so the author has a real choice.
+      (for example: shorter / sharper / subtler), so the author has a real choice; when the source passage is longer than 1,000 characters return exactly 2.
+      Each option's paragraphs field is the replacement for the whole source passage as a list of paragraphs in reading order: one string per paragraph, no line breaks inside a string, no empty strings. Keep the source's paragraphing (the "Source Excerpt" shows one paragraph per line): a passage of several paragraphs comes back as several paragraphs, and every line of dialogue stays its own paragraph — never merge paragraphs into one.
       Write in the source language. Preserve continuity, names, facts, and author intent.
-      Return concise patch records that the author can manually accept or reject.
-      Every replacement_text must read as a seamless continuation of the untouched text around it: match the tense, POV, and tone of the sentence immediately before and after the patched span so the seam is not detectable.
+      Return concise patch records that the author can manually accept or reject; do not copy the source passage back into the output.
+      Every option must read as a seamless continuation of the untouched text around it: "Text Around The Passage" gives the paragraph before, the text before and after the passage inside its own first and last paragraph, and the paragraph after — match their tense, POV, and tone so neither seam is detectable.
       If a [STYLE_REFERENCE] block is prepended, patch in the reference author's hand: the [风格样例] settle questions of diction, imagery, sentence shapes, pauses and dialogue handling, and every replacement option must still sound like that author; never reuse the samples' sentences, names or events.
     structured_schema:
       type: object
@@ -1785,19 +1790,20 @@ templates:
             type: object
             additionalProperties: false
             required:
-              - target_text_ref
-              - source_excerpt
-              - replacement_text
+              - paragraphs
               - patch_type
               - changed_dimensions
               - why_it_helps
             properties:
-              target_text_ref:
+              label:
                 type: string
-              source_excerpt:
+              tone:
                 type: string
-              replacement_text:
-                type: string
+              paragraphs:
+                type: array
+                minItems: 1
+                items:
+                  type: string
               patch_type:
                 type: string
               changed_dimensions:
