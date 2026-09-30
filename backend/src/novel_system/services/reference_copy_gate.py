@@ -472,6 +472,7 @@ def copy_gate_policies(
     scope: Any = None,
     bundle_snapshot: Mapping[str, Any] | None = None,
     policy: Any = None,
+    live: Any = None,
 ) -> list[Any]:
     """抄袭门要比对的绑定：bundle 冻结的那份（绑定时）+ 作用域当前的活动绑定（轻量现解析，不冻结契约）。
 
@@ -481,6 +482,8 @@ def copy_gate_policies(
 
     ``policy``：调用方已经解析好的这一场的策略（成稿门一次评估只解析一份，文学规则与抄袭门看的是同一份）——给了
     就用它代替从 ``bundle_snapshot`` 解析的那份；它本身已是现解析时不再补一份现解析。
+    ``live``：调用方批量解析好的 ``scope`` 的现解析策略（``style_policy.live_policies_without_contract``：整章逐场
+    扫描时查询数不随场数增长）——给了就不再逐场现解析。
     """
     from novel_system.services.style_policy import MODE_LIVE, style_policy_for_bundle, style_policy_live
 
@@ -491,7 +494,8 @@ def copy_gate_policies(
     if primary is not None and (primary.bound or _policy_unavailable_reason(primary) is not None):
         policies.append(primary)
     if scope is not None and getattr(primary, "mode", None) != MODE_LIVE:
-        live = style_policy_live(session, scope, freeze_contract=False)
+        if live is None:
+            live = style_policy_live(session, scope, freeze_contract=False)
         if live.bound or _policy_unavailable_reason(live) is not None:
             policies.append(live)
     return policies

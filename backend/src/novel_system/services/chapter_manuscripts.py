@@ -20,6 +20,8 @@ from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.reference_copy_gate import check_reference_copy, copy_gate_policies
+from novel_system.services.scene_text import final_chapter_memory
+from novel_system.services.style_policy import live_policies_without_contract
 from novel_system.services.writer_review import WriterReviewService
 
 
@@ -47,11 +49,11 @@ class ChapterManuscriptService:
         scene_entries, final_scenes = self._scene_entries(scenes, scene_states)
         assembled = self._assembled_payload(scene_entries)
         completion = self._completion_contract_from_assembled(assembled)
-        aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter_id, chapter_state))
+        aggregate = self._aggregate_payload(final_chapter_memory(self.session, chapter_id))
         source_safety_scan = self._reference_copy_scan(
             scenes,
             final_scenes,
-            "\n".join([assembled["content"], aggregate["content"] if aggregate else ""]),
+            assembled["content"],
         )
         writer_review = WriterReviewService(self.session)
         writer_review_summary = writer_review.chapter_summary(chapter_id)
@@ -135,12 +137,11 @@ class ChapterManuscriptService:
         return {**contract, "canon_continuity": continuity}
 
     def _chapter_list_item(self, chapter: ChapterGoal) -> dict[str, Any]:
-        chapter_state = self.session.get(ChapterState, chapter.chapter_id)
         scenes = self._active_scenes(chapter.chapter_id)
         scene_states = self._scene_states(scenes)
         scene_entries, _final_scenes = self._scene_entries(scenes, scene_states)
         assembled = self._assembled_payload(scene_entries)
-        aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter.chapter_id, chapter_state))
+        aggregate = self._aggregate_payload(final_chapter_memory(self.session, chapter.chapter_id))
         return {
             **self.lifecycle.serialize_chapter_summary(chapter),
             "scene_count": assembled["scene_count"],
@@ -280,6 +281,8 @@ class ChapterManuscriptService:
     ) -> dict[str, Any]:
         """整章正文过唯一抄袭门（风格参考 v3）：每场终稿冻结时的绑定 + 这一场当前的活动绑定，书取并集。
 
+        查的是成稿中心读到的那份整章正文（各场当前终稿现拼），不带存下来的章汇总——落后的汇总里有、正文里已经
+        没有的字不该报成抄袭（S1 27）。各场的活动绑定一次批量解析（查询数不随场数增长，S1 19a）。
         只读展示：检查失败给 ``safe: False`` + 错误码，不拖垮成稿中心。
         """
         try:
@@ -295,15 +298,17 @@ class ChapterManuscriptService:
                 else {}
             )
             finals_by_scene = {row.scene_id: row for row in final_scenes.values()}
+            live_policies = live_policies_without_contract(self.session, scenes)
             policies: list[Any] = []
             seen: set[tuple[Any, ...]] = set()
-            for scene in scenes:
+            for scene, live in zip(scenes, live_policies):
                 final = finals_by_scene.get(scene.scene_id)
                 bundle = bundles.get(final.source_bundle_id) if final is not None and final.source_bundle_id else None
                 for policy in copy_gate_policies(
                     self.session,
                     scope=scene,
                     bundle_snapshot=bundle.frozen_snapshot_json if bundle is not None else None,
+                    live=live,
                 ):
                     key = (policy.mode, policy.binding_id, policy.contract_hash, policy.book_id)
                     if key not in seen:
@@ -388,22 +393,6 @@ class ChapterManuscriptService:
             "requires_human_review": requires_human_review,
             "reviewed_objects": reviewed_objects,
         }
-
-    def _resolve_final_aggregate(self, chapter_id: str, chapter_state: ChapterState | None) -> ChapterMemory | None:
-        if chapter_state is not None and chapter_state.last_final_memory_row_id:
-            pointed = self.session.get(ChapterMemory, chapter_state.last_final_memory_row_id)
-            if pointed is not None and pointed.chapter_id == chapter_id and pointed.aggregate_stage == "final":
-                return pointed
-
-        return self.session.execute(
-            select(ChapterMemory)
-            .where(
-                ChapterMemory.chapter_id == chapter_id,
-                ChapterMemory.aggregate_stage == "final",
-                ChapterMemory.active_flag == 1,
-            )
-            .order_by(ChapterMemory.created_at.desc(), ChapterMemory.row_id.desc())
-        ).scalars().first()
 
     @staticmethod
     def _aggregate_payload(memory: ChapterMemory | None) -> dict[str, Any] | None:
