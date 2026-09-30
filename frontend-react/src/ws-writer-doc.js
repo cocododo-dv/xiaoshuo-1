@@ -54,6 +54,18 @@ function saveToWork(sid, html, workId) {
   } catch (e) { /* 同上 */ }
 }
 
+/* 编辑器上一次装的那一场（prev）和这一次的 sid 是同一场、目录只是给它换了名字吗（乐观新建时的临时 sid → 稳定的 scene_id）：
+   旧名字经目录的别名解析到的就是这一次的 sid */
+function sameSceneRenamed(prev, sid, workId) {
+  if (!prev || prev.sid === sid || prev.workId !== workId) return false;
+  try {
+    const hit = WsCatalog.sceneById(prev.sid);
+    return !!(hit && hit.scene && hit.scene.sid === sid);
+  } catch (e) {
+    return false;
+  }
+}
+
 /* WrDocs 的状态快照 → 保存状态键（loaded / saving / saved / failed / locked，字在 wr-canonical-control 的 SAVE_LABELS）。
    idle：没有要保存的字时说什么（刚换场是「已加载」，读缓存换成新版本后是「已保存」或「已加载」） */
 function saveStatusOf(state, idle = "loaded") {
@@ -78,6 +90,7 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
   const handedRef = useRef(0);        // 交给 WrDocs 的最新一版；和 editVersionRef 相等 = 编辑器里的字 WrDocs 都有了
   const baseRef = useRef("");         // 编辑器上一次整篇换稿后的正文：作者是在它上面写的
   const workRef = useRef("");         // 这一场所属的作品：保存 / 冲刷都带上它（离场时作品可能已经换了）
+  const boundRef = useRef(null);      // 编辑器上一次装的是哪一场 { sid, workId }（目录给这一场换了名字时认得出还是它）
   const mountedRef = useRef(false);
   const sceneRef = useRef(activeScene);
   const decorateEvent = useWrEvent((el) => { if (decorate) decorate(el); });
@@ -161,11 +174,16 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
 
   /* 换场：同步读 WrDocs 缓存（兼容旧 wr-doc 本地键），后台水合服务端草稿。
      wrPrepareLoadedHTML 顺手拆掉历史遗留的空壳标记和旧开场占位句；空白场放一个空段落，
-     提示语由 CSS 画在空段落上（不再是一段会被存下去的「正文」）。 */
+     提示语由 CSS 画在空段落上（不再是一段会被存下去的「正文」）。
+     先订阅、再 WrDocs.load：load 里可能当场就有结果（章已批准锁定、停着的一稿留进同步与恢复、换回已存上的正文），写作台要
+     听到它，状态才不会停在打开之前的「草稿保存失败」（复核六 W1-R6B-4）。
+     目录只是给这一场换了名字（乐观新建时的临时 sid → 后端建好之后稳定的 scene_id）：还是同一场、同一份正文——离开旧名字时
+     没交出去的字已经交给 WrDocs、它的状态机跟到了新名字下，编辑器里就是这份字时不重装（光标留在原处，复核六 W1-R6B-1）。 */
   useEffect(() => {
     const el = editorRef.current;
     if (!el) return undefined;
     if (!activeScene) {
+      boundRef.current = null;
       el.innerHTML = "";
       recount();
       setCanonicalStatus("unknown");
@@ -173,6 +191,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     }
     const sid = activeScene;
     const workId = currentWorkId();
+    const renamed = sameSceneRenamed(boundRef.current, sid, workId);
+    boundRef.current = { sid, workId };
     workRef.current = workId;
     editVersionRef.current += 1;
     handedRef.current = editVersionRef.current;
@@ -180,13 +200,6 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     dirtyRef.current = !!(initial && initial.dirty); // WrDocs 这一场还有没存上的字（路上 / 排队 / 失败待重发 / 冲突中）
     setSaved(saveStatusOf(initial));
     setCanonicalStatus(canonicalFromStore(sid));
-    let stored = null;
-    try { stored = WrDocs.load(sid); } catch (e) {}
-    el.innerHTML = wrPrepareLoadedHTML(stored) || WR_EMPTY_DOC;
-    baseRef.current = wrSerializeManuscript(el);
-    decorateEvent(el);
-    recount();
-    const cleanupAfterLoad = afterLoadEvent(el);
 
     /* 编辑器整篇换成 html（冲突之后的服务端版本 / 读缓存换成的新版本）。还没交给 WrDocs 的字是在上一个版本上写的：先经 WrDocs 留进同步与恢复 */
     const replaceEditor = (html, reason) => {
@@ -240,6 +253,14 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
       else if (kind === "loaded") onLoaded(detail);
       else if (kind === "conflict-resolved") onResolved(detail);
     });
+    let stored = null;
+    try { stored = WrDocs.load(sid); } catch (e) {}
+    const loaded = wrPrepareLoadedHTML(stored) || WR_EMPTY_DOC;
+    if (!(renamed && sameManuscriptText(wrSerializeManuscript(el), loaded))) el.innerHTML = loaded;
+    baseRef.current = wrSerializeManuscript(el);
+    decorateEvent(el);
+    recount();
+    const cleanupAfterLoad = afterLoadEvent(el);
     /* 编辑器里还没交出去的字，用「当时的」场景 id 和作品交给 WrDocs（它在调用之内就写进本机缓存和未同步标记；
        章已批准锁定的场，它在调用之内留进同步与恢复）。交了返回 true */
     const handOverNow = () => {

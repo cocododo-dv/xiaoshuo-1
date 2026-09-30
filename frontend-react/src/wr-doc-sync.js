@@ -5,10 +5,10 @@ import { WsDiagnosis } from "./ws-diagnosis-summary.jsx";
 import { wsNotify } from "./ws-notify.jsx";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { activeWorkId, recoveryCreate, recoveryList, recoveryRemove } from "./wr-recovery-store.js";
+import { activeWorkId, recoveryCreate, recoveryList, recoveryRemove, recoveryRename } from "./wr-recovery-store.js";
 import {
-  cacheWrite, docText, draftTail, pendingBase, pendingClear, pendingRead, pendingRestore, pendingWrite, readCache, readSlot,
-  rememberInSession, sameManuscriptText, textFingerprint, toDocHTML,
+  cacheWrite, docText, draftTail, dropSceneKeys, pendingBase, pendingClear, pendingRead, pendingRestore, pendingSids, pendingWrite,
+  readCache, readSlot, rememberInSession, renameSceneKeys, sameManuscriptText, textFingerprint, toDocHTML,
 } from "./wr-doc-cache.js";
 
 /* ==========================================================
@@ -76,9 +76,10 @@ import {
      复核可能落地、在后面把编辑器换掉）；还没水合的先水合；作者确认的那一稿、编辑器这一份、服务端存下的那一版三者文字
      不同就不提升（AUTHOR_DRAFT_CONFLICT：作者没看过它，复核二 W1-R2A-4 · W1-R2B-1，复核三 W1-R3A-1 · W1-R3B-5）。
      提升在路上时服务端的修订号往前走了、走的全是这一页自己存上的：说的是作者自己接着写了（AUTHOR_DRAFT_MOVED_BY_SELF），
-     不说「在别处更新」（复核三 W1-R3B-8）；那一次自动保存的回包丢了（停着）时先把它再发一次再分，还是确认不了就说草稿
-     还没存上（AUTHOR_DRAFT_UNSAVED，复核四 W1-R4B-7）。章已批准锁定的不提升；锁定那一刻交进来的一稿还没存上（那一次保存 /
-     采纳还没结果、本章这期间又重新打开了）：说它还没存上（AUTHOR_DRAFT_LOCK_PENDING），不说「在别处更新」（复核五 W1-R5A-3）。
+     不说「在别处更新」（复核三 W1-R3B-8）；那一次自动保存的回包丢了（停着）时先把它再发一次再分，还是确认不了、或最新的一稿
+     之后又没存上，就说草稿还没存上（AUTHOR_DRAFT_UNSAVED，复核四 W1-R4B-7，复核六 W1-R6A-3）。章已批准锁定的不提升；
+     锁定那一刻交进来的一稿还没存上（那一次保存 / 采纳还没结果、本章这期间又重新打开了）：说它还没存上
+     （AUTHOR_DRAFT_LOCK_PENDING），不说「在别处更新」（复核五 W1-R5A-3）。
    · 采纳归档（acceptCanonical）：服务端在一个事务里存下并提升了采纳的那一稿。这一页已经读到了那一版（后台复核先到）：
      作者在它上面接着写的字照常保存，只记下权威正文（复核四 W1-R4A-3）。否则还在路上的那一次保存就此作废（superseded）：
      它回来时——不管失败、409 还是别的——不补发、不停着、不开冲突、不提示；排队 / 停着 / 核对中 / 冲突中的本机稿不再发，
@@ -92,9 +93,21 @@ import {
      服务端版本、把失败后停着的最新一稿再发一次（回包丢了的那一稿其实存上了时由核对接上修订号）、已水合的干净一场再读一次
      服务端，采纳带的修订号、预览和覆盖前的备份才是服务端眼下的（复核三 W1-R3B-4，复核四 W1-R4B-4）。作者确认覆盖的是
      预检交给他看过差异的那一稿（起草台 scnAdoptToDoc 比对；复核五 W1-R5A-1）。采纳被服务端按修订号拒绝、这期间草稿往前走的
-     几版全是这一页自己存上的（写作台路上那一次先到了）：adoptionOvertakenBySelf 说是，起草台不说「在别处更新」（复核五 W1-R5B-5）。
+     几版全是这一页自己存上的（写作台路上那一次先到了）：adoptionRefusalCause 说是（own），起草台不说「在别处更新」（复核五 W1-R5B-5）；
+     提升和采纳被这样拒掉之后只按修订号链分：之后又有一稿没存上不相干，自己那一次的回包丢了的先再发一次，还是确认不了就说还没能
+     确认（unsure），都不说「在别处」（refusalCause，复核六 W1-R6A-2 · W1-R6A-3）。
    · replace(sid, html)（同步与恢复的「恢复」「重试同步」）：和 save 一样在调用之内落本机缓存并排进保存，同一个调用里
      就通知写作台换稿——编辑器、本机缓存和之后要同步的始终是同一稿，PATCH 失败时也是。章已批准锁定的场不替它存（拒绝）。
+     排在作者自己的采纳后面、采纳先落了地：等着的调用方收到的冲突带 replacedByAdoption，「恢复」照实说是那次采纳（复核六 W1-R6A-1）。
+   · 一场一台状态机，按目录眼下的名字记：乐观新建的场先用临时 sid，后端建好、目录重拉之后换成稳定的 scene_id——状态机（路上 /
+     排队 / 停着的一稿、等着的调用方）和本机这一层（会话内存、共用读缓存、未同步标记、恢复记录）一起搬到新名字下，按旧名字交进来
+     的字经目录的别名进的也是这一台（renameMeta / followCatalog，复核六 W1-R6B-1）。这一场不在目录里了（建章没成、目录退回了
+     服务端的版本；在别处移到了回收站）：写作台再也打不开它，本机还没同步上的字留进同步与恢复并提示、不再重发；上次会话留下的
+     这种未同步标记在目录装载时同样处理（settleOrphan / sweepOrphanMarkers，复核六 W1-R6B-2）。
+   · 上次会话把整场清空了、那一下没同步上（未同步标记说的正是那一份空稿）：清空时服务端就是眼下这一版就照停着的一稿记下、之后
+     传上去，服务端又往前走了就换上服务端版本并照实提示——不一声不响换回旧稿（复核六 W1-R6B-5）。
+   · 本机存储满了、这一页自己的冲突稿 / 拒掉的字只放进了会话内存：共用读缓存里标着未同步的那一份是它唯一的持久副本（slotOnlyCopy），
+     之后的后台复核、冲突读取写服务端版本时同样先留、留不进就不盖，直到它持久地留下或作者又写了新的一稿（复核六 W1-R6B-3）。
    · 同一浏览器开两个标签页：两份 store 共用 localStorage（读缓存、未同步标记、恢复记录），各有各的内存状态。
      保证的是——
        · 每个标签页读自己的那一份：这一页打开过、写过的场，之后 load / cachedHTML / 同步与恢复的比较读到的都是这一页自己的
@@ -127,9 +140,61 @@ function metaKeyOf(workId, sid) {
   return `${workId}::${sid}`;
 }
 
+/* 目录眼下管这一场叫什么：乐观新建的场（「创建第一章」「加一场」）先用临时 sid（tmp_…），后端建好、目录重拉之后换成稳定的
+   scene_id，临时 sid 经目录的别名仍解析到它；旧深链的位置式 sid 同样经目录解析。只认当前作品（目录只装着它）；目录里查不到
+   就还是它自己 */
+function catalogSid(workId, sid) {
+  if (!sid || workId !== activeWorkId()) return sid;
+  let hit = null;
+  try { hit = WsCatalog.sceneById(sid); } catch (e) { hit = null; }
+  return hit && hit.scene && hit.scene.sid ? hit.scene.sid : sid;
+}
+
+/* 一场只有一台状态机，按目录眼下的名字记（复核六 W1-R6B-1：过去临时 sid 和稳定 sid 各一台——写作台换到稳定 sid 时编辑器是空的、
+   作者接着写的字撞上 409 说「在别处被修改过」，临时 sid 那一台停着的一稿之后在较新的一稿后面补发，刷新之后那段字只在一个
+   谁也不读的本机键里）。这一场先前以别的名字起过状态机（临时 sid）：把它搬到现在的名字上（renameMeta），不另起一台 */
 function metaFor(workId, sid) {
-  const key = metaKeyOf(workId, sid);
-  return docMeta[key] || (docMeta[key] = {
+  const current = catalogSid(workId, sid);
+  const key = metaKeyOf(workId, current);
+  if (docMeta[key]) return docMeta[key];
+  const earlier = (current !== sid && docMeta[metaKeyOf(workId, sid)]) || renamedMetaOf(workId, current);
+  if (earlier) return renameMeta(earlier, current);
+  return (docMeta[key] = newMeta(workId, current));
+}
+
+/* 这部作品里目录如今管它叫 sid、却还记在别的名字下的那一台（没有就是 null） */
+function renamedMetaOf(workId, sid) {
+  return Object.values(docMeta).find((m) => m.workId === workId && m.sid !== sid && catalogSid(workId, m.sid) === sid) || null;
+}
+
+/* 这一场换了名字：状态机（路上 / 排队 / 停着的一稿、等着的调用方，都是同一个对象）和本机这一层（会话内存、共用读缓存、
+   未同步标记、恢复记录）一起搬到新名字下。新名字下已经有别处写进去的本机稿时不盖它：这一页写进共用读缓存的那一份
+   不再算这一页的（slotOwn），旧名字下没同步上的那一份先留进同步与恢复 */
+function renameMeta(m, sid) {
+  const from = m.sid;
+  delete docMeta[metaKeyOf(m.workId, from)];
+  m.sid = sid;
+  docMeta[metaKeyOf(m.workId, sid)] = m;
+  const { moved, left } = renameSceneKeys(m.workId, from, sid);
+  if (!moved) {
+    m.slotOwn = undefined;
+    m.slotOwnBase = null;
+    m.slotOnlyCopy = false;
+  }
+  recoveryRename(m.workId, from, sid);
+  if (left != null) {
+    const { entry, created } = keepText(m, left, KEEP_REASONS.renamed, `场景 ${sid} · 未同步本地稿`, "unsynced");
+    if (!entry || entry.durable !== false) dropSceneKeys({ workId: m.workId, sid: from });
+    if (entry && created) {
+      if (entry.durable !== false) recoveryNotice(m, NOTICE.otherTab);
+      else recoveryNotice(m, NOTICE.otherTabVolatile, "danger");
+    }
+  }
+  return m;
+}
+
+function newMeta(workId, sid) {
+  return {
     workId,
     sid,
     sceneId: null,            // 后端 scene_id（解析过一次就记下：作品换了以后目录里查不到这一场）
@@ -150,6 +215,7 @@ function metaFor(workId, sid) {
     shown: undefined,         // 这个标签页的编辑器眼下在哪一份正文上（见文件头「两个标签页」）
     slotOwn: undefined,       // 这一页上一次写进共用读缓存（本机存储）的那一份
     slotOwnBase: null,        // 它写在服务端哪一版上 { draftId | draft, revision, synced }；synced = 它就是服务端存下的一版
+    slotOnlyCopy: false,      // 共用读缓存里这一页标着未同步的那一份是它唯一的持久副本（见 writeServerVersion）
     dirty: false,             // 本机有服务端还没确认的正文（路上 / 排队 / 失败待重发 / 核对中 / 冲突中）
     saveVersion: 0,
     savedVersion: 0,
@@ -171,7 +237,7 @@ function metaFor(workId, sid) {
     lastSaveError: null,
     cacheError: null,
     localDurable: true,
-  });
+  };
 }
 
 function meta(sid) {
@@ -306,6 +372,12 @@ const NOTICE = {
   otherTab: "这一场在另一个标签页（或上次打开时）有没同步上服务端的正文，已放进「同步与恢复」，可以比较差异、恢复或导出。",
   otherTabVolatile: "这一场在另一个标签页（或上次打开时）有没同步上服务端的正文。浏览器存储空间不足，它只放进了本次会话的「同步与恢复」——刷新或关掉页面前请打开它导出或恢复。",
   otherTabVolatileKept: "这一场在另一个标签页（或上次打开时）有没同步上服务端的正文。浏览器存储空间不足，它只放进了本次会话的「同步与恢复」（本机缓存里也还留着一份，直到这一场再保存）。请打开「同步与恢复」导出，或清理旧记录。",
+  // 这一场不在目录里了（乐观新建没能建到服务端、目录退回了服务端的版本；在别处移到了回收站），写作台再也打不开它（复核六 W1-R6B-2）
+  gone: "这一场已经不在目录里了（新建没能存到服务端，或在别处移到了回收站）：你在这一场写的、还没同步上服务端的正文放进了「同步与恢复」，可以复制或导出。",
+  goneVolatile: "这一场已经不在目录里了（新建没能存到服务端，或在别处移到了回收站）。你在这一场写的、还没同步上服务端的正文因为浏览器存储空间不足，只留在本次会话的「同步与恢复」里（本机缓存里也还留着一份）——刷新或关掉页面前请打开它导出。",
+  // 上次会话把整场清空了、没同步上，服务端之后又往前走了（复核六 W1-R6B-5：过去一声不响就换回了旧稿）
+  clearedAtLoad: "上次会话（或另一个标签页）你把这一场整场清空了，那一下还没同步到服务端；服务端之后又有了新的一版，编辑器显示的是它。还要清空的话，在编辑器里再清一次。",
+  clearedLocked: "这一章已批准锁定：上次会话（或另一个标签页）你把这一场整场清空了、还没同步到服务端，这一下存不上了，编辑器显示的是服务端上的正文。要改写请先到成稿中心重新打开本章。",
   server: "这一场在别处有更新，已加载服务端的最新版本。你刚才在旧版本上写的几句放进了「同步与恢复」，可以比较差异、恢复或导出。",
   replaced: "编辑器换成了新的正文，你刚才没保存的几句放进了「同步与恢复」，可以比较差异、恢复或导出。",
   volatile: "编辑器换成了新的正文。你刚才没保存的几句因为浏览器存储空间不足，只留在本次会话的「同步与恢复」里——刷新或关掉页面前请打开它导出或恢复。",
@@ -348,7 +420,7 @@ function keepText(m, html, reason, label = `场景 ${m.sid} · 冲突本地稿`,
   const same = recoveryList().filter((entry) => entry.sid === m.sid && entry.workId === m.workId && docText(entry.html) === text);
   const durable = same.find((entry) => entry.durable !== false);
   if (durable) return { entry: durable, created: false };
-  const entry = recoveryCreate({ sid: m.sid, workId: m.workId, html, type, reason, label });
+  const entry = recoveryCreate({ sid: m.sid, workId: m.workId, sceneId: m.sceneId || null, html, type, reason, label });
   if (entry.durable !== false) {
     same.forEach((old) => recoveryRemove(old.id)); // 会话里那一份这次放进了本机存储
     return { entry, created: true };
@@ -368,12 +440,13 @@ function keepCopy(m, html, reason, label) {
 
 /* 共用读缓存里装着这一页没有的、还没同步上服务端的正文吗：未同步标记还在，字和这一页这一份、和要写进去的都不一样——
    另一个标签页写进去的（它的保存正失败着），上次会话留下的，或这一页只放进了会话内存的那一份本机稿（showServerVersion）。
-   是这一页自己上一次写进去的那一份就不是：本机存储满了、这一页之后的写没写进去，它还停在那里（复核三 W1-R3A-6）。
+   是这一页自己上一次写进去的那一份就不是：本机存储满了、这一页之后的写没写进去，它还停在那里（复核三 W1-R3A-6）——
+   除非它是这一页那段字唯一的持久副本（slotOnlyCopy：同步与恢复里那一份只在本次会话里，复核六 W1-R6B-3）。
    是就返回它 */
 function foreignSlotText(m, html) {
   if (pendingRead(m) == null) return null;
   const slot = readSlot(m);
-  if (slot == null || !hasAuthorText(slot) || slot === m.slotOwn) return null;
+  if (slot == null || !hasAuthorText(slot) || (slot === m.slotOwn && !m.slotOnlyCopy)) return null;
   const mine = m.shown === undefined ? readCache(m.workId, m.sid) : m.shown;
   if (sameManuscriptText(slot, mine) || sameManuscriptText(slot, html)) return null;
   return slot;
@@ -395,7 +468,10 @@ function keepForeign(m, html, serverWrite) {
 /* 服务端的一版进读缓存（这一页的会话内存 + 共用的那一份），它从此是这一页这一场的正文。
    durable=false：只进会话内存（本机稿没能持久留进同步与恢复，本机存储里那一份和未同步标记要留到刷新以后）。
    共用的那一份装着这一页没有的、没同步上的正文时先把它留进同步与恢复；留不进本机存储就同样只进会话内存、不盖它——
-   它可能是那段正文唯一的持久副本（复核二 W1-R2B-2）。写进了本机存储，读缓存里的字就都在服务端上了：清未同步标记。 */
+   它可能是那段正文唯一的持久副本（复核二 W1-R2B-2）。写进了本机存储，读缓存里的字就都在服务端上了：清未同步标记。
+   本机存储里那一份这一次没盖、它又是这一页自己写进去的、标着未同步：记下它是那段字唯一的持久副本（slotOnlyCopy）——之后的
+   后台复核、冲突读取写服务端版本时同样先留、留不进就不盖，直到它持久地留进同步与恢复或作者又写了新的一稿（复核六 W1-R6B-3：
+   过去这一页自己的那一份不算「别处的字」，下一次后台复核就把它盖掉、清掉标记，刷新之后哪里都没有） */
 function writeServerVersion(m, html, { durable = true } = {}) {
   let toStorage = durable;
   if (toStorage) {
@@ -413,7 +489,10 @@ function writeServerVersion(m, html, { durable = true } = {}) {
   if (toStorage && written.ok) {
     m.slotOwn = written.html;
     m.slotOwnBase = { draftId: m.draftId, revision: m.revision, synced: true };
+    m.slotOnlyCopy = false;
     pendingClear(m);
+  } else if (!toStorage && m.slotOwn !== undefined && pendingRead(m) != null && readSlot(m) === m.slotOwn) {
+    m.slotOnlyCopy = true;
   }
   return written;
 }
@@ -431,8 +510,11 @@ function textBase(m) {
    标记写不进去（本机存储满了）时这一稿不进共用读缓存、只在这一页的会话内存里——进去了却没有标记，下次打开时它会被当成
    过时的读缓存、让服务端版本静默盖掉（复核四 W1-R4B-1）；标记写进去了、读缓存没写进去时，标记退回原来的样子：
    它说的还是那里原有的那一份（别处的一份、服务端版本都不能说成没同步上的，复核三 W1-R3A-6；复核四 W1-R4A-2）。
-   两种情况这一稿都只在本次会话里（localDurable=false）：保存失败时 onFailed 把它留进同步与恢复并提示。 */
-function writeAuthorText(m, html) {
+   两种情况这一稿都只在本次会话里（localDurable=false）：保存失败时 onFailed 把它留进同步与恢复并提示。
+   repair：只是把这一页没同步上的那一稿写回共用读缓存、重新标上（markUnsynced）——修的是本机存储，编辑器没换稿：
+   不改「这一页的编辑器在哪一份上」（shown），章锁定那一刻交进来的较新一稿（lockPending.latest）照旧是下一次要存的
+   （复核六 W1-R6A-4：过去另一个标签页随后写过共用读缓存时，这一次重写把它丢了，之后补发的是较旧的一稿） */
+function writeAuthorText(m, html, { repair = false } = {}) {
   const foreign = foreignSlotText(m, html);
   if (foreign != null) keepForeign(m, foreign, false);
   const base = textBase(m);
@@ -440,10 +522,11 @@ function writeAuthorText(m, html) {
   const marked = pendingWrite(m, base, html);
   const written = cacheWrite(m, html, { durable: marked.ok });
   if (marked.ok && !written.ok) pendingRestore(m, previous);
-  setShown(m, written.html);
+  if (!repair) setShown(m, written.html);
   if (written.ok) {
     m.slotOwn = written.html;
     m.slotOwnBase = base ? { ...base, synced: false } : null;
+    m.slotOnlyCopy = false;
     m.volatileWarned = false;
   }
   m.localDurable = written.ok;
@@ -467,7 +550,7 @@ function markSlotIfUnsynced(m) {
 function markUnsynced(m, html) {
   const slot = readSlot(m);
   if (html != null && slot !== m.slotOwn && !sameManuscriptText(slot, html)) {
-    writeAuthorText(m, html);
+    writeAuthorText(m, html, { repair: true });
     return;
   }
   if (html != null && sameManuscriptText(slot, html)) pendingWrite(m, textBase(m));
@@ -495,8 +578,13 @@ function holdError() {
 function staleBaseError() {
   return Object.assign(new Error("这一场在别处有更新：刚才是在这台电脑较旧的缓存上写的"), { code: "AUTHOR_DRAFT_CONFLICT" });
 }
+/* 采纳归档落了地、这一页等着的保存就此作废：代码照旧是冲突（flush 答「conflict」），replacedByAdoption 说明换稿的是作者自己
+   在起草台的采纳，不是别处的修改——同步与恢复的「恢复」据此照实说（复核六 W1-R6A-1） */
 function replacedError() {
-  return Object.assign(new Error("这一场的正文刚被采纳归档替换；没存上的本机正文已放进「同步与恢复」"), { code: "AUTHOR_DRAFT_CONFLICT" });
+  return Object.assign(new Error("这一场的正文刚被采纳归档替换；没存上的本机正文已放进「同步与恢复」"), {
+    code: "AUTHOR_DRAFT_CONFLICT",
+    replacedByAdoption: true,
+  });
 }
 function staleReadError() {
   return Object.assign(new Error("读到的服务端版本比撞上冲突的那一次还旧"), { code: "AUTHOR_DRAFT_STALE_READ" });
@@ -507,6 +595,16 @@ function movedError() {
 function notSyncedError() {
   return Object.assign(new Error("这一场本机的这一稿还没同步到服务端（服务端是一份新建的空稿）；下一次保存或离开这一场时会同步"), {
     code: "AUTHOR_DRAFT_NOT_SYNCED",
+  });
+}
+function clearedError() {
+  return Object.assign(new Error("这一场在本机整场清空了，那一下还没同步到服务端；下一次保存或离开这一场时会同步"), {
+    code: "AUTHOR_DRAFT_NOT_SYNCED",
+  });
+}
+function goneError() {
+  return Object.assign(new Error("这一场已经不在目录里了；没同步上服务端的正文放进了「同步与恢复」"), {
+    code: "AUTHOR_DRAFT_SCENE_GONE",
   });
 }
 function lockedError() {
@@ -584,6 +682,17 @@ function approvedLocked(m) {
   try {
     const hit = WsCatalog.sceneById(m.sid);
     return !!(hit && hit.chapter && hit.chapter.state === "approved");
+  } catch (e) {
+    return false;
+  }
+}
+
+/* 这一场已不在目录里：目录已从后端装载、查不到它（乐观新建的场没能建到服务端、目录退回了服务端的版本；在别处移到了回收站）。
+   写作台再也打不开它。只认当前作品；目录还在装载时不算 */
+function sceneGone(m) {
+  if (!isActiveWork(m)) return false;
+  try {
+    return !!WsCatalog.ready() && !WsCatalog.sceneById(m.sid);
   } catch (e) {
     return false;
   }
@@ -735,6 +844,12 @@ function settleHydrate(m) {
       else recoveryNotice(m, typed ? NOTICE.pendingConflictVolatile : NOTICE.pendingAtLoadVolatile, "danger");
       return;
     }
+    // 本机把这一场整场清空了、那一下还没同步上（未同步标记说的正是共用读缓存里这一份空稿）：它就是作者最新的一稿，
+    // 不能让服务端上的旧稿一声不响地盖回去（复核六 W1-R6B-5：过去标记被当成「本机存储里没有稿」静默消费掉）
+    if (!localText && local != null && hasAuthorText(serverHTML) && markerDescribes(m, local)) {
+      settleClearedAtLoad(m, local, serverHTML);
+      return;
+    }
     // 内容一致（上次实际保上了）/ 本机存储里没有稿：静默消费标记。服务端是新建的空稿时标记留给下面的工作稿
     if (!localText || !freshBlank) pendingClear(m);
   }
@@ -771,14 +886,41 @@ function showServerVersion(m, serverHTML, durable) {
 
 /* 服务端是 ensure 刚建的空稿、这一页有这一场的字：本机这份就是工作稿，按「保存失败后停着的最新一稿」记下
    （不在水合里发请求：水合可能是别的台子为了读一眼触发的） */
-function holdWorkingCopy(m, html) {
+function holdWorkingCopy(m, html, error = notSyncedError()) {
   m.dirty = true;
   m.canonicalDirty = true;
   pendingWrite(m, { draftId: m.draftId, revision: m.revision });
   m.queued = { html: sanitizeManuscriptHTML(html), version: ++m.saveVersion };
   m.stalled = true;
-  m.lastSaveError = notSyncedError();
+  m.lastSaveError = error;
   notifyState(m);
+}
+
+/* 未同步标记说的是 html 这一段字吗（指纹对得上；没有指纹的旧版标记不知道说的是哪一段，当它说的就是共用读缓存里那一份） */
+function markerDescribes(m, html) {
+  const at = pendingBase(m);
+  return !!at && (!at.fp || at.fp === textFingerprint(html));
+}
+
+/* 上次会话（或另一个标签页）把这一场整场清空了、那一下没同步上（见 settleHydrate）。清空时服务端就是眼下这一版（标记说的草稿、
+   修订号都对得上）：空稿就是这一版的下一稿，按停着的一稿记下——编辑器照旧是空的，下一次保存 / flush / 重新聚焦或联网时传上去
+   （和服务端刚建空稿、本机有字时一样）。服务端之后又往前走了（或标记不知道写在哪一版上）、章已批准锁定：清空落不到作者清空时的
+   那一版上了——换上服务端版本，照实告诉作者（空稿没有字，不必留进同步与恢复） */
+function settleClearedAtLoad(m, local, serverHTML) {
+  const at = pendingBase(m);
+  const locked = approvedLocked(m);
+  if (!locked && at.draft && at.draft === draftTail(m.draftId) && at.revision === m.revision) {
+    m.hydrated = true;
+    rememberInSession(m, local);
+    holdWorkingCopy(m, local, clearedError());
+    return;
+  }
+  pendingClear(m);
+  writeServerVersion(m, serverHTML);
+  m.hydrated = true;
+  notifyState(m);
+  notifyLoadedMeta(m, locked ? "locked" : "pending", { force: locked });
+  recoveryNotice(m, locked ? NOTICE.clearedLocked : NOTICE.clearedAtLoad);
 }
 
 /* 服务端是 ensure 刚建的空稿、这一页有这一场的字，章却已批准锁定：这份字永远存不上（WrDocs 不替锁定的章保存）。
@@ -1019,6 +1161,12 @@ function onFailed(m, flight, e) {
     if (mayHaveLanded(e)) rememberUnsure(m, flight);
     if (!m.queued) m.queued = { html: flight.html, version: flight.version };
   }
+  // 这一场已不在目录里（建章没成、目录退回了服务端的版本；在别处移到了回收站）：停着等重发也永远发不出去——
+  // 没同步上的字留进同步与恢复并告诉作者（复核六 W1-R6B-2）
+  if (sceneGone(m) && settleOrphan(m)) {
+    console.warn("[WrDocs] 这一场已不在目录里，没同步上的正文留进了同步与恢复:", m.sid, e);
+    return;
+  }
   m.stalled = true;
   m.lastSaveError = e;
   markUnsynced(m, m.queued && m.queued.html);
@@ -1184,6 +1332,102 @@ function settleLockedStall(m) {
   if (!m.stalled || !m.queued || m.inFlight || m.conflict || m.checking || !m.hydrated || !approvedLocked(m)) return false;
   refuseLocal(m, lockedError(), [m.queued.html], { locked: true });
   return true;
+}
+
+/* ---- 不在目录里了的场、换了名字的场 ---- */
+
+/* 这一场写作台再也打不开了（sceneGone；或换了名字、新名字下已另有一台状态机）。本机还没同步上的字——排队 / 失败后停着的那一稿、
+   共用读缓存里标着未同步的那一份——先留进同步与恢复并告诉作者，这一场的状态机停下：不再重发，等着的调用方收到失败。都持久地
+   留进去了，本机这一层（会话内存、共用读缓存、未同步标记）一并扔掉；有的只留在本次会话里（本机存储满了）就留着，刷新之后
+   followCatalog 再留一次。过去这段字只在一个谁也不读的本机键里，刷新之后也找不回来（复核六 W1-R6B-2）。
+   路上 / 核对中 / 冲突中 / 水合中 / 采纳在路上的先不动：那边有了结果再说（onFailed、下一次目录装载会再看）。→ 处理了返回 true */
+function settleOrphan(m) {
+  if (m.inFlight || m.checking || m.conflict || m.hydrating || m.adoptions.length) return false;
+  const marked = pendingRead(m) != null;
+  if (!m.dirty && !m.queued && !marked) return false;
+  const { created, durable } = keepRefused(m, [m.queued && m.queued.html, marked ? readSlot(m) : null], KEEP_REASONS.gone);
+  m.queued = null;
+  m.stalled = false;
+  m.dirty = false;
+  m.lastSaveError = null;
+  m.lockPending = null;
+  m.unsure = null;
+  // 这一场若再回到目录（从回收站还原）：重新水合，读服务端眼下的那一版
+  m.hydrated = false;
+  m.draftId = null;
+  m.sceneId = null;
+  rejectWaiters(m, goneError());
+  if (durable) {
+    dropSceneKeys(m);
+    m.shown = undefined;
+    m.slotOwn = undefined;
+    m.slotOwnBase = null;
+    m.slotOnlyCopy = false;
+  }
+  notifyState(m);
+  if (created) recoveryNotice(m, durable ? NOTICE.gone : NOTICE.goneVolatile, durable ? "warn" : "danger");
+  return true;
+}
+
+/* 目录装载成功之后（wr-doc-store.jsx 登记）：换了名字的场（乐观新建的场建好了、目录重拉之后是稳定的 scene_id），状态机和本机
+   这一层跟过去（renameMeta）；不在目录里了的，本机还没同步上的字留进同步与恢复（settleOrphan）。本机存储里标着未同步、这一页
+   却没有状态机的那几场（上次会话 / 另一个标签页留下的）同样处理（sweepOrphanMarkers）。复核六 W1-R6B-1 · W1-R6B-2 */
+function followCatalog(workId) {
+  if (retired || !workId || workId !== activeWorkId()) return;
+  let ready = false;
+  try { ready = !!WsCatalog.ready(); } catch (e) { ready = false; }
+  if (!ready) return;
+  Object.values(docMeta).forEach((m) => {
+    if (m.workId !== workId) return;
+    const current = catalogSid(workId, m.sid);
+    if (current === m.sid) {
+      if (sceneGone(m)) settleOrphan(m);
+      return;
+    }
+    const other = docMeta[metaKeyOf(workId, current)];
+    if (!other) {
+      renameMeta(m, current);
+      return;
+    }
+    // 新名字下已另有一台状态机（按说到不了这里：metaFor 总是先搬）：这一台没同步上的字留进同步与恢复，之后谁也不再找它
+    if (settleOrphan(m) || (!m.dirty && !m.inFlight && !m.checking && !m.conflict && !m.hydrating && !m.adoptions.length)) {
+      delete docMeta[metaKeyOf(workId, m.sid)];
+    }
+  });
+  sweepOrphanMarkers(workId);
+}
+
+/* 本机存储里标着未同步、这一页却没有状态机的那几场：目录里有它的，打开时照常水合（settleHydrate）；换了名字的（同一次会话里
+   目录记得别名）搬到新名字下；不在目录里了的，那一段字留进同步与恢复并告诉作者——写作台再也打不开它 */
+function sweepOrphanMarkers(workId) {
+  let notice = null;
+  pendingSids(workId).forEach((sid) => {
+    if (docMeta[metaKeyOf(workId, sid)]) return; // 这一台还在：followCatalog 处理过，或还有结果没回来
+    const current = catalogSid(workId, sid);
+    const renamed = current !== sid;
+    const scene = { workId, sid };
+    if (!renamed && !sceneGone(scene)) return;
+    if (renamed && !docMeta[metaKeyOf(workId, current)]) {
+      const { moved } = renameSceneKeys(workId, sid, current);
+      if (moved) {
+        recoveryRename(workId, sid, current);
+        return;
+      }
+    }
+    const slot = readSlot(scene);
+    if (slot == null || !hasAuthorText(slot)) {
+      dropSceneKeys(scene);
+      return;
+    }
+    const target = { workId, sid: renamed ? current : sid, sceneId: null };
+    const { entry, created } = keepText(target, slot, renamed ? KEEP_REASONS.renamed : KEEP_REASONS.gone, `场景 ${target.sid} · 未同步本地稿`, "unsynced");
+    if (!entry) return;
+    if (entry.durable !== false) dropSceneKeys(scene);
+    if (created && (!notice || entry.durable === false)) notice = { m: target, renamed, durable: entry.durable !== false };
+  });
+  if (!notice) return;
+  if (notice.renamed) recoveryNotice(notice.m, notice.durable ? NOTICE.otherTab : NOTICE.otherTabVolatile, notice.durable ? "warn" : "danger");
+  else recoveryNotice(notice.m, notice.durable ? NOTICE.gone : NOTICE.goneVolatile, notice.durable ? "warn" : "danger");
 }
 
 /* ---- 回包丢了的那一稿 ---- */
@@ -1555,22 +1799,32 @@ async function settledMeta(m) {
   await outcomeOf(m, m.saveVersion);
 }
 
-/* 提升被服务端按修订号拒绝（409 AUTHOR_DRAFT_CONFLICT）：先等这一页路上的保存有结果，服务端那时的修订号若落在这一页
-   自己存上的那几版里（提升带的修订号之后、到眼下，中间没吸收过别处的版本）——是作者在提升途中接着写、自动保存先到了，
-   换成 AUTHOR_DRAFT_MOVED_BY_SELF；否则原样交回（真在别处更新了）。
-   那一次自动保存存上了、回包却丢了（停着，记着 unsure，服务端正好往前走了一步）：把停着的最新一稿再发一次（客户端留着那一次的
-   幂等键，服务端照当时的结果重放；不是这样也由核对认出自己那一稿）再分；还是没能确认存上，就说草稿还没存上
-   （AUTHOR_DRAFT_UNSAVED），不说「在别处更新」（复核四 W1-R4B-7） */
+/* 提升 / 采纳被服务端按修订号拒绝（409 AUTHOR_DRAFT_CONFLICT）之后：这期间服务端往前走的几版是不是这一页自己存上的。
+   只看修订号链：服务端那时的修订号（409 说的；没说时是这一页眼下的）落在这一页自己存上的那几版里（带去的修订号之后、到眼下，
+   中间没吸收过别处的版本）就是自己的——之后又有一稿没存上（失败、停着）不相干（复核六 W1-R6A-2 · W1-R6A-3：过去它让这里答
+   「在别处」）。先等路上 / 排队 / 核对中的那一稿有结果；自己那一次的回包丢了（unsure，服务端正好比那一次的底往前一步）时先把
+   停着的最新一稿再发一次（客户端留着那一次的幂等键，服务端照当时的结果重放；不是这样也由核对认出自己那一稿）再分（复核四 W1-R4B-7）。
+   → "own"：全是自己存上的；"unsure"：多半是自己那一次、还没能确认；"other"：别处动过（或这一页正在冲突中） */
+async function refusalCause(m, base, e) {
+  const current = e && e.details && e.details.current_revision_no;
+  const lostOwn = () => !!(m.unsure && m.unsure.base === m.revision && m.revision >= base && m.ownChainFrom <= base
+    && (!Number.isInteger(current) || current === m.unsure.base + 1));
+  if (lostOwn()) await flushMeta(m);
+  else await settledMeta(m);
+  if (m.conflict) return "other";
+  const moved = Number.isInteger(current) ? current : m.revision;
+  if (m.ownChainFrom <= base && moved > base && moved <= m.revision) return "own";
+  return lostOwn() && m.dirty ? "unsure" : "other";
+}
+
+/* 提升被服务端按修订号拒绝：草稿往前走的全是作者在提升途中自己存上的——最新的一稿也存上了说 AUTHOR_DRAFT_MOVED_BY_SELF（又改了几句、
+   已经存上，复核三 W1-R3B-8），还有没存上的（之后那一次失败了、回包丢了还没确认）说 AUTHOR_DRAFT_UNSAVED；都不说「在别处更新」。
+   真在别处更新了：原样交回 */
 async function promoteRefusal(m, base, e) {
   if (!e || e.code !== "AUTHOR_DRAFT_CONFLICT") return e;
-  const current = e.details && e.details.current_revision_no;
-  const ownLost = !!(m.stalled && m.unsure && m.unsure.base === base && (!Number.isInteger(current) || current === base + 1));
-  if (ownLost) await flushMeta(m);
-  else await settledMeta(m);
-  const moved = Number.isInteger(current) ? current : m.revision;
-  const ownSince = !m.conflict && !m.lastSaveError && m.ownChainFrom <= base;
-  if (ownSince && moved > base && moved <= m.revision) return movedBySelfError(e);
-  if (ownLost && !m.conflict && m.dirty) return unsavedError(e);
+  const cause = await refusalCause(m, base, e);
+  if (cause === "own") return m.dirty ? unsavedError(e) : movedBySelfError(e);
+  if (cause === "unsure") return unsavedError(e);
   return e;
 }
 
@@ -1582,6 +1836,8 @@ const KEEP_REASONS = {
   refused: "服务端没有接受这一场的保存，编辑器换回服务端版本时还有没存上的正文",
   locked: "这一章已批准锁定，改动没有保存",
   pending: "上次会话没同步上的本机稿换成服务端版本时，编辑器里还有没保存的改动",
+  gone: "这一场已经不在目录里了（新建没能存到服务端，或在别处移到了回收站），本机还有没同步上的正文",
+  renamed: "新建的场换成正式编号时，新编号下已另有一份本机稿；这是新建时写下、还没同步上的正文",
 };
 
 function scopeMeta(sid, options) {
@@ -1782,17 +2038,14 @@ const WrDocs = {
     if (!promotedAtRevision(draft)) return null;
     return landedAdoption(draft, data);
   },
-  /* 采纳请求被服务端按修订号拒绝（409）之后（endAdoption 之后调用）：这期间草稿往前走的几版全是这一页自己存上的吗——写作台
+  /* 采纳请求被服务端按修订号拒绝（409）之后（endAdoption 之后调用）：这期间草稿往前走的几版是不是这一页自己存上的——写作台
      路上那一次（离场冲刷、最后一次自动保存）先到了服务端，采纳带的还是它之前的修订号。先等路上 / 排队的那一稿有结果（它的回包
-     可能比采纳的 409 晚到），再看服务端那时的修订号是不是落在这一页自己存上的那几版里（和 promoteRefusal 同一个分法）。
-     → true：不是「在别处更新」，再采纳一次就在那一稿上（复核五 W1-R5B-5） */
-  async adoptionOvertakenBySelf(sid, token, error) {
-    if (!token || !token.m || !error || error.code !== "AUTHOR_DRAFT_CONFLICT") return false;
-    const m = token.m;
-    await settledMeta(m);
-    const current = error.details && error.details.current_revision_no;
-    const moved = Number.isInteger(current) ? current : m.revision;
-    return !m.conflict && !m.lastSaveError && m.ownChainFrom <= token.base && moved > token.base && moved <= m.revision;
+     可能比采纳的 409 晚到；回包丢了的先再发一次），再看服务端那时的修订号是不是落在这一页自己存上的那几版里（和提升同一个分法，
+     见 refusalCause）。→ "own"：不是「在别处更新」，再采纳一次就在那一稿上（复核五 W1-R5B-5）；"unsure"：多半是写作台自己那一次、
+     回包丢了还没能确认（复核六 W1-R6A-2）；"other"：别处动过 */
+  async adoptionRefusalCause(sid, token, error) {
+    if (!token || !token.m || !error || error.code !== "AUTHOR_DRAFT_CONFLICT") return "other";
+    return refusalCause(token.m, token.base, error);
   },
   /* 写：调用之内本机缓存 + 未同步标记落地；PATCH 按场一次一个，排队的只留最新一稿。
      返回这一稿的结果（被更新的一稿取代时随它一起有结果）。options.workId：这一场所属的作品（离场冲刷时作品可能已换）。 */
@@ -1932,7 +2185,17 @@ const WrDocs = {
      不必自己拼 wr-doc: 键去读 localStorage（会绕过会话内存里这一页自己的那一份）。 */
   cachedHTML(sid) {
     if (!sid) return null;
-    return readCache(activeWorkId(), sid);
+    const workId = activeWorkId();
+    return readCache(workId, catalogSid(workId, sid));
+  },
+  /* 目录眼下管这一场叫什么（乐观新建时的临时 sid 换成了稳定的 scene_id、旧深链的位置式 sid……；查不到就是它自己） */
+  sceneSid(sid) {
+    return catalogSid(activeWorkId(), sid);
+  },
+  /* 目录装载成功之后（wr-doc-store.jsx 登记）：换了名字的场跟过去，不在目录里了的场没同步上的字留进同步与恢复（见 followCatalog）。
+     已被新实例取代的旧实例不再动作 */
+  followCatalog(workId) {
+    followCatalog(workId);
   },
   /* 当前在写场景预热（目录装载后调用）。已被新实例取代的旧实例（热更新 / 单测 resetModules）不再动作 */
   hydrateActive() {

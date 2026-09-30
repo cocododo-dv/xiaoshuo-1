@@ -2373,3 +2373,71 @@ describe("复核五 · 章已批准锁定、服务端是新建的空稿、本机
     expect(patchesTo(ctx.client, "d1")).toEqual([]);
   }, LONG);
 });
+
+/* ==========================================================
+   W1 复核六：两路复核在 96f20c2 上复现的房间级顺序（真的写作台 + WrDocs），断言照实、安全的结果。
+   ========================================================== */
+
+describe("复核六 · 提升在路上时作者接着写：第一句的自动保存先到（提升因此 409），第二句的自动保存这时失败（R6A-4 房间版 · W1-R6A-3）", () => {
+  it("R6A-4 提升没成：写作台不说「草稿或权威正文已在别处更新」，说提升途中又改了几句、还没确认存上；什么也没提升", async () => {
+    const ctx = await loadWriter();
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(200);
+    const promoteGate = deferred();
+    srv.hooks.promote = (run) => promoteGate.promise.then(run);
+    const button = host.querySelector(".wr-canonical-promote");
+    expect(button && !button.disabled).toBe(true);
+    await act(async () => { button.click(); });                            // 「提升为权威正文」→ 确认（window.confirm 替身答是）
+    await vi.waitFor(() => expect(ctx.client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(true), T);
+    await r.append("，一");                                                 // 提升在路上：作者接着写
+    await wait(1100);                                                        // 自动保存：rev 2（这一页自己的）
+    await vi.waitFor(() => expect(srv.drafts.s1.revision).toBe(2), T);
+    srv.hooks.patch = () => new Promise((resolve, reject) => { setTimeout(() => reject(serverError()), 60); });
+    await r.append("，二");
+    await wait(1100);                                                        // 第二次自动保存：500
+    await act(async () => { promoteGate.resolve(); });                      // 提升带的是 rev 1：409 {2}
+    await wait(400);
+    expect(srv.promoted).toEqual([]);
+    expect(srv.drafts.s1).toMatchObject({ revision: 2, content: "<p>起点正文，一</p>" });
+    expect({ elsewhere: /在别处更新/.test(noticeTexts()) }).toEqual({ elsewhere: false });
+    expect(noticeTexts()).toContain("还没确认保存到服务端");
+    expect(r.editor().textContent).toBe("起点正文，一，二");                  // 作者写的字都还在编辑器里
+  }, LONG);
+});
+
+describe("复核六 · 保存 500 停着、章在别处批准、后端仍不稳：回到这一场（NB6-L · W1-R6B-4）", () => {
+  it("NB6-L 打开时 WrDocs 当场把停着的一稿留进同步与恢复、换回已存上的正文：状态是「终稿已锁定」，不停在「草稿保存失败」；批准之后什么也没发", async () => {
+    const chap = twoScenes();
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(300);
+    // 后端不稳：这一场的保存都 500（离场冲刷补发的那一次也是）
+    srv.hooks.patch = (url, body, apply) => (url.endsWith("/author-drafts/d1") ? Promise.reject(serverError()) : apply(url, body));
+    await r.type("<p>起点正文，批准之前写下、没存上的一句</p>");
+    await vi.waitFor(() => expect(r.status()).toBe("草稿保存失败"), T);
+    await openScene("ch01s2");
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
+    await wait(500);
+    // 章在另一台设备上批准了，目录知道了；后台的读取也还失败
+    srv.locked = true;
+    chap.state = "approved";
+    srv.hooks.ensure = (sid, current) => (sid === "s1" ? Promise.reject(busy5()) : current());
+    await act(async () => { await window.WsCatalog.__refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    const sent = patchesTo(ctx.client, "d1").length;
+    await openScene("ch01s1");
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await wait(1500);
+    expect(r.editor().textContent).toBe("起点正文");
+    expect(r.status()).toBe("终稿已锁定");
+    expect(r.recoveryHas("没存上的一句")).toBe(true);
+    expect(patchesTo(ctx.client, "d1")).toHaveLength(sent);
+    expect(ctx.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null });
+  }, LONG);
+});

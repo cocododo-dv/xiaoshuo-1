@@ -14,14 +14,19 @@ const PENDING = "wr-doc-pending:ch01s1::prj-main";
 const LOCAL = "<p>起点，上次会话没存上的一段</p>";
 const tick = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/* 服务端：ensure 回 shared 眼下的样子（几份 store 实例共用 shared） */
-async function loadDocs(shared) {
+/* 服务端：ensure 回 shared 眼下的样子（几份 store 实例共用 shared）。cas：PATCH 按修订号比对（不对就 409，带服务端眼下的修订号） */
+async function loadDocs(shared, { cas = false } = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client);
   client.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/.+\/ensure$/.test(url)
     ? Promise.resolve({ draft: { draft_id: "d1", revision_no: shared.revision, content: shared.content } })
     : Promise.resolve({})));
   client.apiPatch.mockImplementation((url, body) => {
+    if (cas && Number(body.base_revision_no) !== shared.revision) {
+      return Promise.reject(Object.assign(new Error("author draft has changed; refresh before saving"), {
+        code: "AUTHOR_DRAFT_CONFLICT", status: 409, details: { current_revision_no: shared.revision },
+      }));
+    }
     shared.revision += 1;
     shared.content = body.content;
     return Promise.resolve({ draft: { draft_id: "d1", revision_no: shared.revision, content: body.content } });
@@ -237,5 +242,76 @@ describe("复核四 · 本机存储满了：没写进本机的字要么有未同
     expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === LONGER)).toEqual([expect.objectContaining({ durable: false })]);
     const warned = alertsSoFar().filter((message) => message.includes("本次会话") && message.includes("同步与恢复"));
     expect(warned).toHaveLength(1);
+  });
+});
+
+/* ==========================================================
+   复核六：同一个标签页里的 NS-Q（W1-R6B-3）——这一页自己的冲突稿只放进了会话内存（同步与恢复放不下），共用读缓存里
+   那一份标着未同步的本机稿就是它唯一的持久副本（openConflict 的承诺：「刷新后按跨会话的路径再留一次」）。
+   ========================================================== */
+
+describe("复核六 · 本机存储满了时这一页自己的冲突稿：作者再保存之前，后台复核不把本机缓存里那一份盖掉（W1-R6B-3）", () => {
+  const MINE = "<p>起点，这一页刚写、没存上的一大段。</p>";
+
+  it("NB6-Q 另一台设备又存了一版、作者只是重新打开这一场：本机缓存里那一份和未同步标记留着；刷新之后它按跨会话的路径再留一次", async () => {
+    const shared = { revision: 1, content: "<p>起点</p>" };
+    const tab = await loadDocs(shared, { cas: true });
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (String(key).startsWith("wr-recovery:v1:")) throw Object.assign(new Error("full"), { name: "QuotaExceededError" });
+      return realSet.call(this, key, value);
+    });
+    // 另一台设备存下了 rev 2；这一页的自动保存（带 rev 1）409 → 冲突稿只放得进会话内存
+    shared.revision = 2;
+    shared.content = "<p>另一台设备的正文</p>";
+    await expect(tab.mod.WrDocs.save("ch01s1", MINE)).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await vi.waitFor(() => expect(tab.events.some((event) => event.kind === "conflict-resolved")).toBe(true), T);
+    expect(window.localStorage.getItem(CACHE)).toBe(MINE);
+    expect(window.localStorage.getItem(PENDING)).not.toBeNull();
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === MINE)).toEqual([expect.objectContaining({ durable: false })]);
+    expect(window.alert.mock.calls.map(([message]) => String(message)).some((message) => message.includes("只留在本次会话"))).toBe(true);
+
+    // 另一台设备又存了一版；作者只是重新打开这一场（没写字、没保存）
+    shared.revision = 3;
+    shared.content = "<p>另一台设备又改了一句</p>";
+    tab.mod.WrDocs.load("ch01s1");
+    await vi.waitFor(() => expect(tab.events.some((event) => event.kind === "loaded" && event.html === "<p>另一台设备又改了一句</p>")).toBe(true), T);
+    expect(tab.mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>另一台设备又改了一句</p>"); // 编辑器是服务端版本
+    expect(window.localStorage.getItem(CACHE)).toBe(MINE);                         // 那段本机稿还在本机存储里
+    expect(window.localStorage.getItem(PENDING)).not.toBeNull();
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === MINE)).toHaveLength(1); // 会话里只有一份，不重复放
+    expect(tab.client.apiPatch).toHaveBeenCalledTimes(1);
+
+    // 刷新（空间仍不足）：跨会话的路径再把它放进同步与恢复，本机存储里那一份照样留着
+    vi.resetModules();
+    const again = await loadDocs(shared, { cas: true });
+    again.mod.WrDocs.load("ch01s1");
+    await again.mod.WrDocs.hydrate("ch01s1");
+    await tick();
+    expect(again.mod.WrRecovery.list().filter((entry) => entry.html === MINE)).toHaveLength(1);
+    expect(window.localStorage.getItem(CACHE)).toBe(MINE);
+  });
+
+  it("作者在服务端版本上接着写、存上了：本机缓存换成作者的新稿（提示说过它只在本次会话里），那段冲突稿还在本次会话的同步与恢复里", async () => {
+    const shared = { revision: 1, content: "<p>起点</p>" };
+    const tab = await loadDocs(shared, { cas: true });
+    tab.mod.WrDocs.load("ch01s1");
+    await tab.mod.WrDocs.hydrate("ch01s1");
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItem(key, value) {
+      if (String(key).startsWith("wr-recovery:v1:")) throw Object.assign(new Error("full"), { name: "QuotaExceededError" });
+      return realSet.call(this, key, value);
+    });
+    shared.revision = 2;
+    shared.content = "<p>另一台设备的正文</p>";
+    await tab.mod.WrDocs.save("ch01s1", MINE).catch(() => {});
+    await vi.waitFor(() => expect(tab.events.some((event) => event.kind === "conflict-resolved")).toBe(true), T);
+    const NEXT = "<p>另一台设备的正文，在它上面接着写</p>";
+    await tab.mod.WrDocs.save("ch01s1", NEXT);
+    expect(shared).toMatchObject({ revision: 3, content: NEXT });
+    expect(window.localStorage.getItem(CACHE)).toBe(NEXT);
+    expect(tab.mod.WrRecovery.list().filter((entry) => entry.html === MINE)).toEqual([expect.objectContaining({ durable: false })]);
   });
 });

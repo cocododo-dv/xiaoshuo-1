@@ -128,6 +128,82 @@ function cacheWrite(m, html, { durable = true } = {}) {
   }
 }
 
+/* 这一场在本机这一层的键：共用读缓存与未同步标记 */
+function sceneKeys(workId, sid) {
+  return { slot: storageKeyFor(workId, sid, "wr-doc:"), mark: storageKeyFor(workId, sid, "wr-doc-pending:") };
+}
+
+/* 这一场换了名字（乐观新建的场：临时 sid → 后端建好之后稳定的 scene_id，见 WrDocs 的 renameMeta）：会话内存里这一页的那一份、
+   共用读缓存和未同步标记搬到新名字下。新名字下已经有本机稿（另一个标签页先打开了它）时不盖它：旧名字下只是读缓存（没有
+   未同步标记）就扔掉，标着未同步的原样留着；本机存储满了、搬不动时也原样留着。
+   → { moved, left }：moved = 本机存储里的那一份跟到了新名字下（或本来就没有）；left = 旧名字下没搬过去、标着未同步的那一份
+   （调用方先把它留进同步与恢复），没有就是 null */
+function renameSceneKeys(workId, from, to) {
+  const fromMemory = memoryKeyOf(workId, from);
+  const toMemory = memoryKeyOf(workId, to);
+  if (volatileDocs.has(fromMemory)) {
+    if (!volatileDocs.has(toMemory)) volatileDocs.set(toMemory, volatileDocs.get(fromMemory));
+    volatileDocs.delete(fromMemory);
+  }
+  const src = sceneKeys(workId, from);
+  const dst = sceneKeys(workId, to);
+  let slot = null;
+  let mark = null;
+  try {
+    slot = localStorage.getItem(src.slot);
+    mark = localStorage.getItem(src.mark);
+  } catch (e) {
+    return { moved: false, left: null };
+  }
+  if (slot == null && mark == null) return { moved: true, left: null };
+  let free = false;
+  try { free = localStorage.getItem(dst.slot) == null && localStorage.getItem(dst.mark) == null; } catch (e) { free = false; }
+  if (free) {
+    try {
+      if (slot != null) localStorage.setItem(dst.slot, slot);
+      if (mark != null) localStorage.setItem(dst.mark, mark);
+      localStorage.removeItem(src.slot);
+      localStorage.removeItem(src.mark);
+      return { moved: true, left: null };
+    } catch (e) {
+      // 写不进去：新名字下退回原来的空，旧名字下的原样留着
+      try { localStorage.removeItem(dst.slot); localStorage.removeItem(dst.mark); } catch (err) {}
+      return { moved: false, left: mark != null ? slot : null };
+    }
+  }
+  if (mark == null) {
+    try { localStorage.removeItem(src.slot); } catch (e) {}
+    return { moved: false, left: null };
+  }
+  return { moved: false, left: slot };
+}
+
+/* 扔掉这一场在本机这一层的一切（会话内存、共用读缓存、未同步标记）：它不在目录里了、没同步上的字已经持久地留进了同步与恢复 */
+function dropSceneKeys(scene) {
+  volatileDocs.delete(memoryKeyOf(scene.workId, scene.sid));
+  const keys = sceneKeys(scene.workId, scene.sid);
+  try {
+    localStorage.removeItem(keys.slot);
+    localStorage.removeItem(keys.mark);
+  } catch (e) {}
+}
+
+/* 这部作品在本机存储里标着未同步的那几场（sid）：上次会话留下的也在内 */
+function pendingSids(workId) {
+  const prefix = "wr-doc-pending:";
+  const suffix = `::${workId}`;
+  const sids = [];
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix) && key.endsWith(suffix) && key.length > prefix.length + suffix.length) {
+        sids.push(key.slice(prefix.length, key.length - suffix.length));
+      }
+    }
+  } catch (e) {}
+  return sids;
+}
+
 function cacheRead(sid) {
   return readCache(activeWorkId(), sid);
 }
@@ -247,6 +323,6 @@ function sameManuscriptText(a, b) {
 }
 
 export {
-  cacheRead, cacheReadForWork, cacheWrite, docText, draftTail, pendingBase, pendingClear, pendingRead, pendingRestore, pendingWrite,
-  readCache, readSlot, rememberInSession, sameManuscriptText, textFingerprint, toDocHTML,
+  cacheRead, cacheReadForWork, cacheWrite, docText, draftTail, dropSceneKeys, pendingBase, pendingClear, pendingRead, pendingRestore,
+  pendingSids, pendingWrite, readCache, readSlot, rememberInSession, renameSceneKeys, sameManuscriptText, textFingerprint, toDocHTML,
 };

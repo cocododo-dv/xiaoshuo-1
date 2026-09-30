@@ -493,14 +493,21 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       if (isCopyGateError(e)) return { ok: false, reason: copyGateAdoptMessage(e), error: e, authorBackup, copyBlocked: true };
       const code = (e && e.code) || "";
       // 作者稿在这之间被存过（按修订号拒绝）：说清楚、作者稿没动；再试一次时预检会先读到服务端眼下的那一版（复核四 W1-R4B-4）。
-      // 这期间存上的全是写作台这一页自己的保存（路上那一次先到了）：照实说是它，不说「在别处」（复核五 W1-R5B-5）
+      // 这期间存上的全是写作台这一页自己的保存（路上那一次先到了）：照实说是它，不说「在别处」（复核五 W1-R5B-5）；
+      // 写作台那一次的回包丢了、还没能确认它存上了没有：照实说没能确认，同样不说「在别处」（复核六 W1-R6A-2）
       if (code === "AUTHOR_DRAFT_CONFLICT") {
-        let own = false;
-        try { own = await WrDocs.adoptionOvertakenBySelf(sid, adopting, e); } catch (checkError) { own = false; }
-        const reason = own
+        let cause = "other";
+        try { cause = await WrDocs.adoptionRefusalCause(sid, adopting, e); } catch (checkError) { cause = "other"; }
+        const reason = cause === "own"
           ? "你在写作台刚写的一稿先存到了服务器，这次没有覆盖，作者稿也没有被改动；再点一次即可采纳"
-          : "服务器上的作者稿刚在别处更新过，这次没有覆盖，作者稿也没有被改动；再试一次会先读到最新的一版";
-        return { ok: false, reason, error: e, authorBackup, ...(own ? { overtakenBySelf: true } : {}) };
+          : cause === "unsure"
+            ? "你在写作台刚写的一稿可能先存到了服务器，但它的保存回包丢了、还没能确认；这次没有覆盖，作者稿也没有被改动。等写作台显示草稿已保存后再点一次"
+            : "服务器上的作者稿刚在别处更新过，这次没有覆盖，作者稿也没有被改动；再试一次会先读到最新的一版";
+        return {
+          ok: false, reason, error: e, authorBackup,
+          ...(cause === "own" ? { overtakenBySelf: true } : {}),
+          ...(cause === "unsure" ? { overtakenUnconfirmed: true } : {}),
+        };
       }
       const msg = (e && e.message) || String(e || "");
       return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
