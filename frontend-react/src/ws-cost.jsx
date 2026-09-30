@@ -2,14 +2,14 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { StatCard } from "./ws-quality-ui.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
-import { useActiveWorkIdentity } from "./ws-works.jsx";
+import { WsWorks, useActiveWorkIdentity } from "./ws-works.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner } from "./ws-ui.jsx";
 import { COST_WINDOWS, costLoad, csSnapshot, useCostState } from "./ws-cost-store.js";
 import {
   CalibersDetails, ChapterTable, DrillPanel, EstimatePill, ModelTable, NodeBars, PhaseBars, QuotaSection, TopCallsTable,
   TrendChart, costText, fmtInt, pricingComplete,
 } from "./ws-cost-parts.jsx";
-import { realWorkId } from "./lib/work-id.js";
+import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    WsCost — 成本看板
@@ -30,9 +30,10 @@ import { realWorkId } from "./lib/work-id.js";
 
 function WsCost() {
   const st = useCostState();
-  /* 只跟「当前是哪部作品」走：写作时的字数回写不让整张看板重渲 */
-  const identity = useActiveWorkIdentity();
-  const activeId = realWorkId(identity && identity.id);
+  /* 只跟「当前是哪部作品」走：写作时的字数回写不让整张看板重渲。发请求用能拿去发请求的那个 id
+     （新建的作品还没拿到正式 id 时是 null，见 lib/ready-work）——它变的时候身份快照也变，这里跟着重渲 */
+  useActiveWorkIdentity();
+  const activeId = readyWorkId(WsWorks);
   const chapters = useCatalogChapters() || [];
 
   // 跟随当前作品：挂载 / 切书自动加载；已有同项目缓存则不重复请求

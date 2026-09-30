@@ -18,9 +18,10 @@ vi.mock("./ws-catalog.jsx", () => ({
 }));
 
 /* 成本看板跟随当前作品（ws-works 的 useActiveWorkIdentity）；作品 id 由夹具给 */
-const works = vi.hoisted(() => ({ id: "P1" }));
+const works = vi.hoisted(() => ({ id: "P1", pending: false }));
 vi.mock("./ws-works.jsx", () => ({
-  WsWorks: { activeId: () => works.id },
+  // readyId：能拿去发请求的当前作品（新建作品还没拿到正式 id 时是 null）
+  WsWorks: { activeId: () => works.id, readyId: () => (works.pending || works.id === "__loading__" ? null : works.id) },
   useActiveWorkIdentity: () => ({ id: works.id, title: "测试长篇" }),
 }));
 
@@ -333,6 +334,7 @@ describe("WsCost 视图", () => {
       scenes: [{ sid: "sid-a", backendId: "S1", title: "交班" }, { sid: "sid-b", backendId: "S2", title: "夜渡" }],
     }];
     works.id = "P1";
+    works.pending = false;
   });
   afterEach(async () => {
     if (root) await act(async () => root.unmount());
@@ -405,6 +407,21 @@ describe("WsCost 视图", () => {
     await act(async () => root.render(<mod.WsCost />));
     await act(async () => { await Promise.resolve(); });
     expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/P2/cost-dashboard?days=30");
+  });
+
+  it("新建的作品还没拿到正式 id：不拿临时 id 拉账本；拿到正式 id 后再拉", async () => {
+    works.id = "tmp_new_work";
+    works.pending = true;
+    const { client, mod } = await loadView();
+    client.apiGet.mockResolvedValue(DASH);
+    await mountCost(mod);
+    expect(client.apiGet).not.toHaveBeenCalled();
+
+    works.id = "P9";
+    works.pending = false;
+    await act(async () => root.render(<mod.WsCost />));
+    await act(async () => { await Promise.resolve(); });
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/P9/cost-dashboard?days=30");
   });
 
   /* ---- 以 token 为主（批准 #4）：没定价的模型不编金额，图与条按 token 画 ---- */
