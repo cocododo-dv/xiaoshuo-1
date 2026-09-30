@@ -1,0 +1,748 @@
+{
+ "checkpoint": {
+  "artifact_execution_lineage_ids": [],
+  "artifact_hashes": {
+   "budget_basis": "<hex#1>",
+   "bundle": "<hex#2>",
+   "draft": "<hex#3>",
+   "hard_qc_decision": "<hex#4>",
+   "hard_qc_report": "<hex#5>",
+   "near_eval0_candidate": "<hex#6>",
+   "near_eval0_control": "<hex#7>",
+   "near_eval0_evaluation": "<hex#8>",
+   "near_eval0_payload": "<hex#9>",
+   "planning": "<hex#10>",
+   "planning_chapter_architecture": "<hex#11>",
+   "planning_chapter_architecture_provenance": "<hex#12>",
+   "planning_character_pressure": "<hex#13>",
+   "planning_character_pressure_provenance": "<hex#14>",
+   "planning_scene_blueprint": "<hex#15>",
+   "planning_scene_blueprint_provenance": "<hex#16>",
+   "scene_blueprint": "<hex#15>",
+   "selected_draft": "<hex#17>",
+   "soft_auto_critique_decision": "<hex#18>",
+   "soft_completion": "<hex#19>",
+   "soft_final_draft": "<hex#17>",
+   "soft_input_draft": "<hex#17>",
+   "soft_input_provider_execution_mode": "<hex#20>",
+   "soft_qc0_control": "<hex#21>",
+   "soft_qc0_decision": "<hex#22>",
+   "soft_qc0_report": "<hex#23>",
+   "soft_qc_decision": "<hex#24>",
+   "soft_qc_report": "<hex#23>",
+   "style_candidate_rankings": "<hex#25>",
+   "style_ready_candidate_0": "<hex#17>",
+   "style_work_items": "<hex#26>"
+  },
+  "artifact_refs": {
+   "branch": "continue",
+   "bundle_id": "bundle_CH_RESUME_SC01_v1",
+   "candidate_row_ids": [
+    "draft_style_CH_RESUME_SC01_v1"
+   ],
+   "execution_step_key": "hard_qc:0",
+   "hard_qc_artifact_execution_id": "idempotency:checkpoint-format",
+   "hard_qc_bundle_id": "bundle_CH_RESUME_SC01_v1",
+   "hard_qc_execution_step_key": "hard_qc:0",
+   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#27>",
+   "hard_qc_source_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
+   "human_review_event_id": null,
+   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#27>",
+   "llm_call_ids": [
+    "llm_call_CH_RESUME_SC01_<hex#28>"
+   ],
+   "near_eval0_artifact_execution_id": "idempotency:checkpoint-format",
+   "near_eval0_bundle_hash": "<hex#2>",
+   "near_eval0_bundle_id": "bundle_CH_RESUME_SC01_v1",
+   "near_eval0_candidate_snapshot": {
+    "apply_mode": "manual_or_regenerate",
+    "author_decision_note": null,
+    "chapter_id": "CH_RESUME",
+    "created_by": "near_final_acceptance",
+    "diff_summary": {
+     "failure_class": "reference_safety"
+    },
+    "evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_0",
+    "instruction": [
+     {
+      "action": "rewrite once",
+      "dimension": "prose_freshness"
+     }
+    ],
+    "object_id": "CH_RESUME_SC01",
+    "object_type": "scene",
+    "patches": [],
+    "proposed_text": "她没有立刻回答，只用指尖抹去杯沿的水痕，等走廊重新安静。",
+    "revision_type": "near_final_scene_rewrite",
+    "scene_id": "CH_RESUME_SC01",
+    "source_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1",
+    "status": "candidate",
+    "target_text_ref": "source_draft:draft_style_CH_RESUME_SC01_v1"
+   },
+   "near_eval0_control": {
+    "branch": "human_review_proposal",
+    "rewrite_allowed": false,
+    "rewrite_requested": false,
+    "skip_reason": "human_review_proposal"
+   },
+   "near_eval0_evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_0",
+   "near_eval0_execution_step_key": "near_final_acceptance:0",
+   "near_eval0_llm_call_id": "llm_CH_RESUME_SC01_near_final_acceptance_0",
+   "near_eval0_payload": {
+    "evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_0",
+    "failure_class": "reference_safety",
+    "findings": [
+     {
+      "dimension": "prose_freshness",
+      "issue": "needs revision"
+     }
+    ],
+    "near_final_status": "human_review_required",
+    "overall_score": 0.5,
+    "pass_flag": false,
+    "requires_human_review": true,
+    "revision_brief": [
+     {
+      "action": "rewrite once",
+      "dimension": "prose_freshness"
+     }
+    ],
+    "revision_candidate_id": "revision_CH_RESUME_SC01_near_final_acceptance_0",
+    "scores": {
+     "prose_freshness": 0.5
+    },
+    "should_rewrite": false
+   },
+   "near_eval0_revision_candidate_id": "revision_CH_RESUME_SC01_near_final_acceptance_0",
+   "near_eval0_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "neutral_artifact_execution_id": "idempotency:checkpoint-format",
+   "neutral_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
+   "neutral_execution_step_key": "neutral_draft",
+   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#29>",
+   "next_action": "pass",
+   "planning": {
+    "chapter_architecture": {
+     "artifact_type": "chapter_story_architecture",
+     "chapter_id": "CH_RESUME",
+     "created_at": "<ts#1>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#30>",
+     "object_id": "CH_RESUME",
+     "object_type": "chapter",
+     "payload": {
+      "chapter_promise": "the scene must change the available choices",
+      "character_shift": "certainty gives way to costly resolve",
+      "ending_question": "what will the choice cost next",
+      "escalation_path": [
+       "pressure appears",
+       "a choice narrows",
+       "a cost lands"
+      ],
+      "payoff_target": "the chosen action creates the next problem",
+      "reveal_plan": [
+       "the governing constraint is exposed"
+      ]
+     },
+     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#31>",
+     "scene_id": null,
+     "source_bundle_hash": "<hex#32>",
+     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
+     "status": "active"
+    },
+    "character_pressure": {
+     "artifact_type": "character_pressure_blueprint",
+     "chapter_id": "CH_RESUME",
+     "created_at": "<ts#2>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#33>",
+     "object_id": "CH_RESUME_SC01",
+     "object_type": "scene",
+     "payload": {
+      "avoidance_strategy": "delay the irreversible choice",
+      "current_mask": "measured confidence",
+      "hidden_fear": "the choice will expose a weakness",
+      "relationship_debt": "an old promise remains unpaid",
+      "shame_point": "asking for help feels like surrender",
+      "surface_goal": "finish the immediate task",
+      "wrong_belief": "control can prevent every loss"
+     },
+     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#34>",
+     "scene_id": "CH_RESUME_SC01",
+     "source_bundle_hash": "<hex#35>",
+     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
+     "status": "active"
+    }
+   },
+   "planning_chapter_architecture": {
+    "artifact_type": "chapter_story_architecture",
+    "chapter_id": "CH_RESUME",
+    "created_at": "<ts#1>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#30>",
+    "object_id": "CH_RESUME",
+    "object_type": "chapter",
+    "payload": {
+     "chapter_promise": "the scene must change the available choices",
+     "character_shift": "certainty gives way to costly resolve",
+     "ending_question": "what will the choice cost next",
+     "escalation_path": [
+      "pressure appears",
+      "a choice narrows",
+      "a cost lands"
+     ],
+     "payoff_target": "the chosen action creates the next problem",
+     "reveal_plan": [
+      "the governing constraint is exposed"
+     ]
+    },
+    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#31>",
+    "scene_id": null,
+    "source_bundle_hash": "<hex#32>",
+    "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
+    "status": "active"
+   },
+   "planning_chapter_architecture_artifact_execution_id": "idempotency:checkpoint-format",
+   "planning_chapter_architecture_execution_step_key": "planning:chapter_architecture",
+   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#30>",
+   "planning_chapter_architecture_reused": false,
+   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#31>",
+   "planning_character_pressure": {
+    "artifact_type": "character_pressure_blueprint",
+    "chapter_id": "CH_RESUME",
+    "created_at": "<ts#2>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#33>",
+    "object_id": "CH_RESUME_SC01",
+    "object_type": "scene",
+    "payload": {
+     "avoidance_strategy": "delay the irreversible choice",
+     "current_mask": "measured confidence",
+     "hidden_fear": "the choice will expose a weakness",
+     "relationship_debt": "an old promise remains unpaid",
+     "shame_point": "asking for help feels like surrender",
+     "surface_goal": "finish the immediate task",
+     "wrong_belief": "control can prevent every loss"
+    },
+    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#34>",
+    "scene_id": "CH_RESUME_SC01",
+    "source_bundle_hash": "<hex#35>",
+    "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
+    "status": "active"
+   },
+   "planning_character_pressure_artifact_execution_id": "idempotency:checkpoint-format",
+   "planning_character_pressure_execution_step_key": "planning:character_pressure",
+   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#33>",
+   "planning_character_pressure_reused": false,
+   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#34>",
+   "planning_scene_blueprint_artifact_execution_id": "idempotency:checkpoint-format",
+   "planning_scene_blueprint_execution_step_key": "scene_blueprint",
+   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#36>",
+   "planning_scene_blueprint_reused": false,
+   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#37>",
+   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#38>",
+   "resolution_code": "hard_pass",
+   "scene_blueprint": {
+    "blueprint_json": {
+     "anti_summary_rule": "end on physical action",
+     "ending_action": "the door closes behind them",
+     "forced_choice": "advance or concede",
+     "image_anchor": "a lamp reflected in wet stone",
+     "information_release": "the hidden constraint becomes visible",
+     "next_scene_pull": "the consequence follows immediately",
+     "price_paid": "trust becomes harder to recover",
+     "relationship_turn": "caution shifts into conditional trust",
+     "visible_desire": "secure the immediate objective"
+    },
+    "chapter_id": "CH_RESUME",
+    "created_at": "<ts#4>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#36>",
+    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#37>",
+    "scene_id": "CH_RESUME_SC01",
+    "source_bundle_hash": "<hex#39>",
+    "source_bundle_id": null,
+    "status": "accepted"
+   },
+   "scene_token_budget": 38450,
+   "should_continue": true,
+   "soft_auto_critique_decision": {
+    "dimension_scores": {},
+    "directives": [],
+    "error_code": null,
+    "execution_id": "idempotency:checkpoint-format",
+    "execution_step_key": "soft_qc:auto_critique:0",
+    "flagged_dimensions": [],
+    "llm_call_id": null,
+    "llm_contribution": null,
+    "outcome": "not_invoked",
+    "reason": "skip_critique",
+    "rule_dimension_scores": {},
+    "rule_directives": [],
+    "rule_flagged_dimensions": [],
+    "rule_should_rewrite": false,
+    "run_job_id": null,
+    "schema_version": 1,
+    "should_rewrite": false
+   },
+   "soft_auto_critique_outcome": "unchanged",
+   "soft_auto_critique_skip_reason": null,
+   "soft_completion": {
+    "branch": "continue",
+    "draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+    "final_qc_round": 0,
+    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#40>",
+    "skip_reason": "no_patch_requested"
+   },
+   "soft_completion_skip_reason": "no_patch_requested",
+   "soft_final_artifact_execution_id": "idempotency:checkpoint-format",
+   "soft_final_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "soft_final_execution_step_key": "style_draft:0",
+   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#28>",
+   "soft_final_qc_round": 0,
+   "soft_input_artifact_execution_id": "idempotency:checkpoint-format",
+   "soft_input_bundle_hash": "<hex#2>",
+   "soft_input_bundle_id": "bundle_CH_RESUME_SC01_v1",
+   "soft_input_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "soft_input_execution_step_key": "style_draft:0",
+   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#28>",
+   "soft_input_provider_execution_mode": "online",
+   "soft_input_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "soft_qc0_artifact_execution_id": "idempotency:checkpoint-format",
+   "soft_qc0_bundle_hash": "<hex#2>",
+   "soft_qc0_bundle_id": "bundle_CH_RESUME_SC01_v1",
+   "soft_qc0_control": {
+    "patch_allowed": false,
+    "skip_reason": "no_patch_requested"
+   },
+   "soft_qc0_decision": {
+    "branch": "continue",
+    "execution_step_key": "soft_qc:0",
+    "human_review_event_id": null,
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#41>",
+    "next_action": "pass",
+    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#40>",
+    "resolution_code": "soft_pass",
+    "should_continue": true,
+    "stop_reason": null
+   },
+   "soft_qc0_execution_step_key": "soft_qc:0",
+   "soft_qc0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#41>",
+   "soft_qc0_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#40>",
+   "soft_qc0_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "soft_qc_artifact_execution_id": "idempotency:checkpoint-format",
+   "soft_qc_branch": "continue",
+   "soft_qc_bundle_id": "bundle_CH_RESUME_SC01_v1",
+   "soft_qc_execution_step_key": "soft_qc:0",
+   "soft_qc_human_review_event_id": null,
+   "soft_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#41>",
+   "soft_qc_next_action": "pass",
+   "soft_qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#40>",
+   "soft_qc_resolution_code": "soft_pass",
+   "soft_qc_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "soft_qc_stop_reason": null,
+   "stop_reason": null,
+   "style_artifact_execution_id": "idempotency:checkpoint-format",
+   "style_artifact_execution_ids": [
+    "idempotency:checkpoint-format"
+   ],
+   "style_candidate_execution_ids": [
+    "idempotency:checkpoint-format"
+   ],
+   "style_candidate_llm_call_ids": [
+    "llm_call_CH_RESUME_SC01_<hex#28>"
+   ],
+   "style_candidate_rankings": [
+    null
+   ],
+   "style_candidate_row_ids": [
+    "draft_style_CH_RESUME_SC01_v1"
+   ],
+   "style_candidate_step_keys": [
+    "style_draft:0"
+   ],
+   "style_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
+   "style_execution_step_key": "style_draft:0",
+   "style_execution_step_keys": [
+    "style_draft:0"
+   ],
+   "style_initial_candidate_count": 1,
+   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#28>",
+   "style_work_items": [
+    {
+     "base": {
+      "artifact_execution_id": "idempotency:checkpoint-format",
+      "bundle_hash": "<hex#2>",
+      "bundle_id": "bundle_CH_RESUME_SC01_v1",
+      "content_hash": "<hex#17>",
+      "execution_step_key": "style_draft:0",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#28>",
+      "phase": "base",
+      "row_id": "draft_style_CH_RESUME_SC01_v1",
+      "source_base_row_id": null,
+      "source_neutral_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
+      "stage": "style_draft"
+     },
+     "de_template_outcome": {
+      "status": "not_required"
+     },
+     "final": {
+      "artifact_execution_id": "idempotency:checkpoint-format",
+      "bundle_hash": "<hex#2>",
+      "bundle_id": "bundle_CH_RESUME_SC01_v1",
+      "content_hash": "<hex#17>",
+      "execution_step_key": "style_draft:0",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#28>",
+      "phase": "final",
+      "row_id": "draft_style_CH_RESUME_SC01_v1",
+      "source_base_row_id": "draft_style_CH_RESUME_SC01_v1",
+      "source_neutral_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
+      "stage": "style_draft"
+     },
+     "gate_decision": {
+      "base_safety": {
+       "accepted": true,
+       "lost_required_fact_count": 0,
+       "missing_required_fact_count": 0,
+       "new_forbidden_count": 0,
+       "reasons": [],
+       "required_fact_count": 0,
+       "rewritten_integrity_markers": [],
+       "rewritten_length_score": 1.0,
+       "rewritten_required_fact_matches": 0,
+       "rewritten_visible_chars": 28,
+       "source_integrity_markers": [],
+       "source_required_fact_matches": 0,
+       "target_length_range": null
+      },
+      "findings": [],
+      "quality_signal_ids": [],
+      "rewrite_pass": 0,
+      "risk_dimensions": [],
+      "score": 1.0,
+      "triggered": false
+     },
+     "kind": "initial",
+     "slot_index": 0,
+     "slot_key": "initial:0",
+     "slot_order": 0
+    }
+   ]
+  },
+  "branch": "human_review_required",
+  "budget_resume_parent_execution_id": null,
+  "execution_id": "idempotency:checkpoint-format",
+  "node_key": "near_final_ready",
+  "selection_origin_execution_id": null,
+  "selection_parent_execution_id": null,
+  "strategy": "single",
+  "sub_index": 0,
+  "superseded_execution_ids": []
+ },
+ "run_checkpoint": "near_final_ready",
+ "run_execution_status": "completed",
+ "saves": [
+  {
+   "branch": null,
+   "hashes": [
+    "budget_basis"
+   ],
+   "node_key": "budget_ready",
+   "refs": [
+    "scene_token_budget"
+   ],
+   "strategy": null,
+   "sub_index": null
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "planning_scene_blueprint",
+    "planning_scene_blueprint_provenance",
+    "scene_blueprint"
+   ],
+   "node_key": "planning_ready",
+   "refs": [
+    "planning_scene_blueprint_artifact_execution_id",
+    "planning_scene_blueprint_execution_step_key",
+    "planning_scene_blueprint_llm_call_id",
+    "planning_scene_blueprint_reused",
+    "planning_scene_blueprint_row_id",
+    "scene_blueprint"
+   ],
+   "strategy": "planning_in_progress",
+   "sub_index": 0
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "planning_chapter_architecture",
+    "planning_chapter_architecture_provenance"
+   ],
+   "node_key": "planning_ready",
+   "refs": [
+    "planning_chapter_architecture",
+    "planning_chapter_architecture_artifact_execution_id",
+    "planning_chapter_architecture_execution_step_key",
+    "planning_chapter_architecture_llm_call_id",
+    "planning_chapter_architecture_reused",
+    "planning_chapter_architecture_row_id"
+   ],
+   "strategy": "planning_in_progress",
+   "sub_index": 1
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "planning_character_pressure",
+    "planning_character_pressure_provenance"
+   ],
+   "node_key": "planning_ready",
+   "refs": [
+    "planning_character_pressure",
+    "planning_character_pressure_artifact_execution_id",
+    "planning_character_pressure_execution_step_key",
+    "planning_character_pressure_llm_call_id",
+    "planning_character_pressure_reused",
+    "planning_character_pressure_row_id"
+   ],
+   "strategy": "planning_in_progress",
+   "sub_index": 2
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "planning",
+    "scene_blueprint"
+   ],
+   "node_key": "planning_ready",
+   "refs": [
+    "planning",
+    "scene_blueprint"
+   ],
+   "strategy": "planning_complete",
+   "sub_index": 3
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "bundle"
+   ],
+   "node_key": "bundle_ready",
+   "refs": [
+    "bundle_id"
+   ],
+   "strategy": null,
+   "sub_index": null
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "bundle",
+    "draft"
+   ],
+   "node_key": "neutral_ready",
+   "refs": [
+    "bundle_id",
+    "neutral_artifact_execution_id",
+    "neutral_draft_row_id",
+    "neutral_execution_step_key",
+    "neutral_llm_call_id"
+   ],
+   "strategy": null,
+   "sub_index": null
+  },
+  {
+   "branch": "continue",
+   "hashes": [
+    "hard_qc_decision",
+    "hard_qc_report"
+   ],
+   "node_key": "hard_qc_ready",
+   "refs": [
+    "branch",
+    "execution_step_key",
+    "hard_qc_artifact_execution_id",
+    "hard_qc_bundle_id",
+    "hard_qc_execution_step_key",
+    "hard_qc_llm_call_id",
+    "hard_qc_source_draft_row_id",
+    "human_review_event_id",
+    "llm_call_id",
+    "next_action",
+    "qc_report_id",
+    "resolution_code",
+    "should_continue",
+    "stop_reason"
+   ],
+   "strategy": "hard_pass",
+   "sub_index": null
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "style_work_items"
+   ],
+   "node_key": "hard_qc_ready",
+   "refs": [
+    "style_candidate_execution_ids",
+    "style_candidate_llm_call_ids",
+    "style_candidate_row_ids",
+    "style_candidate_step_keys",
+    "style_initial_candidate_count",
+    "style_work_items"
+   ],
+   "strategy": "single_in_progress",
+   "sub_index": 0
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "style_work_items"
+   ],
+   "node_key": "hard_qc_ready",
+   "refs": [
+    "style_candidate_execution_ids",
+    "style_candidate_llm_call_ids",
+    "style_candidate_row_ids",
+    "style_candidate_step_keys",
+    "style_initial_candidate_count",
+    "style_work_items"
+   ],
+   "strategy": "single_in_progress",
+   "sub_index": 1
+  },
+  {
+   "branch": null,
+   "hashes": [
+    "bundle",
+    "selected_draft",
+    "style_candidate_rankings",
+    "style_ready_candidate_0"
+   ],
+   "node_key": "style_ready",
+   "refs": [
+    "bundle_id",
+    "candidate_row_ids",
+    "llm_call_ids",
+    "style_artifact_execution_id",
+    "style_artifact_execution_ids",
+    "style_candidate_rankings",
+    "style_draft_row_id",
+    "style_execution_step_key",
+    "style_execution_step_keys",
+    "style_llm_call_id"
+   ],
+   "strategy": "single",
+   "sub_index": null
+  },
+  {
+   "branch": "unchanged",
+   "hashes": [
+    "soft_auto_critique_decision",
+    "soft_input_draft",
+    "soft_input_provider_execution_mode"
+   ],
+   "node_key": "soft_qc_ready",
+   "refs": [
+    "soft_auto_critique_decision",
+    "soft_auto_critique_outcome",
+    "soft_auto_critique_skip_reason",
+    "soft_input_artifact_execution_id",
+    "soft_input_bundle_hash",
+    "soft_input_bundle_id",
+    "soft_input_draft_row_id",
+    "soft_input_execution_step_key",
+    "soft_input_llm_call_id",
+    "soft_input_provider_execution_mode",
+    "soft_input_source_draft_row_id"
+   ],
+   "strategy": null,
+   "sub_index": 0
+  },
+  {
+   "branch": "continue",
+   "hashes": [
+    "soft_qc0_control",
+    "soft_qc0_decision",
+    "soft_qc0_report"
+   ],
+   "node_key": "soft_qc_ready",
+   "refs": [
+    "soft_qc0_artifact_execution_id",
+    "soft_qc0_bundle_hash",
+    "soft_qc0_bundle_id",
+    "soft_qc0_control",
+    "soft_qc0_decision",
+    "soft_qc0_execution_step_key",
+    "soft_qc0_llm_call_id",
+    "soft_qc0_report_id",
+    "soft_qc0_source_draft_row_id"
+   ],
+   "strategy": null,
+   "sub_index": 1
+  },
+  {
+   "branch": "continue",
+   "hashes": [
+    "soft_completion",
+    "soft_final_draft",
+    "soft_qc0_decision",
+    "soft_qc0_report",
+    "soft_qc_decision",
+    "soft_qc_report"
+   ],
+   "node_key": "soft_qc_ready",
+   "refs": [
+    "soft_completion",
+    "soft_completion_skip_reason",
+    "soft_final_artifact_execution_id",
+    "soft_final_draft_row_id",
+    "soft_final_execution_step_key",
+    "soft_final_llm_call_id",
+    "soft_final_qc_round",
+    "soft_qc0_artifact_execution_id",
+    "soft_qc0_bundle_hash",
+    "soft_qc0_bundle_id",
+    "soft_qc0_decision",
+    "soft_qc0_execution_step_key",
+    "soft_qc0_llm_call_id",
+    "soft_qc0_report_id",
+    "soft_qc0_source_draft_row_id",
+    "soft_qc_artifact_execution_id",
+    "soft_qc_branch",
+    "soft_qc_bundle_id",
+    "soft_qc_execution_step_key",
+    "soft_qc_human_review_event_id",
+    "soft_qc_llm_call_id",
+    "soft_qc_next_action",
+    "soft_qc_report_id",
+    "soft_qc_resolution_code",
+    "soft_qc_source_draft_row_id",
+    "soft_qc_stop_reason"
+   ],
+   "strategy": null,
+   "sub_index": 3
+  },
+  {
+   "branch": "human_review_required",
+   "hashes": [
+    "near_eval0_candidate",
+    "near_eval0_control",
+    "near_eval0_evaluation",
+    "near_eval0_payload"
+   ],
+   "node_key": "near_final_ready",
+   "refs": [
+    "near_eval0_artifact_execution_id",
+    "near_eval0_bundle_hash",
+    "near_eval0_bundle_id",
+    "near_eval0_candidate_snapshot",
+    "near_eval0_control",
+    "near_eval0_evaluation_id",
+    "near_eval0_execution_step_key",
+    "near_eval0_llm_call_id",
+    "near_eval0_payload",
+    "near_eval0_revision_candidate_id",
+    "near_eval0_source_draft_row_id"
+   ],
+   "strategy": null,
+   "sub_index": 0
+  }
+ ],
+ "scene_status": "quality_warning_pending_acceptance"
+}
