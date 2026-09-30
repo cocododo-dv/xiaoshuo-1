@@ -18,6 +18,7 @@
 - :mod:`.style_candidates` 风格稿候选的工作项、读回与复验、Best-of-N 份数、匿名终选门；
 - :mod:`.soft_qc` 软 QC（``soft_qc_ready`` 子游标 0..3）的驱动、修补留用 / 回退与检查点存取；
 - :mod:`.near_final_stage` 准终稿（``near_final_ready`` 子游标 0..3）的驱动、重写门与检查点存取；
+- :mod:`.lifecycle` 运行的入口、执行归属、终态分类、失败审计与已归档重放；
 - :mod:`.archive` 归档尾段（``near_final_ready`` 子游标 4..11 与 ``archived``）。
 
 包本身不导入子模块（免得包与子模块互相导入成环）。
