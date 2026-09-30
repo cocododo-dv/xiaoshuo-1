@@ -64,6 +64,11 @@ def _response(payload: dict, *, request_id: str, model: str) -> LLMResponse:
     )
 
 
+# 合成场景：有「选」、有代价、结尾有动作——过得了准终稿的房风场景机制门（B03-16b：以前产品代码里有一条认
+# 「Provider-generated」字头的旁路替测试跳过这道门，现在删了）
+STYLE_SCENE_TEXT = "Provider-generated style scene text. She has to choose, and the cost is the ledger. She turns and leaves."
+PATCHED_SCENE_TEXT = "Provider-generated patched scene text. She has to choose, and the cost is the ledger. She turns and leaves."
+
 class FakeSceneClient(AccountedGenerateMixin):
     """草稿生成序列：neutral → style → 后续均为 patch/rewrite。"""
 
@@ -76,9 +81,9 @@ class FakeSceneClient(AccountedGenerateMixin):
         if index == 1:
             payload = {"scene_text": "Provider-generated neutral scene text.", "continuity_notes": []}
         elif index == 2:
-            payload = {"scene_text": "Provider-generated style scene text.", "style_notes": []}
+            payload = {"scene_text": STYLE_SCENE_TEXT, "style_notes": []}
         else:
-            payload = {"scene_text": "Provider-generated patched scene text.", "style_notes": []}
+            payload = {"scene_text": PATCHED_SCENE_TEXT, "style_notes": []}
         return _response(payload, request_id=f"resp_scene_{index:03d}", model="fake-scene-model")
 
 

@@ -54,6 +54,11 @@ from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.real_llm_fakes import ScenePipelineOnlineFake
 
 
+# 合成场景：有「选」、有代价、结尾有动作——过得了准终稿的房风场景机制门（B03-16b：以前产品代码里有一条认
+# 「Provider-generated」字头的旁路替测试跳过这道门，现在删了）
+STYLE_SCENE_TEXT = "Provider-generated style scene text. She has to choose, and the cost is the ledger. She turns and leaves."
+PATCHED_SCENE_TEXT = "Provider-generated patched scene text. She has to choose, and the cost is the ledger. She turns and leaves."
+
 class FakeSceneClient(AccountedGenerateMixin):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
@@ -70,7 +75,7 @@ class FakeSceneClient(AccountedGenerateMixin):
             usage = {"input_tokens": 111, "output_tokens": 29, "total_tokens": 140}
         elif len(self.requests) == 2:
             structured_output = {
-                "scene_text": "Provider-generated style scene text.",
+                "scene_text": STYLE_SCENE_TEXT,
                 "style_notes": ["leaned harder into rhythm and inner tension"],
             }
             request_id = "resp_fake_style_001"
@@ -78,7 +83,7 @@ class FakeSceneClient(AccountedGenerateMixin):
             usage = {"input_tokens": 121, "output_tokens": 33, "total_tokens": 154}
         else:
             structured_output = {
-                "scene_text": "Provider-generated patched scene text.",
+                "scene_text": PATCHED_SCENE_TEXT,
                 "style_notes": ["applied one controlled patch pass"],
             }
             request_id = "resp_fake_patch_001"
@@ -650,7 +655,7 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id
     assert neutral_draft.source_bundle_id == bundle.bundle_id
     assert neutral_draft.source_bundle_hash == bundle.bundle_snapshot_hash
-    assert style_draft.content == "Provider-generated style scene text."
+    assert style_draft.content == STYLE_SCENE_TEXT
     assert style_draft.generation_llm_call_id == style_llm_call.llm_call_id
     assert style_draft.source_bundle_id == bundle.bundle_id
     assert style_draft.source_bundle_hash == bundle.bundle_snapshot_hash
