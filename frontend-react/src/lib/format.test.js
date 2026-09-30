@@ -1,7 +1,7 @@
 // lib/format.js：时间与数字文案。钉住各口径的边界（同一家族不同口径不能被合并成一个）。
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  agoLabel, dayTimeLabel, recentOrDayTimeLabel, formatMonthDayTime, isoMonthDay, isoMonthDayTime,
+  agoLabel, dayTimeLabel, recentOrDayTimeLabel, formatMonthDayTime, isoMonthDay, formatLocalMonthDayTime, localDayKey,
   formatIntOrDash, formatPercentRounded, formatPercent, formatDurationClock, formatMinutesApprox,
   wanFixed, formatCountWan, formatCharsWan,
 } from "./format.js";
@@ -29,10 +29,36 @@ describe("时间文案", () => {
     expect(formatMonthDayTime(null)).toBe("");
   });
 
-  it("ISO 串直接截取，不换时区", () => {
+  it("日期串直接截取（日桶照原样标）", () => {
     expect(isoMonthDay("2026-09-29")).toBe("09-29");
-    expect(isoMonthDayTime("2026-09-29T08:30:00Z")).toBe("09-29 08:30");
     expect(isoMonthDay(null)).toBe("");
+  });
+
+  /* 按浏览器所在的时区换算：同一个 UTC 时间戳，东八区与 UTC 看到的钟点不同（审计 F05-04 / F05-05） */
+  describe("本地时区", () => {
+    const tz = process.env.TZ;
+    afterEach(() => { if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz; });
+
+    it("formatLocalMonthDayTime：UTC 时间戳按本地钟点显示，不截取 UTC 串", () => {
+      process.env.TZ = "Asia/Shanghai";
+      expect(formatLocalMonthDayTime("2026-09-29T07:00:00.123456+00:00")).toBe("09-29 15:00");
+      expect(formatLocalMonthDayTime("2026-09-29T20:30:00Z")).toBe("09-30 04:30");
+      process.env.TZ = "UTC";
+      expect(formatLocalMonthDayTime("2026-09-29T07:00:00+00:00")).toBe("09-29 07:00");
+      expect(formatLocalMonthDayTime(null)).toBe("");
+      expect(formatLocalMonthDayTime("不是时间")).toBe("");
+    });
+
+    it("localDayKey：本地日历日，东八区凌晨不算前一天", () => {
+      process.env.TZ = "Asia/Shanghai";
+      // 北京时间 9 月 30 日 06:00 = UTC 9 月 29 日 22:00
+      expect(localDayKey(Date.parse("2026-09-29T22:00:00Z"))).toBe("2026-09-30");
+      expect(new Date(Date.parse("2026-09-29T22:00:00Z")).toISOString().slice(0, 10)).toBe("2026-09-29");
+      process.env.TZ = "UTC";
+      expect(localDayKey(Date.parse("2026-09-29T22:00:00Z"))).toBe("2026-09-29");
+      expect(localDayKey("不是时间")).toBe("");
+      expect(localDayKey()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
   });
 });
 
