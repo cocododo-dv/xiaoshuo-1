@@ -213,7 +213,8 @@ class SnowflakeWorkspaceService(
     ) -> dict[str, Any]:
         """分章面板「只保存章表」（``PATCH …/chapter-plan``，不物化）：前面有步骤待确认、「确认写入」点不动时，
         作者照样能改章名 / 章摘要 / 章界并存下来（R11：07 的章表改成只读镜像之后，这是改章表的门）。
-        章名当场跟到 09 的章头与目录（目录里还是上次播下去的名字时——与 07 改章名同一条规矩）。"""
+        章名当场跟到 09 的章头；目录只跟作者起的名字（目录里还是上次播下去的名字时——与 07 改章名同一条规矩），
+        并章 / 拆章后按新章序重编的「第 N 章」等确认写入随物化落到目录（``follow_plan_titles``）。"""
         saved = self._chaptering.save(project_id, payload, actor_ref=actor_ref)
         follow_plan_titles(self.session, project_id)
         return {**saved, "workspace": self.mutation_workspace(project_id)}

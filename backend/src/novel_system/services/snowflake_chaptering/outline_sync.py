@@ -67,8 +67,8 @@ def sync_long_synopsis_chapters(
         run.draft_json = {**run.draft_json, "chapters": incoming}
         flag_modified(run, "draft_json")
 
-    # 阶段 Z「章名只有一个」：07 里改的章名不必等下一次「确认写入」——09 的章头（场景行上的章名戳）
-    # 和目录里那一章（名字还是上次由章表播下去的）当场跟上。
+    # 阶段 Z「章名只有一个」：07 里改的章名不必等下一次「确认写入」——09 的章头（场景行上的章名戳）当场跟上，
+    # 目录里那一章（名字还是上次由章表播下去的）跟作者起的名字；系统起的「第 N 章」等确认写入（follow_plan_titles）。
     session.flush()
     follow_plan_titles(session, project_id)
 

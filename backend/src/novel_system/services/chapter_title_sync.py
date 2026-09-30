@@ -5,12 +5,12 @@
 作者已经起过名的章再起一遍。现在两扇门改的是同一个名字：
 
 - 章节编排改名 → :func:`adopt_catalog_title`（目录 PATCH 的同一事务里写穿章计划行）；
-- 分章面板「只保存章表」→ ``SnowflakeWorkspaceService.save_chapter_plan`` → :func:`follow_plan_titles`（目录里还是
-  上次播下去的名字就跟着走；API 调用方显式给 07 的章表时同一条路）；
+- 分章面板「只保存章表」→ ``SnowflakeWorkspaceService.save_chapter_plan`` → :func:`follow_plan_titles`（作者起的名字、
+  且目录里还是上次播下去的名字时当场跟过去；系统起的「第 N 章」等确认写入；显式给 07 的章表时同一条路）；
 - 分章面板确认写入 → ``SnowflakeChapteringService.save`` + 物化（阶段 W 的「目录章名跟随章表」）。
 
 目录那一行的 ``writer_brief_json["chapter_title"]`` 记着「上一次由章表播下去的名字」；两边一致时它就等于
-当前章名，之后任何一扇门再改都还跟得上。章表在 07 草稿里的镜像（``chapters``）由
+当前章名，之后任何一扇门再改都还跟得上。章表在 07 草稿里的镜像（``chapters`` 与前端写穿缓存里的那一份）由
 :func:`mirror_chapters_into_long_synopsis`（实现在 ``snowflake_chapter_table``）统一维护。
 """
 
@@ -74,18 +74,24 @@ def adopt_catalog_title(
 
 
 def follow_plan_titles(session: Session, project_id: str) -> list[str]:
-    """章计划行的章名变了（07 保存章表）：绑在上面的场重盖章名戳，目录里那一章跟着改名。
+    """章计划行的章名变了（分章面板「只保存章表」、显式给 07 的章表）：绑在上面的场重盖章名戳（09 的章头），
+    目录里那一章跟着改名。
 
-    目录只在「现在的章名还是上一次由章表播下去的那个」时才跟——和重新物化同一条规矩；两边本来就一致
-    （含章节编排改名写穿之后）时这永远成立。返回改了名的目录章 id。
+    这两条路都不物化：目录里的章序与场景卡还是上一次「确认写入」时的样子，所以目录只跟**作者起的名字**。
+    系统起的占位（「第 N 章」一类，:func:`is_auto_chapter_title`）是按章表的新章序重编的——并章 / 拆章之后跟过去，
+    目录里就冒出两章同一个「第 N 章」、一章挂着别章的号（复核 P04-R2）；它等「确认写入」时随物化落到目录，那时章序与
+    场景卡一起换。作者起的名字也只在「目录里现在的章名还是上一次由章表播下去的那个」时才跟——和重新物化同一条
+    规矩；两边本来就一致（含章节编排改名写穿之后）时这永远成立。返回改了名的目录章 id。
     """
     followed: list[str] = []
     for chapter in live_chapter_plans(session, project_id):
         _restamp_chapter_title(session, project_id, chapter)
         chapter_id = str(chapter.catalog_chapter_id or "").strip()
         title = str(chapter.title or "").strip()
-        row = session.get(ChapterGoal, chapter_id) if chapter_id else None
-        if row is None or row.project_id != project_id or not title:
+        if not chapter_id or is_auto_chapter_title(title):
+            continue
+        row = session.get(ChapterGoal, chapter_id)
+        if row is None or row.project_id != project_id:
             continue
         narrative = dict(row.narrative_json or {})
         current = str(narrative.get("title") or "").strip()
