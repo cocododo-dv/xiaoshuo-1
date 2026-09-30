@@ -25,28 +25,13 @@ def _validation_issues(response) -> list[dict[str, str]]:
         ),
         (
             "post",
-            "/api/v1/author-drafts/missing/apply-proposal",
-            {"proposal_id": "proposal_1", "force": True},
-        ),
-        (
-            "post",
-            "/api/v1/author-drafts/missing/proposals/generate",
-            {"instruction": "收紧节奏", "system_prompt": "override"},
-        ),
-        (
-            "post",
             "/api/v1/author-drafts/missing/proposals/generate-set",
             {"instruction": "给三种方案", "count": 1000},
         ),
         (
             "post",
-            "/api/v1/author-draft-proposals/missing/apply",
-            {"apply_mode": "replace", "status": "accepted"},
-        ),
-        (
-            "post",
-            "/api/v1/author-draft-proposals/missing/reject",
-            {"note": "不采用", "runtime_eligible": 1},
+            "/api/v1/author-drafts/missing/proposals/generate-set",
+            {"instruction": "续写", "target_range": {"unit": "text", "source_excerpt": "正文"}},
         ),
     ],
 )
@@ -115,23 +100,8 @@ def test_canonical_promotion_bounds_accepted_warning_codes(
         ),
         (
             "post",
-            "/api/v1/author-drafts/missing/proposals/generate",
+            "/api/v1/author-drafts/missing/proposals/generate-set",
             {"instruction": "x" * 8_001},
-        ),
-        (
-            "post",
-            "/api/v1/author-drafts/missing/proposals/generate",
-            {"target_range": {"unit": "text", "source_excerpt": "正文", "extra": 1}},
-        ),
-        (
-            "post",
-            "/api/v1/author-draft-proposals/missing/apply",
-            {"note": "x" * 4_001},
-        ),
-        (
-            "post",
-            "/api/v1/author-draft-proposals/missing/reject",
-            {"rejected_ai_trace": "x" * 100_001},
         ),
     ],
 )

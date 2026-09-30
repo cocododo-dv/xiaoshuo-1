@@ -18,8 +18,14 @@ from novel_system.db.models import (
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.errors import DomainError
+from novel_system.services.hash_engine import sha256_text
 from novel_system.services.reference_copy_gate import check_reference_copy, copy_gate_policies
 from novel_system.services.writer_review import WriterReviewService
+
+
+def chapter_body_hash(content: str) -> str:
+    """整章正文的哈希：通读确认与定稿绑定的就是它（没有正文给空串）。"""
+    return sha256_text(content) if content else ""
 
 
 class ChapterManuscriptService:
@@ -63,6 +69,8 @@ class ChapterManuscriptService:
             "missing_scene_ids": completion["missing_scene_ids"],
             "comparison_status": self._comparison_status(assembled["content"], aggregate),
             "assembled": assembled,
+            # 成稿中心读到的整章正文（各场当前终稿按场序现拼）的哈希：「确认定稿」带着它回来，绑定作者读到的那一份
+            "body_hash": chapter_body_hash(assembled["content"]),
             "aggregate": aggregate,
             "source_safety_scan": source_safety_scan,
             "writer_review_summary": writer_review_summary,
@@ -70,6 +78,18 @@ class ChapterManuscriptService:
             "canon_continuity": self._canon_continuity(chapter),
             "scenes": scene_entries,
         }
+
+    def assembled_body(self, chapter_id: str) -> dict[str, Any]:
+        """各场当前终稿按场序现拼的整章正文与它的哈希——成稿中心逐场读到的就是这些。
+
+        定稿绑定的是这一份，而不是章汇总（ChapterMemory）：流水线只在章末一场归档时重建汇总，
+        后归档的前几场不会进去，汇总可能落后于逐场终稿（R13）。
+        """
+        self.lifecycle.require_active_chapter(chapter_id)
+        scenes = self._active_scenes(chapter_id)
+        scene_entries, _final_scenes = self._scene_entries(scenes, self._scene_states(scenes))
+        assembled = self._assembled_payload(scene_entries)
+        return {**assembled, "body_hash": chapter_body_hash(assembled["content"])}
 
     def completion_contract(self, chapter_id: str) -> dict[str, Any]:
         """Return the canonical FinalScene coverage used by every final gate."""

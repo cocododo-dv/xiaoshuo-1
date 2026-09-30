@@ -15,16 +15,14 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     LibraryEntity,
     LibraryRelation,
-    RelationProfile,
     SceneCard,
     SnowflakeCharacterPlan,
     SnowflakeScenePlan,
     StoryCharacter,
     TimelineEvent,
-    VoiceProfile,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.projects import ProjectService
+from novel_system.services.scene_lookup import require_project
 
 ENTITY_KINDS = {"location", "item", "faction", "concept"}
 ENTITY_STATUSES = {"active", "archived"}
@@ -98,7 +96,7 @@ class LibraryService:
         self.session = session
 
     def _require_project(self, project_id: str):
-        return ProjectService(self.session).require_project(project_id)
+        return require_project(self.session, project_id)
 
     def overview(self, project_id: str) -> dict[str, Any]:
         project = self._require_project(project_id)
@@ -446,21 +444,6 @@ class LibraryService:
                     select(SnowflakeCharacterPlan).where(
                         SnowflakeCharacterPlan.project_id == project_id,
                         SnowflakeCharacterPlan.character_id == character_id,
-                    )
-                ).all()
-            ),
-            "voice_profiles": len(
-                self.session.scalars(
-                    select(VoiceProfile).where(
-                        VoiceProfile.character_id == character_id,
-                    )
-                ).all()
-            ),
-            "relation_profiles": len(
-                self.session.scalars(
-                    select(RelationProfile).where(
-                        (RelationProfile.left_character_id == character_id)
-                        | (RelationProfile.right_character_id == character_id)
                     )
                 ).all()
             ),

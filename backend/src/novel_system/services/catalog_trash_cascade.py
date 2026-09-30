@@ -21,9 +21,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard
-
-#: 取回时原来的章内序号已被占用的卡先停到这段高位上；随后 ``_CatalogPlacement`` 会统一重新落位
-_REVIVE_PARK_OFFSET = 1_000_000
+from novel_system.services.catalog_ordering import PARK_GAP
 
 
 def split_trashed_planned_cards(
@@ -93,7 +91,8 @@ def revive_cascade_trashed_scene_cards(
         highest = max(highest, seq)
         if int(trashed_flag or 0) == 0:
             taken.setdefault(str(chapter_id), set()).add(seq)
-    park = highest + _REVIVE_PARK_OFFSET
+    # 原来的章内序号已被占用的卡先停到这段高位上；随后 ``_CatalogPlacement`` 会统一重新落位
+    park = highest + PARK_GAP
     for card in cascade:
         seqs = taken.setdefault(str(card.chapter_id), set())
         seq = int(card.scene_seq or 0)

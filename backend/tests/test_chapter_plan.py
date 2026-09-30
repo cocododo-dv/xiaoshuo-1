@@ -649,18 +649,21 @@ def test_context_builder_slots_and_degradation(client, session) -> None:
     ch1 = _create_chapter(client, pid, "第一章")
     ch2 = _create_chapter(client, pid, "第二章")
     ch3 = _create_chapter(client, pid, "第三章")
-    client.patch(
-        f"/api/v2/projects/{pid}/catalog/chapters/{ch1['chapter_id']}",
-        json={"exit": "她带着名册离开盐场", "tension": 0.4},
-    )
-    client.patch(
+    patched = client.patch(
         f"/api/v2/projects/{pid}/catalog/chapters/{ch2['chapter_id']}",
-        json={"tension": 0.6, "drama": {"forbidden": "不得出现梦醒桥段", "promise": "p"}},
+        json={"drama": {"forbidden": "不得出现梦醒桥段", "promise": "p"}},
     )
-    client.patch(
-        f"/api/v2/projects/{pid}/catalog/chapters/{ch3['chapter_id']}",
-        json={"entry": "堂屋的灯还亮着"},
-    )
+    assert patched.status_code == 200, patched.text
+    # 章级的张力 / 入口 / 出口已退役（批准 #17a）：目录接口不再收也不再发，库里旧行的 narrative_json 原样保留。
+    # 这里直接写进库、当作旧数据；规划上下文改读场上数据时（重评 R10 第 2 步）这一段随之重写。
+    for chapter, legacy in (
+        (ch1, {"exit": "她带着名册离开盐场", "tension": 0.4}),
+        (ch2, {"tension": 0.6}),
+        (ch3, {"entry": "堂屋的灯还亮着"}),
+    ):
+        row = session.get(ChapterGoal, chapter["chapter_id"])
+        row.narrative_json = {**(row.narrative_json or {}), **legacy}
+    session.commit()
 
     from novel_system.services.chapter_planning_context import ChapterPlanningContextBuilder
 

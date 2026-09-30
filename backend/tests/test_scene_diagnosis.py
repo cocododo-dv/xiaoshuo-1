@@ -96,7 +96,7 @@ def _seed_scene(session, *, draft_html: str | None = DRAFT_HTML) -> str | None:
     if draft_html is None:
         return None
     service = AuthorDraftService(session)
-    draft = service.ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    draft = service.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     saved = service.save(draft["draft_id"], {"content": draft_html, "base_revision_no": draft["revision_no"]}, actor_ref="writer")
     session.commit()
     return saved["draft"]["draft_id"] if "draft" in saved else draft["draft_id"]
@@ -394,7 +394,7 @@ def test_ai_deep_review_merges_into_the_diagnosis_and_goes_stale_when_the_text_c
 
     # 作者改了正文：整份深评标 stale（深改面板提示重新深评），规则发现照常按新正文算
     service = AuthorDraftService(session)
-    current = service.ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    current = service.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     assert current["draft_id"] == draft_id
     service.save(current["draft_id"], {"content": "<p>门外很安静。她把证据袋交给了许望。</p>", "base_revision_no": current["revision_no"]}, actor_ref="writer")
     session.commit()
@@ -472,7 +472,7 @@ def test_near_final_review_findings_join_the_diagnosis(client: TestClient, sessi
 
     # 作者改了字：评审就是改前的了
     service = AuthorDraftService(session)
-    current = service.ensure_blank("scene", SCENE_ID, actor_ref="writer")["draft"]
+    current = service.ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
     assert current["draft_id"] == draft_id
     service.save(current["draft_id"], {"content": "<p>门外很安静。她把证据袋交给了许望。</p>", "base_revision_no": current["revision_no"]}, actor_ref="writer")
     session.commit()
@@ -861,7 +861,7 @@ def _add_second_scene(session, html: str = SCENE2_HTML) -> str:
     )
     session.commit()
     service = AuthorDraftService(session)
-    draft = service.ensure_blank("scene", SCENE2_ID, actor_ref="writer")["draft"]
+    draft = service.ensure("scene", SCENE2_ID, actor_ref="writer")["draft"]
     service.save(draft["draft_id"], {"content": html, "base_revision_no": draft["revision_no"]}, actor_ref="writer")
     session.commit()
     return draft["draft_id"]
@@ -933,7 +933,7 @@ def test_chapter_read_through_lands_findings_on_scenes_and_keeps_chapter_level_o
 
     # 改了第二场的字：整章的通读就是改前的
     service = AuthorDraftService(session)
-    draft = service.ensure_blank("scene", SCENE2_ID, actor_ref="writer")["draft"]
+    draft = service.ensure("scene", SCENE2_ID, actor_ref="writer")["draft"]
     service.save(draft["draft_id"], {"content": "<p>她走了。</p>", "base_revision_no": draft["revision_no"]}, actor_ref="writer")
     session.commit()
     after = client.get(f"/api/v1/chapters/{CHAPTER_ID}/deep-review").json()["data"]

@@ -219,6 +219,18 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
         "novel_system.services.errors",
     },
     "novel_system.services.house_taste_lexicons": set(),
+    # 2026-09-30 P05：书脊的状态词表、目录标签与两阶段落位（B08-15 / B08-23）
+    "novel_system.services.project_status": set(),
+    "novel_system.services.catalog_labels": {"novel_system.db.models"},
+    "novel_system.services.catalog_ordering": {
+        "novel_system.db.models",
+        "novel_system.services.chapter_approval",
+    },
+    "novel_system.services.chapter_approval": {"novel_system.db.models", "novel_system.services.errors"},
+    "novel_system.services.catalog_trash_cascade": {
+        "novel_system.db.models",
+        "novel_system.services.catalog_ordering",
+    },
 }
 
 

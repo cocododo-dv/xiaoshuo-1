@@ -2,13 +2,15 @@
 
 历史缺陷：purge 只删 FE 域 + 雪花域表，正文全文仍以 SceneDraft/FinalScene/
 SceneMemory/AuthorDraftRevision/LlmCall 载荷等形式留库，且孤儿行永远无法
-经 UI 清理。本测试在项目名下种满派生表后 purge，逐表断言清零。
+经 UI 清理。本测试在项目名下种满派生表后 purge，逐表断言清零；清单本身从元数据推出
+（B08-19），守卫要求每张带着「指向作品对象」列的表都做了选择。
 """
 
 from __future__ import annotations
 
-import pytest
+from sqlalchemy import func, or_, select
 
+from novel_system.db.base import Base
 from novel_system.db.models import (
     AttemptTracker,
     AuthorPreferenceProfile,
@@ -41,13 +43,19 @@ from novel_system.db.models import (
     StyleReferenceInjectionBinding,
     StyleReferenceProfile,
     StyleReferenceRun,
+    StyleReferenceSceneWindows,
     VolumeSummary,
     WriterEvaluation,
     utcnow,
 )
+from novel_system.services.project_purge import (
+    INDIRECTLY_PURGED_TABLES,
+    NOT_PURGED_TABLES,
+    OWNERSHIP_REFERENCE_SUFFIXES,
+    PURGE_KEY_COLUMNS,
+    purged_tables_child_first,
+)
 from novel_system.services.trash import TrashService
-from novel_system.services.errors import DomainError
-from novel_system.services.vector_store import InMemoryVectorStore
 from tests.fixture_works import cleanup_fixture_works
 
 
@@ -228,22 +236,20 @@ def _seed_full_project(session) -> None:
     session.add(AuthorDraftProposal(
         proposal_id="dp1", draft_id="d1", object_type="scene", object_id=SCENE_ID, content="提案",
     ))
+    # 每场冻结的风格选窗：没有外键、没有 project_id，手工清单漏了它（B08-19）
+    session.add(StyleReferenceSceneWindows(
+        selection_id="sw1", selection_key="sw1-key", scene_id=SCENE_ID, window_refs_json=[{"window_id": "w1"}],
+    ))
     session.flush()
 
 
 def test_purge_project_leaves_no_residual_rows(session):
     _seed_full_project(session)
-    vector_store = InMemoryVectorStore()
-    vector_store.write_collection(
-        f"scenes_{PROJECT_ID}",
-        [{"id": SCENE_ID, "text": "不得在永久清除后残留的正文"}],
-    )
 
-    result = TrashService(session, vector_store=vector_store).purge_project(PROJECT_ID)
+    result = TrashService(session).purge_project(PROJECT_ID)
     session.flush()
 
-    assert sorted(result["purged_vector_collections"]) == [f"scenes_{PROJECT_ID}"]
-    assert vector_store.collection_exists(f"scenes_{PROJECT_ID}") is False
+    assert result == {"project_id": PROJECT_ID, "purged": True}
 
     residuals: dict[str, int] = {}
     checks = {
@@ -293,14 +299,50 @@ def test_purge_project_leaves_no_residual_rows(session):
         "style_reference_injection_bindings": session.query(
             StyleReferenceInjectionBinding
         ).filter_by(binding_id="style_binding_purge"),
+        "style_reference_scene_windows": session.query(StyleReferenceSceneWindows).filter_by(scene_id=SCENE_ID),
     }
     for table, query in checks.items():
         count = query.count()
         if count:
             residuals[table] = count
     assert not residuals, f"purge 后仍有残留: {residuals}"
+    # 按元数据再扫一遍：清单里的每张表都没有这部作品名下的行
+    ids = {
+        "project_id": [PROJECT_ID],
+        "chapter_id": [CHAPTER_ID],
+        "scene_id": [SCENE_ID],
+        "draft_id": ["d1"],
+        "character_id": [],
+    }
+    for table in purged_tables_child_first():
+        conditions = [table.c[column].in_(ids[column]) for column in PURGE_KEY_COLUMNS if column in table.c and ids[column]]
+        if not conditions:
+            continue
+        left = session.execute(select(func.count()).select_from(table).where(or_(*conditions))).scalar()
+        assert left == 0, f"{table.name} 仍有 {left} 行"
     # 参考画像是共享资产；永久清除作品只能移除作品绑定，不能误删画像本体。
     assert session.get(StyleReferenceProfile, "style_profile_shared") is not None
+
+
+def test_every_table_that_can_point_at_a_project_object_has_made_a_purge_choice() -> None:
+    """新表只要带着 *project_id / *chapter_id / *scene_id / *draft_id / *character_id / scope_ref_id 列，
+    就得落在「按元数据清除」「间接清除」「刻意不清除」三者之一——不许默默漏掉。"""
+    keyed = {table.name for table in purged_tables_child_first()}
+    unclassified = []
+    for table in Base.metadata.sorted_tables:
+        if table.name == "story_projects" or table.name in keyed:
+            continue
+        pointers = [
+            column.name
+            for column in table.c
+            if column.name == "scope_ref_id" or column.name.endswith(OWNERSHIP_REFERENCE_SUFFIXES)
+        ]
+        if pointers and table.name not in INDIRECTLY_PURGED_TABLES and table.name not in NOT_PURGED_TABLES:
+            unclassified.append(f"{table.name}{pointers}")
+    assert unclassified == [], unclassified
+    assert keyed.isdisjoint(INDIRECTLY_PURGED_TABLES) and keyed.isdisjoint(NOT_PURGED_TABLES)
+    assert set(INDIRECTLY_PURGED_TABLES).isdisjoint(NOT_PURGED_TABLES)
+    assert "style_reference_scene_windows" in keyed
 
 
 def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
@@ -331,18 +373,3 @@ def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
 
     assert session.get(SnowflakeRevisionLink, "demo-revision-link") is None
     assert session.get(StoryProject, "work-a") is None
-
-
-def test_purge_project_fails_closed_when_vector_cleanup_fails(session):
-    _seed_full_project(session)
-
-    class FailingVectorStore(InMemoryVectorStore):
-        def delete_collection(self, collection_name: str) -> None:
-            raise RuntimeError(f"backend unavailable: {collection_name}")
-
-    with pytest.raises(DomainError) as error:
-        TrashService(session, vector_store=FailingVectorStore()).purge_project(PROJECT_ID)
-    assert error.value.code == "PROJECT_VECTOR_PURGE_FAILED"
-
-    # Relational ownership metadata must remain available for a safe retry.
-    assert session.get(StoryProject, PROJECT_ID) is not None

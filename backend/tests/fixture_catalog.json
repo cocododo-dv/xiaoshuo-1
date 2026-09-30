@@ -6,17 +6,10 @@
    "n": "01",
    "title": "样章01",
    "state": "approved",
-   "tension": 0.28,
-   "pov": "林岑",
-   "time": "D1 · 夜",
-   "place": "档案馆 · 修复台",
    "words": {
     "cur": 4180,
     "target": 4000
    },
-   "entry": "夜班开场，盐钟箱的湿度读数比记录里高了两格。",
-   "exit": "她在残片堆里捡到一片没有编号的潮汐记录。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -28,16 +21,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "盐钟残片",
-     "role": "新引"
-    },
-    {
-     "name": "父亲的潮汐记录",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 1-1",
@@ -87,17 +70,10 @@
    "n": "02",
    "title": "样章02",
    "state": "approved",
-   "tension": 0.4,
-   "pov": "林岑",
-   "time": "D2 · 午",
-   "place": "潮汐记录室",
    "words": {
     "cur": 3960,
     "target": 4000
    },
-   "entry": "带着无编号残片，林岑借口整理进了潮汐记录室。",
-   "exit": "比对之下，父亲的签名被人覆写过一次。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -109,20 +85,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "盐钟残片",
-     "role": "延续"
-    },
-    {
-     "name": "父亲的潮汐记录",
-     "role": "延续"
-    },
-    {
-     "name": "被覆写的签名",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 2-1",
@@ -164,17 +126,10 @@
    "n": "03",
    "title": "样章03",
    "state": "approved",
-   "tension": 0.54,
-   "pov": "林岑",
-   "time": "D3 · 夜",
-   "place": "档案馆 · 地下库",
    "words": {
     "cur": 4420,
     "target": 4200
    },
-   "entry": "顺着覆写痕迹，林岑查到一个被改掉的人名。",
-   "exit": "那个被改写的名字，是她自己。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -186,20 +141,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "被覆写的签名",
-     "role": "延续"
-    },
-    {
-     "name": "改写名单",
-     "role": "新引"
-    },
-    {
-     "name": "林岑的记忆",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 3-1",
@@ -241,17 +182,10 @@
    "n": "04",
    "title": "样章04",
    "state": "approved",
-   "tension": 0.44,
-   "pov": "周岚",
-   "time": "D5 · 午",
-   "place": "回声讲堂",
    "words": {
     "cur": 3880,
     "target": 4000
    },
-   "entry": "切到周岚视角：她在讲堂里讲解潮汐记录的「修订规范」。",
-   "exit": "台下的林岑听出，规范正是改写的说辞。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -263,20 +197,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "改写名单",
-     "role": "延续"
-    },
-    {
-     "name": "周岚",
-     "role": "新引"
-    },
-    {
-     "name": "修订规范",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 4-1",
@@ -310,17 +230,10 @@
    "n": "05",
    "title": "样章05",
    "state": "review",
-   "tension": 0.6,
-   "pov": "林岑",
-   "time": "D6 · 夜",
-   "place": "档案馆 · 夜班室",
    "words": {
     "cur": 4510,
     "target": 4200
    },
-   "entry": "林岑照着一本旧《夜班指南》倒查权限是谁开的。",
-   "exit": "指南的批注笔迹，和覆写签名同出一手。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -332,20 +245,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "修订规范",
-     "role": "延续"
-    },
-    {
-     "name": "夜班指南",
-     "role": "新引"
-    },
-    {
-     "name": "被覆写的签名",
-     "role": "承接"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 5-1",
@@ -387,17 +286,10 @@
    "n": "06",
    "title": "样章06",
    "state": "draft",
-   "tension": 0.72,
-   "pov": "林岑",
-   "time": "D7 · 晨",
-   "place": "馆长办公室外",
    "words": {
     "cur": 2240,
     "target": 4200
    },
-   "entry": "林岑想借还文件，接近周岚那串钥匙。",
-   "exit": "她记下三号档案室那把钥匙的齿形。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -409,20 +301,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "周岚",
-     "role": "延续"
-    },
-    {
-     "name": "三号档案室钥匙",
-     "role": "新引"
-    },
-    {
-     "name": "林岑的越线",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 6-1",
@@ -472,17 +350,10 @@
    "n": "07",
    "title": "样章07",
    "state": "draft",
-   "tension": 0.58,
-   "pov": "林岑",
-   "time": "D8 · 夜",
-   "place": "三号档案室",
    "words": {
     "cur": 1680,
     "target": 4400
    },
-   "entry": "三号档案室的锁，今晚换过了。",
-   "exit": "她终于拿到父亲的原始登记簿。",
-   "align": false,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -494,24 +365,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "三号档案室钥匙",
-     "role": "承接"
-    },
-    {
-     "name": "父亲的登记簿",
-     "role": "新引"
-    },
-    {
-     "name": "林岑的越线",
-     "role": "延续"
-    },
-    {
-     "name": "便签上的小名",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 7-1",
@@ -553,17 +406,10 @@
    "n": "08",
    "title": "样章08",
    "state": "writing",
-   "tension": 0.78,
-   "pov": "林岑",
-   "time": "D9 · 夜",
-   "place": "档案馆 · 夜班",
    "words": {
     "cur": 1850,
     "target": 4600
    },
-   "entry": "带着登记簿，林岑回到档案馆值今晚的夜班。",
-   "exit": "她把第二份备份独自留下，标签上写了一行字，没有签名。",
-   "align": true,
    "current": true,
    "promise": "样例promise：占位描述。",
    "drama": {
@@ -576,28 +422,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "父亲的登记簿",
-     "role": "承接"
-    },
-    {
-     "name": "第二份备份",
-     "role": "新引"
-    },
-    {
-     "name": "林岑的记忆",
-     "role": "延续"
-    },
-    {
-     "name": "便签上的小名",
-     "role": "延续"
-    },
-    {
-     "name": "盐钟残片",
-     "role": "收束"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 8-1",
@@ -648,17 +472,10 @@
    "n": "09",
    "title": "样章09",
    "state": "planned",
-   "tension": 0.9,
-   "pov": "林岑",
-   "time": "D10 · 凌晨",
-   "place": "档案馆",
    "words": {
     "cur": 0,
     "target": 4600
    },
-   "entry": "天亮前，林岑要决定那份没有签名的备份去向。",
-   "exit": "（待规划）",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -670,16 +487,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "第二份备份",
-     "role": "承接"
-    },
-    {
-     "name": "便签上的小名",
-     "role": "延续"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 9-1",
@@ -697,17 +504,10 @@
    "n": "10",
    "title": "样章10",
    "state": "planned",
-   "tension": 0.99,
-   "pov": "林岑",
-   "time": "D10 · 晨",
-   "place": "档案馆 · 门厅",
    "words": {
     "cur": 0,
     "target": 4200
    },
-   "entry": "（承接第 9 章）",
-   "exit": "（全书收束 · 待规划）",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -719,16 +519,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "盐钟残片",
-     "role": "收束"
-    },
-    {
-     "name": "林岑的记忆",
-     "role": "收束"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 10-1",
@@ -748,17 +538,10 @@
    "n": "01",
    "title": "样章01",
    "state": "approved",
-   "tension": 0.3,
-   "pov": "苏怀梅",
-   "time": "D1 · 晨",
-   "place": "盐场",
    "words": {
     "cur": 5400,
     "target": 5400
    },
-   "entry": "霜降后的第一个早班，怀梅替父亲去盐场点名。",
-   "exit": "她在工牌箱底摸到一枚早已注销的旧工牌。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -770,12 +553,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "旧工牌",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 1-1",
@@ -809,17 +586,10 @@
    "n": "02",
    "title": "样章02",
    "state": "review",
-   "tension": 0.46,
-   "pov": "苏怀梅",
-   "time": "D3 · 夜",
-   "place": "祖屋 · 堂屋",
    "words": {
     "cur": 5670,
     "target": 7400
    },
-   "entry": "祖父的藤椅整夜在堂屋里吱呀作响。",
-   "exit": "她看见祖父把一只旧木匣锁进了床底。",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -831,16 +601,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "旧木匣",
-     "role": "新引"
-    },
-    {
-     "name": "旧工牌",
-     "role": "延续"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 2-1",
@@ -874,18 +634,11 @@
    "n": "03",
    "title": "样章03",
    "state": "writing",
-   "tension": 0.62,
-   "pov": "苏怀梅",
-   "time": "D6 · 凌晨",
-   "place": "盐田尽头",
    "current": true,
    "words": {
     "cur": 1530,
     "target": 4500
    },
-   "entry": "离乡前夜，怀梅写下那封不打算寄出的信。",
-   "exit": "（在写）",
-   "align": true,
    "promise": "样例promise：占位描述。",
    "drama": {
     "promise": "样例promise：占位描述。",
@@ -897,16 +650,6 @@
     "forbidden": "样例forbidden：占位描述。",
     "notes": "样例notes：占位描述。"
    },
-   "threads": [
-    {
-     "name": "旧木匣",
-     "role": "延续"
-    },
-    {
-     "name": "没寄出的信",
-     "role": "新引"
-    }
-   ],
    "scenes": [
     {
      "title": "样场 3-1",

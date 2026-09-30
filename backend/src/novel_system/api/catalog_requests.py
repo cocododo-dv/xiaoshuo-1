@@ -6,18 +6,11 @@ from novel_system.api.request_types import BoundedJsonObject, StrictRequestModel
 
 
 class _CatalogChapterNarrativeRequest(StrictRequestModel):
+    # 章级的张力 / 视角 / 时间 / 地点 / 入口 / 出口 / 衔接 / 线索已退役（批准 #17a）：带着它们的请求照常 422
     title: str | None = Field(default=None, max_length=500)
     act: str | None = Field(default=None, max_length=128)
-    tension: float | int | None = None
-    pov: str | None = Field(default=None, max_length=500)
-    time_label: str | None = Field(default=None, max_length=1000)
-    place: str | None = Field(default=None, max_length=2000)
-    entry: str | None = Field(default=None, max_length=20_000)
-    exit: str | None = Field(default=None, max_length=20_000)
-    align: bool | None = None
     promise: str | None = Field(default=None, max_length=20_000)
     drama: BoundedJsonObject | None = None
-    threads: list[BoundedJsonObject] | None = Field(default=None, max_length=1000)
     notes: str | None = Field(default=None, max_length=100_000)
 
 
@@ -69,6 +62,3 @@ class CatalogSceneUpdateRequest(_CatalogSceneFieldsRequest):
     pov_character_id: str | None = Field(default=None, max_length=255)
     pov_character_name: str | None = Field(default=None, max_length=500)
 
-
-class CatalogImportRequest(StrictRequestModel):
-    chapters: list[BoundedJsonObject] | None = Field(default=None, max_length=10_000)

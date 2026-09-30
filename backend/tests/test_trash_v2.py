@@ -43,7 +43,7 @@ def test_project_soft_delete_restore_roundtrip(client):
     assert entry["kind"] == "work"
     assert entry["restorable"] is True
 
-    _post(client, f"/api/v2/projects/{pid}/restore")
+    _post(client, f"/api/v2/trash/work:{pid}/restore")
     listed = client.get("/api/v2/projects").json()["data"]["items"]
     assert any(item["project_id"] == pid for item in listed)
     # 数据无损：目录原样回来
@@ -76,7 +76,7 @@ def test_project_trash_hides_children_from_legacy_author_routes(client):
         item["chapter_id"] for item in after.json()["data"]["items"]
     }
 
-    restored = _post(client, f"/api/v2/projects/{project_id}/restore")
+    restored = _post(client, f"/api/v2/trash/work:{project_id}/restore")
     assert restored["trashed"] is False
     visible_again = client.get("/api/v1/chapters")
     assert visible_again.status_code == 200
@@ -91,16 +91,15 @@ def test_unified_trash_lists_three_levels(client, session):
     chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "要删的章"})["chapter"]
     scene_id = chapter["scenes"][0]["scene_id"]
 
-    # 场景级软删（v2 桥接）
-    scene_del = client.delete(f"/api/v2/projects/{pid}/catalog/scenes/{scene_id}")
-    assert scene_del.status_code == 200, scene_del.text
-    # 章级软删
-    chapter_del = client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}")
-    # 既有规则：章下有已 trash 场景时阻止章删 —— 先恢复场景再删章
-    if chapter_del.status_code == 409:
-        _post(client, f"/api/v2/trash/scene:{scene_id}/restore")
-        chapter_del = client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}")
-    assert chapter_del.status_code == 200, chapter_del.text
+    # 场景级软删（前端删场走 v1 的 scenes/trash）
+    scene_del = _post(client, "/api/v1/scenes/trash", {"scene_ids": [scene_id]})
+    assert scene_del["processed"] == [{"scene_id": scene_id}]
+    # 章级软删——既有规则：章下有单独进了回收站的场景时不许删章，先恢复场景再删章
+    chapter_del = _post(client, "/api/v1/chapters/trash", {"chapter_ids": [chapter["chapter_id"]]})
+    assert [item["code"] for item in chapter_del["blocked"]] == ["CHAPTER_TRASH_BLOCKED_HAS_TRASHED_SCENES"]
+    _post(client, f"/api/v2/trash/scene:{scene_id}/restore")
+    chapter_del = _post(client, "/api/v1/chapters/trash", {"chapter_ids": [chapter["chapter_id"]]})
+    assert chapter_del["blocked"] == [] and chapter_del["processed"][0]["chapter_id"] == chapter["chapter_id"]
     # 作品级软删（demo 可删）
     work_del = client.delete("/api/v2/projects/work-b")
     assert work_del.status_code == 200, work_del.text
@@ -138,7 +137,7 @@ def test_scene_trash_keeps_draft_and_restore_brings_it_back(client, session):
     )
     assert saved.status_code == 200
 
-    client.delete(f"/api/v2/projects/{pid}/catalog/scenes/{scene_id}")
+    _post(client, "/api/v1/scenes/trash", {"scene_ids": [scene_id]})
     _post(client, f"/api/v2/trash/scene:{scene_id}/restore")
     current = client.get(f"/api/v1/author-drafts/scene/{scene_id}/current").json()["data"]
     assert current["draft"]["content"] == "正文留着，恢复即回。"
@@ -177,8 +176,8 @@ def test_scene_restore_blocked_when_chapter_trashed(client):
     chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
     scene_id = chapter["scenes"][0]["scene_id"]
     # 章级软删级联场景（既有规则：反向顺序——场景已删时章删会被 409 阻止）
-    chapter_del = client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}")
-    assert chapter_del.status_code == 200, chapter_del.text
+    chapter_del = _post(client, "/api/v1/chapters/trash", {"chapter_ids": [chapter["chapter_id"]]})
+    assert chapter_del["blocked"] == []
 
     merged = client.get(f"/api/v2/trash?project_id={pid}").json()["data"]["items"]
     scene_entry = next(item for item in merged if item["id"] == f"scene:{scene_id}")
@@ -190,3 +189,14 @@ def test_scene_restore_blocked_when_chapter_trashed(client):
         headers={"X-Idempotency-Key": "trash-blocked-restore"},
     )
     assert blocked.status_code == 409
+
+
+def test_the_retired_catalog_delete_and_project_restore_routes_are_gone(client):
+    """删章 / 删场走 v1 的 trash，恢复作品走统一回收站（批准 #24a）；这三个没有界面调用的入口已删。"""
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
+    scene_id = chapter["scenes"][0]["scene_id"]
+    assert client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}").status_code in {404, 405}
+    assert client.delete(f"/api/v2/projects/{pid}/catalog/scenes/{scene_id}").status_code in {404, 405}
+    assert client.post(f"/api/v2/projects/{pid}/restore", json={}).status_code in {404, 405}

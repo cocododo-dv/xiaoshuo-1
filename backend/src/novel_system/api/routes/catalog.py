@@ -1,31 +1,30 @@
 """FE-ALIGN Phase 3: 目录 API（v2）—— 章节/场景树的唯一真相源。
 
 对应原型 WsCatalog（design/ws-catalog.jsx）；创建类端点（建章/建场景）经
-idempotent_response 兑现幂等键（必填 + 同键重放同响应）；PATCH/软删
-对旧调用方不强制键，但客户端给键时同样执行持久重放。import 端点仅供 localStorage 一次性迁移使用，admin token 保护
-（loopback 免 token）。恢复走 /api/v2/trash 统一回收站端点。
+idempotent_response 兑现幂等键（必填 + 同键重放同响应）；PATCH 对旧调用方不强制键，
+但客户端给键时同样执行持久重放。删章 / 删场走 v1 的 ``/api/v1/{chapters,scenes}/trash``，
+恢复走 /api/v2/trash 统一回收站端点（这里的两个 DELETE 与 localStorage 一次性迁移用的 import 端点
+没有界面调用，已删：批准 #24a / #25）。
 """
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.catalog_requests import (
     CatalogChapterCreateRequest,
     CatalogChapterUpdateRequest,
-    CatalogImportRequest,
     CatalogSceneCreateRequest,
     CatalogSceneUpdateRequest,
 )
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest, StrictRequestModel
+from novel_system.api.request_types import StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.services.catalog import CatalogService
-from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=["catalog"])
 
@@ -136,79 +135,4 @@ def update_catalog_scene(
         path_template="/api/v2/projects/{project_id}/catalog/scenes/{scene_id}",
         payload={"project_id": project_id, "scene_id": scene_id, "body": body},
         action=lambda: CatalogService(session).update_scene(project_id, scene_id, body),
-    )
-
-
-@router.delete("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}")
-def trash_catalog_chapter(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    """章级软删（桥接既有 AuthorLifecycleService trash 机制）。"""
-    from novel_system.services.trash import TrashService
-
-    return optional_idempotent_response(
-        request,
-        session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
-        payload={
-            "project_id": project_id,
-            "chapter_id": chapter_id,
-            "body": payload.model_dump(mode="json") if payload else {},
-        },
-        action=lambda: TrashService(session).trash_chapter_in_project(
-            project_id, chapter_id, actor_ref=actor_ref_of(request)
-        ),
-    )
-
-
-@router.delete("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}")
-def trash_catalog_scene(
-    project_id: str,
-    scene_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    """场景级软删（桥接既有 AuthorLifecycleService trash 机制）。"""
-    from novel_system.services.trash import TrashService
-
-    return optional_idempotent_response(
-        request,
-        session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}/catalog/scenes/{scene_id}",
-        payload={
-            "project_id": project_id,
-            "scene_id": scene_id,
-            "body": payload.model_dump(mode="json") if payload else {},
-        },
-        action=lambda: TrashService(session).trash_scene_in_project(
-            project_id, scene_id, actor_ref=actor_ref_of(request)
-        ),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/import")
-def import_catalog(
-    project_id: str,
-    payload: CatalogImportRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-):
-    client_host = request.client.host if request.client else None
-    require_admin_token(x_admin_token, client_host=client_host)
-    body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/import",
-        payload={"project_id": project_id, "body": body},
-        action=lambda: CatalogService(session).import_catalog(project_id, body),
     )

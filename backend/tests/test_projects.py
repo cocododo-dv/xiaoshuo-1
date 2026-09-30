@@ -14,7 +14,6 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
 )
-from novel_system.services.errors import DomainError
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.projects import ProjectChapterFlowService
 
@@ -169,7 +168,7 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
                 self.session.flush()
                 return result
 
-    monkeypatch.setattr("novel_system.services.projects.ChapterRunnerService", FakeChapterRunnerService)
+    monkeypatch.setattr("novel_system.services.chapter_final_flow.ChapterRunnerService", FakeChapterRunnerService)
     project = _create_project(client, target_chapter_count=2)
     plan = _generate_plan(client, project["project_id"])
     approved = _approve_plan(client, project["project_id"], plan["plan_id"])
@@ -364,7 +363,8 @@ def test_project_chapter_final_requires_current_read_confirmation(client, sessio
     assert read_log.payload_json["confirmed_by"] == "author-c"
 
 
-def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(client, session) -> None:
+def test_project_review_packet_uses_the_assembled_finals_even_when_an_aggregate_exists(client, session) -> None:
+    """R13：终审包的正文取各场当前终稿现拼（成稿中心读的那一份）；章汇总可能落后，只作对照（comparison_status）。"""
     project = _create_project(client, target_chapter_count=1, key="review-packet-body")
     plan = _generate_plan(client, project["project_id"])
     approved = _approve_plan(client, project["project_id"], plan["plan_id"])
@@ -424,10 +424,11 @@ def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(clien
 
     assert response.status_code == 200
     packet = response.json()["data"]["review_packet"]
+    assembled = "\n".join(f"assembled scene {index}" for index in range(1, len(scenes) + 1))
     assert packet["chapter_id"] == chapter_id
-    assert packet["body"] == "aggregate chapter body"
-    assert packet["body_source"] == "aggregate"
-    assert packet["char_count"] == len("aggregate chapter body")
+    assert packet["body"] == assembled
+    assert packet["body_source"] == "assembled"
+    assert packet["char_count"] == len(assembled)
     assert packet["body_empty_reason"] is None
     assert packet["completion_status"] == "complete"
     assert packet["comparison_status"] == "aggregate_differs_current"
@@ -561,12 +562,57 @@ def test_project_chapter_run_job_reuses_existing_running_job(client, session, mo
     assert started_jobs == []
 
 
+def test_project_chapter_run_failure_keeps_each_path_mapping(client, session, monkeypatch) -> None:
+    """「运行结果 → 作品状态」三处共用一张表（B08-27），失败这一格各守各的老规矩：同步「运行本章」
+    （测试原语）失败回到「可以运行本章」，后台 worker 失败停在「待处理阻断」。"""
+
+    class ExplodingOrchestrator:
+        def __init__(self, db_session) -> None:
+            self.session = db_session
+
+        def run_scene(self, scene_id: str) -> dict:
+            raise RuntimeError("provider exploded mid-scene")
+
+    monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", ExplodingOrchestrator)
+    project_id = client.post(
+        "/api/v2/projects",
+        json={"title": "雨城旧信", "outline_text": "林昭翻开旧案卷。"},
+        headers={"X-Idempotency-Key": "run-failure-project"},
+    ).json()["data"]["project"]["project_id"]
+    chapter_id = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters",
+        json={"title": "旧信", "current": True, "with_scene": True},
+        headers={"X-Idempotency-Key": "run-failure-chapter"},
+    ).json()["data"]["chapter"]["chapter_id"]
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/run",
+        json={},
+        headers={"X-Idempotency-Key": "run-failure-sync"},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["run"]["status"] == "failed"
+    assert data["project"]["status"] == "chapter_ready"
+    assert client.get(f"/api/v1/projects/{project_id}/dashboard").json()["data"]["next_action"] == "run_current_chapter"
+
+    from novel_system.services.projects import _run_project_chapter_job_worker
+
+    job_id = data["run"]["job_id"]
+    _run_project_chapter_job_worker(project_id, chapter_id, job_id)
+    session.expire_all()
+    assert session.get(ChapterRunJob, job_id).status == "failed"
+    assert session.get(StoryProject, project_id).status == "chapter_blocked"
+    assert client.get(f"/api/v1/projects/{project_id}/dashboard").json()["data"]["next_action"] == "resolve_blocker"
+
+
 def test_project_chapter_flow_request_contracts_are_strict(client) -> None:
     base = "/api/v1/projects/missing-project/chapters/missing-chapter"
     cases = [
-        (f"{base}/run-job", {"offline_demo": "true"}, "body.offline_demo", "bool_type"),
+        # 离线演示已退役：offline_demo 不再是契约字段，和别的未知字段一样 422
+        (f"{base}/run-job", {"offline_demo": False}, "body.offline_demo", "extra_forbidden"),
         (f"{base}/run-job", {"allow_demo": True}, "body.allow_demo", "extra_forbidden"),
-        (f"{base}/run-job", {"offline_demo": False, "unexpected": 1}, "body.unexpected", "extra_forbidden"),
+        (f"{base}/run-job", {"unexpected": 1}, "body.unexpected", "extra_forbidden"),
         (f"{base}/read-confirm", {"note": "x", "unexpected": 1}, "body.unexpected", "extra_forbidden"),
         (f"{base}/approve-final", {"revision_notes": "x", "unexpected": 1}, "body.unexpected", "extra_forbidden"),
     ]
@@ -582,14 +628,11 @@ def test_project_chapter_flow_request_contracts_are_strict(client) -> None:
         )
 
 
-def test_project_chapter_run_service_rejects_non_boolean_or_legacy_demo_flags(session) -> None:
+def test_project_chapter_run_service_takes_no_demo_flags(session) -> None:
     service = ProjectChapterFlowService(session)
-    with pytest.raises(DomainError) as non_boolean:
-        service.prepare_chapter_run_job("missing-project", "missing-chapter", offline_demo="true")
-    assert non_boolean.value.code == "INVALID_CHAPTER_RUN_MODE"
-
-    with pytest.raises(TypeError):
-        service.prepare_chapter_run_job("missing-project", "missing-chapter", allow_demo=True)
+    for legacy_flag in ("offline_demo", "allow_demo"):
+        with pytest.raises(TypeError):
+            service.prepare_chapter_run_job("missing-project", "missing-chapter", **{legacy_flag: True})
 
 
 def test_project_chapter_flow_request_length_boundaries(client) -> None:

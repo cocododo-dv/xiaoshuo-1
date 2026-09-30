@@ -109,8 +109,9 @@ await check("派生卡：不可划掉 / snooze 按指纹 / 修好自动消失", 
   if (blocked !== 409) throw new Error(`resolve should be 409, got ${blocked}`);
   // 修好（删空章）→ 自动消失
   await page.evaluate(async (args) => {
-    await fetch(`${args.api}/api/v2/projects/work-a/catalog/chapters/${args.cid}`, {
-      method: "DELETE", headers: { "X-Idempotency-Key": "p5-fix-" + Date.now() },
+    await fetch(`${args.api}/api/v1/chapters/trash`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Idempotency-Key": "p5-fix-" + Date.now() },
+      body: JSON.stringify({ chapter_ids: [args.cid] }),
     });
   }, { api: API, cid: created });
   items = (await api("/api/v1/review-items?state=open&project_id=work-a")).items;

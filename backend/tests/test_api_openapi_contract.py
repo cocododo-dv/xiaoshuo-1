@@ -44,9 +44,10 @@ def test_every_versioned_api_operation_documents_standard_success_and_error_enve
     # Guard each API generation independently: a healthy v1 count must never
     # hide an accidentally excluded v2 router (the original blind spot).
     # Floors sit just below the live counts; lower them only alongside a
-    # deliberate endpoint retirement (2026-09 subtraction batch 1: v1 → 91, v2 → 96).
-    assert operation_counts["v1"] >= 90
-    assert operation_counts["v2"] >= 95
+    # deliberate endpoint retirement (2026-09 subtraction batch 1: v1 → 91, v2 → 96;
+    # 2026-09-30 refactor, routes with no UI caller retired — approved #6 / #7 / #24a / #25: v1 → 94, v2 → 92).
+    assert operation_counts["v1"] >= 93
+    assert operation_counts["v2"] >= 91
 
 
 def test_health_probes_keep_their_minimal_non_enveloped_contract() -> None:
