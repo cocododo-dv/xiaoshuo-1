@@ -15,14 +15,20 @@ describe("风格参考前端的模块边界", () => {
     expect(family.sort()).toEqual([
       "ws-styleref-activity.jsx", "ws-styleref-apply.jsx", "ws-styleref-check.jsx", "ws-styleref-fidelity.jsx",
       "ws-styleref-learn.jsx", "ws-styleref-library.jsx", "ws-styleref-model.js", "ws-styleref-overview.jsx",
-      "ws-styleref-portrait.jsx", "ws-styleref-scene-preview.jsx", "ws-styleref-store.js", "ws-styleref-ui.jsx",
-      "ws-styleref.jsx",
+      "ws-styleref-portrait.jsx", "ws-styleref-scene-preview.jsx", "ws-styleref-store-activity.js",
+      "ws-styleref-store-core.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref.jsx",
     ]);
   });
 
-  it("store 只 import lib/client.js、纯派生的 model 与共享小工具；model 只 import 词表与纯文字工具", () => {
-    // lib/events.js（事件广播）、lib/ids.js（导入键的随机后缀）：共享层的叶子模块，不读 store、不写 window
-    expect(imports(read("ws-styleref-store.js")).sort()).toEqual(["./lib/client.js", "./lib/events.js", "./lib/ids.js", "./ws-styleref-model.js"]);
+  it("store 三块只 import lib/client.js、纯派生的 model、共享小工具与彼此（只朝一个方向）；model 只 import 词表与纯文字工具", () => {
+    // 底座：请求与纯派生；订阅频道是模块内的集合，不借 window 事件
+    expect(imports(read("ws-styleref-store-core.js")).sort()).toEqual(["./lib/client.js", "./ws-styleref-model.js"]);
+    // 活动表：lib/poll.js（看页面可见性的轮询）+ 底座
+    expect(imports(read("ws-styleref-store-activity.js")).sort()).toEqual(["./lib/client.js", "./lib/poll.js", "./ws-styleref-model.js", "./ws-styleref-store-core.js"]);
+    // 写操作与门面：lib/ids.js（导入键的随机后缀）+ 底座 + 活动表；底座不 import 活动表（读完书库补登作业走登记口）
+    expect(imports(read("ws-styleref-store.js")).sort()).toEqual([
+      "./lib/client.js", "./lib/ids.js", "./ws-styleref-model.js", "./ws-styleref-store-activity.js", "./ws-styleref-store-core.js",
+    ]);
     // lib/messages.js：「后端原话能不能给作者看」的纯函数（对照检查的 model 也用它），无状态、无副作用；
     // lib/format.js：时间与数字文案（纯函数）
     expect(imports(read("ws-styleref-model.js")).sort()).toEqual(["./labels/style-reference.js", "./lib/format.js", "./lib/messages.js"]);

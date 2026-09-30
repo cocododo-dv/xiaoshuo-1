@@ -374,17 +374,17 @@ describe("删书（批量）", () => {
 });
 
 describe("导入、重新分类、学习", () => {
-  it("导入经 lib/client 发 FormData（带幂等键），分类作业登记进活动表，广播 sr:book-imported", async () => {
+  it("导入经 lib/client 发 FormData（带幂等键），分类作业登记进活动表，通知 imported 频道", async () => {
     client.apiPost.mockResolvedValueOnce({ book: { book_id: "bk-new", title: "新书" }, job_id: "job-1" });
     const seen = [];
     const onImported = (e) => seen.push(e.detail);
-    window.addEventListener("sr:book-imported", onImported);
+    const offImported = store.srSubscribe("imported")(onImported);
     const file = new File(["第一章\n正文一段。"], "新书.txt", { type: "text/plain" });
     await store.srRunImport({
       file, title: "新书", authorLabel: " 某人 ", cloudPolicy: "segments_only",
       rightsDeclaration: { analysis_rights: true, send_rights: true }, importKey: "imp-1",
     });
-    window.removeEventListener("sr:book-imported", onImported);
+    offImported();
     const [url, body, opts] = client.apiPost.mock.calls[0];
     expect(url).toBe(`${API}/books/import-upload`);
     expect(body).toBeInstanceOf(FormData);
@@ -466,16 +466,16 @@ describe("参考书活动", () => {
     expect(store.srActivityEntries().map((e) => e.key)).toEqual(["job:j9"]);
   });
 
-  it("从进行中走到终态：广播 sr:activity-finished，并按 kind 重读书库与学习信息", async () => {
+  it("从进行中走到终态：通知 finished 频道，并按 kind 重读书库与学习信息", async () => {
     store.srActivityApply([jobEntry()]);
     expect(store.srActivityFor("bk-a", "learn")).not.toBeNull();
     const finished = [];
     const onFinished = (e) => finished.push(e.detail.key);
-    window.addEventListener("sr:activity-finished", onFinished);
+    const offFinished = store.srSubscribe("finished")(onFinished);
     client.apiGet.mockClear();
     store.srActivityApply([jobEntry({ status: "succeeded", percent: 100, result: { profile_id: "pf-a" } })]);
     await vi.waitFor(() => expect(finished).toEqual(["job:j1"]));
-    window.removeEventListener("sr:activity-finished", onFinished);
+    offFinished();
     const urls = client.apiGet.mock.calls.map(([url]) => url);
     expect(urls).toContain(`${API}/books`);
     expect(urls).toContain(`${API}/books/bk-a/learn`);
@@ -575,11 +575,11 @@ describe("参考书活动", () => {
     // 之后的清单：在跑 → 成功，照常广播结束（没有被当成「关掉过」丢掉）
     const finished = [];
     const onFinished = (e) => finished.push(e.detail.key);
-    window.addEventListener("sr:activity-finished", onFinished);
+    const offFinished = store.srSubscribe("finished")(onFinished);
     store.srActivityApply([jobEntry({ key: "job:j5", job_id: "j5", status: "running", percent: 60 })], { complete: true, sentAt: Date.now() + 1 });
     store.srActivityApply([jobEntry({ key: "job:j5", job_id: "j5", status: "succeeded", percent: 100 })], { complete: true, sentAt: Date.now() + 2 });
     await vi.waitFor(() => expect(finished).toEqual(["job:j5"]));
-    window.removeEventListener("sr:activity-finished", onFinished);
+    offFinished();
     expect(store.srActivityEntries().map((e) => [e.key, e.status])).toEqual([["job:j5", "succeeded"]]);
   });
 

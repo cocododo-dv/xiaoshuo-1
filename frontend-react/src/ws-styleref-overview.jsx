@@ -7,7 +7,7 @@ import {
   srFormatWhen, srJobErrorText, srProvenanceView, srRetypeUnfinished,
 } from "./ws-styleref-model.js";
 import {
-  srActivityFor, srBookDetail, srLoadBookDetail, srLoadClassifyEstimate, srLoadRuntime, srResumeClassification, srRetype,
+  srActivityFor, srBookDetail, srFetchClassifyEstimate, srLoadBookDetail, srLoadRuntime, srResumeClassification, srRetype,
   srRuntime,
 } from "./ws-styleref-store.js";
 import { SrErrorLine, SrProgressBar, useSrStore } from "./ws-styleref-ui.jsx";
@@ -82,7 +82,7 @@ function SrClassifyCard({ book, onAction }) {
     if (busy) return;
     setBusy("estimate"); setError(null);
     let estimate = null;
-    try { estimate = await srLoadClassifyEstimate(book.id, { force: true }); }
+    try { estimate = await srFetchClassifyEstimate(book.id); }
     catch (e) { estimate = null; }
     setBusy(null);
     const cost = srClassifyEstimateText(estimate);
