@@ -21,6 +21,7 @@ from novel_system.services.llm_audit import (
     bounded_identifier,
     json_fingerprint,
 )
+from novel_system.services.maintenance import register_maintenance_task
 from novel_system.services.scene_run_checkpoint import idempotency_execution_id
 from novel_system.settings import get_settings
 from novel_system.services.hash_engine import sha256_text
@@ -771,3 +772,15 @@ def _dedupe_targets(targets: list[dict[str, str] | None]) -> list[dict[str, str]
         seen_refs.add(target_ref)
         deduped.append(target)
     return deduped
+
+
+# 重放缓存的保留期清理登记在全系统维护登记簿上（``services/maintenance.py``，随运行任务巡检线程跑），
+# 每 6 小时一次。``run_at_start=False``：启动后的第一拍不清——后端热加载新代码时，第一次大批量删除必须等
+# 部署时那份备份做完（批准#23 / 重评 R14 复核补充 2）。登记零参数的 ``run_idempotency_retention``（自开会话、
+# 提交、还页），不是要会话参数的 ``purge_expired_idempotency``。
+register_maintenance_task(
+    IDEMPOTENCY_RETENTION_TASK,
+    run_idempotency_retention,
+    interval_seconds=IDEMPOTENCY_RETENTION_INTERVAL_SECONDS,
+    run_at_start=False,
+)

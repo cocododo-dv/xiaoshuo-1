@@ -5,7 +5,6 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import IdempotencyKey, OperationLog
@@ -133,14 +132,11 @@ def test_retention_runs_every_6_hours_on_the_system_maintenance_registry_but_nev
     """重评 R14：清理登记在全系统维护登记表上（``services/maintenance.py``，随运行任务巡检线程跑），每 6 小时一次；
     启动后的第一拍不清——后端热加载新代码时，第一次大批量删除必须等部署时那份备份做完（复核补充 2 / 7）。
 
-    登记表随 P01b 进来：它还不在树上时本例跳过。两边合并之后要在 ``idempotency.py`` 末尾登记::
-
-        register_maintenance_task(IDEMPOTENCY_RETENTION_TASK, run_idempotency_retention,
-                                  interval_seconds=IDEMPOTENCY_RETENTION_INTERVAL_SECONDS, run_at_start=False)
-
-    没登记本例就红：保留期只在部署时的 compact_db 里跑一次，之后这张表又会一直长下去。
+    登记在 ``idempotency.py`` 末尾（导入即登记）。没登记、登记错了函数或 ``run_at_start=True`` 本例都红：
+    保留期只在部署时的 compact_db 里跑一次，之后这张表又会一直长下去。
     """
-    maintenance = pytest.importorskip("novel_system.services.maintenance")
+    from novel_system.services import maintenance
+
     registered = maintenance.SYSTEM_MAINTENANCE.tasks.get(IDEMPOTENCY_RETENTION_TASK)
     assert registered is not None, "idempotency retention is not registered on the system maintenance registry"
     task, interval = registered
