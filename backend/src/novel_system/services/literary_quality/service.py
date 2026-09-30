@@ -44,7 +44,7 @@ from novel_system.services.literary_quality.report import (
 )
 from novel_system.services.literary_quality.rules import analyze_literary_quality
 from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment, weighted_score
-from novel_system.services.manuscript_html import plain_manuscript_text
+from novel_system.services.manuscript_html import plain_manuscript_text, visible_paragraphs
 from novel_system.services.scene_text import current_author_drafts, pointed_final_scenes
 from novel_system.services.style_policy import live_policies_without_contract, style_policy_live
 from novel_system.services.value_coercion import optional_text
@@ -433,7 +433,7 @@ class LiteraryQualityService:
     def _chapter_source(chapter_id: str, *, text_layer: str, rows: _TextRows) -> dict[str, str] | None:
         if text_layer == "author_draft_preferred":
             draft = rows.chapter_drafts.get(chapter_id)
-            if draft is not None:
+            if draft is not None and _has_visible_text(draft.content):
                 return {
                     "text_layer": "author_draft",
                     "source_ref": f"author_draft:{draft.draft_id}",
@@ -445,7 +445,7 @@ class LiteraryQualityService:
         if text_layer == "chapter_memory_final":
             # 章记忆读时现拼：这一章此刻归档过的各场记忆按场序（位置对不上、拼不出来的章不列）
             derivation = rows.chapter_memories.get(chapter_id)
-            if derivation is None or derivation.status != "derived":
+            if derivation is None or derivation.status != "derived" or not _has_visible_text(derivation.content):
                 return None
             return {
                 "text_layer": "chapter_memory_final",
@@ -458,7 +458,7 @@ class LiteraryQualityService:
             parts: list[str] = []
             for scene in rows.chapter_scenes.get(chapter_id, []):
                 final_scene = rows.finals.get(scene.scene_id)
-                if final_scene is not None and final_scene.content:
+                if final_scene is not None and _has_visible_text(final_scene.content):
                     parts.append(final_scene.content)
             assembled = "\n\n".join(parts)
             if assembled:
@@ -473,7 +473,7 @@ class LiteraryQualityService:
     def _scene_source(scene_id: str, *, text_layer: str, rows: _TextRows) -> dict[str, str] | None:
         if text_layer == "author_draft_preferred":
             draft = rows.scene_drafts.get(scene_id)
-            if draft is not None:
+            if draft is not None and _has_visible_text(draft.content):
                 return {
                     "text_layer": "author_draft",
                     "source_ref": f"author_draft:{draft.draft_id}",
@@ -483,13 +483,21 @@ class LiteraryQualityService:
             return None
 
         final_scene = rows.finals.get(scene_id)
-        if final_scene is None:
+        if final_scene is None or not _has_visible_text(final_scene.content):
             return None
         return {
             "text_layer": "runtime_final_scene",
             "source_ref": f"final_scene:{final_scene.row_id}",
             "content": final_scene.content or "",
         }
+
+
+def _has_visible_text(content: str | None) -> bool:
+    """看得见的字才算正文——与写作台深改面板同一条规则（``scene_diagnosis.context.diagnosis_text``）：写作台一打开
+    没有终稿的场就建一份空白作者稿（``""`` / ``<p></p>`` / ``<p><br></p>``），那是一张白纸，不是正文；拿它去分析，
+    「缺什么」的规则对白纸全会响（S1 17，与复核 P02b-R1 同类）。空白的作者稿往下一层落（终稿 / 各场终稿现拼），
+    都没有字就不列。"""
+    return bool(visible_paragraphs(content))
 
 
 def _string_list(value: Any) -> list[str]:
