@@ -306,7 +306,7 @@ class PipelineMixin:
         # §6.4 / §16：chapter_seq、连续过渡计数、constraint_intensity 的上下文推导
         # 统一收敛在 classify_scene_with_context——与崩溃续跑同一入口，判定不得分叉。
         criticality = classify_scene_with_context(self.session, ctx.scene)
-        # 记开关打开时这一场会起的候选数（_best_of_n_count 读的就是它）；旧的上限 best_of_n 没人读了（[批准#2]）
+        # 记开关打开时这一场会起的候选数（_best_of_n_count 读的就是它；旧的候选上限随 [批准#2] 删了）
         _LOGGER.info(
             "scene %s criticality=%s reasons=%s initial_best_of_n=%d",
             ctx.scene_id,

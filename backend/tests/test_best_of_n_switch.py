@@ -20,11 +20,10 @@ from tests.support.checkpoint_fakes import _accounted_online_default_orchestrato
 from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _seed_resume_scene
 
 
-def _criticality(level: str, *, initial: int, best_of_n: int, human_gate: bool) -> SceneCriticality:
+def _criticality(level: str, *, initial: int, human_gate: bool) -> SceneCriticality:
     return SceneCriticality(
         level=level,
         reasons=[level],
-        best_of_n=best_of_n,
         skip_critique=False,
         human_gate=human_gate,
         initial_best_of_n=initial,
@@ -34,7 +33,7 @@ def _criticality(level: str, *, initial: int, best_of_n: int, human_gate: bool) 
 def test_switch_off_always_drafts_one_candidate(session, monkeypatch) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", raising=False)
     orchestrator = Orchestrator(session)
-    critical = _criticality("critical", initial=3, best_of_n=5, human_gate=True)
+    critical = _criticality("critical", initial=3, human_gate=True)
     assert orchestrator._best_of_n_count(None, criticality=critical) == 1
     assert not hasattr(orchestrator, "_best_of_n_policy_cap")
 
@@ -43,9 +42,9 @@ def test_switch_on_follows_scene_criticality(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", "true")
     assert get_settings().scene_best_of_n_enabled is True
     orchestrator = Orchestrator(session)
-    transition = _criticality("transition", initial=1, best_of_n=1, human_gate=False)
-    standard = _criticality("standard", initial=2, best_of_n=3, human_gate=False)
-    critical = _criticality("critical", initial=3, best_of_n=5, human_gate=True)
+    transition = _criticality("transition", initial=1, human_gate=False)
+    standard = _criticality("standard", initial=2, human_gate=False)
+    critical = _criticality("critical", initial=3, human_gate=True)
     assert orchestrator._best_of_n_count(None, criticality=transition) == 1
     assert orchestrator._best_of_n_count(None, criticality=standard) == 2
     assert orchestrator._best_of_n_count(None, criticality=critical) == 3

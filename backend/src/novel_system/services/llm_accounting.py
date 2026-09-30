@@ -518,11 +518,7 @@ def execute_accounted_call(
     online_capability_invoked = False
     response: object | None = None
     try:
-        if context.provider_execution_mode != "online":
-            raise LLMAccountingRejected(
-                "LLM_ACCOUNTING_CONTEXT_INVALID",
-                "offline deterministic execution was retired; only online provider execution is accounted",
-            )
+        # 上下文只能是 online（LLMCallContext 构造时就拒绝别的执行模式），这里不再复查。
         if not isinstance(client, OnlineAccountedExecution):
             raise LLMAccountingRejected(
                 "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
