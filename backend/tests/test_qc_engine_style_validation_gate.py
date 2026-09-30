@@ -42,6 +42,12 @@ from novel_system.services.qc_engine import (
     SoftQcEngine,
     run_styled_draft_style_gate,
 )
+from novel_system.services.qc_engine.styled_gate import (
+    HARD_QC_GATE_EVENT_KIND,
+    HARD_QC_GATE_STAGE,
+    run_reference_copy_gate,
+)
+from novel_system.services.reference_copy_gate import CopyCheck
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 # 参考书原文段（抄袭语料）：连续 ≥12 字重叠即命中。
@@ -228,11 +234,6 @@ def test_gate_onstage_nonpov_character_triggers_verdict(session) -> None:
     assert verdict == "plagiarism"
 
 
-# ---------------------------------------------------------------------------
-# styled-draft gate（模块级函数）
-# ---------------------------------------------------------------------------
-
-
 def _metric_events(session, kind: str) -> list[StyleReferenceMetricEvent]:
     return list(
         session.execute(
@@ -241,6 +242,73 @@ def _metric_events(session, kind: str) -> list[StyleReferenceMetricEvent]:
             )
         ).scalars().all()
     )
+
+
+def test_neutral_gate_is_the_same_gate_as_the_styled_one(session) -> None:
+    """B04-06：中性步位稿与风格稿过同一道门（``run_reference_copy_gate``）——同一份读数、同一套「没查成」口径；
+    中性步位只认原文重合（受保护专名不对它下判定，风格稿门照报），审计行沿用 ``qc_gate_decided`` 并带上阶段与命中数。"""
+    _seed_style_binding(
+        project_id="proj_neutral_shared", seed="neutral_shared",
+        paragraphs=[REFERENCE_PARAGRAPH], forbidden_terms=["美轮美奂"],
+    )
+    scene = _make_scene("proj_neutral_shared")
+    engine = HardQcEngine(session, llm_client=object())
+
+    assert engine._apply_style_validation_gate(scene, "这景色真是美轮美奂极了。") == "pass"
+    assert engine._apply_style_validation_gate(scene, f"他想起那夜：{COPIED_SENTENCE}。") == "plagiarism"
+
+    events = _metric_events(session, HARD_QC_GATE_EVENT_KIND)
+    assert sorted((event.outcome, event.context_json["stage"]) for event in events) == [
+        ("pass", "hard_qc"),
+        ("plagiarism", "hard_qc"),
+    ]
+    assert {event.context_json["forbidden_hit_count"] for event in events} == {0}
+    assert all(event.profile_id == "sr_profile_neutral_shared" for event in events)
+    assert _metric_events(session, STYLED_DRAFT_GATE_EVENT_KIND) == []
+
+    neutral = run_reference_copy_gate(session, scene, "这景色真是美轮美奂极了。", stage=HARD_QC_GATE_STAGE)
+    styled = run_styled_draft_style_gate(session, scene, "这景色真是美轮美奂极了。", stage="style_draft")
+    assert neutral["verdict"] == "pass" and neutral["forbidden_hits"] == []
+    assert styled["verdict"] == "fail" and styled["forbidden_hit_count"] == 1
+    with pytest.raises(ValueError):
+        run_reference_copy_gate(session, scene, "x", stage="bogus")
+
+
+def test_neutral_gate_that_could_not_check_lets_hard_qc_continue(session) -> None:
+    """门没查成（绑定的书已删 / 策略降级 / 检查自身出错）：与风格稿门同一个 ``unavailable`` 读数、WARNING 与 error
+    事件；硬质检这一侧照常往下走（None，qc 结论直通）。以前书删了照样报 pass，审计行也记 pass；契约解析失败连
+    审计行都没有。"""
+    _seed_style_binding(project_id="proj_neutral_gone", seed="neutral_gone", paragraphs=[REFERENCE_PARAGRAPH])
+    scene = _make_scene("proj_neutral_gone")
+    engine = HardQcEngine(session, llm_client=object())
+    missing = CopyCheck(blocked=False, missing_books=("sr_book_neutral_gone",))
+    with patch("novel_system.services.reference_copy_gate.check_reference_copy", return_value=missing):
+        assert engine._apply_style_validation_gate(scene, "一段文本") is None
+        gate = run_reference_copy_gate(session, scene, "一段文本", stage=HARD_QC_GATE_STAGE)
+    assert gate["verdict"] == STYLED_GATE_UNAVAILABLE_VERDICT
+    assert gate["error_code"] == "STYLE_REFERENCE_BOOK_MISSING"
+    events = _metric_events(session, HARD_QC_GATE_EVENT_KIND)
+    assert [event.outcome for event in events] == ["error", "error"]
+    assert {event.context_json["error_code"] for event in events} == {"STYLE_REFERENCE_BOOK_MISSING"}
+
+    # 冻结状态却没有契约：还没解析出画像就失败，照样留一行审计
+    broken = {
+        "bundle_id": "b_neutral_ctr",
+        "bundle_snapshot_hash": "h",
+        "snapshot": {
+            "source_version_refs": {"style_reference_runtime_contract_status": "frozen"},
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    gate = run_reference_copy_gate(session, scene, "一段文本", stage=HARD_QC_GATE_STAGE, bundle=broken)
+    assert gate["verdict"] == STYLED_GATE_UNAVAILABLE_VERDICT
+    assert gate["error_code"] == "runtime_contract_missing" and gate["profile_id"] is None
+    assert [event.outcome for event in _metric_events(session, HARD_QC_GATE_EVENT_KIND)] == ["error"] * 3
+
+
+# ---------------------------------------------------------------------------
+# styled-draft gate（模块级函数）
+# ---------------------------------------------------------------------------
 
 
 def test_styled_gate_returns_none_without_binding_or_text(session) -> None:

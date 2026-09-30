@@ -1,6 +1,7 @@
-"""管线里的两道原文重合门：中性步位稿（硬质检）与风格稿（风格稿落库后、软质检、准定稿重写、风格直起的首稿）。
-都走唯一抄袭门（reference_copy_gate），每次裁决记一行 MetricEvent；门自己失败不阻断主流程，但必须与「无绑定」
-区分开。"""
+"""管线里的原文重合门：中性步位稿（硬质检）与风格稿（风格稿落库后、软质检、准定稿重写、风格直起的首稿）过的是
+同一道门（:func:`run_reference_copy_gate`）。都走唯一抄袭门（reference_copy_gate），每次裁决记一行 MetricEvent；
+门自己没查成时报 ``verdict="unavailable"``（与「无绑定」区分开），怎么处置由调用方定：硬质检照常往下走，软质检挂 Q2
+要人工复核，起草链路发 STYLE_GATE_UNAVAILABLE。"""
 
 from __future__ import annotations
 
@@ -46,7 +47,14 @@ STYLED_DRAFT_GATE_STAGES: frozenset[str] = frozenset(
 _STYLED_GATE_MAX_HITS = 8
 
 
+# 中性步位稿（中性稿 / style_first 首稿）在硬质检里过的那一道：同一道门，审计行沿用旧名；这一阶段只认原文重合，
+# 受保护专名 / 生成禁用词不对它下判定（见上）。
+HARD_QC_GATE_STAGE = "hard_qc"
 HARD_QC_GATE_EVENT_KIND = "qc_gate_decided"
+_GATE_EVENT_KINDS: dict[str, str] = {
+    HARD_QC_GATE_STAGE: HARD_QC_GATE_EVENT_KIND,
+    **{stage: STYLED_DRAFT_GATE_EVENT_KIND for stage in STYLED_DRAFT_GATE_STAGES},
+}
 
 
 def _scene_has_gate_scope(scene: Any) -> bool:
@@ -182,19 +190,39 @@ def run_styled_draft_style_gate(
 ) -> dict[str, Any] | None:
     """v2（规格 §2.W5.5）styled-draft gate：对**已风格化**文本跑抄袭 + 生成禁用词。
 
-    风格参考 v3：绑定与否只看 :class:`~novel_system.services.style_policy.StylePolicy`（调用方传入的 bundle
-    快照 → 场景当前 SceneBundle 冻结快照 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析）；原文重合
-    走唯一抄袭门 :func:`~novel_system.services.reference_copy_gate.check_reference_copy`（按书建一次索引、
-    同一稿不重复扫描）。无绑定 / 契约显式 absent / 文本为空 → ``None``（不登记事件）。契约 degraded 或检查
-    自身失败 → ``verdict="unavailable"`` 的诊断字典（见 ``styled_gate_unavailable_result``）并 WARNING 落日志：
-    gate 不阻断主流程，但「检查没跑」必须与「无绑定」区分开，由调用方挂 Q2 / notice 让作者看见。
-
-    返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性 n-gram 重叠命中（Q0）；
-    ``forbidden_hits`` 非空表示用了画像现行的生成禁用词 / 受保护专名。每次裁决（含 gate 自身失败）
-    写一行 ``styled_draft_gate_decided`` MetricEvent。
+    只收风格化输出的阶段（``STYLED_DRAFT_GATE_STAGES``）；门本身见 :func:`run_reference_copy_gate`，每次裁决
+    （含 gate 自身失败）写一行 ``styled_draft_gate_decided`` MetricEvent。
     """
     if stage not in STYLED_DRAFT_GATE_STAGES:
         raise ValueError(f"unknown styled-draft gate stage: {stage}")
+    return run_reference_copy_gate(session, scene, text, stage=stage, bundle=bundle)
+
+
+def run_reference_copy_gate(
+    session: Session,
+    scene: SceneCard,
+    text: str,
+    *,
+    stage: str,
+    bundle: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """管线里每一道原文重合门（中性步位稿 ``hard_qc`` 与风格稿的各阶段）都是这一个函数。
+
+    风格参考 v3：绑定与否只看 :class:`~novel_system.services.style_policy.StylePolicy`（调用方传入的 bundle
+    快照 → 场景当前 SceneBundle 冻结快照 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析）；原文重合
+    走唯一抄袭门 :func:`~novel_system.services.reference_copy_gate.check_reference_copy`（按书建一次索引、
+    同一稿不重复扫描）。无作用域 / 无绑定 / 契约显式 absent / 文本为空 → ``None``（不登记事件）。契约 degraded、
+    绑定的书已删或检查自身失败 → ``verdict="unavailable"`` 的诊断字典（见 ``styled_gate_unavailable_result``）并
+    WARNING 落日志：gate 不阻断主流程，但「检查没跑」必须与「无绑定」区分开，调用方各按自己的口径处置。
+
+    返回诊断字典（见 ``_styled_gate_result``）：``verdict`` 为 ``plagiarism`` 表示确定性 n-gram 重叠命中（Q0）；
+    风格稿阶段 ``forbidden_hits`` 非空（``verdict="fail"``）表示用了画像现行的生成禁用词 / 受保护专名，中性步位
+    （``hard_qc``）不看这一项。每次裁决（含 gate 自身失败）按阶段写一行 MetricEvent（风格稿
+    ``styled_draft_gate_decided``，中性步位 ``qc_gate_decided``）。
+    """
+    event_kind = _GATE_EVENT_KINDS.get(stage)
+    if event_kind is None:
+        raise ValueError(f"unknown reference copy gate stage: {stage}")
     if scene is None or not text or not str(text).strip() or not _scene_has_gate_scope(scene):
         return None
     scene_id = getattr(scene, "scene_id", None)
@@ -216,13 +244,15 @@ def run_styled_draft_style_gate(
         profile_id = policy.profile_id
         binding_id = policy.binding_id
         runtime_contract_hash = policy.contract_hash
-        report = _styled_gate_report(session, policy, str(text))
+        report = _styled_gate_report(
+            session, policy, str(text), judge_protected_terms=stage != HARD_QC_GATE_STAGE
+        )
         unavailable_reason = getattr(report, "unavailable_reason", None)
         if unavailable_reason and report.verdict != "plagiarism":
             # 风格参考 v3（L4）：绑定的参考书已删（或策略降级）——抄袭门对这本书什么也没比对，不能报「通过」。
             # 与 gate 自身失败同一形状（verdict=unavailable），软 QC 据此挂 Q2 复核、起草链路发 STYLE_GATE_UNAVAILABLE。
             _LOGGER.warning(
-                "styled-draft style gate could not check the bound reference for scene %s (stage=%s): %s",
+                "reference copy gate could not check the bound reference for scene %s (stage=%s): %s",
                 getattr(scene, "scene_id", None),
                 stage,
                 unavailable_reason,
@@ -250,7 +280,7 @@ def run_styled_draft_style_gate(
         return result
     except Exception as exc:  # noqa: BLE001 — gate 不阻断主流程，但降级必须可见
         _LOGGER.warning(
-            "styled-draft style gate unavailable for scene %s (stage=%s)",
+            "reference copy gate unavailable for scene %s (stage=%s)",
             getattr(scene, "scene_id", None),
             stage,
             exc_info=True,
@@ -282,7 +312,7 @@ def run_styled_draft_style_gate(
             )
             event_id = _record_gate_event(
                 session,
-                STYLED_DRAFT_GATE_EVENT_KIND,
+                event_kind,
                 scene_id=scene_id,
                 profile_id=profile_id,
                 binding_id=binding_id,
@@ -320,8 +350,10 @@ def scene_gate_style_policy(
     return style_policy_for_scene(session, scene, bundle if isinstance(bundle, Mapping) else None)
 
 
-def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
-    """风格稿一道门的读数：原文重合（抄袭门，缓存）+ 生成禁用词 / 受保护专名。
+def _styled_gate_report(
+    session: Session, policy: Any, text: str, *, judge_protected_terms: bool = True
+) -> Any:
+    """一道门的读数：原文重合（抄袭门，缓存）+ 生成禁用词 / 受保护专名（``judge_protected_terms``：中性步位不看）。
 
     风格参考 v3（H1）：禁用词与成稿门、抄袭门**同一张现行的表**——就是抄袭门的 ``protected_hits``（画像现行的
     生成期禁用词、学习作业写的受保护专名、环境变量的全局词），同一套规范化匹配。冻结契约里的禁用词只用来渲染
@@ -329,16 +361,23 @@ def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
     绑定的书查不到 / 策略降级 → ``unavailable_reason``（这一道门没有查成，调用方报 unavailable，不当作通过）。
     返回与旧校验报告同形的对象，交给 :func:`_styled_gate_result` 压成诊断字典（``quantitative_json`` 恒为空：
     旧校验层的量化回测随校验层删了，诊断字典已不再带它；只剩一个风格参考测试还读这个属性）。
+
+    没查成的缘故（``missing_books`` / ``unavailable_reasons``）有才读：``check_reference_copy`` 按模块属性现查，
+    换上去的结果可以不带这两项——没说自己没查成，就是查成了。
     """
     from types import SimpleNamespace
 
     from novel_system.services.reference_copy_gate import check_reference_copy
 
     copy = check_reference_copy(session, text, policy=policy)
-    forbidden = [
-        {"pattern_statement": term, "matched_excerpt": term, "severity": "error"}
-        for term in copy.protected_terms()
-    ]
+    forbidden = (
+        [
+            {"pattern_statement": term, "matched_excerpt": term, "severity": "error"}
+            for term in copy.protected_terms()
+        ]
+        if judge_protected_terms
+        else []
+    )
     if copy.hits:
         verdict = "plagiarism"
     elif forbidden:
@@ -346,10 +385,12 @@ def _styled_gate_report(session: Session, policy: Any, text: str) -> Any:
     else:
         verdict = "pass"
     unavailable_reason: str | None = None
-    if copy.missing_books:
+    missing_books = getattr(copy, "missing_books", ())
+    unavailable_reasons = getattr(copy, "unavailable_reasons", ())
+    if missing_books:
         unavailable_reason = "STYLE_REFERENCE_BOOK_MISSING"
-    elif copy.unavailable_reasons:
-        unavailable_reason = str(copy.unavailable_reasons[0])
+    elif unavailable_reasons:
+        unavailable_reason = str(unavailable_reasons[0])
     return SimpleNamespace(
         verdict=verdict,
         plagiarism_json={

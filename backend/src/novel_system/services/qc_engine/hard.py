@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import logging
-import time
 from typing import Any
 
 from novel_system.db.models import QcReport, SceneCard, SceneRunState
@@ -35,10 +33,9 @@ from novel_system.services.qc_engine.issues import (
     _scene_card_source_texts,
 )
 from novel_system.services.qc_engine.styled_gate import (
-    HARD_QC_GATE_EVENT_KIND,
-    _record_gate_event,
-    _scene_has_gate_scope,
-    scene_gate_style_policy,
+    HARD_QC_GATE_STAGE,
+    STYLED_GATE_UNAVAILABLE_VERDICT,
+    run_reference_copy_gate,
 )
 from novel_system.services.qc_validator import validate_qc_report
 from novel_system.services.quality_classifier import (
@@ -46,8 +43,6 @@ from novel_system.services.quality_classifier import (
     classify_issues,
     has_blocking,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 
 HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint"}
@@ -389,58 +384,21 @@ class HardQcEngine(QcEngineBase):
     def _apply_style_validation_gate(
         self, scene: SceneCard, neutral_content: str
     ) -> str | None:
-        """PR-8 §6.6 — 中性步位稿（中性稿 / style_first 首稿）的抄袭门。
+        """PR-8 §6.6 — 中性步位稿（中性稿 / style_first 首稿）的抄袭门：与风格稿同一道门
+        （:func:`~novel_system.services.qc_engine.styled_gate.run_reference_copy_gate`，阶段 ``hard_qc``，审计行
+        ``qc_gate_decided``）。
 
-        scene 无作用域 / 无绑定 / 检查失败 → None（qc 结论直通）；否则 "pass" / "plagiarism"。
-
-        v2（规格 §2.W5.5）：这里只裁决确定性 n-gram 抄袭（Q0）；生成禁用词 / 量化容差不对中性步位稿产生
-        fail / partial（风格稿的对应检查在 ``run_styled_draft_style_gate``）。风格参考 v3：绑定与否看
-        StylePolicy（场景当前 bundle 冻结的契约 → 旧 bundle / 无 bundle 时按当前活动绑定轻量现解析），
-        原文重合走唯一抄袭门（按书一次索引、同一稿不重复扫描）。
+        v2（规格 §2.W5.5）：这里只裁决确定性 n-gram 抄袭（Q0）；生成禁用词 / 受保护专名不对中性步位稿产生
+        fail / partial（风格稿的对应检查在 ``run_styled_draft_style_gate``）。scene 无作用域 / 无绑定 → None；
+        门没查成（检查异常、契约损坏、绑定的书已删）→ None，qc 结论直通（门已落 WARNING、记 error 事件）；
+        否则 "pass" / "plagiarism"。
         """
-        from novel_system.services.reference_copy_gate import check_reference_copy
-
-        if not neutral_content or not _scene_has_gate_scope(scene):
+        gate = run_reference_copy_gate(
+            self.session, scene, neutral_content, stage=HARD_QC_GATE_STAGE
+        )
+        if gate is None or gate.get("verdict") == STYLED_GATE_UNAVAILABLE_VERDICT:
             return None
-        started_at = time.perf_counter()
-        verdict: str | None = None
-        profile_id: str | None = None
-        binding_id: str | None = None
-        runtime_contract_hash: str | None = None
-        try:
-            policy = scene_gate_style_policy(self.session, scene, None)
-            if policy.error_code is not None:
-                raise ValueError(policy.error_code)
-            if not policy.bound:
-                return None
-            profile_id = policy.profile_id
-            binding_id = policy.binding_id
-            runtime_contract_hash = policy.contract_hash
-            check = check_reference_copy(self.session, neutral_content, policy=policy)
-            verdict = "plagiarism" if check.hits else "pass"
-            return verdict
-        except (
-            Exception
-        ):  # noqa: BLE001 — gate 不阻塞主流程，但降级必须可见（审计 P-11）
-            _LOGGER.warning(
-                "style validation gate degraded for scene %s",
-                scene.scene_id,
-                exc_info=True,
-            )
-            return None
-        finally:
-            # PR-10 §13 — 记录 qc gate 决策事件;无 active binding 时不记录
-            if profile_id is not None:
-                _record_gate_event(
-                    self.session,
-                    HARD_QC_GATE_EVENT_KIND,
-                    scene_id=scene.scene_id,
-                    profile_id=profile_id,
-                    binding_id=binding_id,
-                    outcome=verdict or "error",
-                    started_at=started_at,
-                    context={"runtime_contract_hash": runtime_contract_hash},
-                )
+        return "plagiarism" if gate.get("verdict") == "plagiarism" else "pass"
 
     def _persist_qc_report(
         self,
