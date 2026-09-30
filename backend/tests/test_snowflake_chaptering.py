@@ -492,6 +492,80 @@ def test_chapter_plan_suggestion_replays_without_a_second_llm_call(client, monke
     assert calls == 1
 
 
+def _suggest_response(assignments: list[dict]):
+    import json as _json
+
+    from novel_system.services.llm_client import LLMResponse
+
+    payload = {"assignments": assignments, "rationale": "这一场更像下一章的开头。"}
+    return LLMResponse(request_id="suggest", provider="fake", model="fake", text=_json.dumps(payload),
+                       structured_output=payload, response_format="json_object", raw_response={}, usage={},
+                       finish_reason="stop")
+
+
+def _working_payload(request) -> dict:
+    import json as _json
+
+    prompt = request.messages[1]["content"]
+    return _json.loads(prompt.split("Working payload:\n", 1)[1].split("\n\n", 1)[0])
+
+
+def test_the_chapter_suggestion_prompt_numbers_scenes_in_story_order(client, session, monkeypatch) -> None:
+    """B07-13：分过一次章之后 scene_seq 是章内序（1、2、1、2……）——提示词给模型的必须是全书的故事序号，
+    否则「场不得排到编号更小的场前面」这条约束读到的是一串重复的号。"""
+    project_id = _create_project(client, "suggest-story-index")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    captured: list = []
+
+    def responder(request):
+        captured.append(request)
+        return _suggest_response([])
+
+    _install_llm(monkeypatch, responder)
+    response = client.post(f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest", json={})
+    assert response.status_code == 200, response.text
+    payload = _working_payload(captured[0])
+    assert [scene["story_index"] for scene in payload["scenes"]] == list(range(1, 13))
+    assert all("scene_seq" not in scene for scene in payload["scenes"])
+    assert "approved_context" not in payload, "永远是空表的槽不进提示词"
+
+
+def test_an_out_of_order_ai_suggestion_moves_only_that_scene(client, session, monkeypatch) -> None:
+    """批准 #17c：模型把一章中间的一场放进后面的章时，只有这一场回到连续的位置（并入故事序上前一场的章）——
+    不再把它后面的场一起拽进去。面板看到的就是确认后落库的那一版（与 save 同一条连续性规则）。"""
+    project_id = _create_project(client, "suggest-heal")
+    _seed(client, project_id)
+    _autoassign(session, project_id)
+    chapters = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview", json={"strategy": "keep_current"}
+    ).json()["data"]["chapters"]
+    before = {scene["scene_plan_id"]: chapter["row_uid"] for chapter in chapters for scene in chapter["scenes"]}
+    # 找一章：前面还有章、后面也还有章、自己至少两场——把它的第一场交给后一章
+    index = next(
+        position
+        for position, chapter in enumerate(chapters)
+        if 0 < position < len(chapters) - 1 and len(chapter["scenes"]) >= 2
+    )
+    moved = chapters[index]["scenes"][0]["scene_plan_id"]
+
+    def responder(_request):
+        return _suggest_response([{"scene_plan_id": moved, "chapter_row_uid": chapters[index + 1]["row_uid"]}])
+
+    _install_llm(monkeypatch, responder)
+    response = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest", json={"base_strategy": "keep_current"}
+    )
+    assert response.status_code == 200, response.text
+    suggestion = response.json()["data"]
+    after = {scene["scene_plan_id"]: chapter["row_uid"] for chapter in suggestion["chapters"] for scene in chapter["scenes"]}
+    changed = sorted(scene_plan_id for scene_plan_id in before if after.get(scene_plan_id) != before[scene_plan_id])
+    assert changed == [moved], "只有放错位置的那一场换章"
+    assert after[moved] == chapters[index - 1]["row_uid"], "离群的场并入故事序上前一场所在的章"
+    flat = [scene["story_index"] for chapter in suggestion["chapters"] for scene in chapter["scenes"]]
+    assert flat == sorted(flat)
+
+
 def _live_chapters(session, project_id: str) -> list[SnowflakeChapterPlan]:
     session.expire_all()
     return list(session.execute(

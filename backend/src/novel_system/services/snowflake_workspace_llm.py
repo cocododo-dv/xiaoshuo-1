@@ -738,7 +738,6 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         chapters: list[dict[str, Any]],
         scenes: list[dict[str, Any]],
         current_assignment: list[dict[str, Any]],
-        approved_context: list[dict[str, Any]],
     ) -> WorkspaceLLMResult:
         """分章建议（P3，顾问通道）。
 
@@ -751,7 +750,6 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
             "chapters": chapters,
             "scenes": scenes,
             "current_assignment": current_assignment,
-            "approved_context": approved_context,
         }
         allowed_scene_ids = {str(item.get("scene_plan_id") or "") for item in scenes}
         allowed_chapter_uids = {str(item.get("row_uid") or "") for item in chapters}

@@ -1372,6 +1372,9 @@ class SnowflakeChapteringService:
         base = self.preview(project_id, {"strategy": (payload or {}).get("base_strategy") or "spine_anchor"})
         chapters = self.ensure_chapter_plans(project_id)
         scenes = self.scene_plans(project_id)
+        current = {
+            scene["scene_plan_id"]: chapter["row_uid"] for chapter in base["chapters"] for scene in chapter["scenes"]
+        }
         result = SnowflakeWorkspaceLLMService(self.session).chapter_plan_suggestions(
             project=self._project_payload(project_id),
             chapters=[
@@ -1385,39 +1388,29 @@ class SnowflakeChapteringService:
                 }
                 for chapter in chapters
             ],
+            # B07-13：给模型的是全书的故事序号——scene_seq 在分过一次章之后是章内序（1、2、1、2……）
             scenes=[
                 {
                     "scene_plan_id": plan.scene_plan_id,
-                    "scene_seq": plan.scene_seq,
+                    "story_index": story_index,
                     "title": plan.title or plan.summary or plan.scene_id,
                     "summary": plan.summary or "",
                     "primary_form": plan.scene_type or "proactive",
                     "spine": scene_spine(plan),
                 }
-                for plan in scenes
+                for story_index, plan in enumerate(scenes, start=1)
             ],
             current_assignment=[
-                {"scene_plan_id": scene["scene_plan_id"], "chapter_row_uid": chapter["row_uid"]}
-                for chapter in base["chapters"]
-                for scene in chapter["scenes"]
+                {"scene_plan_id": scene_plan_id, "chapter_row_uid": row_uid} for scene_plan_id, row_uid in current.items()
             ],
-            approved_context=[],
         )
         suggested = {
             item["scene_plan_id"]: item["chapter_row_uid"] for item in result.payload.get("assignments") or []
         }
         # 模型没提到的场保留确定性提案的归属 —— 建议是叠加，不是全量替换
-        assignment = {
-            scene.scene_plan_id: suggested.get(
-                scene.scene_plan_id,
-                next(
-                    (c["row_uid"] for c in base["chapters"] for s in c["scenes"] if s["scene_plan_id"] == scene.scene_plan_id),
-                    None,
-                ),
-            )
-            for scene in scenes
-        }
-        assignment = _enforce_contiguity(assignment, chapters, scenes)
+        assignment = {scene.scene_plan_id: suggested.get(scene.scene_plan_id, current.get(scene.scene_plan_id)) for scene in scenes}
+        # 批准 #17c：模型放错先后的场只挪它自己（与 save 同一条连续性规则），面板看到的就是确认后落库的那一版
+        assignment = heal_assignment(assignment, chapters, scenes)
         shaped = self._shape_preview(project_id, "llm_suggested", chapters, scenes, assignment)
         shaped["chapter_table"] = self._chapter_table_info(project_id)
         shaped["rationale"] = result.payload.get("rationale") or ""
@@ -2141,30 +2134,6 @@ def heal_assignment(
             previous_uid = uid
             continue
         fixed[scene.scene_plan_id] = previous_uid or assignment[scenes[first_kept].scene_plan_id]
-    return fixed
-
-
-def _enforce_contiguity(
-    assignment: dict[str, str | None],
-    chapters: list[SnowflakeChapterPlan],
-    scenes: list[SnowflakeScenePlan],
-) -> dict[str, str | None]:
-    """章是故事序上连续的一段：沿故事序走，章序只许不降。
-
-    模型给的分章建议可能把第 9 场放回第 2 章——章内顺序永远等于故事序，那样目录里读到的顺序就和
-    场景列表分家了。回退的归属被拉平到它前面已经到达的那一章；没有归属的场原样留着（由面板报未分配）。
-    """
-    order = {chapter.row_uid: index for index, chapter in enumerate(chapters)}
-    fixed: dict[str, str | None] = {}
-    reached = -1
-    for scene in scenes:
-        target = assignment.get(scene.scene_plan_id)
-        index = order.get(target or "", -1)
-        if index < 0:
-            fixed[scene.scene_plan_id] = target if target in order else None
-            continue
-        reached = max(reached, index)
-        fixed[scene.scene_plan_id] = chapters[reached].row_uid
     return fixed
 
 
