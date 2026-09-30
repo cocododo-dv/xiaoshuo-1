@@ -562,6 +562,50 @@ def test_project_chapter_run_job_reuses_existing_running_job(client, session, mo
     assert started_jobs == []
 
 
+def test_project_chapter_run_failure_keeps_each_path_mapping(client, session, monkeypatch) -> None:
+    """「运行结果 → 作品状态」三处共用一张表（B08-27），失败这一格各守各的老规矩：同步「运行本章」
+    （测试原语）失败回到「可以运行本章」，后台 worker 失败停在「待处理阻断」。"""
+
+    class ExplodingOrchestrator:
+        def __init__(self, db_session) -> None:
+            self.session = db_session
+
+        def run_scene(self, scene_id: str) -> dict:
+            raise RuntimeError("provider exploded mid-scene")
+
+    monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", ExplodingOrchestrator)
+    project_id = client.post(
+        "/api/v2/projects",
+        json={"title": "雨城旧信", "outline_text": "林昭翻开旧案卷。"},
+        headers={"X-Idempotency-Key": "run-failure-project"},
+    ).json()["data"]["project"]["project_id"]
+    chapter_id = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters",
+        json={"title": "旧信", "current": True, "with_scene": True},
+        headers={"X-Idempotency-Key": "run-failure-chapter"},
+    ).json()["data"]["chapter"]["chapter_id"]
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/run",
+        json={},
+        headers={"X-Idempotency-Key": "run-failure-sync"},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["run"]["status"] == "failed"
+    assert data["project"]["status"] == "chapter_ready"
+    assert client.get(f"/api/v1/projects/{project_id}/dashboard").json()["data"]["next_action"] == "run_current_chapter"
+
+    from novel_system.services.projects import _run_project_chapter_job_worker
+
+    job_id = data["run"]["job_id"]
+    _run_project_chapter_job_worker(project_id, chapter_id, job_id)
+    session.expire_all()
+    assert session.get(ChapterRunJob, job_id).status == "failed"
+    assert session.get(StoryProject, project_id).status == "chapter_blocked"
+    assert client.get(f"/api/v1/projects/{project_id}/dashboard").json()["data"]["next_action"] == "resolve_blocker"
+
+
 def test_project_chapter_flow_request_contracts_are_strict(client) -> None:
     base = "/api/v1/projects/missing-project/chapters/missing-chapter"
     cases = [

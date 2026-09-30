@@ -54,7 +54,12 @@ class ProjectChapterFlowService:
         project.status = PROJECT_STATUS_CHAPTER_RUNNING
         self.session.flush()
         run_result = ChapterRunnerService(self.session).run_full(chapter_id)
-        project.status = _project_status_after_run(self.session, chapter_id, run_result.get("status"))
+        project.status = _project_status_after_run(
+            self.session,
+            chapter_id,
+            run_result.get("status"),
+            failed_status=PROJECT_STATUS_CHAPTER_READY,
+        )
         self.session.flush()
         return {
             "project": project_payload(project),
@@ -662,11 +667,19 @@ def _require_current_chapter(project: StoryProject, chapter_id: str, message: st
         raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", message, status_code=409)
 
 
-def _project_status_after_run(session: Session, chapter_id: str, run_status: Any) -> str:
+def _project_status_after_run(
+    session: Session,
+    chapter_id: str,
+    run_status: Any,
+    *,
+    failed_status: str = PROJECT_STATUS_CHAPTER_BLOCKED,
+) -> str:
     """一次章节运行（同步运行、后台任务的准备、后台 worker）结束后作品该停在哪个状态——三处共用一张表。
 
-    跑完（completed）先确认整章都有权威正文，再进「本章终审」；阻断或失败都停在「待处理阻断」；
-    任务还在排队 / 在跑就是「运行中」；其余回到「可以运行本章」。
+    跑完（completed）先确认整章都有权威正文，再进「本章终审」；阻断停在「待处理阻断」；任务还在排队 / 在跑
+    就是「运行中」；其余回到「可以运行本章」。失败（failed）默认也停在「待处理阻断」（后台 worker 一直如此；
+    任务准备拿不到 failed——失败的任务重跑时先回到 pending）；同步「运行本章」这个测试原语一直把失败放回
+    「可以运行本章」，它传 ``failed_status`` 保住这一点。
     """
     status = str(run_status or "")
     if status in {"pending", "running"}:
@@ -674,8 +687,10 @@ def _project_status_after_run(session: Session, chapter_id: str, run_status: Any
     if status == "completed":
         ChapterManuscriptService(session).require_complete(chapter_id)
         return PROJECT_STATUS_CHAPTER_FINAL_REVIEW
-    if status in {"blocked", "failed"}:
+    if status == "blocked":
         return PROJECT_STATUS_CHAPTER_BLOCKED
+    if status == "failed":
+        return failed_status
     return PROJECT_STATUS_CHAPTER_READY
 
 
