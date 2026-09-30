@@ -545,7 +545,8 @@ describe("WsCost 视图", () => {
     expect(host.textContent).not.toContain("1,270,116");
     drill.resolve({ level: "chapter", summary: { chapter_id: "C1", total_tokens: 998899, call_count: 28, total_cost: null, pricing: { complete: false } } });
     await act(async () => { await loading; });
-    expect(host.textContent).toContain("第 1 章 · 盐场的早班");
+    expect(host.textContent).not.toContain("正在读取账本");
+    expect(host.textContent).toContain("盐场的早班");
     expect(host.textContent).toContain("998,899");
   });
 });

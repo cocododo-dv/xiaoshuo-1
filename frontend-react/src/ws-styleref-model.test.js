@@ -438,28 +438,28 @@ describe("出错说法 · 后端 author_action 与死词汇（2026-09-24 清理 
 /* 当前作品的场：目录 store 的章（WsCatalog 的形状）→ 下拉框分组与场名；叫法与全站同一套（审计 F05-14） */
 describe("当前作品的场", () => {
   const chapters = [
-    { id: "ch01", backendId: "C1", n: "01", title: "雾里", scenes: [
+    { id: "ch07", backendId: "C7", n: "07", title: "雾里", scenes: [
       { sid: "S1", backendId: "S1", title: "码头" },
       { sid: "S2", backendId: "S2", title: "夜渡：一场很长很长的、写了二十多个字的场景题目" },
     ] },
-    { id: "ch02", backendId: "C2", n: "02", title: "第 2 章", scenes: [{ sid: "S3", backendId: "S3", title: "" }] },
-    { id: "ch03", backendId: "C3", n: "03", title: "空章", scenes: [] },
-    { id: "ch04", backendId: "C4", n: "04", title: "临时", scenes: [{ sid: "tmp_x", backendId: null, title: "还没存好" }] },
+    { id: "ch08", backendId: "C8", n: "08", title: "第 8 章", scenes: [{ sid: "S3", backendId: "S3", title: "" }] },
+    { id: "ch09", backendId: "C9", n: "09", title: "空章", scenes: [] },
+    { id: "ch10", backendId: "C10", n: "10", title: "临时", scenes: [{ sid: "tmp_x", backendId: null, title: "还没存好" }] },
   ];
 
   it("分组按章、场名是「第 N 章 · 第 M 场「场题」」（章号不补零，场题截短，占位章名不重复）；没有场的章不列", () => {
     const { groups } = srSceneIndex(chapters);
-    expect(groups.map((g) => g.label)).toEqual(["第 1 章 · 雾里", "第 2 章"]);
+    expect(groups.map((g) => g.label)).toEqual(["第 7 章 · 雾里", "第 8 章"]);
     expect(groups[0].scenes).toEqual([
-      { value: "S1", label: "第 1 章 · 第 1 场「码头」" },
-      { value: "S2", label: "第 1 章 · 第 2 场「夜渡：一场很长很长的、写了二十多个字…」" },
+      { value: "S1", label: "第 7 章 · 第 1 场「码头」" },
+      { value: "S2", label: "第 7 章 · 第 2 场「夜渡：一场很长很长的、写了二十多个字…」" },
     ]);
-    expect(groups[1].scenes).toEqual([{ value: "S3", label: "第 2 章 · 第 1 场" }]);
+    expect(groups[1].scenes).toEqual([{ value: "S3", label: "第 8 章 · 第 1 场" }]);
   });
 
   it("labelOf / has 按场的后端 id 查；目录还没读到（null）时是空的", () => {
     const index = srSceneIndex(chapters);
-    expect(index.labelOf("S2")).toContain("第 1 章 · 第 2 场");
+    expect(index.labelOf("S2")).toContain("第 7 章 · 第 2 场");
     expect(index.labelOf("nope")).toBe("");
     expect(index.has("S3")).toBe(true);
     expect(index.has("tmp_x")).toBe(false);
