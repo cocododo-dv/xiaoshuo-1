@@ -2536,7 +2536,9 @@ templates:
     # 2026-09-16 v2：assignments 成员对象补上 properties——只有 additionalProperties: true 的对象，
     # 按 schema 约束解码的后端（经中转的 Gemini）只会吐 `{}`；集合步的成员 schema 由服务端按编辑器模板
     # 补全（snowflake_workspace_llm.enrich_structured_schema），这个模板没有步骤模板可依，直接写在这里。
-    version: "2026-09-16.v2"
+    # 2026-09-30 v3（B07-13）：场带全书故事序号 story_index（scene_seq 分过章之后是章内序，1、2、1、2……）；
+    # current_assignment 是作者在面板上看着的那一版分章（不一定是脊柱锚点）；章内先后永远跟故事序。
+    version: "2026-09-30.v3"
     input_token_budget: 24000
     system_prompt: |
       You are grouping an ordered scene list into chapters for a novel already planned with the snowflake method.
@@ -2545,10 +2547,11 @@ templates:
       The three disaster scenes are structural hinges. If a scene carries spine 灾一/灾二/灾三, it belongs in the chapter carrying the same mark — that alignment outranks any preference about even chapter length.
     task_prompt: |
       Assign every scene in `scenes` to exactly one chapter in `chapters`, and return the assignments in reading order.
-      Return `assignments`: an array of objects with `scene_plan_id` (echo verbatim from `scenes`) and `chapter_row_uid` (echo verbatim from `chapters`). Order within a chapter is the order you list them.
+      Return `assignments`: an array of objects with `scene_plan_id` (echo verbatim from `scenes`) and `chapter_row_uid` (echo verbatim from `chapters`). Order within a chapter always follows the story order; you only choose the chapter.
       Also return `rationale`: at most 3 short sentences naming the two or three chapter breaks you are least sure about and why, so the author knows where to look first. Do not summarise the plot back.
-      Constraints, in priority order: (1) spine-marked scenes sit in the chapter with the same spine mark; (2) scene reading order is preserved — a scene may not appear before an earlier-numbered scene; (3) every scene is assigned exactly once; (4) no chapter is left empty; (5) chapter lengths are reasonably balanced, but never at the cost of 1-4.
-      `current_assignment` shows the deterministic spine-anchor proposal the author is looking at right now. Deviate from it only where you can say why in `rationale` — an unexplained reshuffle is worse than no suggestion.
+      `scenes` is listed in story order and each scene's `story_index` is its position in the whole book (1 = the first scene).
+      Constraints, in priority order: (1) spine-marked scenes sit in the chapter with the same spine mark; (2) every chapter is one unbroken run of the story order — a scene never goes to an earlier chapter than a scene with a smaller story_index; (3) every scene is assigned exactly once; (4) no chapter is left empty; (5) chapter lengths are reasonably balanced, but never at the cost of 1-4.
+      `current_assignment` is the chaptering the author is looking at right now in the panel. Deviate from it only where you can say why in `rationale` — an unexplained reshuffle is worse than no suggestion.
     structured_schema:
       type: object
       additionalProperties: false
@@ -2667,13 +2670,17 @@ templates:
   # ---- 章节编排 LLM 规划（docs/chapter-arrangement-llm-design-2026-07-16.md §4） ----
 
   chapter_scene_plan_candidates:
-    version: "2026-09-12.v2"
+    # 2026-09-30 v3（批准 #17a，重评 R10）：章级张力 / 入口出口 / 伏笔账这些输入从来没有数据，去掉；
+    # 邻章交接、章结构邻域、近几章的视角分布都从各场现算。理由要引用这些真实事实。
+    version: "2026-09-30.v3"
     input_token_budget: 3200
     system_prompt: |
       You are a senior long-form fiction structure editor working inside a chapter-arrangement workbench.
-      You receive a deterministic context bundle: the chapter card (drama fields, entry/exit), current scene cards,
-      neighbor-chapter handoff, the chapter story architecture, snowflake canon digests, narrative state,
-      open foreshadow debts, the tension neighborhood, character positions, and hard author constraints.
+      You receive a deterministic context bundle: the chapter card (drama fields, act, disaster mark), current scene cards,
+      the neighbor-chapter handoff (how the previous chapter's last scene ends, how the next chapter's first scene opens),
+      the chapter story architecture, snowflake canon digests, narrative state, the structure neighborhood (nearby
+      chapters' act, disaster mark and scene count), character positions (the POV distribution of recent chapters'
+      scenes, the characters on stage), and hard author constraints.
       Propose exactly 3 candidate scene-sequence plans whose STRUCTURAL STRATEGIES are mutually exclusive
       (e.g. compress into a two-scene collision vs. slow-burn triptych vs. reactive-led detour) — not the same
       plan with different wording. Never violate author_constraints.forbidden or must_not. Write all string
@@ -2681,8 +2688,9 @@ templates:
     task_prompt: |
       Build 3 divergent chapter scene plans from the supplied context.
       Rules:
-      - Each candidate.rationale MUST cite concrete facts from the context (a specific foreshadow debt,
-        the previous chapter's exit, a tension value, a character position) — no generic advice.
+      - Each candidate.rationale MUST cite concrete facts from the context (the previous chapter's last scene,
+        where the chapter sits against the disasters, a scene card, the recent POV distribution, an author
+        constraint, a canon fact) — no generic advice.
       - Existing scene cards are established facts: when a planned scene corresponds to one, set ref_scene_id
         to that scene_id and keep its non-empty fields unchanged in your plan.
       - Each scene entry needs a working title, kind (proactive/reactive), the three-beat brief
@@ -2754,7 +2762,8 @@ templates:
                       type: string
 
   chapter_scene_plan_fill:
-    version: "2026-09-20.v4"
+    # 2026-09-30 v5（批准 #17a，重评 R10）：伏笔账早已删除，不再让模型「依据伏笔债」填空。
+    version: "2026-09-30.v5"
     input_token_budget: 3200
     system_prompt: |
       You are a consultative scene-card assistant inside a chapter-arrangement workbench.
@@ -2781,8 +2790,8 @@ templates:
         design is edited there, not here: never put its brief keys, pov_character_name, exit_change or hook
         into patch.scenes (the workbench discards them). If such a scene still has an empty beat, say so in gaps
         ("在构思第 10 步补"). Its placeholder title may still be filled.
-      - Values must be grounded in the context: chapter promise, neighbor handoff, foreshadow debts,
-        narrative state. A decision beat must create the next scene's goal.
+      - Values must be grounded in the context: chapter promise, neighbor handoff, narrative state and the
+        existing scene cards. A decision beat must create the next scene's goal.
       - In adopt mode, append_scenes carries the adopted candidate's NEW scenes (those with ref_scene_id null),
         in order, to be appended at the end of the chapter. In fill mode leave append_scenes empty unless an
         obvious structural hole (e.g. missing reactive beat) needs exactly one new scene.
@@ -2883,12 +2892,15 @@ templates:
             type: string
 
   chapter_plan_review:
-    version: "2026-09-20.v3"
+    # 2026-09-30 v4（批准 #17a，重评 R10）：检查项改读场上的真实数据——视角疲劳看近几章各场的视角分布，
+    # 交接看上一章最后一场 / 下一章第一场，「压力没有升级」只在有章节蓝图时对照它的升级路线；
+    # 伏笔逾期没有任何数据来源，去掉；「缺反应场」按雪花法的口径（反应场本来就是少数）。
+    version: "2026-09-30.v4"
     input_token_budget: 3200
     system_prompt: |
       You are a structural chapter-plan reviewer inside a chapter-arrangement workbench.
       You receive the deterministic context bundle (chapter card, scene cards, neighbor handoff,
-      chapter architecture, canon digests, narrative state, foreshadow debts, tension neighborhood,
+      chapter architecture, canon digests, narrative state, structure neighborhood,
       character positions, author constraints). You diagnose STRUCTURE, not prose style.
       Every finding MUST cite concrete evidence from the supplied context; findings without evidence are
       discarded by the server. Write all string values in Chinese while keeping the English schema keys.
@@ -2897,11 +2909,16 @@ templates:
       Allowed codes and what they mean:
       - PROMISE_UNGROUNDED: the chapter promise/drama card is not carried by any scene.
       - SCENE_FUNCTION_DUPLICATE: two scenes perform the same structural function with no escalation.
-      - REACTIVE_MISSING: consecutive proactive scenes leave no room to absorb costs.
-      - TENSION_FLAT: pressure does not escalate versus the tension neighborhood, or repeats the same kind.
-      - FORESHADOW_OVERDUE: an open foreshadow debt due here is not planned for payoff.
-      - POV_FATIGUE: POV distribution over recent chapters makes this chapter's POV choice tiring.
-      - HANDOFF_MISMATCH: the chapter entry/exit does not align with the neighbor chapters' exit/entry.
+      - REACTIVE_MISSING: a setback leaves the POV character with no believable next goal, and neither a reactive
+        scene nor a follow-up reaction beat absorbs it. Reactive scenes are a minority by design — never report
+        consecutive proactive scenes on their own.
+      - TENSION_FLAT: only when chapter_architecture is present — the scene briefs do not carry its
+        escalation_path (a planned escalation step has no scene, or the scenes repeat the same kind of pressure
+        where the path escalates). Never report it when chapter_architecture is absent.
+      - POV_FATIGUE: character_positions.recent_pov_distribution (the POV of each scene in the recent chapters)
+        together with this chapter's scene POVs makes this chapter's POV choice tiring.
+      - HANDOFF_MISMATCH: this chapter's first scene does not pick up neighbor_handoff.prev.last_scene (its
+        exit_change / hook), or this chapter's last scene does not set up neighbor_handoff.next.first_scene.
       - EXIT_NO_CHANGE: a scene ends without changing world/relations (empty or cosmetic exit_change).
       - BRIEF_INCOMPLETE: a scene card is missing three-beat/POV fields the drafting contract needs.
       - OTHER: anything structural that does not fit above.
@@ -2935,7 +2952,6 @@ templates:
                   - SCENE_FUNCTION_DUPLICATE
                   - REACTIVE_MISSING
                   - TENSION_FLAT
-                  - FORESHADOW_OVERDUE
                   - POV_FATIGUE
                   - HANDOFF_MISMATCH
                   - EXIT_NO_CHANGE

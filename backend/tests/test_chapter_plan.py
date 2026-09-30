@@ -152,7 +152,82 @@ def test_architecture_put_requires_promise(client) -> None:
     assert bad.json()["error"]["code"] == "CHAPTER_ARCHITECTURE_PROMISE_REQUIRED"
 
 
-def test_generate_architecture_offline_author_action_no_placeholder(client, session) -> None:
+def test_design_or_binding_changes_keep_the_authors_blueprint_and_say_so(client, session) -> None:
+    """B07-03：作者在章节编排里亲手写的蓝图，不因构思改动 / 换参考书被作废（下一次运行也不会拿 AI 版顶替它）；
+    AI 做的蓝图照旧作废重做。留下来的作者版带一个「设计在它之后改过」的提示。"""
+    from novel_system.services.scene_planning_staleness import (
+        supersede_for_binding_scope,
+        supersede_scene_planning_artifacts,
+    )
+
+    pid = _create_project(client)
+    authored = _create_chapter(client, pid, "旧信")
+    generated = _create_chapter(client, pid, "案卷")
+    put = client.put(f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture", json=_ARCH_PAYLOAD)
+    assert put.status_code == 200, put.text
+    author_row_id = put.json()["data"]["architecture"]["row_id"]
+    session.add(
+        GenerationPlanningArtifact(
+            row_id="planning_ai_architecture",
+            artifact_type="chapter_story_architecture",
+            object_type="chapter",
+            object_id=generated["chapter_id"],
+            chapter_id=generated["chapter_id"],
+            payload_json=dict(_ARCH_PAYLOAD),
+            llm_call_id="llm_call_ai_architecture",
+            status="active",
+            created_by="near_final_planning",
+        )
+    )
+    session.commit()
+    assert client.get(
+        f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture"
+    ).json()["data"]["architecture"]["design_changed"] is None
+
+    counts = supersede_scene_planning_artifacts(
+        session,
+        scene_ids=[],
+        chapter_ids=[authored["chapter_id"], generated["chapter_id"]],
+        reason="snowflake_step:scene_details",
+    )
+    session.commit()
+    assert counts["chapter_architecture"] == 1 and counts["author_architecture_kept"] == 1
+    session.expire_all()
+    assert session.get(GenerationPlanningArtifact, author_row_id).status == "active"
+    assert session.get(GenerationPlanningArtifact, "planning_ai_architecture").status == "superseded"
+
+    kept = client.get(f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture").json()["data"]
+    assert kept["architecture"]["row_id"] == author_row_id
+    hint = kept["architecture"]["design_changed"]
+    assert hint["reason"] == "snowflake_step:scene_details" and hint["at"] and hint["message"]
+
+    # 换参考书（绑定作用于整部作品）同样不动作者版
+    binding = supersede_for_binding_scope(session, scope="project", scope_ref_id=pid)
+    session.commit()
+    assert binding["author_architecture_kept"] == 1 and binding["chapter_architecture"] == 0
+    session.expire_all()
+    assert session.get(GenerationPlanningArtifact, author_row_id).status == "active"
+    latest = client.get(f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture").json()["data"]
+    assert latest["architecture"]["design_changed"]["reason"] == "style_binding_changed"
+
+    # 作者改写蓝图 = 新的一行，提示随旧行留在历史里
+    rewritten = client.put(
+        f"/api/v2/projects/{pid}/catalog/chapters/{authored['chapter_id']}/architecture",
+        json={**_ARCH_PAYLOAD, "chapter_promise": "改写后的承诺"},
+    ).json()["data"]["architecture"]
+    assert rewritten["row_id"] != author_row_id and rewritten["design_changed"] is None
+
+
+def _assert_llm_not_configured(response) -> None:
+    """B07-12：没有可用模型时章节编排的 AI 一律 409 + 去配置的 author_action（中文），不回 200 + fallback。"""
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "CHAPTER_PLAN_LLM_NOT_CONFIGURED"
+    assert error["details"]["author_action"]["target_view"] == "config"
+    assert "模型" in error["message"]
+
+
+def test_generate_architecture_offline_is_fail_closed_and_writes_no_placeholder(client, session) -> None:
     pid = _create_project(client)
     chid = _create_chapter(client, pid)["chapter_id"]
     response = client.post(
@@ -160,11 +235,7 @@ def test_generate_architecture_offline_author_action_no_placeholder(client, sess
         json={},
         headers={"X-Idempotency-Key": _key("arch-gen")},
     )
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert data["source"] == "fallback"
-    assert data["author_action"]["target_view"] == "config"
-    assert data["architecture"] is None
+    _assert_llm_not_configured(response)
     # 显式生成在离线时绝不落占位蓝图（占位会被场景 run 当真注入）。
     rows = session.query(GenerationPlanningArtifact).all()
     assert rows == []
@@ -425,7 +496,7 @@ def test_apply_locked_chapter_409(client, session) -> None:
     assert "APPROVED" in response.json()["error"]["code"]
 
 
-def test_locked_chapter_blocks_architecture_writes_but_review_reads(client, session) -> None:
+def test_locked_chapter_blocks_architecture_writes_but_review_reads(client, session, monkeypatch) -> None:
     pid = _create_project(client)
     chapter = _create_chapter(client, pid)
     chid = chapter["chapter_id"]
@@ -435,24 +506,31 @@ def test_locked_chapter_blocks_architecture_writes_but_review_reads(client, sess
         json=_ARCH_PAYLOAD,
     )
     assert put.status_code == 409
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted",
+        _fake_llm([], {"findings": []}),
+    )
     review = client.post(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/review")
-    assert review.status_code == 200  # 只读体检放行
+    assert review.status_code == 200, review.text  # 只读体检放行
+    assert list(review.json()["data"]["findings"]) == []
 
 
 # ---------- fill（P2） ----------
 
 
-def test_fill_offline_fallback_lists_gaps(client) -> None:
+def test_fill_offline_is_fail_closed_and_the_gap_checklist_is_a_separate_non_ai_read(client) -> None:
     pid = _create_project(client)
     chapter = _create_chapter(client, pid)
     chid = chapter["chapter_id"]
     response = client.post(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/fill", json={})
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert data["source"] == "fallback"
-    assert data["author_action"]["target_view"] == "config"
-    assert data["patch"] == {"drama": {}, "scenes": [], "append_scenes": []}
-    # 默认开场卡缺 conflict/setback/pov → 降级 gaps 列出空槽清单
+    _assert_llm_not_configured(response)
+    # 待补清单不是 AI：没有模型也能读，名字上就说是规则算的
+    gaps = client.get(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/gaps")
+    assert gaps.status_code == 200, gaps.text
+    data = gaps.json()["data"]
+    assert data["source"] == "rules"
+    # 默认开场卡缺 conflict/setback/pov → 清单列出空槽
     assert data["gaps"] and any("conflict" in gap for gap in data["gaps"])
 
 
@@ -524,15 +602,11 @@ def test_fill_adopt_requires_candidate(client, monkeypatch) -> None:
 # ---------- candidates（P3） ----------
 
 
-def test_candidates_offline_fallback(client) -> None:
+def test_candidates_offline_is_fail_closed(client) -> None:
     pid = _create_project(client)
     chid = _create_chapter(client, pid)["chapter_id"]
     response = client.post(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/candidates", json={})
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["source"] == "fallback"
-    assert data["candidates"] == []
-    assert data["author_action"]["target_view"] == "config"
+    _assert_llm_not_configured(response)
 
 
 def test_candidates_llm_normalizes_refs_and_carries_hint(client, monkeypatch) -> None:
@@ -584,17 +658,32 @@ def test_candidates_llm_normalizes_refs_and_carries_hint(client, monkeypatch) ->
 # ---------- review（P4） ----------
 
 
-def test_review_offline_rule_findings(client) -> None:
+def test_review_offline_is_fail_closed_instead_of_rule_findings(client) -> None:
+    """以前体检在没有模型时拿规则凑一份 findings 冒充 AI 体检；现在如实 409（待补清单另有只读接口）。"""
     pid = _create_project(client)
     chapter = _create_chapter(client, pid)
     chid = chapter["chapter_id"]
     response = client.post(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/review")
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["source"] == "fallback"
-    codes = {f["code"] for f in data["findings"]}
-    assert "BRIEF_INCOMPLETE" in codes  # 默认开场卡缺三拍/缺 POV
-    assert "PROMISE_UNGROUNDED" in codes  # 戏剧卡为空
+    _assert_llm_not_configured(response)
+
+
+def test_a_failed_model_call_is_reported_in_chinese_without_the_exception_text(client, session, monkeypatch) -> None:
+    pid = _create_project(client)
+    chid = _create_chapter(client, pid)["chapter_id"]
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+
+    def failing_generate(self, request):  # noqa: ANN001
+        raise RuntimeError("upstream exploded with sk-secret-detail")
+
+    monkeypatch.setattr(
+        "novel_system.services.llm_client.LLMClient.generate_accounted", accounted_generate_method(failing_generate)
+    )
+    response = client.post(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/review")
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "CHAPTER_PLAN_LLM_CALL_FAILED"
+    assert "exploded" not in error["message"] and "sk-secret" not in error["message"]
+    assert "章节编排" in error["message"]
 
 
 def test_review_llm_drops_evidence_free_findings_and_sanitizes_patch(client, monkeypatch) -> None:
@@ -621,6 +710,8 @@ def test_review_llm_drops_evidence_free_findings_and_sanitizes_patch(client, mon
             },
             {"code": "TENSION_FLAT", "severity": "warn", "scene_id": None, "evidence": "", "summary": "无据断言"},
             {"code": "NOT_A_CODE", "severity": "bad", "scene_id": "nope", "evidence": "有据但 code 非法", "summary": "s"},
+            # 伏笔账早已删除，伏笔逾期不再是体检项（批准 #17a）：模型硬说了也只算「其他」
+            {"code": "FORESHADOW_OVERDUE", "severity": "warn", "scene_id": None, "evidence": "旧信没回收", "summary": "s"},
         ]
     }
     monkeypatch.setattr(
@@ -630,7 +721,7 @@ def test_review_llm_drops_evidence_free_findings_and_sanitizes_patch(client, mon
     response = client.post(f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/review")
     assert response.status_code == 200, response.text
     findings = response.json()["data"]["findings"]
-    assert len(findings) == 2  # 无据 finding 被丢弃
+    assert len(findings) == 3  # 无据 finding 被丢弃
     first = findings[0]
     assert first["code"] == "EXIT_NO_CHANGE"
     # suggestion_patch 同样过 sanitize：覆盖 goal 被剔除，只留填空 exit_change
@@ -639,12 +730,19 @@ def test_review_llm_drops_evidence_free_findings_and_sanitizes_patch(client, mon
     ]
     second = findings[1]
     assert second["code"] == "OTHER" and second["severity"] == "info" and second["scene_id"] is None
+    assert findings[2]["code"] == "OTHER"
 
 
 # ---------- 上下文底座（P1） ----------
 
 
-def test_context_builder_slots_and_degradation(client, session) -> None:
+def test_context_builder_reads_scene_data_not_the_dead_chapter_fields(client, session) -> None:
+    """批准 #17a（重评 R10）：章级的张力 / 视角 / 入口 / 出口 / 线索没有任何地方能填，规划提示不再读它们（库里的旧值
+    原样留着，这里直接写进库当作旧数据）；邻章交接、章结构邻域、近几章的视角分布都从各场现算。
+    批准 #6（重评 R5）：作者偏好档案那一槽与它的降级标记一并去掉；伏笔槽早就没有数据来源，也去掉。"""
+    from novel_system.db.models import StoryCharacter
+    from novel_system.services.chapter_planning_context import ChapterPlanningContextBuilder
+
     pid = _create_project(client)
     ch1 = _create_chapter(client, pid, "第一章")
     ch2 = _create_chapter(client, pid, "第二章")
@@ -654,29 +752,46 @@ def test_context_builder_slots_and_degradation(client, session) -> None:
         json={"drama": {"forbidden": "不得出现梦醒桥段", "promise": "p"}},
     )
     assert patched.status_code == 200, patched.text
-    # 章级的张力 / 入口 / 出口已退役（批准 #17a）：目录接口不再收也不再发，库里旧行的 narrative_json 原样保留。
-    # 这里直接写进库、当作旧数据；规划上下文改读场上数据时（重评 R10 第 2 步）这一段随之重写。
+    lin = StoryCharacter(character_id=f"{pid}_lin", project_id=pid, display_name="林昭")
+    session.add(lin)
     for chapter, legacy in (
-        (ch1, {"exit": "她带着名册离开盐场", "tension": 0.4}),
-        (ch2, {"tension": 0.6}),
-        (ch3, {"entry": "堂屋的灯还亮着"}),
+        (ch1, {"exit": "旧出口", "tension": 0.4, "pov": "沈迟"}),
+        (ch2, {"tension": 0.6, "entry": "旧入口", "threads": ["旧线"]}),
+        (ch3, {"entry": "堂屋的旧入口"}),
     ):
         row = session.get(ChapterGoal, chapter["chapter_id"])
         row.narrative_json = {**(row.narrative_json or {}), **legacy}
+    last_of_first = session.get(SceneCard, ch1["scenes"][-1]["scene_id"])
+    last_of_first.exit_change = "她带着名册离开盐场"
+    last_of_first.hook = "名册上多了一个名字"
+    last_of_first.pov_character_id = lin.character_id
+    first_of_third = session.get(SceneCard, ch3["scenes"][0]["scene_id"])
+    first_of_third.writer_brief_json = {**(first_of_third.writer_brief_json or {}), "goal": "进堂屋问清旧信的来历"}
     session.commit()
-
-    from novel_system.services.chapter_planning_context import ChapterPlanningContextBuilder
 
     context = ChapterPlanningContextBuilder(session).build(pid, ch2["chapter_id"])
     payload = context.prompt_payload
-    assert payload["chapter_card"]["tension"] == 0.6
-    assert payload["neighbor_handoff"]["prev"]["exit"] == "她带着名册离开盐场"
-    assert payload["neighbor_handoff"]["next"]["entry"] == "堂屋的灯还亮着"
-    window = payload["tension_neighborhood"]["window"]
+    for dead in ("tension", "pov", "entry", "exit", "threads"):
+        assert dead not in payload["chapter_card"], dead
+    prev, following = payload["neighbor_handoff"]["prev"], payload["neighbor_handoff"]["next"]
+    assert "exit" not in prev and "entry" not in following
+    assert prev["last_scene"]["exit_change"] == "她带着名册离开盐场"
+    assert prev["last_scene"]["hook"] == "名册上多了一个名字"
+    assert following["first_scene"]["kind"] == "proactive"
+    assert following["first_scene"]["first_beat"] == "进堂屋问清旧信的来历"
+    assert "tension_neighborhood" not in payload and "foreshadow_debts" not in payload
+    window = payload["structure_neighborhood"]["window"]
     assert [item["is_current"] for item in window] == [False, True, False]
+    assert [item["scene_count"] for item in window] == [1, 1, 1]
+    assert all("tension" not in item for item in window)
+    # 近几章的视角分布数的是各场的视角人物，不是章级的旧 pov 字段
+    assert payload["character_positions"]["recent_pov_distribution"] == {"林昭": 1}
     assert payload["author_constraints"]["forbidden"] == "不得出现梦醒桥段"
-    # 冷启动：无雪花 canon / 无蓝图 → 降级而非阻断
+    assert "author_preferences" not in payload["author_constraints"]
+    # 冷启动：无雪花 canon / 无蓝图 → 降级而非阻断；没有作者偏好 / 伏笔这两个永远降级的槽
     assert "snowflake_canon" in context.degraded_slots
     assert "chapter_architecture" in context.degraded_slots
+    assert "author_preferences" not in context.degraded_slots
+    assert "foreshadow_debts" not in context.degraded_slots
     assert context.context_fingerprint
     assert context.source_version_refs["chapter_goal"] == ch2["chapter_id"]

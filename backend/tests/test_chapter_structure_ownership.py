@@ -19,9 +19,10 @@ from novel_system.db.models import (
     SnowflakeScenePlan,
     SnowflakeStepRun,
 )
+from novel_system.services.chapter_title_sync import is_auto_chapter_title
 from tests.test_catalog_book_spine import _catalog, _materialized, _preview
 from tests.test_snowflake_chaptering import _patch
-from tests.test_snowflake_chaptering_story_order import _confirm
+from tests.test_snowflake_chaptering_story_order import _confirm, _payload
 
 
 def _rename(client, project_id: str, chapter_id: str, title: str, key: str):
@@ -211,6 +212,84 @@ def test_a_chapter_renamed_in_step_07_is_renamed_in_the_catalog_and_on_the_scene
             select(SnowflakeScenePlan).where(SnowflakeScenePlan.chapter_plan_id == row.chapter_plan_id)
         ).scalars()
     } == {"雨城的清晨"}
+
+
+def test_saving_only_the_chapter_table_renames_the_chapter_everywhere_like_step_07_did(client, session) -> None:
+    """R11（批准 #18a）：07 的章表改成只读镜像之后，分章面板的「只保存章表」（PATCH …/chapter-plan，不物化）是
+    「确认写入」被挡住时改章名 / 章摘要的门——存下来的章名当场跟到目录（目录里还是上次播下去的名字时）、09 的章头
+    与 07 的镜像，和以前在 07 里改章名一样；目录里的场景卡不动（没有物化）。"""
+    project_id = _materialized(client, "z-save-only")
+    target = _catalog(client, project_id)[1]
+    cards_before = {chapter["chapter_id"]: [scene["scene_id"] for scene in chapter["scenes"]] for chapter in _catalog(client, project_id)}
+    panel = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview", json={"strategy": "keep_current"}
+    ).json()["data"]
+    payload = _payload(panel)
+    for chapter in payload["chapters"]:
+        if chapter["row_uid"] == target["structure"]["row_uid"]:
+            chapter["title"] = "码头对质"
+            chapter["summary"] = "她当着众人对出名册"
+
+    saved = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan", json=payload)
+    assert saved.status_code == 200, saved.text
+
+    after = _catalog(client, project_id)
+    assert {chapter["chapter_id"]: chapter["title"] for chapter in after}[target["chapter_id"]] == "码头对质"
+    assert {chapter["chapter_id"]: [scene["scene_id"] for scene in chapter["scenes"]] for chapter in after} == cards_before
+    row = _plan_row(session, project_id, target["chapter_id"])
+    assert (row.title, row.summary) == ("码头对质", "她当着众人对出名册")
+    assert {
+        plan.chapter_title
+        for plan in session.execute(
+            select(SnowflakeScenePlan).where(SnowflakeScenePlan.chapter_plan_id == row.chapter_plan_id)
+        ).scalars()
+    } == {"码头对质"}
+    assert "码头对质" in [item["title"] for item in _long_synopsis_draft(session, project_id)["chapters"]]
+
+
+def test_saving_only_a_merged_table_leaves_the_numbered_catalog_names_until_confirm(client, session) -> None:
+    """复核 P04-R2：「只保存章表」不物化——并章之后章表按新章序把系统起的「第 N 章」重编，目录里的章序与场景卡却还是
+    上一次确认写入的样子。目录要是跟着重编，就冒出两章同一个「第 N 章」、一章挂着别章的号，一直挂到确认写入（而作者用
+    「只保存章表」正是因为确认写入被挡住了）。系统起的章名等确认写入时随物化落到目录；作者起的名字照旧当场跟过去；
+    显式给 07 的章表（今天的前端上行回传同一张镜像）同一条规矩。"""
+    project_id = _materialized(client, "z-save-only-merge")
+    before = _catalog(client, project_id)
+    titles_before = {chapter["chapter_id"]: chapter["title"] for chapter in before}
+    cards_before = {chapter["chapter_id"]: [scene["scene_id"] for scene in chapter["scenes"]] for chapter in before}
+    assert len(before) >= 4 and all(is_auto_chapter_title(title) for title in titles_before.values())
+    catalog_id_of = {chapter["structure"]["row_uid"]: chapter["chapter_id"] for chapter in before}
+    panel = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview", json={"strategy": "keep_current"}
+    ).json()["data"]
+    payload = _payload(panel)
+    # 面板里的「并入上一章」：第二章的场归第一章，第二章从章表上拿掉；同一次保存里给最后一章起个名字
+    first, second = payload["chapters"][0]["row_uid"], payload["chapters"][1]["row_uid"]
+    payload["chapters"] = [chapter for chapter in payload["chapters"] if chapter["row_uid"] != second]
+    for item in payload["assignments"]:
+        if item["chapter_row_uid"] == second:
+            item["chapter_row_uid"] = first
+    named = payload["chapters"][-1]["row_uid"]
+    payload["chapters"][-1]["title"] = "案卷重开"
+
+    saved = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan", json=payload)
+    assert saved.status_code == 200, saved.text
+
+    # 章表里：原来排第三的章挪到第二位，系统章名跟着重编——正好撞上目录里第二章的名字
+    moved_up = payload["chapters"][1]["row_uid"]
+    moved = _plan_row(session, project_id, catalog_id_of[moved_up])
+    assert moved.chapter_seq == 2
+    assert moved.title != titles_before[catalog_id_of[moved_up]], "章表里的系统章名没按新章序重编"
+    assert moved.title == titles_before[catalog_id_of[second]]
+    # 目录里：只有作者起的名字当场跟过去；「第 N 章」与场景卡都还是上次确认写入的样子
+    expected = {**titles_before, catalog_id_of[named]: "案卷重开"}
+    after = _catalog(client, project_id)
+    assert {chapter["chapter_id"]: chapter["title"] for chapter in after} == expected
+    assert {chapter["chapter_id"]: [scene["scene_id"] for scene in chapter["scenes"]] for chapter in after} == cards_before
+
+    # 07 上行回传水合来的镜像（改了五段展开，章表原样）：显式章表那条路也不把重编的章名推进目录
+    draft = _long_synopsis_draft(session, project_id)
+    _patch(client, project_id, "long_synopsis", {**draft, "paragraphs": ["改过的一幕", "", "", "", ""]})
+    assert {chapter["chapter_id"]: chapter["title"] for chapter in _catalog(client, project_id)} == expected
 
 
 # ------------------------------------------------------------------ 3. 章的先后与幕只有一处可改

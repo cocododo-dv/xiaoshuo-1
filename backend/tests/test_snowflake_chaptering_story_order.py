@@ -313,9 +313,13 @@ def test_confirming_a_proposal_replaces_the_placeholder_table_and_mirrors_it(ses
 
     session.refresh(run)
     assert [item["title"] for item in run.draft_json["chapters"]] == ["旧日志", "第 2 章", "第 3 章", "第 4 章"]
+    assert [item["row_uid"] for item in run.draft_json["chapters"]] == [chapter.row_uid for chapter in chapters]
+    # 写穿缓存里的那一份跟着换成新章表（前端水合整份取它）：新浏览器看不到那两行占位旧章，也看不到一张空章表
+    #（复核 P04-R1：空表上点一下「添加章节」就上行一张一行的显式章表，把全书的章冲掉）；写穿缓存的其余部分原样
     mirrored = run.draft_json["fe_scaffold"]["chapters"]
-    assert [item["title"] for item in mirrored] == ["旧日志", "第 2 章", "第 3 章", "第 4 章"]
+    assert [item["title"] for item in mirrored] == [item["title"] for item in run.draft_json["chapters"]]
     assert [item["row_uid"] for item in mirrored] == [chapter.row_uid for chapter in chapters]
+    assert [item["id"] for item in mirrored] == ["01", "02", "03", "04"]
     assert run.draft_json["fe_scaffold"]["expansions"] == {}
 
 

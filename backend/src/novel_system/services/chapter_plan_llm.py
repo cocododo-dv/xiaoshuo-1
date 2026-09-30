@@ -1,32 +1,30 @@
 """章节编排的 LLM 规划服务（chapter plan）。
 
 四条能力（设计文档 docs/chapter-arrangement-llm-design-2026-07-16.md §4/§5）：
-- 章节蓝图显式化：读 / 作者改写 / 显式重生成（复用 chapter_story_architecture 节点与
-  GenerationPlanningArtifact 表；作者版 llm_call_id=None，场景 run 的
-  ensure_scene_planning 会自动复用最新 active 行）。
+- 章节蓝图显式化：读 / 作者改写 / 显式重生成（蓝图行的一处定义见 ``chapter_architecture``；作者版
+  llm_call_id=None，场景 run 的 ensure_scene_planning 会自动复用最新 active 行）。
 - candidates：3 个结构策略互斥的整章编排候选（无状态咨询，不落库）。
 - fill：保真补全 —— 只产出「填空」补丁；覆盖型意见降级为 notes。
 - review：编排体检 findings（带 evidence 与可选单条填空建议）。
 - apply：补丁经服务端 sanitize 后在单事务内经 CatalogService 原子回写目录。
+- gaps：**不是 AI**——按空槽列出的「待补清单」（规则算的，名字上就说清楚）。
 
 铁律（服务端强制，不信任模型自律）：只填空、按 scene_id 对位、新卡只追加、
 不删除、不覆盖作者非空文本。锁章由 chapter_approval.require_chapter_mutation_allowed
-统一 409。LLM 调用走与雪花工作区同款的 execute_accounted_call 计量/审计路径。
+统一 409。LLM 调用走 ``structured_llm_call`` 的计量 / 审计骨架。
+
+2026-09-30（B07-12，作者「没有模型就不兜底」）：蓝图生成 / 候选 / 补全 / 体检在没有可用模型时回 409
+``CHAPTER_PLAN_LLM_NOT_CONFIGURED`` + author_action，不再回 200 + ``source: fallback``（体检以前还拿规则凑一份
+findings 冒充 AI 体检）；待补清单另成一个只读接口。给作者看的话一律中文、不带异常原文。
 """
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import (
-    ChapterGoal,
-    GenerationPlanningArtifact,
-    LlmCall,
-    SceneCard,
-)
+from novel_system.db.models import ChapterGoal, GenerationPlanningArtifact, SceneCard
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.catalog import (
     CatalogService,
@@ -36,36 +34,27 @@ from novel_system.services.catalog import (
     scene_title,
 )
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
-from novel_system.services.scene_design_ownership import plan_owned_scene_ids
-from novel_system.services.chapter_planning_context import (
+from novel_system.services.chapter_architecture import (
+    ARCHITECTURE_FIELDS,  # noqa: F401 — 旧名：从本模块 import 的调用方
     CHAPTER_ARCHITECTURE_ARTIFACT,
+    latest_chapter_architecture,
+    normalize_chapter_architecture,
+    persist_chapter_architecture,
+)
+from novel_system.services.chapter_planning_context import (
     STYLE_REFERENCE_SLOT,
     ChapterPlanningContext,
     ChapterPlanningContextBuilder,
-    latest_chapter_architecture,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
-from novel_system.services.llm_accounting import (
-    LLMCallContext,
-    execute_accounted_call,
-    mark_postprocess_failure,
-)
-from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
-from novel_system.services.llm_client import LLMConfigurationError, build_llm_request
-from novel_system.services.llm_service_base import RuntimeLLMAccess, structured_prompt_hash
+from novel_system.services.llm_client import LLMConfigurationError
+from novel_system.services.llm_service_base import RuntimeLLMAccess
 from novel_system.services.prompt_builder import PromptConfigurationError
+from novel_system.services.scene_design_ownership import plan_owned_scene_ids
 from novel_system.services.scene_lookup import require_project_chapter
-
-ARCHITECTURE_FIELDS = (
-    "chapter_promise",
-    "escalation_path",
-    "reveal_plan",
-    "payoff_target",
-    "character_shift",
-    "ending_question",
-)
-_ARCHITECTURE_LIST_FIELDS = {"escalation_path", "reveal_plan"}
+from novel_system.services.scene_planning_staleness import design_changed_since
+from novel_system.services.structured_llm_call import run_structured_call
 
 _PATCH_DRAMA_FIELDS = (
     "promise",
@@ -82,18 +71,25 @@ _MAX_FIELD_CHARS = 400
 _MAX_TITLE_CHARS = 60
 _MAX_APPEND_ABS = 6
 
+# 2026-09-30（批准 #17a，重评 R10）：FORESHADOW_OVERDUE 去掉——伏笔账本早已删除，这个码没有任何数据来源；
+# 张力 / 视角疲劳 / 交接三项改读场上的真实数据（见 chapter_plan_review v4）。
 REVIEW_FINDING_CODES = (
     "PROMISE_UNGROUNDED",
     "SCENE_FUNCTION_DUPLICATE",
     "REACTIVE_MISSING",
     "TENSION_FLAT",
-    "FORESHADOW_OVERDUE",
     "POV_FATIGUE",
     "HANDOFF_MISMATCH",
     "EXIT_NO_CHANGE",
     "BRIEF_INCOMPLETE",
     "OTHER",
 )
+
+# 各节点 id（= 模板名）
+_ARCHITECTURE_NODE = CHAPTER_ARCHITECTURE_ARTIFACT
+_CANDIDATES_NODE = "chapter_scene_plan_candidates"
+_FILL_NODE = "chapter_scene_plan_fill"
+_REVIEW_NODE = "chapter_plan_review"
 
 
 class ChapterPlanService(RuntimeLLMAccess):
@@ -119,7 +115,7 @@ class ChapterPlanService(RuntimeLLMAccess):
     def get_architecture(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         require_project_chapter(self.session, project_id, chapter_id)
         artifact = latest_chapter_architecture(self.session, chapter_id)
-        return {"architecture": _serialize_architecture(artifact)}
+        return {"architecture": self._architecture_view(artifact)}
 
     def generate_architecture(
         self, project_id: str, chapter_id: str, *, actor_ref: str = "operator"
@@ -131,24 +127,16 @@ class ChapterPlanService(RuntimeLLMAccess):
             changed_fields=["chapter_story_architecture"],
             operation="chapter_plan.generate_architecture",
         )
+        # 没有模型就不生成：不落占位蓝图（占位会被场景 run 当真注入），只引导去配置。
+        self._require_llm(_ARCHITECTURE_NODE)
         context = self._context_builder.build(project_id, chapter_id)
-        if not self._llm_enabled():
-            # 显式生成不落占位蓝图（占位会被场景 run 当真注入），只引导去配置。
-            return {
-                "source": "fallback",
-                "architecture": _serialize_architecture(
-                    latest_chapter_architecture(self.session, chapter_id)
-                ),
-                "author_action": self._llm_action(),
-                "degraded_slots": context.degraded_slots,
-            }
         payload = self._run_structured_task(
-            task_key=CHAPTER_ARCHITECTURE_ARTIFACT,
-            template_name=CHAPTER_ARCHITECTURE_ARTIFACT,
+            task_key=_ARCHITECTURE_NODE,
+            template_name=_ARCHITECTURE_NODE,
             project_id=project_id,
             step_ref=f"chapter_plan:architecture:{chapter_id}",
             prompt_payload=context.prompt_payload,
-            normalize_output=_normalize_architecture_payload,
+            normalize_output=lambda output: normalize_chapter_architecture(output, strict=False),
         )
         artifact = self._persist_architecture(
             chapter,
@@ -159,7 +147,7 @@ class ChapterPlanService(RuntimeLLMAccess):
         )
         return {
             "source": "llm",
-            "architecture": _serialize_architecture(artifact),
+            "architecture": self._architecture_view(artifact),
             "degraded_slots": context.degraded_slots,
             "context_fingerprint": context.context_fingerprint,
         }
@@ -179,11 +167,11 @@ class ChapterPlanService(RuntimeLLMAccess):
             changed_fields=["chapter_story_architecture"],
             operation="chapter_plan.put_architecture",
         )
-        body = _normalize_architecture_payload(dict(payload or {}))
+        body = normalize_chapter_architecture(dict(payload or {}), strict=False)
         if not str(body.get("chapter_promise") or "").strip():
             raise DomainError(
                 "CHAPTER_ARCHITECTURE_PROMISE_REQUIRED",
-                "chapter_promise is required",
+                "章节蓝图至少要写「本章承诺」。",
                 status_code=400,
             )
         artifact = self._persist_architecture(
@@ -193,7 +181,14 @@ class ChapterPlanService(RuntimeLLMAccess):
             actor_ref=actor_ref or "author",
             context=None,
         )
-        return {"architecture": _serialize_architecture(artifact)}
+        return {"architecture": self._architecture_view(artifact)}
+
+    def _architecture_view(self, artifact: GenerationPlanningArtifact | None) -> dict[str, Any] | None:
+        """蓝图回包：作者写的蓝图留下来之后设计 / 绑定又变过时带 ``design_changed``（B07-03），否则为 None。"""
+        view = _serialize_architecture(artifact)
+        if view is not None:
+            view["design_changed"] = design_changed_since(self.session, artifact)
+        return view
 
     def _persist_architecture(
         self,
@@ -204,30 +199,14 @@ class ChapterPlanService(RuntimeLLMAccess):
         actor_ref: str,
         context: ChapterPlanningContext | None,
     ) -> GenerationPlanningArtifact:
-        for row in self.session.query(GenerationPlanningArtifact).filter(
-            GenerationPlanningArtifact.artifact_type == CHAPTER_ARCHITECTURE_ARTIFACT,
-            GenerationPlanningArtifact.object_type == "chapter",
-            GenerationPlanningArtifact.object_id == chapter.chapter_id,
-            GenerationPlanningArtifact.status == "active",
-        ):
-            row.status = "superseded"
-        artifact = GenerationPlanningArtifact(
-            row_id=f"planning_{CHAPTER_ARCHITECTURE_ARTIFACT}_{chapter.chapter_id}_{uuid.uuid4().hex[:10]}",
-            artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
-            object_type="chapter",
-            object_id=chapter.chapter_id,
-            chapter_id=chapter.chapter_id,
-            scene_id=None,
-            payload_json=payload,
+        return persist_chapter_architecture(
+            self.session,
+            chapter.chapter_id,
+            payload,
             llm_call_id=llm_call_id,
-            source_bundle_id=None,
-            source_bundle_hash=context.context_fingerprint if context else None,
-            status="active",
             created_by=actor_ref or "chapter_plan",
+            source_bundle_hash=context.context_fingerprint if context else None,
         )
-        self.session.add(artifact)
-        self.session.flush()
-        return artifact
 
     # ---------- candidates（发散通道） ----------
 
@@ -235,21 +214,15 @@ class ChapterPlanService(RuntimeLLMAccess):
         self, project_id: str, chapter_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         require_project_chapter(self.session, project_id, chapter_id)
+        self._require_llm(_CANDIDATES_NODE)
         context = self._context_builder.build(project_id, chapter_id)
-        if not self._llm_enabled():
-            return {
-                "source": "fallback",
-                "candidates": [],
-                "author_action": self._llm_action(),
-                "degraded_slots": context.degraded_slots,
-            }
         prompt_payload = dict(context.prompt_payload)
         hint = str((body or {}).get("direction_hint") or "").strip()
         if hint:
             prompt_payload["direction_hint"] = hint[:300]
         result = self._run_structured_task(
-            task_key="chapter_scene_plan_candidates",
-            template_name="chapter_scene_plan_candidates",
+            task_key=_CANDIDATES_NODE,
+            template_name=_CANDIDATES_NODE,
             project_id=project_id,
             step_ref=f"chapter_plan:candidates:{chapter_id}",
             prompt_payload=prompt_payload,
@@ -267,24 +240,16 @@ class ChapterPlanService(RuntimeLLMAccess):
 
     def fill(self, project_id: str, chapter_id: str, body: dict[str, Any]) -> dict[str, Any]:
         require_project_chapter(self.session, project_id, chapter_id)
-        context = self._context_builder.build(project_id, chapter_id)
         body = body or {}
         mode = str(body.get("mode") or "fill").strip().lower()
         if mode not in {"fill", "adopt"}:
-            raise DomainError("CHAPTER_PLAN_MODE_INVALID", "mode must be fill or adopt", status_code=400)
-        if not self._llm_enabled():
-            return {
-                "source": "fallback",
-                "patch": {"drama": {}, "scenes": [], "append_scenes": []},
-                "notes": [],
-                "gaps": _empty_slot_gaps(
-                    context.scenes, context.chapter,
-                    plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, context.scenes),
-                ),
-                "dropped": [],
-                "author_action": self._llm_action(),
-                "degraded_slots": context.degraded_slots,
-            }
+            raise DomainError(
+                "CHAPTER_PLAN_MODE_INVALID",
+                "补全只有两种：fill（把空槽填上）或 adopt（采纳一份编排方向）。",
+                status_code=400,
+            )
+        self._require_llm(_FILL_NODE)
+        context = self._context_builder.build(project_id, chapter_id)
         prompt_payload = dict(context.prompt_payload)
         prompt_payload["mode"] = mode
         if mode == "adopt":
@@ -292,13 +257,13 @@ class ChapterPlanService(RuntimeLLMAccess):
             if not isinstance(candidate, dict) or not candidate:
                 raise DomainError(
                     "CHAPTER_PLAN_CANDIDATE_REQUIRED",
-                    "adopt mode requires the chosen candidate object",
+                    "采纳方向时要带上选中的那一份方向。",
                     status_code=400,
                 )
             prompt_payload["adopted_candidate"] = normalize(candidate)
         result = self._run_structured_task(
-            task_key="chapter_scene_plan_fill",
-            template_name="chapter_scene_plan_fill",
+            task_key=_FILL_NODE,
+            template_name=_FILL_NODE,
             project_id=project_id,
             step_ref=f"chapter_plan:fill:{chapter_id}",
             prompt_payload=prompt_payload,
@@ -326,17 +291,11 @@ class ChapterPlanService(RuntimeLLMAccess):
 
     def review(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         require_project_chapter(self.session, project_id, chapter_id)
+        self._require_llm(_REVIEW_NODE)
         context = self._context_builder.build(project_id, chapter_id)
-        if not self._llm_enabled():
-            return {
-                "source": "fallback",
-                "findings": _rule_based_findings(context),
-                "author_action": self._llm_action(),
-                "degraded_slots": context.degraded_slots,
-            }
         result = self._run_structured_task(
-            task_key="chapter_plan_review",
-            template_name="chapter_plan_review",
+            task_key=_REVIEW_NODE,
+            template_name=_REVIEW_NODE,
             project_id=project_id,
             step_ref=f"chapter_plan:review:{chapter_id}",
             prompt_payload=context.prompt_payload,
@@ -350,6 +309,17 @@ class ChapterPlanService(RuntimeLLMAccess):
             "degraded_slots": context.degraded_slots,
             "context_fingerprint": context.context_fingerprint,
             **result["output"],
+        }
+
+    # ---------- gaps（待补清单：不是 AI） ----------
+
+    def gaps(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+        """这一章的戏剧卡与各场三拍 / 视角还空着哪些——按空槽算出来的清单，不调模型、不冒充 AI 结果。"""
+        chapter = require_project_chapter(self.session, project_id, chapter_id)
+        scenes = self._catalog.scene_rows(chapter_id)
+        return {
+            "source": "rules",
+            "gaps": empty_slot_gaps(scenes, chapter, plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, scenes)),
         }
 
     # ---------- apply（原子回写） ----------
@@ -439,20 +409,24 @@ class ChapterPlanService(RuntimeLLMAccess):
             "chapter": chapter_payload,
         }
 
-    # ---------- LLM plumbing（与雪花工作区同款计量/审计路径） ----------
+    # ---------- LLM plumbing ----------
 
     def _plan_owned_scene_ids(self, project_id: str, scenes: list[SceneCard]) -> set[str]:
         """设计归构思侧所有的场景卡（雪花物化 / 回流出来的，且构思里那一行还在）——章节规划 AI 不往它们的设计里填。"""
         return plan_owned_scene_ids(self.session, project_id, scenes)
 
-    def llm_enabled(self) -> bool:
-        return self._llm_enabled()
-
-    def _llm_action(self) -> dict[str, Any]:
-        settings = self._settings_payload()
-        return llm_setup_action(
-            llm_enabled=bool(settings.llm_enabled),
-            generation_mode="chapter_plan",
+    def _require_llm(self, node_id: str) -> None:
+        """没有可用模型就 409：作者点的是 AI，拿规则算的东西冒充 AI 结果就是撒谎（作者 2026-09-15「没有模型就不兜底」）。"""
+        if self._llm_enabled():
+            return
+        raise DomainError(
+            "CHAPTER_PLAN_LLM_NOT_CONFIGURED",
+            "章节编排的 AI 需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。",
+            status_code=409,
+            details={
+                "node_id": node_id,
+                "author_action": llm_setup_action(llm_enabled=False, generation_mode="chapter_plan"),
+            },
         )
 
     def _run_structured_task(
@@ -476,7 +450,7 @@ class ChapterPlanService(RuntimeLLMAccess):
                     f"模型已接入，但 LLM 节点路由未配置：{task_key}。"
                     "请到配置环境点击“一键补齐”，或在节点路由中为该节点绑定 provider/model 后重试。"
                     if missing_route
-                    else f"chapter plan LLM prompt or route is not ready: {task_key}。"
+                    else f"章节编排的 AI 节点还没配好：{task_key} 的路由或提示词模板不可用。"
                     "请检查节点路由、提示词模板和模型配置后重试。"
                 ),
                 status_code=409,
@@ -492,138 +466,22 @@ class ChapterPlanService(RuntimeLLMAccess):
                     ),
                 },
             ) from exc
-
-        user_prompt = _render_user_prompt(template, prompt_payload)
-        prompt_hash = structured_prompt_hash(
-            template_name,
-            template.version,
-            template.system_prompt,
-            user_prompt,
-            template.structured_schema,
-        )
-        llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
-        request = build_llm_request(
-            task_config,
+        result = run_structured_call(
+            self.session,
+            self._client(),
+            task_config=task_config,
+            template=template,
             node_id=task_key,
-            messages=[
-                {"role": "system", "content": template.system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_schema={"name": template.name, "schema": template.structured_schema},
+            project_id=project_id,
+            step_ref=step_ref,
+            user_prompt=_render_user_prompt(template, prompt_payload),
+            prompt_payload=prompt_payload,
+            normalize_output=normalize_output,
+            error_prefix="CHAPTER_PLAN",
+            failure_message="章节编排的 AI 调用没有成功：模型没有回话或出错了。请检查模型接入与节点路由后重试。",
+            invalid_message="章节编排的 AI 这一次没有给出可用的结果（格式不对或内容为空）。可以再试一次。",
         )
-        request_summary = sanitize_audit_summary(
-            {
-                "task_key": task_key,
-                "template_name": template.name,
-                "template_version": template.version,
-                "step_key": step_ref,
-                **normalize(prompt_payload),
-            }
-        )
-        try:
-            response = execute_accounted_call(
-                self.session,
-                self._client(),
-                request,
-                LLMCallContext(
-                    scope_type="project",
-                    scope_id=project_id,
-                    project_id=project_id,
-                    node_id=task_key,
-                    step=step_ref,
-                ),
-                llm_call_id=llm_call_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._supplement_accounted_call(
-                llm_call_id=llm_call_id,
-                request_summary=request_summary,
-                prompt_hash=prompt_hash,
-                response_summary=error_audit_summary(exc),
-            )
-            raise DomainError(
-                "CHAPTER_PLAN_LLM_CALL_FAILED",
-                f"chapter plan LLM call failed for {task_key}: {exc}",
-                status_code=409,
-                details={
-                    "llm_call_id": llm_call_id,
-                    "node_id": task_key,
-                    "error_code": getattr(exc, "code", exc.__class__.__name__),
-                    "next_action": "check_provider_route_model_and_retry",
-                    "response_summary": error_audit_summary(exc),
-                },
-            ) from exc
-
-        try:
-            raw_output = response.structured_output or {}
-            if not isinstance(raw_output, dict):
-                raise ValueError("structured output must be an object")
-            normalized_output = normalize_output(raw_output)
-        except Exception as exc:  # noqa: BLE001
-            mark_postprocess_failure(
-                self.session,
-                llm_call_id,
-                error_code="LLM_RESPONSE_INVALID_SCHEMA",
-                error_text=str(exc),
-            )
-            self._supplement_accounted_call(
-                llm_call_id=llm_call_id,
-                request_summary=request_summary,
-                prompt_hash=prompt_hash,
-                response_summary={
-                    "message": str(exc),
-                    "structured_output": response.structured_output,
-                    "request_id": response.request_id,
-                },
-            )
-            raise DomainError(
-                "CHAPTER_PLAN_LLM_RESPONSE_INVALID_SCHEMA",
-                str(exc),
-                status_code=409,
-                details={
-                    "llm_call_id": llm_call_id,
-                    "node_id": task_key,
-                    "error_code": "LLM_RESPONSE_INVALID_SCHEMA",
-                    "next_action": "retry_or_adjust_prompt_schema",
-                },
-            ) from exc
-
-        self._supplement_accounted_call(
-            llm_call_id=llm_call_id,
-            request_summary=request_summary,
-            prompt_hash=prompt_hash,
-            response_summary={
-                "request_id": response.request_id,
-                "response_format": response.response_format,
-                "structured_output": response.structured_output,
-            },
-        )
-        return {
-            "llm_call_id": response.llm_call_id or llm_call_id,
-            "output": normalized_output,
-        }
-
-    def _supplement_accounted_call(
-        self,
-        *,
-        llm_call_id: str,
-        request_summary: dict[str, Any],
-        prompt_hash: str,
-        response_summary: dict[str, Any],
-    ) -> None:
-        parent = self.session.get(LlmCall, llm_call_id)
-        if parent is None:
-            raise RuntimeError(f"accounted chapter plan call {llm_call_id} is missing")
-        parent.prompt_hash = prompt_hash
-        parent.request_payload_summary = sanitize_audit_summary(
-            {**dict(parent.request_payload_summary or {}), **request_summary}
-        )
-        parent.response_payload_summary = sanitize_audit_summary(
-            {**dict(parent.response_payload_summary or {}), **response_summary}
-        )
-        self.session.commit()
-
-    # ---------- helpers ----------
+        return {"llm_call_id": result.llm_call_id, "output": result.output}
 
 
 # ---------- 纯函数：补丁 sanitize 与输出归一 ----------
@@ -775,10 +633,10 @@ def sanitize_plan_patch(
     return clean_patch, dropped
 
 
-def _empty_slot_gaps(
+def empty_slot_gaps(
     scenes: list[SceneCard], chapter: ChapterGoal | None = None, *, plan_owned_scene_ids: set[str] | None = None
 ) -> list[str]:
-    """离线降级：列出每张卡待补的空槽，让 UI 依然给出可执行清单。"""
+    """待补清单（不是 AI）：列出戏剧卡与每张卡还空着的槽，给作者一份可执行的清单。"""
     owned = plan_owned_scene_ids or set()
     gaps: list[str] = []
     if chapter is not None:
@@ -799,18 +657,8 @@ def _empty_slot_gaps(
     return gaps
 
 
-def _normalize_architecture_payload(output: dict[str, Any]) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    for key in ARCHITECTURE_FIELDS:
-        value = output.get(key)
-        if key in _ARCHITECTURE_LIST_FIELDS:
-            items = value if isinstance(value, list) else ([value] if value else [])
-            payload[key] = [
-                _clean_text(item, _MAX_FIELD_CHARS) for item in items if _clean_text(item)
-            ][:8]
-        else:
-            payload[key] = _clean_text(value, _MAX_FIELD_CHARS)
-    return payload
+# 旧名：测试从本模块 import
+_empty_slot_gaps = empty_slot_gaps
 
 
 def _serialize_architecture(artifact: GenerationPlanningArtifact | None) -> dict[str, Any] | None:
@@ -911,71 +759,6 @@ def _normalize_review_output(
                 finding["suggestion_patch"] = clean_patch
         findings.append(finding)
     return {"findings": findings}
-
-
-def _rule_based_findings(context: ChapterPlanningContext) -> list[dict[str, Any]]:
-    """离线降级体检：不调用 LLM 也给出可执行的结构性提示。"""
-    findings: list[dict[str, Any]] = []
-    chapter_card = context.prompt_payload.get("chapter_card") or {}
-    drama = dict(chapter_card.get("drama") or {})
-    missing_drama = [
-        key
-        for key in ("promise", "spine", "arc", "problem", "aftertaste", "ending")
-        if _is_empty_slot(drama.get(key))
-    ]
-    if missing_drama:
-        findings.append(
-            {
-                "code": "PROMISE_UNGROUNDED",
-                "severity": "warn",
-                "scene_id": None,
-                "field": "drama",
-                "evidence": f"戏剧卡缺 {len(missing_drama)} 项：{', '.join(missing_drama)}",
-                "summary": "戏剧卡未填完整，场景规划缺少章级承诺锚点。",
-            }
-        )
-    reactive_count = 0
-    for scene in context.scenes:
-        kind = scene_kind(scene)
-        if kind == "reactive":
-            reactive_count += 1
-        brief = dict(scene.writer_brief_json or {})
-        keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
-        missing = [key for key in keys if _is_empty_slot(brief.get(key))]
-        if missing:
-            findings.append(
-                {
-                    "code": "BRIEF_INCOMPLETE",
-                    "severity": "warn",
-                    "scene_id": scene.scene_id,
-                    "field": ",".join(missing),
-                    "evidence": f"「{scene_title(scene)}」三拍缺：{', '.join(missing)}",
-                    "summary": "场景三拍不完整，起草契约会被阻断或退化。",
-                }
-            )
-        if not scene.pov_character_id:
-            findings.append(
-                {
-                    "code": "BRIEF_INCOMPLETE",
-                    "severity": "warn",
-                    "scene_id": scene.scene_id,
-                    "field": "pov",
-                    "evidence": f"「{scene_title(scene)}」未设 POV 角色。",
-                    "summary": "缺 POV 会阻断场景执行契约。",
-                }
-            )
-    if context.scenes and reactive_count == 0 and len(context.scenes) >= 3:
-        findings.append(
-            {
-                "code": "REACTIVE_MISSING",
-                "severity": "info",
-                "scene_id": None,
-                "field": None,
-                "evidence": f"本章 {len(context.scenes)} 场全部为主动场。",
-                "summary": "连续主动场没有喘息拍，考虑安排一场反应场消化代价。",
-            }
-        )
-    return findings
 
 
 # ---------- prompt helpers（与雪花工作区同构） ----------

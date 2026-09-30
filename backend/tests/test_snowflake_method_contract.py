@@ -530,11 +530,9 @@ def test_prose_expansions_never_parse_into_chapters() -> None:
 
     prose = {"paragraphs": _paragraphs(5), "chapters": []}
     assert parse_outline_chapters(prose) == []
-    # 历史草稿的章行格式仍然认得
+    # 2026-09-30（B07-22）：阶段 D 之前的「NN 章名：…」章行镜像也不再解析——章表只在 chapters 里
     legacy = {"paragraphs": ["01 雨夜来信：信件迫使她回乡（灾一）\n02 旧屋回声：旧证词出现裂缝", "", "", ""]}
-    parsed = parse_outline_chapters(legacy)
-    assert [c["title"] for c in parsed] == ["雨夜来信", "旧屋回声"]
-    assert parsed[0]["spine"] == "灾一"
+    assert parse_outline_chapters(legacy) == []
     # 结构化章表优先，散文段落不干扰
     both = {"paragraphs": _paragraphs(5), "chapters": [{"act": 2, "title": "中点", "summary": "养母", "spine": "灾二"}]}
     assert [c["title"] for c in parse_outline_chapters(both)] == ["中点"]

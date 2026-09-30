@@ -100,13 +100,17 @@ _UPSTREAM_DRAFTS: dict[str, dict] = {
             {"character_id": "c1", "display_name": "林昭", "role": "主角", "synopsis": "信念：真相\n旧伤：母亲之死"}
         ]
     },
+    # 2026-09-30（B07-22）：章表只在结构化的 chapters 里（散文段落里的「NN 章名：」行不再解析）
     "long_synopsis": {
-        "paragraphs": [
-            "01 雨夜来信：一封旧信把她拉回雨城。\n02 旧案卷宗：她翻出封存的案卷。",
-            "03 父亲的谎：父亲的时间线对不上。\n04 追捕：证据被销毁。",
-            "05 抉择：公开还是保全家人。\n06 余波：代价落地。",
-            "",
-        ]
+        "paragraphs": ["", "", "", ""],
+        "chapters": [
+            {"act": 1, "title": "雨夜来信", "summary": "一封旧信把她拉回雨城。"},
+            {"act": 1, "title": "旧案卷宗", "summary": "她翻出封存的案卷。"},
+            {"act": 2, "title": "父亲的谎", "summary": "父亲的时间线对不上。"},
+            {"act": 2, "title": "追捕", "summary": "证据被销毁。"},
+            {"act": 3, "title": "抉择", "summary": "公开还是保全家人。"},
+            {"act": 3, "title": "余波", "summary": "代价落地。"},
+        ],
     },
     "character_bibles": {
         "characters": [

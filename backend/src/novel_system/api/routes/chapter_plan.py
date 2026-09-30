@@ -4,7 +4,8 @@
 - 蓝图三端点：GET/PUT architecture + POST architecture/generate（幂等）
 - 三通道：POST plan/candidates | plan/fill | plan/review（单次结构化咨询调用；
   每次主动重生成会获得新键，同一网络请求重试则重放，避免重复计费；
-  计量/审计仍由 execute_accounted_call 承担）
+  计量/审计仍由 execute_accounted_call 承担）。没有可用模型时生成 / 三通道回 409 + author_action（fail-closed）。
+- GET plan/gaps：待补清单——按空槽算的，不是 AI 结果，不需要模型。
 - POST plan/apply（幂等）：补丁经服务端 sanitize 后单事务原子回写目录。
 """
 from __future__ import annotations
@@ -140,6 +141,18 @@ def chapter_plan_review(
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).review(project_id, chapter_id),
     )
+
+
+@router.get("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/gaps")
+def chapter_plan_gaps(
+    project_id: str,
+    chapter_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """待补清单（不是 AI）：这一章的戏剧卡与各场三拍 / 视角还空着哪些。"""
+    result = ChapterPlanService(session).gaps(project_id, chapter_id)
+    return ok(result, req_id=request_id_of(request))
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply")

@@ -16,6 +16,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from novel_system.db.models import OperationLog, SnowflakeAssistantTurn, SnowflakeCharacterPlan, SnowflakeStepRun, utcnow
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text
+from novel_system.services.snowflake_chapter_table import carry_stored_chapters, keep_live_chapter_table
 from novel_system.services.snowflake_character_ids import RosterSource, canonical_character_id, canonicalize_draft
 from novel_system.services.snowflake_draft_merge import overlay_keeping_members
 from novel_system.services.snowflake_staleness import semantic_payload
@@ -51,6 +52,7 @@ class SnowflakeStepEditingMixin:
         direction_ref: dict[str, Any] | None = None
         direction_turn: SnowflakeAssistantTurn | None = None
         direction_index: int | None = None
+        chapters_kept = False
         if body.get("skip"):
             draft = self._skip_draft(step_key, body)
             source = "skip"
@@ -132,6 +134,8 @@ class SnowflakeStepEditingMixin:
                 roster=self._character_roster(project.project_id, latest_by_step),
                 mint_missing=True,
             )
+            # R11（批准 #18a）：07 的章表是分章结果的只读镜像——已经分过章就保留现表，模型给的章表不收、不同步
+            chapters_kept = step_key == "long_synopsis" and keep_live_chapter_table(self.session, project.project_id, draft)
             source = llm_result.source
             llm_call_id = llm_result.llm_call_id
             # 分批深化中途失败等「作者必须知道但不属于草稿」的事实随健康度落库
@@ -167,7 +171,7 @@ class SnowflakeStepEditingMixin:
                 "adopted_at": utcnow(),
             }
             flag_modified(direction_turn, "adoption_json")
-        sync_notice = self._sync_structured_step_data(project, step_key, draft, run)
+        sync_notice = None if chapters_kept else self._sync_structured_step_data(project, step_key, draft, run)
         if sync_notice:
             # 章表收缩只有落库时才知道（要比对既有章行），此时 health_json 已经建好——
             # 补挂回去，绝不让「已生成」盖住「全书归属松了 N 场」。
@@ -210,6 +214,9 @@ class SnowflakeStepEditingMixin:
             mint_missing=True,
         )
         latest = latest_by_step.get(step_key)
+        # R11（批准 #18a）：07 的章表是分章结果的只读镜像，前端不再上行它——没带章表时沿用存着的那一份（必须在下面的
+        # 语义比较之前：缺席的章表会被默认值补成空表，已确认的 07 就被打回待审），也不去同步章表行。显式带了照旧同步。
+        chapters_carried = step_key == "long_synopsis" and carry_stored_chapters(draft, body.get("draft"), latest)
 
         # 防静默回退：已批准/已跳过步骤收到无故事含义的 re-PATCH 时保持原状态与版本。
         # ``fe_*`` 是前端写穿缓存（其中 book_brief.fe_meta 会在确认任何后续步骤时变化）；
@@ -263,7 +270,8 @@ class SnowflakeStepEditingMixin:
                 )
 
         self.session.flush()
-        self._sync_structured_step_data(project, step_key, draft, run)
+        if not chapters_carried:
+            self._sync_structured_step_data(project, step_key, draft, run)
         self.session.flush()
         return self._step_saved_response(project.project_id, step_key, run, include_workspace=include_workspace)
 

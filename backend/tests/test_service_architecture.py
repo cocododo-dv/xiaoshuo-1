@@ -207,8 +207,16 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
     "novel_system.services.scene_text": {"novel_system.db.models"},
     "novel_system.services.planning_queries": {"novel_system.db.models"},
     "novel_system.services.snowflake_queries": {"novel_system.db.models"},
-    "novel_system.services.snowflake_scene_order": {"novel_system.db.models"},
+    "novel_system.services.snowflake_scene_order": {"novel_system.db.models", "novel_system.services.snowflake_queries"},
     "novel_system.services.snowflake_triage": {"novel_system.db.models"},
+    # 2026-09-30 P04：章表行的唯一读写处与分章的 AI 调用——目录服务 / 雪花 LLM 服务在模块顶层引它们，
+    # 它们若引回分章包（包的 __init__ 引着分章服务）就在运行时闭环
+    "novel_system.services.snowflake_chapter_table": {
+        "novel_system.db.models",
+        "novel_system.services.errors",
+        "novel_system.services.snowflake_queries",
+    },
+    "novel_system.services.snowflake_chapter_llm": set(),
     "novel_system.services.author_preferences": set(),
     # P01b：后台作业的通用运行时、全系统维护登记簿、运行任务的租约内核、房风词表
     "novel_system.services.background_jobs": set(),
