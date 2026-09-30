@@ -82,7 +82,7 @@ describe("左栏与进度格", () => {
     chapter({ id: "ch03", backendId: "c3", n: "03", title: "第 3 章", state: "planned", words: { cur: 0 }, scenes: [] }),
   ];
 
-  it("章行：阶段来自 manuscriptStage（规划但有字 = 写作中），不再带恒定的版本号", () => {
+  it("章行：阶段来自 chapterStage（规划但有字 = 写作中），不再带恒定的版本号", () => {
     const rows = manuChapterRows(catalog, (c) => c.state !== "planned" || c.words.cur > 0);
     expect(rows.map((r) => [r.id, r.stage, r.words, r.sceneDone, r.scenes])).toEqual([["ch01", "approved", 1200, 2, 2], ["ch02", "writing", 800, 0, 0]]);
     expect(rows[0]).not.toHaveProperty("ver");

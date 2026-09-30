@@ -1,13 +1,13 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_ACTS, ARR_SCENE_STATE } from "./ws-author-data.jsx";
-import { arrBookFacts, arrChapterStatus, arrIsPlanChapter, arrLensChapters, arrRangeLabel } from "./ws-author-derive.js";
+import { arrBookFacts, arrIsPlanChapter, arrLensChapters, arrRangeLabel } from "./ws-author-derive.js";
 import { ArrPacingLens } from "./ws-author-pacing.jsx";
 import { ArrSpineLens } from "./ws-author-spine.jsx";
 import { ArrDoctor } from "./ws-author-doctor.jsx";
 import { ArrBudgetBar, ArrChapterStateTag, ArrGrip, ArrMiniScenes } from "./ws-author-ui.jsx";
 import { PageHeader, Segmented, Tag } from "./ws-ui.jsx";
-import { chapterHeading, chapterLabel } from "./labels/catalog.js";
+import { chapterHeading, chapterLabel, chapterStage } from "./labels/catalog.js";
 
 /* ==========================================================
    全书编排 — overview
@@ -67,7 +67,7 @@ function ArrChapterRow({ c, num, picked, onOpen, dnd, selectMode, selected, onTo
   const scenes = c.scenes || [];
   const done = scenes.filter((s) => s.state === "done").length;
   const locked = c.state === "approved";
-  const status = arrChapterStatus(c);
+  const stage = chapterStage(c);
   /* 阶段 X：雪花整理出来的章没有「章承诺」和章级 POV——行上不留空，用构思里的章摘要和各场的 POV 顶上 */
   const blurb = c.promise || c.summary || "";
   const povs = c.pov ? [c.pov] : [...new Set(scenes.map((s) => s.povName).filter(Boolean))];
@@ -80,7 +80,7 @@ function ArrChapterRow({ c, num, picked, onOpen, dnd, selectMode, selected, onTo
   const head = chapterHeading({ n: num, title: c.title });
   const full = chapterLabel({ n: num, title: c.title }, { maxTitle: Infinity });
   return (
-    <li className={`arr-card s-${status.key} ${picked ? "is-picked" : ""} ${selected ? "is-selected" : ""} ${selectMode && locked ? "is-unselectable" : ""} ${planOwned ? "is-plan-owned" : ""}`}
+    <li className={`arr-card s-${stage} ${picked ? "is-picked" : ""} ${selected ? "is-selected" : ""} ${selectMode && locked ? "is-unselectable" : ""} ${planOwned ? "is-plan-owned" : ""}`}
       data-testid="arr-chapter-card" data-structure-owner={planOwned ? "plan" : "desk"}
       {...(selectMode ? {} : dnd)}
       onClick={() => { if (!selectMode) { onOpen(c.id); return; } if (!locked) onToggleSelect(c.id); }}>

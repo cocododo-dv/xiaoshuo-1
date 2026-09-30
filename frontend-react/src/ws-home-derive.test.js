@@ -71,7 +71,7 @@ describe("hmDeriveSpine", () => {
   });
 });
 
-describe("hmDeriveSpine / hmChapterWindow · 章的阶段与成稿中心同一套（ws-labels.manuscriptStage）", () => {
+describe("hmDeriveSpine / hmChapterWindow · 章的阶段与成稿中心、章节编排同一套（labels/catalog.js 的 chapterStage）", () => {
   // 目录上还挂着「规划 / 待写」、但已经有字或有写完的场的章，成稿中心读作「写作中」；主页以前照抄目录标签说「规划」
   const book = () => [
     CH(1, "approved", { words: { cur: 0, target: 3000 } }),
@@ -87,6 +87,11 @@ describe("hmDeriveSpine / hmChapterWindow · 章的阶段与成稿中心同一�
     expect(spine.segments.map(s => s.state)).toEqual(["approved", "writing", "writing", "writing", "planned", "todo"]);
     expect(spine.counts).toEqual({ approved: 1, review: 0, draft: 0, writing: 3, planned: 1, todo: 1 });
     expect(spine.legend.find(l => l.state === "writing").n).toBe(3);
+  });
+
+  it("有一场在写（还没存下字）的规划章也算「写作中」——与章节编排、成稿中心同一条规则", () => {
+    const spine = hmDeriveSpine([CH(1, "planned", { scenes: [{ sid: "w1", state: "writing" }, { sid: "w2", state: "todo" }] }), CH(2, "draft")]);
+    expect(spine.segments.map(s => s.state)).toEqual(["writing", "draft"]);
   });
 
   it("章卡的状态标签用同一个阶段：同一个词 + ws-ui 语气", () => {

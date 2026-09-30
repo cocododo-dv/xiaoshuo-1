@@ -5,11 +5,11 @@
    按「略过」触发的回流条目、阶段加权百分比都不再保留——进度只留字数口径。
    2026-09-21：焦点卡、进度脊的「前线」、章节窗口都以 WsCatalog.focusScene() 为准
    （写作台 / AI 起草台用的同一条「现在该写哪一场」规则）；雪花卡只读服务端 dashboard。
-   同日：章节状态不再自带一份词表。一章在哪个阶段按 ws-labels.manuscriptStage 判（规划中但已经有字
-   = 写作中），叫法取 CHAPTER_STATE_META（图例、章卡、悬停说明同一个词）——与成稿中心、章节编排同一份。
+   同日：章节状态不再自带一份词表。一章在哪个阶段按 labels/catalog.js 的 chapterStage 判（规划中但已经有字、
+   或有一场在写 = 写作中），叫法取 CHAPTER_STATE_META（图例、章卡、悬停说明同一个词）——与成稿中心、章节编排同一份。
    ========================================================== */
 import { snowStepByBackendKey } from "./ws-nav.js";
-import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStateMeta, manuscriptStage, sceneLabel } from "./labels/catalog.js";
+import { CHAPTER_STATE_ORDER, chapterHeading, chapterLabel, chapterStage, chapterStateMeta, sceneLabel } from "./labels/catalog.js";
 import { LEGACY_DRAFT_PLACEHOLDER } from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 import { wanFixed } from "./lib/format.js";
@@ -35,12 +35,12 @@ function sameChapter(a, b) {
 }
 
 /* 目录 → 进度脊模型：
-   segments  每章一段（n / title / state / front / sid / hint），state 是 manuscriptStage 判出的阶段；
+   segments  每章一段（n / title / state / front / sid / hint），state 是 chapterStage 判出的阶段；
              sid 指向该章在写的场景（否则第一场没写完的；整章写完则第一场），供深链进写作房间
    counts    各阶段的章数；legend 是按 CHAPTER_STATE_ORDER 排好的图例（含 0 章的阶段）
    scenes    全书场景计数（已规划 / 已完成 / 写作中 / 待写，以及铺了场的章数）
    frontChapter 传入时「前线」就是它（主页传焦点场景所在章，焦点卡与进度脊永远指着同一章）；
-   不传则按 hmCurrentChapter。认不出的章节状态按 manuscriptStage 归入规划（有字则在写）；未知的场景状态归入 todo。 */
+   不传则按 hmCurrentChapter。认不出的章节状态按 chapterStage 归入规划（动笔了则在写）；未知的场景状态归入 todo。 */
 function hmDeriveSpine(chapters, frontChapter) {
   const list = Array.isArray(chapters) ? chapters.filter(Boolean) : [];
   const cur = frontChapter ? list.find(c => sameChapter(c, frontChapter)) || null : hmCurrentChapter(list);
@@ -48,7 +48,7 @@ function hmDeriveSpine(chapters, frontChapter) {
   CHAPTER_STATE_ORDER.forEach(k => { counts[k] = 0; });
   const scenes = { total: 0, done: 0, writing: 0, todo: 0, chapters: 0 };
   const segments = list.map(c => {
-    const state = manuscriptStage(c);
+    const state = chapterStage(c);
     counts[state] += 1;
     const rows = Array.isArray(c.scenes) ? c.scenes.filter(Boolean) : [];
     if (rows.length) scenes.chapters += 1;
@@ -162,7 +162,7 @@ function hmChapterWindow(chapters, spine) {
   start = Math.max(0, Math.min(start, list.length - size));
   const cards = list.slice(start, start + size).map((c, i) => {
     const seg = segs[start + i] || {};
-    const state = manuscriptStage(c);
+    const state = chapterStage(c);
     const meta = chapterStateMeta(state);
     // 章卡两段：num「第 N 章」与章自己的名字；占位名（第 N 章 / 未命名）不再跟章号并排
     const head = chapterHeading(c);

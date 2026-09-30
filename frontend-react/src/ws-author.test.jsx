@@ -766,6 +766,23 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(window.location.hash).not.toBe("#snowflake");   // 有外壳就不自己改 hash
   });
 
+  it("章的阶段与主页、成稿中心同一条规则：退回小修的章读作「草稿」、目录说写作中的章读作「写作中」；序列栏把审阅中 / 草稿单独数", async () => {
+    catalogState.ready = true;
+    catalogState.chapters = [
+      chapter("ch01", "退回的章", { state: "draft", words: { cur: 900, target: 4000 }, scenes: [{ sid: "s1", backendId: "b1", title: "一", kind: "主动", state: "done", goal: "", obstacle: "", turn: "" }] }),
+      chapter("ch02", "在写的章", { state: "writing" }),
+      chapter("ch03", "审阅一", { state: "review" }),
+      chapter("ch04", "审阅二", { state: "review" }),
+    ];
+    await act(async () => root.render(<WsAuthor />));
+    const states = [...host.querySelectorAll('[data-testid="arr-chapter-card"] .arr-card-state')].map((node) => node.textContent);
+    expect(states).toEqual(["草稿", "写作中", "审阅中", "审阅中"]);
+
+    await act(async () => click(host.querySelector(".arr-card-title")));
+    const stat = [...host.querySelectorAll(".arr-rail-stat > span")].map((node) => node.textContent);
+    expect(stat).toEqual(["0 已定稿", "2 审阅中", "1 草稿", "1 写作中", "0 规划中"]);
+  });
+
   it("目录请求失败与真空作品分开呈现，并提供真实重试", async () => {
     catalogState.error = new Error("network down");
     await act(async () => root.render(<WsAuthor />));

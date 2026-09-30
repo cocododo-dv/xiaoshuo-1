@@ -5,7 +5,7 @@
    PRJ_…_CH01、成本看板拿前端 slug 去比后端 id 永远对不上；章节状态在成稿中心叫
    「计划中 / 待聚合」、在主页叫「规划」。这里给一份：
    · CHAPTER_STATE_META —— 目录状态 → 中文叫法 / 语气色（ws-ui 的 tone）；SCENE_STATE_META —— 场的三态；
-   · manuscriptStage —— 成稿中心看的是稿子走到哪一步，不是目录上手打的标签；
+   · chapterStage（旧名 manuscriptStage）—— 一章走到哪一步：主页、成稿中心、章节编排同一条规则；
    · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」。
    纯函数：章节列表由调用方传入（通常是 WsCatalog.get()），不读 store、不写 window。
    ========================================================== */
@@ -33,20 +33,36 @@ export function chapterStateMeta(state) {
   return CHAPTER_STATE_META[state] || CHAPTER_STATE_META.planned;
 }
 
-function hasManuscriptText(chapter) {
+/* 这一章动笔了没有：已经有字，或者有一场在写 / 写完了（场上记着字数也算） */
+function chapterStarted(chapter) {
   if (!chapter) return false;
   if (Number(chapter.words && chapter.words.cur) > 0) return true;
-  return (chapter.scenes || []).some((scene) => scene && (scene.state === "done" || scene.state === "archived"));
+  return (chapter.scenes || []).some((scene) => scene && (
+    scene.state === "writing" || scene.state === "done" || scene.state === "archived" || Number(scene.words) > 0));
 }
 
-/* 成稿中心的阶段：已定稿 / 审阅中 / 草稿照目录；其余（写作中、规划、待写）只要已经有字
-   或有写完的场，就是「写作中」——一章写了四千字还挂着「计划中」，作者读不懂。 */
-export function manuscriptStage(chapter) {
+/* 流程定下的阶段：审阅与终稿批准（成稿中心推进）、退回小修后的草稿。其余阶段按各场的进度读。 */
+const WORKFLOW_STAGES = ["approved", "review", "draft"];
+
+/* 一章的阶段——主页、成稿中心、章节编排同一条规则（2026-10，批准 #19）：
+   已定稿 / 审阅中 / 草稿照目录；目录说「写作中」、已经有字、或者有一场在写 / 写完了，就是「写作中」；
+   否则照目录说「待写」或「规划中」（认不出的状态也读作规划中）。只用于显示，绝不回写。
+   以前章节编排自己一条规则：退回小修的「草稿」章读成写作中或规划中、目录说写作中但还没字的章读成规划中，
+   同一章在三个视图里叫法不一样。 */
+export function chapterStage(chapter) {
   const state = chapter && chapter.state;
-  if (state === "approved" || state === "review" || state === "draft" || state === "writing") return state;
-  if (hasManuscriptText(chapter)) return "writing";
+  if (WORKFLOW_STAGES.includes(state) || state === "writing") return state;
+  if (chapterStarted(chapter)) return "writing";
   return state === "todo" ? "todo" : "planned";
 }
+
+/* 这一章的阶段是不是按各场读出来的（不是审阅 / 批准 / 退回这些流程定下的）——状态标签的悬停说明据此说话 */
+export function chapterStageDerived(chapter) {
+  return !WORKFLOW_STAGES.includes(chapter && chapter.state);
+}
+
+/* 旧名：成稿中心、主页一直这样叫它 */
+export const manuscriptStage = chapterStage;
 
 /* ---------- 场景状态 ---------- */
 

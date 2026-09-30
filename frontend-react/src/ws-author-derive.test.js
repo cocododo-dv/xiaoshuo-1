@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  arrActSpans, arrBookFacts, arrBookSpine, arrChapterChecks, arrChapterEdge, arrChapterFacts, arrChapterStatus,
-  arrIsPlanChapter, arrLensChapters, arrRangeLabel, arrSceneBeatsPlanned,
+  arrActSpans, arrBookFacts, arrBookSpine, arrChapterChecks, arrChapterEdge, arrChapterFacts,
+  arrIsPlanChapter, arrLensChapters, arrRailTally, arrRangeLabel, arrSceneBeatsPlanned,
 } from "./ws-author-derive.js";
 import { arrDeriveIssues } from "./ws-author-doctor.jsx";
+import { chapterStage, chapterStageDerived } from "./labels/catalog.js";
 
 /* 阶段 Z：章节编排读的是作者在构思里真的做出来的东西（场上的 POV / 时间 / 地点 / 离场变化、章装着第几到第几场），
    而不是一套没人能填的章级字段。这里全是目录载荷上的纯函数。 */
@@ -148,12 +149,30 @@ describe("全书体检 · 只报读得出来的事实", () => {
 });
 
 describe("章的显示状态、章节体检与卷带", () => {
-  it("已批准 / 审阅中来自后端；其余按各场读：有一场动了笔或已经有字 = 写作中，否则规划中", () => {
-    expect(arrChapterStatus(chapter("a", { state: "approved" }))).toEqual({ key: "approved", derived: false });
-    expect(arrChapterStatus(chapter("b", { state: "review" }))).toEqual({ key: "review", derived: false });
-    expect(arrChapterStatus(chapter("c", { state: "planned", scenes: [scene("s1", { state: "done" })] }))).toEqual({ key: "writing", derived: true });
-    expect(arrChapterStatus(chapter("d", { state: "planned", words: { cur: 12, target: 0 } })).key).toBe("writing");
-    expect(arrChapterStatus(chapter("e", { state: "writing", scenes: [scene("s2")] }))).toEqual({ key: "planned", derived: true });
+  it("章的阶段与主页、成稿中心同一条规则：审阅 / 定稿 / 退回小修的草稿照流程；目录说写作中、有字、有一场在写或写完 = 写作中", () => {
+    expect(chapterStage(chapter("a", { state: "approved" }))).toBe("approved");
+    expect(chapterStage(chapter("b", { state: "review" }))).toBe("review");
+    // 成稿中心「退回小修」把章设成 draft：章节编排以前读成写作中 / 规划中
+    expect(chapterStage(chapter("c", { state: "draft", words: { cur: 900, target: 0 }, scenes: [scene("s1", { state: "done" })] }))).toBe("draft");
+    // 目录说写作中、还没有字：以前章节编排读成规划中，主页 / 成稿中心读成写作中
+    expect(chapterStage(chapter("d", { state: "writing", scenes: [scene("s2")] }))).toBe("writing");
+    expect(chapterStage(chapter("e", { state: "planned", scenes: [scene("s3", { state: "done" })] }))).toBe("writing");
+    expect(chapterStage(chapter("f", { state: "planned", words: { cur: 12, target: 0 } }))).toBe("writing");
+    // 有一场在写（还没存下字）也算动笔了：以前主页、成稿中心读成规划中
+    expect(chapterStage(chapter("g", { state: "planned", scenes: [scene("s4", { state: "writing" })] }))).toBe("writing");
+    expect(chapterStage(chapter("h", { state: "planned", scenes: [scene("s5")] }))).toBe("planned");
+    expect(chapterStage(chapter("i", { state: "todo" }))).toBe("todo");
+    expect(chapterStage(chapter("j", { state: "something-new" }))).toBe("planned");
+    expect([chapter("k", { state: "draft" }), chapter("l", { state: "review" }), chapter("m", { state: "approved" })].map(chapterStageDerived)).toEqual([false, false, false]);
+    expect([chapter("n", { state: "writing" }), chapter("o", { state: "planned" })].map(chapterStageDerived)).toEqual([true, true]);
+  });
+
+  it("序列栏的数按同一条阶段规则：审阅中 / 草稿有章时单独成一项，不再记在「写作中」名下", () => {
+    const tally = arrRailTally([
+      chapter("a", { state: "review" }), chapter("b", { state: "review" }), chapter("c", { state: "review" }),
+      chapter("d", { state: "draft" }), chapter("e", { state: "planned" }),
+    ]);
+    expect(tally.map((t) => [t.label, t.n])).toEqual([["已定稿", 0], ["审阅中", 3], ["草稿", 1], ["写作中", 0], ["规划中", 1]]);
   });
 
   it("章节体检：只报读得出来的事实，与构思同步只对有构思分章的书出现", () => {

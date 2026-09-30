@@ -1,5 +1,5 @@
 import { escapeManuscriptText } from "./manuscript-html.js";
-import { chapterLabel, chapterStateMeta, manuscriptStage } from "./labels/catalog.js";
+import { chapterLabel, chapterStage, chapterStateMeta } from "./labels/catalog.js";
 
 /* ==========================================================
    ws-manuscripts-compile — 成稿中心的纯函数
@@ -104,7 +104,7 @@ export function manuBuildBody(chapter, snapshot) {
 /* ---------- 左栏与进度条 ---------- */
 
 /* 目录章 → 成稿中心的章行。eligible 决定哪些章进成稿中心（ws-manuscripts-store 的
-   manuscriptChapterEligible）；stage 是稿子走到哪一步（ws-labels.manuscriptStage）。
+   manuscriptChapterEligible）；stage 是稿子走到哪一步（labels/catalog.js 的 chapterStage，与主页、章节编排同一条规则）。
    目录载荷里没有批准时间，所以章行也不带（以前的「于 … 批准」只有测试夹具填得出来）。 */
 export function manuChapterRows(chapters, eligible) {
   return (chapters || []).filter(eligible || Boolean).map((c) => {
@@ -114,7 +114,7 @@ export function manuChapterRows(chapters, eligible) {
       backendId: c.backendId || "",
       n: c.n,
       title: c.title,
-      stage: manuscriptStage(c),
+      stage: chapterStage(c),
       words: (c.words && c.words.cur) || 0,
       scenes: scenes.length,
       sceneDone: scenes.filter((s) => s.state === "done").length,
@@ -145,7 +145,7 @@ export function manuDefaultPick(rows) {
 
 /* 整书进度格：按目录全序（含还没进成稿中心的规划章），计划章数比目录多时补占位格。 */
 export function manuProgressCells(chapters, planChapters) {
-  const cells = (chapters || []).map((c) => ({ id: c.id, n: c.n, title: c.title, stage: manuscriptStage(c) }));
+  const cells = (chapters || []).map((c) => ({ id: c.id, n: c.n, title: c.title, stage: chapterStage(c) }));
   for (let i = cells.length; i < (Number(planChapters) || 0); i++) {
     cells.push({ id: `plan${i}`, n: String(i + 1), title: "", stage: "planned", plan: true });
   }

@@ -1,21 +1,21 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_CH_STATE, ARR_SCENE_STATE } from "./ws-author-data.jsx";
-import { arrChapterStatus } from "./ws-author-derive.js";
+import { ARR_SCENE_STATE } from "./ws-author-data.jsx";
 import { Tag } from "./ws-ui.jsx";
+import { chapterStage, chapterStageDerived, chapterStateMeta } from "./labels/catalog.js";
 
 /* ==========================================================
    章节编排 · 小零件（全书清单、序列栏、章节详情共用）
    状态标签、进度点、字数条、抓手。纯展示，不读 store。
    ========================================================== */
 
-/* 章的状态：已定稿 / 审阅中来自后端流程，其余按各场的进度读出来（arrChapterStatus，只显示不回写） */
+/* 章的状态：与主页、成稿中心同一条规则（labels/catalog.js 的 chapterStage，只显示不回写）。
+   已定稿 / 审阅中 / 草稿来自审阅与批准流程，其余按各场的进度读出来。 */
 function ArrChapterStateTag({ ch }) {
-  const st = arrChapterStatus(ch);
-  const m = ARR_CH_STATE[st.key] || ARR_CH_STATE.planned;
+  const m = chapterStateMeta(chapterStage(ch));
   return (
     <Tag tone={m.tone} dot className="arr-state-tag"
-      title={st.derived ? "按各场的进度显示：有一场动了笔就是写作中。审阅与终稿批准由成稿中心推进。" : "由审阅与终稿批准流程推进"}>
+      title={chapterStageDerived(ch) ? "按各场的进度显示：有一场动了笔就是写作中。审阅与终稿批准由成稿中心推进。" : "由审阅与终稿批准流程推进"}>
       {m.label}
     </Tag>
   );

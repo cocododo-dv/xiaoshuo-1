@@ -11,6 +11,7 @@
    ========================================================== */
 
 import { ARR_ACTS } from "./ws-author-data.jsx";
+import { CHAPTER_STATE_ORDER, chapterStage, chapterStateMeta } from "./labels/catalog.js";
 
 const BLANK_MARKERS = ["待规划", "待定", "待补", "待填"];
 const isBlank = (value) => {
@@ -113,15 +114,15 @@ export function arrBookFacts(chapters) {
   };
 }
 
-/* 章的显示状态。已批准 / 审阅中是后端流程给的；其余（后端的「规划中 / 草稿 / 进行中」写作时从不推进）
-   按各场读：有一场在写 / 写完、或者已经有字 = 写作中，否则 = 规划中。只用于显示，绝不回写。 */
-export function arrChapterStatus(c) {
-  const raw = c && c.state;
-  if (raw === "approved" || raw === "review") return { key: raw, derived: false };
-  const scenes = (c && c.scenes) || [];
-  const started = ((c && c.words && c.words.cur) || 0) > 0
-    || scenes.some((s) => s.state === "writing" || s.state === "done" || (s.words || 0) > 0);
-  return { key: started ? "writing" : "planned", derived: true };
+/* 序列栏顶上的一行数：各阶段几章（章的阶段与主页、成稿中心同一条规则：labels/catalog.js 的 chapterStage）。
+   已定稿 / 写作中 / 规划中总在，审阅中 / 草稿 / 待写有章时才出现——以前审阅中、草稿的章都记在「写作中」名下。 */
+const ARR_RAIL_ALWAYS = ["approved", "writing", "planned"];
+export function arrRailTally(chapters) {
+  const counts = {};
+  (chapters || []).forEach((c) => { const stage = chapterStage(c); counts[stage] = (counts[stage] || 0) + 1; });
+  return CHAPTER_STATE_ORDER
+    .filter((stage) => ARR_RAIL_ALWAYS.includes(stage) || counts[stage])
+    .map((stage) => ({ stage, n: counts[stage] || 0, label: chapterStateMeta(stage).label }));
 }
 
 /* 章节体检（右栏 + 页头「体检」按钮上的待办数）：只报读得出来的事实。
