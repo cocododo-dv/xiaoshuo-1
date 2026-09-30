@@ -101,9 +101,11 @@ def test_cleanup_custom_days_threshold():
 
 @pytest.fixture
 def _maintenance_registry(monkeypatch):
-    """每个用例从干净的登记簿开始(cleanup 模块导入时登记的那项照样在),最后恢复。"""
+    """每个用例从干净的登记簿开始(install_workers() 登记的那项照样在),最后恢复。"""
     from novel_system.services.style_reference import jobs as jobs_module
+    from novel_system.services.style_reference.workers import install_workers
 
+    install_workers()
     saved = dict(jobs_module._MAINTENANCE)
     saved_last = dict(jobs_module._MAINTENANCE_LAST_RUN)
     jobs_module._MAINTENANCE_LAST_RUN.clear()

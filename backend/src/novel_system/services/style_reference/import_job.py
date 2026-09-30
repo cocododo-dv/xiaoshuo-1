@@ -2,7 +2,7 @@
 
 严格 LLM(2026-09-15):每一段都由 LLM 分类,没有启发式兜底。导入 / 重新分类 / 就地重分类的请求只做
 准备工作(导入:解码、切段、安全扫描、批量落书与段落行),然后建一个 ``classify`` 作业;这里的处理器
-(``register_job_handler("classify", ...)``,本模块导入时注册)在作业工人线程里逐批分类。
+(``run_classification_job``,由 ``workers.install_workers`` 登记)在作业工人线程里逐批分类。
 
 **作业表取代了旧的书上 JSON 游标状态机**(``stats_json["classification"]``、自己的单线程执行器、心跳
 线程、``recover_classification_jobs``):
@@ -84,7 +84,6 @@ from novel_system.services.style_reference.jobs import (
     StyleJobService,
     heartbeat_is_stale,
     job_activity_entry,
-    register_job_handler,
 )
 from novel_system.services.style_reference.segmentation import llm as seg
 from novel_system.services.style_reference.segmentation.types import (
@@ -294,7 +293,7 @@ def cancel_classification(session: Session, book_id: str) -> StyleReferenceJob |
     job = active_classification_job(session, book_id)
     if job is None:
         return None
-    # 排队中 / 工人已死的作业在请求里直接收尾;书的状态由登记的收尾钩子(_on_classification_cancelled)一并落定
+    # 排队中 / 工人已死的作业在请求里直接收尾;书的状态由登记的收尾钩子(on_classification_cancelled)一并落定
     return StyleJobService(session).request_cancel(job.job_id)
 
 
@@ -924,7 +923,7 @@ def run_classification_job(session: Session, claimed: ClaimedJob, service: Style
     _ClassificationRun(session, claimed, service).run()
 
 
-def _on_classification_cancelled(session: Session, job: StyleReferenceJob) -> None:
+def on_classification_cancelled(session: Session, job: StyleReferenceJob) -> None:
     """请求 / 认领 / 清扫里直接收尾的取消:书的状态一并落定(就地重标回 ready,其余 failed)。"""
     if not job.book_id:
         return
@@ -935,8 +934,6 @@ def _on_classification_cancelled(session: Session, job: StyleReferenceJob) -> No
         .execution_options(synchronize_session="fetch")
     )
 
-
-register_job_handler(JOB_KIND_CLASSIFY, run_classification_job, on_cancelled=_on_classification_cancelled)
 
 
 # ---------------------------------------------------------------- read models
@@ -1190,5 +1187,6 @@ __all__ = [
     "fail_orphaned_classifications",
     "resolve_classification_client",
     "resume_classification",
+    "on_classification_cancelled",
     "run_classification_job",
 ]

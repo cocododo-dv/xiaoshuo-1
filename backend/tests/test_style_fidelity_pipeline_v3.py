@@ -46,6 +46,14 @@ SCENE_ID = "CH_RESUME_SC01"
 
 
 @pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+
+
+@pytest.fixture(autouse=True)
 def _online(monkeypatch):
     install_online_pipeline(monkeypatch)
     register_job_handler(JOB_KIND_CHECK, check_job.run_check_job)

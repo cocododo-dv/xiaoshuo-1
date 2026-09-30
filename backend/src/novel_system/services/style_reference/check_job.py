@@ -71,7 +71,6 @@ from novel_system.services.style_reference.jobs import (
     JobLost,
     StyleJobService,
     job_activity_entry,
-    register_job_handler,
 )
 from novel_system.services.style_reference.llm_nodes import (
     NodeConfigUnavailable,
@@ -583,7 +582,8 @@ def run_reference_judge(
 
 
 def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobService) -> None:
-    """``check`` 作业处理器。终态由框架写（取消 / 失败没有附带状态要落，所以不走 ``JobRun.run``），检查点
+    """``check`` 作业处理器。终态由框架写（取消 / 失败没有附带状态要落，所以不走 ``JobRun.run``；失败记什么按
+    ``jobs.job_failure``，与 ``JobRun`` 同一条规则），检查点
     （``check_continue`` / ``checkpoint``：进度写落空 → ``JobLost``，写成了立刻提交，不带着 SQLite 的写锁去建窗口
     索引、跑抄袭门、等模型）与分类 / 学习共用 ``JobRun``。"""
     run = JobRun(session, claimed, service)
@@ -676,12 +676,10 @@ def check_job_payload(session: Session, job: StyleReferenceJob) -> dict[str, Any
     return {"job": job_activity_entry(job), "reading": reading}
 
 
-def _check_never_resumes(_job: StyleReferenceJob) -> bool:
+def check_never_resumes(_job: StyleReferenceJob) -> bool:
     """对照检查没有续跑:失败 / 取消了就「重新检查」(新作业),活动条目不给「继续」。"""
     return False
 
-
-register_job_handler(JOB_KIND_CHECK, run_check_job, resumable=_check_never_resumes)
 
 
 __all__ = [
@@ -702,6 +700,7 @@ __all__ = [
     "check_job_payload",
     "normalize_judge_output",
     "resolve_check_client",
+    "check_never_resumes",
     "run_check_job",
     "run_reference_judge",
     "scene_current_text",

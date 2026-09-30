@@ -25,15 +25,17 @@ cancelled，运行中的由工人在下一个检查点（``check_continue``）�
 **互斥**：同一本书的分类与学习互斥（各自也只能有一个活动作业）。建作业是「先插入、再查」：这条 INSERT 已拿到
 SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一定看得见先到的那一行（先查后插时两个都查不到）。
 
-处理器约定（``register_job_handler(kind, handler)``）：``handler(session, claimed, service)`` 在工人线程里
-运行，自己负责周期性调用 ``service.check_continue(claimed)``（取消 → ``JobCancelled``，丢了所有权 →
-``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` / ``service.save_cursor``，最后
-``service.succeed``；抛出的 ``DomainError`` 由框架记为失败（错误码原样保留），其余异常记为
-``STYLE_REFERENCE_JOB_FAILED``——进程退出期间冒出来的异常（代已变 / 线程池已关）一律按中断放回队列。
-三种处理器共用的脚手架（检查点、并行调用循环、终态映射）在 ``job_runtime.JobRun``。
+处理器约定（``register_job_handler(kind, handler)``，三种作业由 ``workers.install_workers`` 显式登记）：
+``handler(session, claimed, service)`` 在工人线程里运行，自己负责周期性调用 ``service.check_continue(claimed)``
+（取消 → ``JobCancelled``，丢了所有权 → ``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` /
+``service.save_cursor``，最后 ``service.succeed``；抛出的异常由框架按 :func:`job_failure` 记为失败（``DomainError``
+的错误码原样保留，其余异常记为 ``STYLE_REFERENCE_JOB_FAILED``）——进程退出期间冒出来的异常（代已变 / 线程池
+已关）一律按中断放回队列。三种处理器共用的脚手架（检查点、并行调用循环、终态收尾）在 ``job_runtime.JobRun``，
+它记失败用的也是 :func:`job_failure`。
 
-**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（例：``cleanup`` 登记的遥测 90 天留存
-清理）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记日志、不影响清扫。
+**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（例：``cleanup`` 的遥测 90 天留存清理，
+``workers.install_workers`` 登记）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记
+日志、不影响清扫。
 
 与业务无关的运行时（工人代、守护调用池、维护任务登记簿、带自己停止信号的周期线程）在
 ``services.background_jobs``；这里转出旧名字（``DaemonCallPool``、``current_worker_generation`` …），调用方与
@@ -66,6 +68,7 @@ from novel_system.services.background_jobs import (
     generation_changed,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.periodic_heartbeat import periodic_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -724,10 +727,6 @@ def job_resumable(job: StyleReferenceJob) -> bool:
     return job.state in (STATE_FAILED, STATE_CANCELLED)
 
 
-def registered_job_handler(kind: str) -> JobHandler | None:
-    return _HANDLERS.get(kind)
-
-
 def run_cancel_hook(session: Session, job_id: str) -> None:
     """一个刚在框架里被收尾为 cancelled 的作业：跑这类作业的收尾钩子（书的状态 / run 行）；钩子失败只记日志。"""
     job = session.get(StyleReferenceJob, job_id)
@@ -752,6 +751,19 @@ def is_worker_interruption(exc: BaseException, claimed: ClaimedJob | None = None
     if claimed is not None and worker_generation_changed(claimed):
         return True
     return isinstance(exc, RuntimeError) and "after" in str(exc) and "shutdown" in str(exc)
+
+
+def job_failure(exc: BaseException) -> tuple[str, str, bool, Mapping[str, Any] | None]:
+    """作业里冒出来的异常 → 记在作业行上的 ``(错误码, 说法, retryable, details)``——唯一的一处：工人框架（处理器直接
+    抛出的）与 ``job_runtime.JobRun.run``（分类 / 学习）都按它记失败，两条路不会各说各的。
+
+    ``DomainError``：错误码与说法原样，``retryable`` = 异常的 ``retryable`` 属性或 ``details.retryable``；其余异常：
+    异常自带的 ``code``（没有就 ``STYLE_REFERENCE_JOB_FAILED``）、「类型: 说法」、可续跑（游标保留）。"""
+    if isinstance(exc, DomainError):
+        details = exc.details if isinstance(exc.details, Mapping) else None
+        retryable = bool(getattr(exc, "retryable", False) or (details or {}).get("retryable"))
+        return exc.code, str(exc.message), retryable, details
+    return str(getattr(exc, "code", None) or JOB_FAILED_CODE), f"{type(exc).__name__}: {exc}", True, None
 
 
 def _session_factory():
@@ -809,8 +821,6 @@ def _release_interrupted(session: Session, service: StyleJobService, claimed: Cl
 
 
 def _run_job(job_id: str) -> None:
-    from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
-
     generation = current_worker_generation()
     try:
         with _session_factory() as session:
@@ -846,31 +856,15 @@ def _run_job(job_id: str) -> None:
                 except JobLost:
                     session.rollback()
                     logger.info("style job %s lost ownership; worker stops", job_id)
-                except DomainError as exc:
+                except Exception as exc:  # noqa: BLE001 — 作业边界：记失败（job_failure），不让线程静默死
                     if is_worker_interruption(exc, claimed):
                         _release_interrupted(session, service, claimed)
                         return
                     session.rollback()
-                    service.fail(
-                        claimed,
-                        code=exc.code,
-                        message=str(exc.message),
-                        retryable=bool(getattr(exc, "retryable", False)),
-                        details=exc.details if isinstance(exc.details, Mapping) else None,
-                    )
-                    session.commit()
-                except Exception as exc:  # noqa: BLE001 — 作业边界：记失败，不让线程静默死
-                    if is_worker_interruption(exc, claimed):
-                        _release_interrupted(session, service, claimed)
-                        return
-                    session.rollback()
-                    logger.exception("style job %s failed", job_id)
-                    service.fail(
-                        claimed,
-                        code=getattr(exc, "code", None) or JOB_FAILED_CODE,
-                        message=f"{type(exc).__name__}: {exc}",
-                        retryable=True,
-                    )
+                    if not isinstance(exc, DomainError):
+                        logger.exception("style job %s failed", job_id)
+                    code, message, retryable, details = job_failure(exc)
+                    service.fail(claimed, code=code, message=message, retryable=retryable, details=details)
                     session.commit()
                 except (KeyboardInterrupt, SystemExit):
                     # Ctrl-C / 正常退出：进程要走了——作业放回队列（游标保留），再往上抛。被 SIGKILL 的进程什么也
@@ -918,9 +912,9 @@ _MAINTENANCE_LAST_RUN: dict[str, float] = _STYLE_MAINTENANCE.last_run
 
 
 def register_maintenance_task(name: str, task: MaintenanceTask, *, interval_seconds: float) -> None:
-    """登记一项随清扫线程跑的定期维护任务（模块导入时登记，与处理器同一种约定）：清扫线程启动时先跑一次，之后每
-    ``interval_seconds`` 秒跑一次。任务自己开会话、自己提交；抛出的异常由清扫线程记日志，不影响清扫与别的任务。
-    同名重复登记覆盖（模块被重新导入时无害）。"""
+    """登记一项随清扫线程跑的定期维护任务（``workers.install_workers`` 登记风格参考自己的）：清扫线程启动时先跑一次，
+    之后每 ``interval_seconds`` 秒跑一次。任务自己开会话、自己提交；抛出的异常由清扫线程记日志，不影响清扫与别的
+    任务。同名重复登记覆盖。"""
     _STYLE_MAINTENANCE.register(name, task, interval_seconds=interval_seconds)
 
 
@@ -939,6 +933,10 @@ def start_job_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> No
     """常驻清扫线程（FastAPI lifespan 启动时调用一次；重复调用无害）。启动时先跑一拍（清扫 + 全部维护任务），
     之后每 ``interval_seconds`` 秒一拍（维护任务只在各自的间隔到期时才跑）。"""
     global _SWEEPER, _SWEEPER_STOP
+    missing = [kind for kind in JOB_KINDS if kind not in _HANDLERS]
+    if missing:
+        # 处理器由 workers.install_workers() 登记（lifespan 在这之前调用）；漏了的种类排队的作业不会被派发
+        logger.error("style job sweeper starting without handlers for %s (install_workers() not called?)", missing)
     with _EXECUTOR_LOCK:
         if _SWEEPER is not None and _SWEEPER.is_alive():
             return
@@ -998,10 +996,10 @@ __all__ = [
     "heartbeat_is_stale",
     "is_worker_interruption",
     "job_activity_entry",
+    "job_failure",
     "job_resumable",
     "register_job_handler",
     "register_maintenance_task",
-    "registered_job_handler",
     "run_cancel_hook",
     "run_due_maintenance",
     "run_job_inline",

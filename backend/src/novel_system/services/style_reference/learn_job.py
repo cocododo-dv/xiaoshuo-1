@@ -78,7 +78,6 @@ from novel_system.services.style_reference.jobs import (
     JobLost,
     StyleJobService,
     heartbeat_is_stale,
-    register_job_handler,
 )
 from novel_system.services.style_reference.learn_card import (
     MIN_CARD_LINES,
@@ -505,7 +504,7 @@ def cancel_learn(session: Session, book_id: str) -> StyleReferenceJob | None:
     job = active_learn_job(session, book_id)
     if job is None:
         return None
-    # 排队中 / 工人已死的作业在请求里直接收尾;学习的 run 行由登记的收尾钩子(_on_learn_cancelled)一并落定
+    # 排队中 / 工人已死的作业在请求里直接收尾;学习的 run 行由登记的收尾钩子(on_learn_cancelled)一并落定
     return StyleJobService(session).request_cancel(job.job_id)
 
 
@@ -1673,12 +1672,10 @@ def run_learn_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     _LearnRun(session, claimed, service).run()
 
 
-def _on_learn_cancelled(session: Session, job: StyleReferenceJob) -> None:
+def on_learn_cancelled(session: Session, job: StyleReferenceJob) -> None:
     """请求 / 认领 / 清扫里直接收尾的取消:这次学习的 run 行一并标 cancelled。"""
     _set_run_status(session, dict(job.cursor_json or {}).get("run_id"), "cancelled")
 
-
-register_job_handler(JOB_KIND_LEARN, run_learn_job, on_cancelled=_on_learn_cancelled, resumable=learn_resumable)
 
 
 __all__ = [
@@ -1696,6 +1693,7 @@ __all__ = [
     "latest_learn_job",
     "learn_payload",
     "learn_resumable",
+    "on_learn_cancelled",
     "resolve_learn_client",
     "run_learn_job",
     "start_learn_job",

@@ -36,6 +36,14 @@ from novel_system.services.style_reference.check_job import start_check_job
 from novel_system.services.style_reference.validation import check_plagiarism
 
 
+@pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+
+
 class _SentinelLLM:
     """任何调用都视为违规的 LLM client 哨兵。"""
 

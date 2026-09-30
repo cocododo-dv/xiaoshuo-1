@@ -23,7 +23,6 @@ from novel_system.db.models import (
     StyleReferenceRun,
     StyleReferenceWindow,
 )
-from novel_system.services.style_reference.jobs import register_maintenance_task
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -304,12 +303,3 @@ def run_metric_events_retention() -> dict[str, Any]:
             summary.get("cutoff"),
         )
     return summary
-
-
-# 清扫线程启动时跑一次、之后每 24 小时一次。模块导入时登记(与作业处理器同一种约定):书库路由在应用装配时就导入
-# 本模块,所以 lifespan 起清扫线程之前一定登记过;jobs 不能反过来导入本模块(本模块要用 StyleJobService,会成环)。
-register_maintenance_task(
-    METRIC_EVENTS_MAINTENANCE_TASK,
-    run_metric_events_retention,
-    interval_seconds=METRIC_EVENTS_CLEANUP_INTERVAL_SECONDS,
-)

@@ -62,6 +62,14 @@ LONG_TEXT = "\n\n".join(
 _BOUNDARY_RE = re.compile(r"\[UNTRUSTED_REFERENCE_DATA:[^\]]+\]\n")
 
 
+@pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+
+
 def _items(request) -> list[dict]:
     user = request.messages[-1]["content"]
     opening = _BOUNDARY_RE.search(user)
@@ -559,7 +567,8 @@ def test_app_startup_sweeps_and_finishes_a_job_left_by_a_dead_process(session, m
     _claim_as_dead_worker(job_id)
     with TestClient(create_app()) as client:
         assert jobs._SWEEPER is not None and jobs._SWEEPER.is_alive()
-        assert jobs.registered_job_handler("classify") is import_job.run_classification_job
+        # lifespan 先 install_workers() 再起清扫线程：处理器是显式登记的，不靠导入副作用
+        assert jobs._HANDLERS.get("classify") is import_job.run_classification_job
         book = wait_book_status(client, book_id)
     assert jobs._SWEEPER is None and jobs._SWEEPER_STOP.is_set()
     assert book["classification"]["state"] == "succeeded" and book["classification"]["attempt"] == 2

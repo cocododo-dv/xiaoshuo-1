@@ -78,6 +78,14 @@ KINDS = {"铁灰城": "place", ORG: "organization"}
 RIGHTS = {"rights_declaration": {"declared": True, "send_rights": True, "analysis_rights": True}}
 
 
+@pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+
+
 def learn_rows(chapters: int = 6, per_chapter: int = 40, seed: str = "learn") -> list[dict]:
     """合成书：章题 + 对白 / 叙述 / 心理 / 动作四种段，每段带唯一的序号（段内引文不重复）。"""
     rng = random.Random(seed)

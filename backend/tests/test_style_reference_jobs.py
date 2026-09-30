@@ -178,8 +178,9 @@ def test_requeue_keeps_the_cursor_and_merges_params(session) -> None:
 def test_resumable_follows_the_rule_of_each_kind(session) -> None:
     """活动条目的 ``resumable`` 按这类作业登记的规则（B10-01）：分类按缺省（失败 / 取消的能续），学习看失败的
     ``error.retryable``，对照检查从不续跑（失败了是「重新检查」，建新作业）。"""
-    from novel_system.services.style_reference import check_job, learn_job  # noqa: F401 — 登记各自的规则
+    from novel_system.services.style_reference.workers import install_workers
 
+    install_workers()  # 登记各自的规则（lifespan 里也是它）
     book_id = _book(session)
     service = StyleJobService(session)
 
@@ -256,6 +257,43 @@ def test_worker_framework_success_domain_error_and_cancel_paths() -> None:
     run_job_inline(cancel_id)
     with SessionLocal() as db:
         assert db.get(StyleReferenceJob, cancel_id).state == STATE_CANCELLED
+
+
+def test_the_framework_and_job_run_record_a_failure_the_same_way() -> None:
+    """失败记什么只有一条规则（jobs.job_failure）：处理器直接抛出（对照检查走这条）与经 JobRun.run（分类 / 学习）
+    记下的错误码、说法、retryable、details 一样——details 里说可以重试的领域错误两边都记 retryable。"""
+    from novel_system.services.style_reference.job_runtime import JobRun
+    from novel_system.services.style_reference.jobs import job_failure
+
+    error = DomainError("STYLE_REFERENCE_X_FAILED", "评审没给分", status_code=502, details={"retryable": True, "n": 1})
+
+    def raw(session, claimed, service):
+        raise error
+
+    class _Run(JobRun):
+        def _run(self) -> None:
+            raise error
+
+        def finish_cancelled(self) -> None:  # pragma: no cover — 本例不取消
+            raise AssertionError
+
+        def finish_failed(self, *, code, message, retryable, details=None) -> None:
+            self.session.rollback()
+            self.service.fail(self.claimed, code=code, message=message, retryable=retryable, details=details)
+            self.session.commit()
+
+    recorded = []
+    for handler in (raw, lambda session, claimed, service: _Run(session, claimed, service).run()):
+        register_job_handler(JOB_KIND_CLASSIFY, handler)
+        job_id = _create_committed()
+        run_job_inline(job_id)
+        with SessionLocal() as db:
+            recorded.append(dict(db.get(StyleReferenceJob, job_id).error_json))
+    assert recorded[0] == recorded[1]
+    assert recorded[0]["retryable"] is True and recorded[0]["details"] == {"retryable": True, "n": 1}
+    code, message, retryable, details = job_failure(error)
+    assert (code, message, retryable, details) == ("STYLE_REFERENCE_X_FAILED", "评审没给分", True, {"retryable": True, "n": 1})
+    assert job_failure(ValueError("boom"))[:3] == ("STYLE_REFERENCE_JOB_FAILED", "ValueError: boom", True)
 
 
 def test_worker_that_loses_ownership_writes_nothing() -> None:
