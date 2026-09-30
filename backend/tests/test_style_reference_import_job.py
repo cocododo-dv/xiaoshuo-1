@@ -1109,21 +1109,35 @@ def test_an_unclassifiable_paragraph_fails_the_job_without_losing_the_rest_of_it
 
 
 def test_in_flight_batches_are_drained_and_applied_when_another_batch_fails(session, monkeypatch) -> None:
-    """一批失败:不再派发新批,已经在飞的批(已花钱)等它们回来、照常落库。"""
-    target: dict[str, list[int]] = {}
+    """一批失败:不再派发新批,已经在飞的批(已花钱)等它们回来、照常落库。
 
-    def fail_first_rest_batch_slow_others(node, indexes, _call_no):
+    确定性(不靠睡多久):另外两批卡在调用里,直到作业线程已经落下失败的那一批(``_apply`` 带着失败)才回来——
+    机器再忙,也不会在失败被看见之前先回来一批、腾出位置去派发第 4 批。"""
+    target: dict[str, list[int]] = {}
+    failure_applied = threading.Event()
+    real_apply = import_job._ClassificationRun._apply
+
+    def apply_and_signal(self, phase, positions, outcome):  # noqa: ANN001
+        real_apply(self, phase, positions, outcome)
+        if outcome.failure is not None:
+            failure_applied.set()
+
+    monkeypatch.setattr(import_job._ClassificationRun, "_apply", apply_and_signal)
+
+    def fail_first_rest_batch_hold_others(node, indexes, _call_no):
         if node != seg.NODE_BULK:
             return None
         if indexes == target["failing"]:
             return "fail"
-        time.sleep(0.4)  # 另外两批还在飞时,第一批已经三次失败
+        if indexes in target["held"]:
+            assert failure_applied.wait(timeout=60), "失败的那一批一直没有落库"
         return None
 
-    fake = _use(monkeypatch, ScriptedClassifier(fail_first_rest_batch_slow_others))
+    fake = _use(monkeypatch, ScriptedClassifier(fail_first_rest_batch_hold_others))
     book_id, job_id = _ingest(session)
     batches = _rest_batches(session, book_id)
     target["failing"] = batches[0]
+    target["held"] = [batches[1], batches[2]]
     run_job_inline(job_id)
 
     job = _job(job_id)
