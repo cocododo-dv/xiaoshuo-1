@@ -7,7 +7,6 @@ const flow = vi.hoisted(() => ({
   refresh: vi.fn().mockResolvedValue({}),
   body: vi.fn(() => null),
   snapshot: vi.fn(),
-  aggregate: vi.fn().mockResolvedValue({ status: "created" }),
   setReviewState: vi.fn().mockResolvedValue({}),
   confirmRead: vi.fn().mockResolvedValue({ body_hash: "hash-1" }),
   approveFinal: vi.fn().mockResolvedValue({ approved_chapter_id: "c1" }),
@@ -552,17 +551,18 @@ describe("成稿中心 · 拆分后的页头、状态行与对话框", () => {
     expect(host.textContent).not.toContain("控制塔");
   });
 
-  it("状态行只说最近一次动作的结果：导出失败后再刷新汇总，旧错误不再压住新提示", async () => {
+  it("状态行只说最近一次动作的结果：导出失败后再重新打开终稿，旧错误不再压住新提示", async () => {
     const host = await renderPage("approved");
     flow.snapshot.mockReturnValue({ status: "error", body: null, error: { message: "导出前正文核验失败" } });
     await click(host.querySelector('[data-testid="chapter-export"]'));
     expect(host.querySelector(".ms-status").textContent).toContain("导出前正文核验失败");
 
     flow.snapshot.mockReturnValue(readySnapshot());
-    flow.aggregate.mockResolvedValue({ status: "created" });
-    await click(host.querySelector('[data-testid="chapter-aggregate"]'));
-    expect(flow.aggregate).toHaveBeenCalledWith("c1");
-    expect(host.textContent).toContain("章节汇总已生成");
+    await click(host.querySelector('[data-testid="reopen-final-open"]'));
+    await typeTextarea(document.querySelector('textarea[placeholder*="打破终稿锁"]'), "第三场时间线需要纠正");
+    await click(document.querySelector('[data-testid="reopen-final-confirm"]'));
+    expect(flow.reopenFinal).toHaveBeenCalledWith("p1", "c1", "第三场时间线需要纠正");
+    expect(host.querySelector(".ms-status").textContent).toContain("终稿已重新打开");
     expect(host.textContent).not.toContain("导出前正文核验失败");
   });
 
@@ -688,29 +688,30 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
     }
   });
 
-  it("刷新汇总在途时换章：结果不报到新章头上；回到原章时按钮仍在忙，结果落回原章", async () => {
+  it("送审在途时换章：结果不报到新章头上；回到原章时按钮仍在忙，结果落回原章", async () => {
     const other = { ...chapter("draft"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" };
     const host = await renderPage([chapter("draft"), other]);
-    let resolveAggregate;
-    flow.aggregate.mockReturnValueOnce(new Promise((resolve) => { resolveAggregate = resolve; }));
-    const aggregateButton = () => host.querySelector('[data-testid="chapter-aggregate"]');
+    let resolveSubmit;
+    flow.setReviewState.mockReturnValueOnce(new Promise((resolve) => { resolveSubmit = resolve; }));
+    const submitButton = () => button(host.querySelector(".ms-reader-foot"), "送入审阅");
 
-    await click(aggregateButton());
-    expect(aggregateButton().disabled).toBe(true);
+    await click(submitButton());
+    expect(flow.setReviewState).toHaveBeenCalledWith("p1", "c1", "review");
+    expect(submitButton().disabled).toBe(true);
 
     await click(chapterRow(host, "c2"));
     expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
-    expect(aggregateButton().disabled).toBe(false);
+    expect(submitButton().disabled).toBe(false);
     await click(chapterRow(host, "c1"));
-    expect(aggregateButton().disabled).toBe(true);
+    expect(submitButton().disabled).toBe(true);
     await click(chapterRow(host, "c2"));
 
-    await act(async () => { resolveAggregate({ status: "created" }); await Promise.resolve(); await Promise.resolve(); });
-    expect(host.textContent).not.toContain("章节汇总已生成");
+    await act(async () => { resolveSubmit({}); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(host.textContent).not.toContain("状态已由服务端确认");
 
     await click(chapterRow(host, "c1"));
-    expect(aggregateButton().disabled).toBe(false);
-    expect(host.querySelector(".ms-status").textContent).toContain("章节汇总已生成");
+    expect(submitButton().disabled).toBe(false);
+    expect(host.querySelector(".ms-status").textContent).toContain("状态已由服务端确认");
   });
 
   it("停在「对比」上退回小修：本章没有对比了就回到正文，不留一个没有选中项的分段", async () => {

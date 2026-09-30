@@ -76,18 +76,6 @@ const WsManuStore = {
     return manuInflight[chapterId];
   },
 
-  /** 作者显式生成/刷新章节汇总；写成功后立即重拉成稿详情，视图不拿旧缓存冒充结果。 */
-  async aggregate(chapterId) {
-    if (!chapterId) throw new Error("缺少章节标识，无法生成章节汇总。");
-    const result = await apiPost(`/api/v1/chapters/${chapterId}/runtime/aggregate/final`, {});
-    delete manuCache[chapterId];
-    const loaded = await this.refresh(chapterId);
-    if (!loaded || loaded.status !== "ready") {
-      throw new Error((loaded && loaded.error && loaded.error.message) || "章节汇总已生成，但重新加载服务端正文失败。");
-    }
-    return result;
-  },
-
   /**
    * 章节流转必须等待服务端确认，不能只改本地目录状态。
    * review/draft 仍由目录端点维护；approved 只能走项目终稿闸门。
@@ -188,7 +176,7 @@ const WsManuStore = {
     return result;
   },
 
-  /** 同步读：{ completion, assembled, aggregate, scenes:[{sceneId, paras, live, charCount}] } | null */
+  /** 同步读：{ completion, assembled, canonContinuity, missingSceneIds, scenes:[{sceneId, paras, live, charCount}] } | null */
   body(chapterId) {
     const hit = manuCache[chapterId];
     if (!hit || hit.status !== "ready" || !hit.detail) return null;
@@ -208,7 +196,6 @@ const WsManuStore = {
     return {
       completion: detail.completion_status || "empty",
       assembled: detail.assembled || null,
-      aggregate: detail.aggregate || null,
       canonContinuity: detail.canon_continuity || null,
       missingSceneIds: (detail.assembled && detail.assembled.missing_scene_ids) || [],
       scenes,

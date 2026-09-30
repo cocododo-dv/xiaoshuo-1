@@ -119,13 +119,6 @@ function WsManuscripts({ go }) {
               </div>
             </div>
             <div className="ms-reader-tools">
-              {synced && (
-                <button type="button" className="btn btn-quiet btn-sm" data-testid="chapter-aggregate" onClick={flow.aggregate} disabled={busy.aggregate}
-                  title="用各场已完成的终稿重新拼出本章汇总">
-                  {busy.aggregate ? <Spinner size={13} /> : <I.Layers size={13} />}
-                  {busy.aggregate ? "汇总中…" : "刷新章节汇总"}
-                </button>
-              )}
               <Segmented label="阅读方式" value={view} onChange={setView} options={tabOptions} />
             </div>
           </header>
