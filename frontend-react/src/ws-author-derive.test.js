@@ -25,7 +25,7 @@ const chapter = (id, extra = {}) => ({
 });
 
 describe("章节编排 · 派生层", () => {
-  it("一章的入口 / 出口、视角 · 时空从各场读出来；作者填过的章级字段优先", () => {
+  it("一章的入口 / 出口、视角 · 时空只从各场读；旧数据里存着的章级值不再盖过场上的事实", () => {
     const ch = chapter("ch02", {
       structure: { owner: "plan", rowUid: "r2", sceneRange: { first: 6, last: 8 }, plannedSceneCount: 3, titleAuto: true },
       scenes: [
@@ -36,18 +36,18 @@ describe("章节编排 · 派生层", () => {
     });
     const facts = arrChapterFacts(ch);
     expect(facts.rangeLabel).toBe("第 6–8 场");
-    expect(facts.entry).toEqual({ text: "s6 的整句摘要", derived: true });
-    expect(facts.exit).toEqual({ text: "林昭找到了寄信人", derived: true });
-    expect(facts.pov).toEqual({ text: "林昭 2 · 顾行 1", derived: true });
-    expect(facts.time).toEqual({ text: "第二日·晨 → 第二日·中午", derived: true });
-    expect(facts.place).toEqual({ text: "码头 · 邮局", derived: true });
+    expect(facts.entry).toBe("s6 的整句摘要");
+    expect(facts.exit).toBe("林昭找到了寄信人");
+    expect(facts.pov).toBe("林昭 2 · 顾行 1");
+    expect(facts.time).toBe("第二日·晨 → 第二日·中午");
+    expect(facts.place).toBe("码头 · 邮局");
     expect(facts.beats).toEqual({ planned: 3, total: 3 });
 
-    const authored = arrChapterFacts({ ...ch, pov: "老陈", entry: "雨停了", exit: "（待规划）" });
-    expect(authored.pov).toEqual({ text: "老陈", derived: false });
-    expect(authored.entry).toEqual({ text: "雨停了", derived: false });
-    expect(authored.exit.derived).toBe(true); // 「（待规划）」是占位，不是作者填的
-    expect(arrChapterEdge(null, "entry")).toEqual({ text: "", derived: false });
+    const legacy = arrChapterFacts({ ...ch, pov: "老陈", time: "去年冬天", place: "别处", entry: "雨停了", exit: "天亮了" });
+    expect([legacy.pov, legacy.time, legacy.place, legacy.entry, legacy.exit])
+      .toEqual([facts.pov, facts.time, facts.place, facts.entry, facts.exit]);
+    expect(arrChapterEdge(null, "entry")).toBe("");
+    expect(arrChapterEdge(chapter("ch09"), "exit")).toBe("");
     expect(arrRangeLabel({ sceneRange: { first: 4, last: 4 } })).toBe("第 4 场");
     expect(arrRangeLabel({ sceneRange: null })).toBe("");
   });
@@ -59,15 +59,16 @@ describe("章节编排 · 派生层", () => {
     expect(arrSceneBeatsPlanned(scene("d", { obstacle: "" }))).toBe(false);
   });
 
-  it("镜头用的章：章级 POV 没填时取本章场次最多的那一位，泳道看得见本章出现过的全部视角", () => {
-    const [lensed, authored, empty] = arrLensChapters([
-      chapter("ch01", { scenes: [scene("a", { povName: "老陈" }), scene("b", { povName: "林昭" }), scene("c", { povName: "林昭" })] }),
-      chapter("ch02", { pov: "顾行", scenes: [scene("d", { povName: "林昭" })] }),
+  it("镜头用的章：主 POV 是本章场次最多的那一位，泳道看得见本章出现过的全部视角；旧的章级 POV / 时间不再算数", () => {
+    const [lensed, legacy, empty] = arrLensChapters([
+      chapter("ch01", { scenes: [scene("a", { povName: "老陈" }), scene("b", { povName: "林昭" }), scene("c", { povName: "林昭", design: { owner: "plan", storyTime: "第三日" } })] }),
+      chapter("ch02", { pov: "顾行", time: "去年", scenes: [scene("d", { povName: "林昭" })] }),
       chapter("ch03"),
     ]);
     expect(lensed.pov).toBe("林昭");
     expect(lensed.povs).toEqual(["林昭", "老陈"]);
-    expect(authored.povs).toEqual(["顾行"]);
+    expect(lensed.time).toBe("第三日");
+    expect([legacy.pov, legacy.povs, legacy.time]).toEqual(["林昭", ["林昭"], ""]);
     expect(empty.pov).toBe("未定");
   });
 

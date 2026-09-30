@@ -61,12 +61,12 @@ function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose, onConf
 
       <div className="ctx-block" data-testid="arr-ctx-spacetime">
         <div className="ctx-head"><I.Eye size={13} /><span>视角 · 时空</span>
-          {(facts.pov.derived || facts.time.derived || facts.place.derived) ? <span className="arr-ctx-hint">取自本章各场</span> : null}
+          {(facts.pov || facts.time || facts.place) ? <span className="arr-ctx-hint">取自本章各场</span> : null}
         </div>
         <ul className="arr-meta">
-          <li><span>视角</span><strong>{facts.pov.text || "—"}</strong></li>
-          <li><span>时间</span><strong>{facts.time.text || "—"}</strong></li>
-          <li><span>地点</span><strong>{facts.place.text || "—"}</strong></li>
+          <li><span>视角</span><strong>{facts.pov || "—"}</strong></li>
+          <li><span>时间</span><strong>{facts.time || "—"}</strong></li>
+          <li><span>地点</span><strong>{facts.place || "—"}</strong></li>
         </ul>
       </div>
     </aside>

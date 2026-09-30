@@ -68,9 +68,9 @@ function ArrChapterRow({ c, num, picked, onOpen, dnd, selectMode, selected, onTo
   const done = scenes.filter((s) => s.state === "done").length;
   const locked = c.state === "approved";
   const stage = chapterStage(c);
-  /* 阶段 X：雪花整理出来的章没有「章承诺」和章级 POV——行上不留空，用构思里的章摘要和各场的 POV 顶上 */
+  /* 章承诺没写时用构思里的章摘要；视角是各场的 POV（章级视角不再有，批准 #17a） */
   const blurb = c.promise || c.summary || "";
-  const povs = c.pov ? [c.pov] : [...new Set(scenes.map((s) => s.povName).filter(Boolean))];
+  const povs = [...new Set(scenes.map((s) => s.povName).filter(Boolean))];
   const povLine = povs.length > 2 ? `${povs.slice(0, 2).join("、")} 等 ${povs.length} 人` : povs.join("、");
   const planOwned = arrIsPlanChapter(c);
   const rangeLabel = arrRangeLabel(c.structure);

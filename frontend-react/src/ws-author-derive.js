@@ -7,7 +7,8 @@
    灾难、每一场的形态 / POV / 时间 / 地点 / 离场变化、每一章装着故事序上的第几到第几场——到了这里一样都看不见。
 
    这一层把后者读出来：全部是目录载荷（WsCatalog 的章 / 场）上的纯函数，不写 window、不碰网络。
-   章级字段作者真的填过（旧数据、AI 编排写的）就用作者的；没填过才用场上读出来的，并标明「来自各场」。
+   章级的视角 / 时间 / 地点 / 入口 / 出口只从各场读（2026-10，批准 #17a、重评 R10）：旧数据里存着的章级值
+   产品里没有编辑入口、也没有东西写它，不再盖过场上读出来的事实。
    ========================================================== */
 
 import { ARR_ACTS } from "./ws-author-data.jsx";
@@ -38,14 +39,10 @@ function countBy(list) {
 const sceneOpening = (s) => clean(s && (s.summary || s.title));
 const sceneClosing = (s) => clean(s && (s.exitChange || s.summary || s.title));
 
-/* 一章的入口 / 出口：作者填过就用作者的；否则入口 = 第一场在做什么，出口 = 最后一场离场时变了什么 */
+/* 一章的入口 / 出口：入口 = 第一场在做什么，出口 = 最后一场离场时变了什么（没有场时是空串） */
 export function arrChapterEdge(ch, edge) {
-  if (!ch) return { text: "", derived: false };
-  const authored = clean(edge === "entry" ? ch.entry : ch.exit);
-  if (authored) return { text: authored, derived: false };
-  const scenes = ch.scenes || [];
-  const text = edge === "entry" ? sceneOpening(scenes[0]) : sceneClosing(scenes[scenes.length - 1]);
-  return { text, derived: !!text };
+  const scenes = (ch && ch.scenes) || [];
+  return edge === "entry" ? sceneOpening(scenes[0]) : sceneClosing(scenes[scenes.length - 1]);
 }
 
 export function arrRangeLabel(structure) {
@@ -54,22 +51,26 @@ export function arrRangeLabel(structure) {
   return span.first === span.last ? `第 ${span.first} 场` : `第 ${span.first}–${span.last} 场`;
 }
 
-/* 章节详情要用的全部派生事实 */
+/* 各场的视角：按场次多少排（「林昭 2 · 顾行 1」的来源） */
+const scenePovs = (scenes) => countBy((scenes || []).map((s) => clean(s.povName)));
+/* 各场的故事时间：头尾两场（同一个就只写一个） */
+function sceneTimeLine(scenes) {
+  const times = (scenes || []).map((s) => clean(s.design && s.design.storyTime)).filter(Boolean);
+  if (!times.length) return "";
+  return times[0] === times[times.length - 1] ? times[0] : `${times[0]} → ${times[times.length - 1]}`;
+}
+
+/* 章节详情要用的全部派生事实（视角 / 时间 / 地点 / 入口 / 出口都是从各场读出来的字，没有就是空串） */
 export function arrChapterFacts(ch) {
   const scenes = (ch && ch.scenes) || [];
-  const povs = countBy(scenes.map((s) => clean(s.povName)));
-  const times = scenes.map((s) => clean(s.design && s.design.storyTime)).filter(Boolean);
+  const povs = scenePovs(scenes);
   const places = countBy(scenes.map((s) => clean(s.design && s.design.location)));
-  const authoredPov = clean(ch && ch.pov);
-  const authoredTime = clean(ch && ch.time);
-  const authoredPlace = clean(ch && ch.place);
-  const timeLine = times.length ? (times[0] === times[times.length - 1] ? times[0] : `${times[0]} → ${times[times.length - 1]}`) : "";
   const planned = scenes.filter(arrSceneBeatsPlanned).length;
   return {
     povs,
-    pov: { text: authoredPov || povs.map((p) => (povs.length > 1 ? `${p.name} ${p.count}` : p.name)).join(" · "), derived: !authoredPov && povs.length > 0 },
-    time: { text: authoredTime || timeLine, derived: !authoredTime && !!timeLine },
-    place: { text: authoredPlace || places.slice(0, 3).map((p) => p.name).join(" · "), derived: !authoredPlace && places.length > 0 },
+    pov: povs.map((p) => (povs.length > 1 ? `${p.name} ${p.count}` : p.name)).join(" · "),
+    time: sceneTimeLine(scenes),
+    place: places.slice(0, 3).map((p) => p.name).join(" · "),
     entry: arrChapterEdge(ch, "entry"),
     exit: arrChapterEdge(ch, "exit"),
     beats: { planned, total: scenes.length },
@@ -77,17 +78,15 @@ export function arrChapterFacts(ch) {
   };
 }
 
-/* 镜头用的章：章级 POV / 时间没填时用场上读出来的（主 POV = 本章场次最多的那一位） */
+/* 节奏镜头用的章：主 POV = 本章场次最多的那一位，povs = 本章各场出现过的全部视角，time = 第一场的故事时间 */
 export function arrLensChapters(chapters) {
   return (chapters || []).map((c) => {
-    const facts = arrChapterFacts(c);
-    const names = facts.povs.map((p) => p.name);
-    const authored = clean(c.pov);
+    const names = scenePovs(c.scenes).map((p) => p.name);
     return {
       ...c,
-      pov: authored || names[0] || "未定",
-      povs: authored ? [authored] : (names.length ? names : ["未定"]),
-      time: clean(c.time) || (facts.time.text ? facts.time.text.split(" → ")[0] : ""),
+      pov: names[0] || "未定",
+      povs: names.length ? names : ["未定"],
+      time: sceneTimeLine(c.scenes).split(" → ")[0],
     };
   });
 }

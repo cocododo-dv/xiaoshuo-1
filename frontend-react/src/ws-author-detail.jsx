@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_ACTS, ARR_SCENE_STATE } from "./ws-author-data.jsx";
-import { arrChapterFacts, arrIsPlanChapter, arrIsPlanScene, arrRangeLabel, DRAMA_KEYS } from "./ws-author-derive.js";
+import { arrChapterEdge, arrIsPlanChapter, arrIsPlanScene, arrRangeLabel, DRAMA_KEYS } from "./ws-author-derive.js";
 import { ArrAiArrange } from "./ws-author-ai.jsx";
 import { ArrChapterStateTag, ArrGrip, ArrSceneStateTag } from "./ws-author-ui.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
@@ -252,27 +252,26 @@ function ArrSceneRow({
 }
 
 /* ---- 章与章的交接 ----
-   入口 / 出口作者填过就用作者的；没填过（产品里没有编辑入口，真实作品全是空的）就从场上读：
-   入口 = 第一场在做什么，出口 = 最后一场离场时变了什么——两章之间接不接得上，一眼看得出来。 */
+   入口 / 出口从场上读：入口 = 第一场在做什么，出口 = 最后一场离场时变了什么——两章之间接不接得上，一眼看得出来。 */
 function ArrHandoffStrip({ prev, ch, next, numOf, onJump, sectionRef }) {
-  const mine = arrChapterFacts(ch);
-  const prevExit = prev ? arrChapterFacts(prev).exit : null;
-  const nextEntry = next ? arrChapterFacts(next).entry : null;
-  const derived = mine.entry.derived || mine.exit.derived;
+  const entry = arrChapterEdge(ch, "entry");
+  const exit = arrChapterEdge(ch, "exit");
+  const prevExit = prev ? arrChapterEdge(prev, "exit") : "";
+  const nextEntry = next ? arrChapterEdge(next, "entry") : "";
   return (
     <div className="arr-handoff" data-testid="arr-handoff" ref={sectionRef}>
       <button type="button" className={`arr-ho-cell arr-ho-side ${prev ? "" : "is-empty"}`} disabled={!prev} onClick={() => prev && onJump(prev.id)}>
         <span className="arr-ho-k"><I.ChevronLeft size={12} />{prev ? `承接第 ${Number(numOf[prev.id])} 章` : "全书开篇"}</span>
-        <span className="arr-ho-text" title={prev ? prevExit.text : undefined}>{prev ? (prevExit.text || "上一章还没有出口") : "没有前一章"}</span>
+        <span className="arr-ho-text" title={prev ? prevExit : undefined}>{prev ? (prevExit || "上一章还没有出口") : "没有前一章"}</span>
       </button>
       <div className="arr-ho-cell arr-ho-mid">
-        <span className="arr-ho-k">本章的入口和出口{derived ? <em className="arr-ho-src" title="章级的入口 / 出口没有单独填过：入口取第一场，出口取最后一场的离场变化">取自首尾两场</em> : null}</span>
-        <span className="arr-ho-text arr-ho-entry" title={mine.entry.text}><i className="arr-ho-tick">入</i><span className="arr-ho-clamp">{mine.entry.text || "还没有场"}</span></span>
-        <span className="arr-ho-text arr-ho-exit" title={mine.exit.text}><i className="arr-ho-tick is-out">出</i><span className="arr-ho-clamp">{mine.exit.text || "还没有场"}</span></span>
+        <span className="arr-ho-k">本章的入口和出口{(entry || exit) ? <em className="arr-ho-src" title="入口取第一场，出口取最后一场的离场变化">取自首尾两场</em> : null}</span>
+        <span className="arr-ho-text arr-ho-entry" title={entry}><i className="arr-ho-tick">入</i><span className="arr-ho-clamp">{entry || "还没有场"}</span></span>
+        <span className="arr-ho-text arr-ho-exit" title={exit}><i className="arr-ho-tick is-out">出</i><span className="arr-ho-clamp">{exit || "还没有场"}</span></span>
       </div>
       <button type="button" className={`arr-ho-cell arr-ho-side ${next ? "" : "is-empty"}`} disabled={!next} onClick={() => next && onJump(next.id)}>
         <span className="arr-ho-k">{next ? `交给第 ${Number(numOf[next.id])} 章` : "全书收束"}<I.ChevronRight size={12} /></span>
-        <span className="arr-ho-text" title={next ? nextEntry.text : undefined}>{next ? (nextEntry.text || "下一章还没有场") : "没有后一章"}</span>
+        <span className="arr-ho-text" title={next ? nextEntry : undefined}>{next ? (nextEntry || "下一章还没有场") : "没有后一章"}</span>
       </button>
     </div>
   );

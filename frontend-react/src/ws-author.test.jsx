@@ -352,7 +352,8 @@ describe("章节编排 · 服务端目录真相", () => {
     installSnowSync();
     catalogState.ready = true;
     catalogState.chapters = [
-      planChapter("ch01", "雨夜来信", { spine: "灾一", structure: { owner: "plan", rowUid: "r1", sceneRange: { first: 1, last: 2 }, plannedSceneCount: 2, titleAuto: false },
+      // 旧数据里还存着章级视角：不再盖过各场的视角（批准 #17a）
+      planChapter("ch01", "雨夜来信", { spine: "灾一", pov: "老陈", structure: { owner: "plan", rowUid: "r1", sceneRange: { first: 1, last: 2 }, plannedSceneCount: 2, titleAuto: false },
         scenes: [planScene("SC1", 1), planScene("SC2", 2, { kind: "反应", state: "done" })] }),
       planChapter("ch02", "第 2 章", { act: "act2", structure: { owner: "plan", rowUid: "r2", sceneRange: { first: 3, last: 3 }, plannedSceneCount: 1, titleAuto: true },
         scenes: [planScene("SC3", 3)] }),
@@ -365,6 +366,7 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(cards.map((card) => card.getAttribute("draggable"))).toEqual(["false", "false", "true"]);
     expect(cards[0].textContent).toContain("第 1–2 场");
     expect(cards[1].textContent).toContain("第 3 场");
+    expect(cards[0].querySelector(".arr-card-pov").textContent).toBe("林昭");
 
     // 默认镜头 = 结构；没有章级张力 / 线索数据时，那两个镜头根本不出现（不拿 0.3 的默认值画平线）
     const lensTabs = [...host.querySelectorAll(".arr-arc .seg-btn")].map((node) => node.textContent);
