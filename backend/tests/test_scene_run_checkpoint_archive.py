@@ -1116,3 +1116,55 @@ def test_chapter_last_archive_leaves_a_trashed_sibling_out_of_the_aggregate_and_
     final = session.get(FinalScene, session.get(SceneRunState, "CH_RESUME_SC01").current_final_scene_row_id)
     assert memory.content == final.content
     assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+def test_chapter_last_resume_accepts_an_aggregate_whose_scene_order_differs_from_memory_row_ids(session) -> None:
+    """章汇总按场序拼，输入清单按 row_id 排；两者不一致时（手加的场 id 带随机后缀、雪花的场 id 来自构思行）续跑复验
+    也得认——以前复验按 row_id 序重拼再逐字比，章末那一场在第 8 步之后停下就再也续不上（RUN_CHECKPOINT_CORRUPT）。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    # 场序在前、row_id 在后的一场
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text="林昭先读了旧信。")
+    execution_id = "idempotency:chapter-last-scene-order"
+
+    product = _stop_after_sub9(session, execution_id)
+
+    assert product["outcome"] == "aggregated"
+    assert [item["scene_id"] for item in product["inputs"]] == ["CH_RESUME_SC01", "CH_RESUME_SC09"]
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    assert memory.content.startswith("林昭先读了旧信。\n")
+    assert _resume(session, execution_id)["scene_status"] == "archived"
+
+
+def test_chapter_last_resume_still_rejects_an_aggregate_that_is_not_exactly_its_inputs(session) -> None:
+    """次序放宽之后自检照样逐字：汇总里多出清单之外的文字（行与检查点里的快照一起改、产品哈希也重算）就报损坏。"""
+    from novel_system.services.hash_engine import sha256_json_plain
+
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    _archived_sibling(session, "CH_RESUME_SC09", scene_seq=1, text="林昭先读了旧信。")
+    execution_id = "idempotency:chapter-last-forged-aggregate"
+    product = _stop_after_sub9(session, execution_id)
+
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    forged = f"{memory.content}\n案卷里没有的一段。"
+    memory.content = forged
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    payload = deepcopy(state.run_checkpoint_json)
+    payload["artifact_refs"]["archive_chapter_product"]["chapter_memory"]["content"] = forged
+    payload["artifact_hashes"]["archive_chapter_product"] = sha256_json_plain(
+        payload["artifact_refs"]["archive_chapter_product"]
+    )
+    state.run_checkpoint_json = payload
+    session.commit()
+
+    with pytest.raises(DomainError) as corrupt:
+        _resume(session, execution_id)
+    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
+    assert "chapter aggregate output changed" in str(corrupt.value)

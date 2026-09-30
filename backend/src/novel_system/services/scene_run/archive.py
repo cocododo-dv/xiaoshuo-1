@@ -1264,9 +1264,15 @@ class ArchiveCheckpointMixin:
                 "runtime_eligibility_basis",
             ):
                 actual[mutable_field] = snapshot.get(mutable_field)
-            expected_content = "\n".join(
-                self.session.get(SceneMemory, item["row_id"]).content for item in inputs
+            # 汇总按场序拼，清单按 row_id 排，两个次序不必一致（手加的场 id 带随机后缀；场序归档之后也可能再改）。
+            # 以前按 row_id 序重拼再逐字比，这样的章章末那一场每次都在第 8 步自检时报损坏。这里只认「汇总恰好是
+            # 这几条记忆各一次、用换行拼起来」：按各条在存下来的汇总里出现的位置排好，再逐字比。
+            stored = memory.content or ""
+            input_memories = sorted(
+                (self.session.get(SceneMemory, item["row_id"]) for item in inputs),
+                key=lambda row: (stored.find(row.content), row.row_id),
             )
+            expected_content = "\n".join(row.content for row in input_memories)
             if actual != snapshot or memory.content != expected_content:
                 raise checkpoint_corrupt("chapter aggregate output changed")
         elif snapshot is not None:
