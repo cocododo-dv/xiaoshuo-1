@@ -378,7 +378,7 @@ export async function srCancelLearn(bookId) {
 }
 
 /* ==========================================================
-   本场预览（只读，不缓存：设置一变就重算）与当前作品的场景
+   本场预览（只读，不缓存：设置一变就重算）；当前作品的场从目录 store 读（ws-styleref-ui 的 useSrWorkScenes）
    ========================================================== */
 export async function srScenePreview(profileId, { sceneId = null, projectId = null, config = {} } = {}) {
   const c = srNormalizeConfig(config);
@@ -391,17 +391,6 @@ export async function srScenePreview(profileId, { sceneId = null, projectId = nu
   if (sceneId) body.scene_id = sceneId;
   if (projectId) body.project_id = projectId;
   return apiPost(`${API}/profiles/${encodeURIComponent(profileId)}/injection-preview`, body);
-}
-
-/* 当前作品的章与场（本场预览选场用）：[{ chapterId, no, title, scenes: [{ sceneId, title }] }] */
-export async function srLoadWorkScenes(projectId) {
-  const data = await apiGet(`/api/v2/projects/${encodeURIComponent(projectId)}/catalog`);
-  return ((data && data.chapters) || []).map((c, index) => ({
-    chapterId: c.chapter_id || c.slug || `ch${index + 1}`,
-    no: Number(c.no || c.n || index + 1),
-    title: c.title || "",
-    scenes: (c.scenes || []).filter((s) => s && s.scene_id).map((s) => ({ sceneId: s.scene_id, title: s.title || "" })),
-  }));
 }
 
 /* 参考书原文的一段范围（本场预览里展开一个样例窗；只在本机给作者看）：闭区间，一次至多 80 段 */

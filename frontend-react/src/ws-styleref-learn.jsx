@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import {
-  SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srInputTooSmall, srJobErrorText, srLearnEstimateText, srRelearnText,
+  SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srInputTooSmall, srJobErrorText, srLearnEstimateText, srModelGate, srRelearnText,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srLoadRuntime, srRuntime, srStartLearn,
@@ -37,16 +37,12 @@ export function SrLearnCard({ book, go, onAction }) {
   React.useEffect(() => { srLoadLearn(book.id); srLoadRuntime(); }, [book.id]);
   const info = srLearnInfo(book.id);
   const data = info && info.data;
-  /* 先看得到的拦路：没有模型；「仅本机模型」的书而学习节点不在本机。服务端仍是最后一道闸（拒了照样说清楚） */
+  /* 先看得到的拦路：没有模型；「仅本机模型」的书而学习节点不在本机。服务端仍是最后一道闸（拒了照样说清楚）。
+     学习节点在不在本机看学习信息里的路由；运行时还没读到时也照样按路由判 */
   const runtime = srRuntime();
-  const noLlm = runtime.phase === "ready" && !!runtime.data && runtime.data.llm_enabled === false;
   const routes = (data && Array.isArray(data.routes)) ? data.routes : [];
-  const cloudBlocked = !noLlm && book.cloudPolicy === "local_only" && routes.some((r) => r && r.local === false);
-  const gate = noLlm
-    ? { testId: "sr-learn-no-llm", text: "还没有接入模型：学习文风要由模型分层读原文。" }
-    : cloudBlocked
-      ? { testId: "sr-learn-cloud-blocked", text: "这本书设为「仅本机模型」，但学习用的模型不在本机：在设置里把学习节点换成本机模型，或用别的范围重新导入。" }
-      : null;
+  const gate = srModelGate((runtime.phase === "ready" && runtime.data) || {}, { purpose: "learn", cloudPolicy: book.cloudPolicy, routes });
+  const gateTestId = gate ? (gate.kind === "no_llm" ? "sr-learn-no-llm" : "sr-learn-cloud-blocked") : null;
   const lastJob = (data && data.learn) || book.learn || null;
   const running = srActivityFor(book.id, "learn");
   const view = running ? srActivityView(running) : null;
@@ -132,8 +128,8 @@ export function SrLearnCard({ book, go, onAction }) {
           {gate && (
             <Notice
               tone="warn"
-              testId={gate.testId}
-              actions={onAction ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onAction({ type: "settings" })}>去设置模型</button> : null}
+              testId={gateTestId}
+              actions={onAction ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onAction(gate.action)}>{gate.action.label}</button> : null}
             >
               {gate.text}
             </Notice>

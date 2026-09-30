@@ -4,7 +4,7 @@ import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, paragraphTypeLabel } from "./labels/style-reference.js";
 import {
   SR_ACTIVITY_WHERE, srActivityKindLabel, srActivityView, srClassifyEstimateText, srCloudPolicyMeta, srFormatPct,
-  srFormatWhen, srJobErrorText, srProvenanceView, srRetypeUnfinished,
+  srFormatWhen, srJobErrorText, srModelGate, srProvenanceView, srRetypeUnfinished,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srBookDetail, srFetchClassifyEstimate, srLoadBookDetail, srLoadRuntime, srResumeClassification, srRetype,
@@ -64,11 +64,8 @@ function SrClassifyCard({ book, onAction }) {
   React.useEffect(() => { srLoadRuntime(); }, []);
   /* 分类要用模型（GET /runtime 说的是两个分类节点的实际路由）；「仅本机模型」的书还要求分类节点在本机 */
   const runtime = srRuntime();
-  const rt = runtime.phase === "ready" ? runtime.data : null;
-  const modelGate = !rt ? null
-    : rt.llm_enabled === false ? "还没有接入模型：重新分类要由模型给每一段分类。"
-    : book.cloudPolicy === "local_only" && rt.llm_is_local === false ? "这本书设为「仅本机模型」，但分类用的模型不在本机：先在设置里把段落分类换成本机模型。"
-    : null;
+  const gate = srModelGate(runtime.phase === "ready" ? runtime.data : null, { purpose: "classify", cloudPolicy: book.cloudPolicy });
+  const modelGate = gate ? gate.text : null;
 
   const resume = async () => {
     if (busy) return;

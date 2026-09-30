@@ -28,6 +28,8 @@ const API = "/api/v2/style-reference";
 const client = await import("./lib/client.js");
 const store = await import("./ws-styleref-store.js");
 const fidStore = await import("./ws-fidelity-store.js");
+// 本场预览、对照检查、「像不像」的场名读目录 store（按当前作品缓存）：每个用例重读一遍夹具里的目录
+const catalogStore = await import("./ws-catalog.jsx");
 const { WsStyleRef } = await import("./ws-styleref.jsx");
 
 /* ---------- 合成数据（中性占位，不是任何真书） ---------- */
@@ -75,7 +77,10 @@ const OWN_BINDING = {
 
 const CATALOG = {
   chapters: [
-    { chapter_id: "c1", no: 1, title: "雾里", scenes: [{ scene_id: "sc-1", title: "码头" }, { scene_id: "sc-2", title: "夜渡" }] },
+    {
+      chapter_id: "c1", slug: "ch01", no: "01", title: "雾里",
+      scenes: [{ scene_id: "sc-1", slug: "sc-1", title: "码头" }, { scene_id: "sc-2", slug: "sc-2", title: "夜渡" }],
+    },
   ],
 };
 
@@ -184,6 +189,7 @@ beforeEach(() => {
   installRoutes();
   store.srResetForTests();
   fidStore.fidResetForTests();
+  catalogStore.WsCatalog.reset();
   try { localStorage.clear(); } catch (e) { /* ignore */ }
   // 提示层没挂（单独渲染这一页）时 srNotify 退回 window.alert；jsdom 没实现它
   vi.spyOn(window, "alert").mockImplementation(() => {});
@@ -1439,7 +1445,7 @@ describe("第四步 · 对照检查", () => {
 
   it("换了作品：上一部作品里选的那一场不带过来，按钮也不能点（复核 #7）", async () => {
     let posted = null;
-    state.catalogs.w2 = { chapters: [{ chapter_id: "c9", no: 1, title: "南风", scenes: [{ scene_id: "sc-9", title: "河口" }] }] };
+    state.catalogs.w2 = { chapters: [{ chapter_id: "c9", slug: "ch01", no: "01", title: "南风", scenes: [{ scene_id: "sc-9", slug: "sc-9", title: "河口" }] }] };
     await openCheck();
     routeCheck({
       post: (body) => { posted = body; return Promise.resolve({ job_id: "job-c", job: JOB("succeeded", { finished_at: "2026-09-23T10:00:00" }), reading: { ...CHECK_READING, scene_id: "sc-2" } }); },

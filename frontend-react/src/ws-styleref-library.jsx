@@ -5,7 +5,7 @@ import { wsConfirm } from "./ws-notify.jsx";
 import { Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { getOperatorRef } from "./lib/client.js";
 import {
-  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srBookPipeline, srDeleteBooksUsage, srErrorInfo, srFilterBooks,
+  SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srBookPipeline, srDeleteBooksUsage, srErrorInfo, srFilterBooks, srModelGate,
   srPolicyNeedsSendRights, srRightsReady, srSortBooks,
 } from "./ws-styleref-model.js";
 import {
@@ -246,12 +246,9 @@ function srBuildRightsDeclaration(cloudPolicy, analysis, send) {
   };
 }
 
-/* 为什么现在不能导入（有原因就锁住「导入」并把原因写在旁边） */
-function srImportBlocker({ runtime, policy, rightsReady, file, title }) {
-  if (runtime && runtime.llm_enabled === false) return "先接入模型：导入之后要用模型给每一段分类";
-  if (policy === "local_only" && runtime && runtime.llm_enabled && runtime.llm_is_local === false) {
-    return "现在给段落分类的是云端模型，「仅本机模型」的书导入不了";
-  }
+/* 为什么现在不能导入（有原因就锁住「导入」并把原因写在旁边）；模型那一条与各页同一个判断（srModelGate） */
+function srImportBlocker({ gate, rightsReady, file, title }) {
+  if (gate) return gate.text;
   if (!rightsReady) return "先确认权属声明";
   if (!file) return "还没选文件";
   if (!title.trim()) return "还没填书名";
@@ -308,7 +305,8 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
   const needsSend = srPolicyNeedsSendRights(effectivePolicy);
   const rights = { analysis_rights: analysisRights, send_rights: needsSend && sendRights };
   const rightsReady = srRightsReady(effectivePolicy, rights);
-  const blocker = srImportBlocker({ runtime, policy: effectivePolicy, rightsReady, file, title });
+  const gate = srModelGate(runtime, { purpose: "import", cloudPolicy: effectivePolicy });
+  const blocker = srImportBlocker({ gate, rightsReady, file, title });
 
   const takeFile = (f) => {
     if (!f) return;
@@ -367,7 +365,7 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
         <button type="button" className="ws-dialog-x" aria-label="关闭导入" onClick={onClose}><I.X size={16} /></button>
       </header>
       <div className="ws-dialog-body sr-import-body">
-        {runtime && runtime.llm_enabled === false && (
+        {gate && gate.kind === "no_llm" && (
           <Notice
             tone="warn"
             testId="sr-import-no-llm"
@@ -393,7 +391,7 @@ export function SrImportDialog({ open, onClose, onImported, onOpenBook, onOpenSe
             </label>
           ))}
         </fieldset>
-        {effectivePolicy === "local_only" && runtime && runtime.llm_enabled && runtime.llm_is_local === false && (
+        {gate && gate.kind === "not_local" && (
           <Notice tone="warn" testId="sr-import-local-blocked" actions={onOpenSettings ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去设置模型</button> : null}>
             现在给段落分类的是云端模型，「仅本机模型」的书会被拒绝：先在设置里把段落分类换成本机模型，或选另外两档。
           </Notice>

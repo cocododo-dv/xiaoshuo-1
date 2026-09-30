@@ -30,8 +30,8 @@ describe("风格参考前端的模块边界", () => {
       "./lib/client.js", "./lib/ids.js", "./ws-styleref-model.js", "./ws-styleref-store-activity.js", "./ws-styleref-store-core.js",
     ]);
     // lib/messages.js：「后端原话能不能给作者看」的纯函数（对照检查的 model 也用它），无状态、无副作用；
-    // lib/format.js：时间与数字文案（纯函数）
-    expect(imports(read("ws-styleref-model.js")).sort()).toEqual(["./labels/style-reference.js", "./lib/format.js", "./lib/messages.js"]);
+    // lib/format.js：时间与数字文案（纯函数）；labels/catalog.js：章 / 场的全站叫法（选一场的下拉框用）
+    expect(imports(read("ws-styleref-model.js")).sort()).toEqual(["./labels/catalog.js", "./labels/style-reference.js", "./lib/format.js", "./lib/messages.js"]);
   });
 
   it("不写 window：没有 Object.assign(window…) 与 window.x = …；旧的全局名一个都不剩", () => {
