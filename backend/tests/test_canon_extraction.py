@@ -7,15 +7,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 
 from novel_system.db.models import FactCandidate, LlmCall, LlmCallAttempt, NarrativeEvent, SceneCard
 from novel_system.services.canon_continuity import CanonContinuityService
+from novel_system.services.prompt_builder import load_prompt_templates
+from novel_system.services.system_config import SystemConfigService
 from tests.narrative_fixtures import WORLD_PROJECT, seed_final_scene, seed_narrative_world, world_scene
 
 SCENE = world_scene(2, 2)
 PROSE = "林远把半页旧信交给苏晚。苏晚这才得知案卷藏在北境。两人从此不再互相试探。"
+REPO_PROMPTS = Path(__file__).resolve().parents[2] / "config" / "prompts.yaml"
 
 
 class _Response:
@@ -288,3 +293,47 @@ def test_a_failed_chunk_degrades_the_whole_extraction_and_stages_nothing(session
     assert result["scene"]["status"] == "degraded"
     assert result["scene"]["candidates"] == []
     assert session.query(FactCandidate).filter(FactCandidate.scene_id == SCENE).count() == 0
+
+
+def _activate_prompts_snapshot_without_the_extractor(session) -> None:
+    """一份只有 ``neutral_draft`` 的活动提示词快照：保存过提示词、还没跑 ``sync_prompt_templates`` 的安装的样子。"""
+    template = {
+        "version": "2026-09-29.v1",
+        "input_token_budget": 24000,
+        "system_prompt": "快照里只有这一条。",
+        "task_prompt": "写这一场。",
+        "structured_schema": {
+            "type": "object",
+            "required": ["scene_text"],
+            "properties": {"scene_text": {"type": "string"}},
+        },
+    }
+    service = SystemConfigService(session)
+    created = service.create_draft(
+        category="prompts",
+        yaml_raw=yaml.safe_dump({"templates": {"neutral_draft": template}}, allow_unicode=True, sort_keys=False),
+        secrets=None,
+        actor_ref="test",
+    )
+    service.activate(created["snapshot"]["snapshot_id"], actor_ref="test")
+    session.commit()
+
+
+def test_extraction_uses_the_repo_template_when_the_prompts_snapshot_predates_it(
+    session, monkeypatch, extraction_world
+) -> None:
+    """抽取的提示词以前写死在代码里：已经保存过提示词快照的安装，上线后到跑 ``sync_prompt_templates`` 之前，快照里
+    没有 ``narrative_event_extract``——作者点「提取」要用仓库 prompts.yaml 里的那份，而不是报 500。"""
+    _activate_prompts_snapshot_without_the_extractor(session)
+    assert "narrative_event_extract" not in load_prompt_templates()
+    runner = ScriptedExtractionRunner(session, [{"events": []}])
+    _install_runner(monkeypatch, runner)
+
+    result = CanonContinuityService(session).extract_scene_candidates(WORLD_PROJECT, SCENE)
+
+    assert result["product"]["outcome"] == "completed_empty"
+    repo_template = load_prompt_templates(REPO_PROMPTS)["narrative_event_extract"]
+    assert "continuity fact-extractor" in repo_template.system_prompt
+    assert [(call["task_name"], call["system_prompt"], call["prompt_text"]) for call in runner.calls] == [
+        ("narrative_event_extract", repo_template.system_prompt, f"## Scene prose\n\n{PROSE}")
+    ]
