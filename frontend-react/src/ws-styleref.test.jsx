@@ -289,7 +289,7 @@ describe("参考书库：多选删除", () => {
     await settle();
     expect($(".sr-stage-title").textContent).toBe("乙书");
     state.books = [bookRow(), bookRow({ book_id: "bk-c", title: "丙书" })];
-    await click($(".sr-stage-actions button"));
+    await click(byTestId("sr-header-more"));
     await click(byTestId("sr-header-delete"));
     await settle();
     expect($(".sr-stage-title").textContent).toBe("丙书");
@@ -334,7 +334,7 @@ describe("参考书库：多选删除", () => {
     await settle();
     expect(confirm.mock.calls[0][0]).toContain("《北岸手记》、《南山》正在用《甲书》的文风");
     expect(confirm.mock.calls[0][0]).toContain("这些作品起草新场景时不再带它的文风");
-    await click($(".sr-stage-actions .sr-menu button"));
+    await click(byTestId("sr-header-more"));
     await click(byTestId("sr-header-delete"));
     await settle();
     expect(confirm.mock.calls[1][0]).toContain("《北岸手记》、《南山》正在用《甲书》的文风");
@@ -1619,6 +1619,10 @@ describe("参考书活动", () => {
     ];
     await mountView();
     await settle(20);
+    // 进度条是 ws-ui 的 ProgressBar：在跑的用 warn 的语气，读屏报名字与百分比
+    const bar = $('[data-activity-key="job:jc1"] [role="progressbar"]');
+    expect(bar.dataset.tone).toBe("warn");
+    expect(bar.getAttribute("aria-valuenow")).toBe("40");
     expect($('[data-activity-key="job:jc2"] [data-testid="sr-activity-cancel"]')).toBeNull();
     const cancel = $('[data-activity-key="job:jc1"] [data-testid="sr-activity-cancel"]');
     client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/cancel") ? { job: { job_id: "jc1", kind: "check", status: "cancelled" } } : {}));

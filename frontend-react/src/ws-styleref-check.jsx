@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { Notice, Segmented, Spinner } from "./ws-ui.jsx";
+import { Notice, ProgressBar, Segmented, Spinner } from "./ws-ui.jsx";
 import { fidErrorInfo, fidJobView, fidReadingStates } from "./ws-fidelity-model.js";
 import { fidAdoptJob, fidCancelCheck, fidCheck, fidResumeCheck, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
 import {
@@ -8,7 +8,7 @@ import {
 } from "./ws-fidelity-ui.jsx";
 import { srAppliedToWork, srFormatDuration, srFormatWhen, srIsLegacyGlobalBinding, srModelGate } from "./ws-styleref-model.js";
 import { srActivityTrack, srLoadProjectBinding, srLoadRuntime, srProjectBinding, srRuntime } from "./ws-styleref-store.js";
-import { SrProgressBar, SrStageEmpty, srActiveWork, srNotify, useSrStore, useSrWorkScenes } from "./ws-styleref-ui.jsx";
+import { SrStageEmpty, srActiveWork, srNotify, useSrStore, useSrWorkScenes } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 第四步「对照检查」：拿一段文字（或当前作品的一场）对照这本书的作者，看像不像。
@@ -216,7 +216,7 @@ function SrCheckOutcome({ entry, describe, onAction, onCancel, cancelling }) {
     return (
       <div className="card sr-check-running" data-testid="sr-check-running">
         <div className="sr-check-running-head"><Spinner size={13} /> 正在对照检查{what ? `：${what}` : ""}</div>
-        <SrProgressBar percent={view.percent} label="对照检查进度" />
+        <ProgressBar value={view.percent} label="对照检查进度" tone="warn" className="sr-progress" />
         <div className="sr-activity-meta">
           {[view.label || "排队中", view.elapsed != null && view.elapsed > 0 ? `已用 ${srFormatDuration(view.elapsed)}` : null].filter(Boolean).join(" · ")}
         </div>

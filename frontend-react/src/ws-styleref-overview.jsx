@@ -1,6 +1,6 @@
 import React from "react";
 import { wsConfirm } from "./ws-notify.jsx";
-import { Notice, Spinner, Tag } from "./ws-ui.jsx";
+import { Notice, ProgressBar, Spinner, Tag } from "./ws-ui.jsx";
 import { STYLE_LAYER_LABELS, STYLE_LAYER_ORDER, paragraphTypeLabel } from "./labels/style-reference.js";
 import {
   SR_ACTIVITY_WHERE, srActivityKindLabel, srActivityView, srClassifyEstimateText, srCloudPolicyMeta, srFormatPct,
@@ -10,7 +10,7 @@ import {
   srActivityFor, srBookDetail, srFetchClassifyEstimate, srLoadBookDetail, srLoadRuntime, srResumeClassification, srRetype,
   srRuntime,
 } from "./ws-styleref-store.js";
-import { SrErrorLine, SrProgressBar, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrErrorLine, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
    风格参考 · 第一步「参考书」：段落分类（进度 / 继续 / 来源与一致率 / 用模型重新分类）、这本书的事实、
@@ -113,7 +113,7 @@ function SrClassifyCard({ book, onAction }) {
       </div>
       {running ? (
         <div className="sr-ov-live">
-          <SrProgressBar percent={view.percent} label="段落分类进度" />
+          <ProgressBar value={view.percent} label="段落分类进度" tone="warn" className="sr-progress" />
           <div className="sr-activity-meta">{srActivityKindLabel(running)} · {view.detail}</div>
           <p className="sr-ov-hint">{`可以在${SR_ACTIVITY_WHERE}里取消，之后还能从断点接着分。`}</p>
         </div>

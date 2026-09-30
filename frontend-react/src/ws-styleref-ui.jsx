@@ -14,7 +14,7 @@ import { isRealWorkId } from "./lib/work-id.js";
    · srNotify / srActiveWork —— 提示、当前作品；当前作品在模块加载时经 srConfigureHost 交给 store
    · useSrStore —— 订阅 store 的频道重渲（lib/store-utils 的 useStoreTick）；useSrWorkScenes —— 当前作品的章与场（读目录 store）
    · SrErrorLine —— 出错的一句话 + 下一步按钮（去设置模型 / 打开这本 / 去学习文风）
-   · SrMenu（页头「更多」）、SrStageEmpty（缺前一步时的空态卡）、SrProgressBar（进度条）
+   · SrStageEmpty（缺前一步时的空态卡）；页头「更多」与进度条用 ws-ui 的 MenuButton / ProgressBar（srProgressTone 给语气）
    不写 window。
    ========================================================== */
 
@@ -78,14 +78,9 @@ export function SrErrorLine({ error, onAction, className, testId }) {
   );
 }
 
-/* 进度条：percent 0–100 */
-export function SrProgressBar({ percent, label }) {
-  return (
-    <div className="sr-progress" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
-      <span className="sr-progress-fill" style={{ width: `${percent}%` }} />
-    </div>
-  );
-}
+/* 进度条的语气（ws-ui ProgressBar 的 tone）：在跑 warn、做完 ok、没完成 danger、取消 neutral */
+const SR_PROGRESS_TONE = { running: "warn", queued: "warn", succeeded: "ok", failed: "danger", cancelled: "neutral" };
+export function srProgressTone(status) { return SR_PROGRESS_TONE[status] || undefined; }
 
 /* 缺前一步时的空态卡：说现状，给下一步 */
 export function SrStageEmpty({ icon = "Sparkles", title, children, actionLabel, onAction, testId }) {
@@ -94,79 +89,6 @@ export function SrStageEmpty({ icon = "Sparkles", title, children, actionLabel, 
       <EmptyState icon={icon} title={title} actions={actionLabel ? <button type="button" className="btn btn-accent btn-sm" onClick={onAction}>{actionLabel}</button> : null}>
         {children}
       </EmptyState>
-    </div>
-  );
-}
-
-/* 页头「更多」菜单：按钮 + role=menu 弹层；方向键在项间移动，Esc / 点外面关闭并把焦点还给按钮。 */
-export function SrMenu({ label, items }) {
-  const [open, setOpen] = React.useState(false);
-  const wrapRef = React.useRef(null);
-  const btnRef = React.useRef(null);
-  const menuId = React.useId();
-  React.useEffect(() => {
-    if (!open) return undefined;
-    const first = wrapRef.current && wrapRef.current.querySelector('[role="menuitem"]:not([disabled])');
-    if (first) first.focus();
-    const onDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); setOpen(false); if (btnRef.current) btnRef.current.focus(); }
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
-  }, [open]);
-  const onMenuKey = (e) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
-    const nodes = Array.from(e.currentTarget.querySelectorAll('[role="menuitem"]:not([disabled])'));
-    if (!nodes.length) return;
-    e.preventDefault();
-    const at = nodes.indexOf(document.activeElement);
-    let next = at;
-    if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = nodes.length - 1;
-    else next = (at + (e.key === "ArrowDown" ? 1 : -1) + nodes.length) % nodes.length;
-    nodes[next].focus();
-  };
-  return (
-    <div className="sr-menu" ref={wrapRef}>
-      <button
-        ref={btnRef}
-        type="button"
-        className="btn btn-ghost btn-sm btn-icon"
-        aria-label={label}
-        title={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((o) => !o)}
-      ><I.More size={15} /></button>
-      {open && (
-        <div className="sr-menu-pop" role="menu" id={menuId} aria-label={label} onKeyDown={onMenuKey}>
-          {items.map((it) => {
-            const Ic = it.icon ? I[it.icon] : null;
-            return (
-              <button
-                key={it.id}
-                type="button"
-                role="menuitem"
-                className={`sr-menu-item${it.danger ? " is-danger" : ""}`}
-                data-testid={it.testId}
-                disabled={it.disabled}
-                title={it.title}
-                onClick={() => {
-                  // 先把焦点还给「更多」按钮再执行：菜单项马上卸载，随后打开的确认框要记住正确的「打开前焦点」
-                  setOpen(false);
-                  if (btnRef.current) btnRef.current.focus();
-                  if (it.onSelect) it.onSelect();
-                }}
-              >
-                {Ic ? <Ic size={14} /> : null}<span>{it.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

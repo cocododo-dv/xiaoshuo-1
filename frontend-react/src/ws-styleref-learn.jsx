@@ -1,14 +1,14 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
-import { Notice, Spinner, Tag } from "./ws-ui.jsx";
+import { Notice, ProgressBar, Spinner, Tag } from "./ws-ui.jsx";
 import {
   SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srInputTooSmall, srJobErrorText, srLearnEstimateText, srModelGate, srRelearnText,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srLoadRuntime, srRuntime, srStartLearn,
 } from "./ws-styleref-store.js";
-import { SrErrorLine, SrProgressBar, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrErrorLine, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { SrPortrait } from "./ws-styleref-portrait.jsx";
 
 /* ==========================================================
@@ -106,7 +106,7 @@ export function SrLearnCard({ book, go, onAction }) {
 
       {running ? (
         <div className="sr-ov-live" data-testid="sr-learn-running">
-          <SrProgressBar percent={view.percent} label="学习文风进度" />
+          <ProgressBar value={view.percent} label="学习文风进度" tone="warn" className="sr-progress" />
           <div className="sr-activity-meta">{view.detail}</div>
           <div className="sr-ov-foot">
             <span className="sr-ov-hint">{`进度也在${SR_ACTIVITY_WHERE}里；取消之后可以从断点接着学。`}</span>

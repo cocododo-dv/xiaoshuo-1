@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
-import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
+import { EmptyState, MenuButton, Spinner, Tag } from "./ws-ui.jsx";
 import {
   SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srLandingStage, srPickLandingBook,
   srReadUiPrefs, srRememberUi, srStageStates,
@@ -11,7 +11,7 @@ import {
   srLoadRuntime, srRememberSession, srResumeClassification, srSessionUi, srSetViewMounted, srStartLearn, srSubscribe,
   srSyncBooks,
 } from "./ws-styleref-store.js";
-import { SrMenu, srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
 import { srRunningFor } from "./ws-styleref-activity.jsx";
 import { SrImportDialog, SrLibrary, srDeleteBooksFlow, srPipelineFor } from "./ws-styleref-library.jsx";
 import { SrOverview } from "./ws-styleref-overview.jsx";
@@ -255,7 +255,8 @@ function SrStageHeader({ book, librarySwitch, onDelete }) {
         </div>
       </div>
       <div className="sr-stage-actions">
-        <SrMenu label="这本书的更多操作" items={[{ id: "delete", label: "删除这本书…", icon: "Trash", danger: true, testId: "sr-header-delete", onSelect: onDelete }]} />
+        <MenuButton label="这本书的更多操作" testId="sr-header-more"
+          items={[{ id: "delete", label: "删除这本书…", icon: "Trash", danger: true, testId: "sr-header-delete", onSelect: onDelete }]} />
       </div>
     </header>
   );

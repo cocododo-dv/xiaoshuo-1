@@ -93,13 +93,8 @@
 .sr-activity-meta { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.5; overflow-wrap: anywhere; }
 .sr-activity-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; margin-top: 8px; }
 
-/* 进度条（活动面板、段落分类、学习文风共用） */
-.sr-progress { height: 6px; border-radius: var(--r-pill); background: var(--paper-3); overflow: hidden; margin: 7px 0 5px; }
-.sr-progress-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--ink-2); transition: width .4s ease; }
-.sr-activity-item.is-running .sr-progress-fill, .sr-ov-live .sr-progress-fill { background: var(--warn); }
-.sr-activity-item.is-succeeded .sr-progress-fill { background: var(--ok); }
-.sr-activity-item.is-failed .sr-progress-fill { background: var(--danger); }
-.sr-activity-item.is-cancelled .sr-progress-fill { background: var(--ink-3); }
+/* 进度条（活动面板、段落分类、学习文风、对照检查共用）：ws-ui 的 ProgressBar，填充色走 data-tone；这里只给上下间距 */
+.sr-progress { margin: 7px 0 5px; }
 
 /* 出错的一句话 + 下一步 */
 .sr-error-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 10px 0 0; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--danger-ink); }
@@ -277,21 +272,6 @@
 .sr-apply-status-text { font-size: var(--fs-md); line-height: 1.6; color: var(--ink-1); }
 .sr-apply-status-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .sr-apply-form { display: flex; flex-direction: column; gap: 16px; }
-.sr-choice { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
-.sr-choice-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
-.sr-choice-card {
-  display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px 14px; text-align: left; cursor: pointer;
-  background: var(--paper-0); border: 1px solid var(--line-1); border-radius: var(--r-md);
-  transition: border-color var(--t-fast), box-shadow var(--t-fast);
-}
-.sr-choice-card:hover:not(:disabled) { border-color: var(--line-2); }
-.sr-choice-card.is-active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
-.sr-choice-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.sr-choice-card:disabled { opacity: .5; cursor: not-allowed; }
-.sr-choice-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); }
-.sr-choice-title em { padding: 1px 7px; border-radius: var(--r-pill); background: var(--paper-2); color: var(--ink-2); font-size: 11px; font-style: normal; font-weight: 600; }
-.sr-choice-card.is-active .sr-choice-title em { background: var(--accent-wash); color: var(--accent-ink); }
-.sr-choice-detail { font-size: 12.5px; line-height: 1.6; color: var(--ink-3); }
 .sr-windows { display: flex; flex-direction: column; gap: 2px; }
 .sr-windows.is-off .sr-windows-value { color: var(--ink-3); }
 .sr-windows-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
@@ -343,22 +323,8 @@
 .sr-check-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; padding-top: 12px; border-top: 1px solid var(--line-1); }
 .sr-check-hint { flex: 1 1 240px; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
 .sr-check-running-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); }
-.sr-check-running .sr-progress-fill { background: var(--warn); }
 .sr-check-result { display: flex; flex-direction: column; gap: 16px; }
 .sr-check-lines { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-1); }
-
-/* ---------- 「更多」菜单 ---------- */
-.sr-menu { position: relative; }
-.sr-menu-pop {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-popover);
-  display: flex; flex-direction: column; gap: 2px; min-width: 180px; padding: 6px;
-  background: var(--paper-0); border: 1px solid var(--line-2); border-radius: var(--r-md); box-shadow: var(--shadow-lg);
-  animation: ws-rise 140ms ease-out;
-}
-.sr-menu-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 0; border-radius: var(--r-sm); background: transparent; font-size: var(--fs-sm); color: var(--ink-1); text-align: left; cursor: pointer; white-space: nowrap; }
-.sr-menu-item:hover:not(:disabled), .sr-menu-item:focus-visible { background: var(--paper-2); outline: none; }
-.sr-menu-item.is-danger { color: var(--danger-ink); }
-.sr-menu-item:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---------- 导入对话框（WsDialog） ---------- */
 .sr-import-dialog.ws-dialog { width: min(720px, 100%); }
@@ -434,5 +400,5 @@
   .sr-dim-summary, .sr-dim-counts { grid-column: 2 / -1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .sr-menu-pop, .sr-book-skel { animation: none; }
+  .sr-book-skel { animation: none; }
 }

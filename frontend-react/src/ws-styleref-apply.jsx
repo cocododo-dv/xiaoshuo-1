@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
-import { Notice, Spinner, Tag, onRadioGroupKeyDown, radioTabIndex } from "./ws-ui.jsx";
+import { Notice, RadioCards, Spinner, Tag } from "./ws-ui.jsx";
 import {
   SR_DRAFT_MODES, SR_REFERENCE_MODES, SR_SAMPLE_WINDOWS_MAX, SR_SAMPLE_WINDOWS_MIN, SR_SEGMENTS_ONLY_LABEL,
   srBindingOwnedByWork, srBindingSummary, srDimensionStatesSummary, srFormatChars, srIsLegacyGlobalBinding,
@@ -212,10 +212,9 @@ export function SrApply({ book, go, onAction }) {
       <div className="card sr-apply-form" data-testid="sr-apply-form">
         <div className="card-head"><div><div className="card-title">怎么带这本书</div><div className="card-sub">三项设置都会直接改变起草时带上的东西；「重点 / 正常 / 不学」在文风画像里逐维设。</div></div></div>
 
-        <SrRadioCards
+        <RadioCards
           label="参考方式"
-          name="sr-reference-mode"
-          items={SR_REFERENCE_MODES.map((m) => ({ ...m, disabled: samplesBlocked && m.id !== "card_only" }))}
+          items={SR_REFERENCE_MODES.map((m) => srRadioItem(m, { disabled: samplesBlocked && m.id !== "card_only" }))}
           value={effectiveDraft.reference_mode}
           onChange={(id) => set({ reference_mode: id })}
           testId="sr-reference-mode"
@@ -250,10 +249,9 @@ export function SrApply({ book, go, onAction }) {
           </p>
         </div>
 
-        <SrRadioCards
+        <RadioCards
           label="起草方式"
-          name="sr-draft-mode"
-          items={SR_DRAFT_MODES}
+          items={SR_DRAFT_MODES.map((m) => srRadioItem(m))}
           value={draft.draft_mode}
           onChange={(id) => set({ draft_mode: id })}
           testId="sr-draft-mode"
@@ -310,34 +308,7 @@ export function SrApply({ book, go, onAction }) {
   );
 }
 
-/* 卡片式单选组（键盘约定同 Segmented：整组一个 Tab 停靠点，方向键换选项） */
-function SrRadioCards({ label, name, items, value, onChange, testId }) {
-  const radioItems = items.map((item) => ({ value: item.id, disabled: item.disabled }));
-  return (
-    <fieldset className="sr-choice" data-testid={testId}>
-      <legend className="sr-policy-legend">{label}</legend>
-      <div className="sr-choice-row" role="radiogroup" aria-label={label} onKeyDown={(e) => onRadioGroupKeyDown(e, { items: radioItems, value, onChange })}>
-        {items.map((item) => {
-          const on = item.id === value;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              role="radio"
-              name={name}
-              aria-checked={on}
-              tabIndex={radioTabIndex(radioItems, value, item.id)}
-              disabled={item.disabled}
-              data-value={item.id}
-              className={`sr-choice-card${on ? " is-active" : ""}`}
-              onClick={() => { if (!on) onChange(item.id); }}
-            >
-              <span className="sr-choice-title">{item.label}{item.badge ? <em>{item.badge}</em> : null}</span>
-              <span className="sr-choice-detail">{item.detail}</span>
-            </button>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
+/* 参考方式 / 起草方式的一项 → ws-ui RadioCards 的一张卡（名字、小徽标、一句真话） */
+function srRadioItem(mode, { disabled = false } = {}) {
+  return { value: mode.id, label: mode.label, badge: mode.badge, detail: mode.detail, disabled };
 }
