@@ -9,7 +9,6 @@ vi.mock("./ws-works.jsx", () => ({ WsWorks: { activeId: () => "prj-main" } }));
 import { apiGet, apiPost } from "./lib/client.js";
 import { ManuDiagnosis } from "./ws-manuscripts-diagnosis.jsx";
 
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const T = { timeout: 4000, interval: 20 };
 
 const CHAPTER = {
@@ -100,11 +99,11 @@ describe("成稿中心 · 诊断页签", () => {
     apiPost.mockResolvedValue(fresh);
     const host = await render(<ManuDiagnosis chapter={CHAPTER} go={go} />);
     await vi.waitFor(() => expect(host.textContent).toContain("这是改前的通读"), T);
-    /* 通读之后面板广播 ws:diagnosis-changed，自己也会按事件重拉一次：服务端此刻给的已是新结果 */
-    apiGet.mockResolvedValue(fresh);
+    /* 通读的回包就是新诊断：换上它，不再紧跟一个 GET（面板自己广播的那一条不让它重读） */
     await click(button(host, "重新通读"));
     await vi.waitFor(() => expect(host.textContent).toContain("对着现在各场的正文"), T);
     expect(apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/deep-review", { scope: "all" });
+    expect(apiGet).toHaveBeenCalledTimes(1);
     expect(host.textContent).toContain("总分 70");
     expect(host.textContent).not.toContain("本章开头的承诺");
     expect(changed).toHaveBeenCalled();
@@ -115,6 +114,48 @@ describe("成稿中心 · 诊断页签", () => {
     await vi.waitFor(() => expect(host.textContent).toContain("没有可用的模型"), T);
     await click(button(host, "去系统设置"));
     expect(go).toHaveBeenLastCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
+  });
+
+  it("页签开着时只为这一章的诊断变动重读：别的章、别的场的广播不重读，这一章的场 / 不带范围的广播照旧重读", async () => {
+    const host = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("本章开头的承诺到结尾没有兑现"), T);
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    const announce = (detail) => act(async () => { window.dispatchEvent(new CustomEvent("ws:diagnosis-changed", { detail })); });
+
+    await announce({ chapterId: "c9", rollup: { chapter_id: "c9", chapters: {}, scenes: {} } });
+    await announce({ sid: "ch09s1", rollup: { chapter_id: "c9", chapters: {}, scenes: {} } });
+    await announce({ sid: "ch09s1", sceneId: "s9", findings: [] });
+    expect(apiGet).toHaveBeenCalledTimes(1);
+
+    await announce({ sid: "ch01s2", sceneId: "s2", findings: [] });
+    await vi.waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2), T);
+    await announce({ sid: "ch01s1", rollup: { chapter_id: "c1", chapters: {}, scenes: {} } });
+    await vi.waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3), T);
+    await announce({});
+    await vi.waitFor(() => expect(apiGet).toHaveBeenCalledTimes(4), T);
+  });
+
+  it("各场都还没有正文时两个通读按钮都不可点（后端对它回 409 且不调模型），并说一句为什么；有一场有正文就能点", async () => {
+    const blank = payload({
+      ai: { status: "stale", evaluation_id: "chapter_eval_1", overall_score: 0.5, revision_brief: [], created_at: "2026-09-22T10:00:00Z", scope: "all", reviewed_scene_ids: ["s1", "s2"], carried_scene_ids: [], changed_scene_ids: ["s1"], changed_count: 1, incremental_available: true },
+      chapter_findings: [],
+      scenes: [
+        { scene_id: "s1", scene_seq: 1, title: "", text_layer: "none", summary: { open: 0, by_severity: {} }, ai_status: "not_run", review_status: "not_run", findings_from_chapter: [] },
+        { scene_id: "s2", scene_seq: 2, title: "", text_layer: "none", summary: { open: 0, by_severity: {} }, ai_status: "not_run", review_status: "not_run", findings_from_chapter: [] },
+      ],
+    });
+    apiGet.mockResolvedValue(blank);
+    const host = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("写出正文之后才能通读"), T);
+    expect(host.querySelector('[data-testid="chapter-deep-review-run"]').disabled).toBe(true);
+    expect(host.querySelector('[data-testid="chapter-deep-review-run-changed"]').disabled).toBe(true);
+    await click(host.querySelector('[data-testid="chapter-deep-review-run"]'));
+    expect(apiPost).not.toHaveBeenCalled();
+
+    apiGet.mockResolvedValue({ ...blank, scenes: [{ ...blank.scenes[0], text_layer: "author_draft" }, blank.scenes[1]] });
+    const other = await render(<ManuDiagnosis chapter={CHAPTER} go={vi.fn()} />);
+    await vi.waitFor(() => expect(other.querySelector('[data-testid="chapter-deep-review-run"]').disabled).toBe(false), T);
+    expect(other.textContent).not.toContain("写出正文之后才能通读");
   });
 
   it("还没同步到服务器的章：只说一句，不发请求", async () => {
@@ -154,7 +195,6 @@ describe("成稿中心 · 诊断页签", () => {
     await vi.waitFor(() => expect(host.textContent).toContain("改过 1 场：第 2 场"), T);
     expect(host.textContent).toContain("通读后改过");
     expect(button(host, "整章重新通读")).not.toBeUndefined();
-    apiGet.mockResolvedValue(incremental);
     await click(button(host, "只通读改过的 1 场"));
     await vi.waitFor(() => expect(host.textContent).toContain("上次只通读了改过的 1 场，其余 1 场沿用更早的通读"), T);
     expect(apiPost).toHaveBeenCalledWith("/api/v1/chapters/c1/deep-review", { scope: "changed" });

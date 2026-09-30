@@ -6,7 +6,7 @@ import {
 /* ==========================================================
    文学质量的纯模型（从 ws-quality.jsx 拆出，2026-09-22）
    规则维度与严重度的中文名（在 labels/finding.js，成稿中心的诊断页签与写作台深改抽屉读同一份）、
-   文本层、巡检对象的人话名字与分数格式、筛选项。
+   文本层、巡检对象的人话名字与分数格式、筛选项。一条发现怎么显示在 ws-finding-ui.jsx（与成稿中心共用）。
    不读 store、不碰 React：视图（ws-quality.jsx）与单测都从这里拿。
    ========================================================== */
 
@@ -22,27 +22,6 @@ export function qDimensionOptions(serverDimensions) {
   const list = (Array.isArray(serverDimensions) ? serverDimensions : []).filter((d) => d && d.dimension);
   if (list.length) return list.map((d) => ({ key: d.dimension, label: d.label || ruleDimensionLabel(d.dimension) }));
   return QUALITY_DIM_KEYS.map((key) => ({ key, label: ruleDimensionLabel(key) }));
-}
-
-/* 一条发现要显示的字：问题 / 改法都是服务端给的中文（literary_quality.DIMENSION_NOTES，写作台深改面板读的是
-   同一份）；english 是悬停时给的英文原句（只有旧载荷带 issue_en）。 */
-export function qFindingText(finding) {
-  const f = finding || {};
-  return {
-    issue: String(f.issue || ""),
-    fix: String(f.recommendation || f.recommended_action || ""),
-    english: f.issue_en ? [f.issue_en, f.recommendation_en].filter(Boolean).join("\n") : "",
-  };
-}
-
-/* 证据摘录来自作者稿（HTML），截断处可能带半个标签：只留文字 */
-export function qPlainText(value) {
-  return String(value || "")
-    .replace(/^[a-z/]{1,6}>/i, "")
-    .replace(/<[^>]*(>|$)/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /* 严重程度的中文名与 ws-ui 语气（labels/finding.js）；写作台深改抽屉还从这里拿这两个名字 */

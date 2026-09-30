@@ -2,10 +2,11 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner, StatTile, Tag } from "./ws-ui.jsx";
+import { FindingLine, findingPlainText, writerIntents } from "./ws-finding-ui.jsx";
 import { chapterLabel, chapterLabelById, findSceneByBackendId } from "./labels/catalog.js";
 import {
   QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_MIN_SEVERITIES, QUALITY_TEXT_LAYERS, Q_ITEM_LAYER,
-  qDimLabel, qDimensionOptions, qFindingText, qObjectLabel, qPct, qPlainText, qRiskDims, qScore, qSevLabel, qSevTone,
+  qDimLabel, qDimensionOptions, qObjectLabel, qPct, qRiskDims, qScore, qSevLabel,
 } from "./ws-quality-model.js";
 import {
   qAnalyzeText, qChapterSetReview, qLoadOverview, qScopeFilters, qSnapshot, useQualityState,
@@ -157,31 +158,6 @@ function QualityOverview({ go, filters, setFilters, draft, setDraft }) {
   );
 }
 
-/* 一条发现：问题 / 改法是服务端给的中文（与写作台深改面板同一份）；onLocate 带着它的 signal_id
-   去写作台——深改面板到了诊断就选中同一条并滚到那一句 */
-function QualityFinding({ finding, evidence, onLocate }) {
-  const text = qFindingText(finding);
-  const excerpt = qPlainText(finding.context || evidence);
-  const label = finding.label || qDimLabel(finding.dimension);
-  const signalId = finding.signal_id || finding.quality_signal_id;
-  return (
-    <li className="q-finding">
-      <div className="q-finding-head">
-        <Tag tone={qSevTone(finding.severity)}>{qSevLabel(finding.severity)}</Tag>
-        <strong title={QUALITY_DIMS[finding.dimension] || finding.label ? undefined : finding.dimension}>{label}</strong>
-        {onLocate && signalId && (
-          <button type="button" className="btn btn-quiet btn-sm q-finding-go" onClick={() => onLocate(signalId)}>
-            <I.Pen size={12} /> 在写作台看这一处
-          </button>
-        )}
-      </div>
-      {text.issue && <p className="q-finding-issue" title={text.english || undefined}>{text.issue}</p>}
-      {excerpt && <blockquote className="q-finding-evidence">{excerpt}</blockquote>}
-      {text.fix && <p className="q-finding-fix">改法：{text.fix}</p>}
-    </li>
-  );
-}
-
 function QualityItem({ item, chapters, go }) {
   const [open, setOpen] = React.useState(false);
   const riskDims = qRiskDims(item);
@@ -196,11 +172,7 @@ function QualityItem({ item, chapters, go }) {
   const sceneHit = item.object_type === "scene" ? findSceneByBackendId(chapters, item.scene_id || item.object_id) : null;
   const sceneSid = (sceneHit && sceneHit.scene.sid) || "";
   const toWriter = (signalId) => {
-    if (!go) return;
-    const posture = signalId ? { posture: "deep", signal_id: signalId } : "deep";
-    go("writer", sceneSid
-      ? [{ type: "ws:writer-scene", detail: sceneSid }, { type: "ws:writer-posture", detail: posture }]
-      : []);
+    if (go) go("writer", writerIntents(sceneSid, { deep: true, signalId: signalId || "" }));
   };
   const topSignal = rna.signal_id || rna.quality_signal_id || null;
   const ignoredCount = Number(item.ignored_count) || 0;
@@ -227,7 +199,7 @@ function QualityItem({ item, chapters, go }) {
           ) : (
             <ul className="q-findings">
               {findings.map((f, i) => (
-                <QualityFinding key={f.signal_id || i} finding={f} evidence={f.evidence_excerpt}
+                <FindingLine key={f.signal_id || i} finding={f} evidence={f.evidence_excerpt}
                   onLocate={sceneSid && go ? toWriter : null} />
               ))}
             </ul>
@@ -257,7 +229,7 @@ function AnalyzeResult({ data }) {
       </div>
       {spans.length > 0 && (
         <ul className="q-findings">
-          {spans.map((s, i) => <QualityFinding key={i} finding={s} evidence={s.evidence} />)}
+          {spans.map((s, i) => <FindingLine key={i} finding={s} evidence={s.evidence} />)}
         </ul>
       )}
     </div>
@@ -362,7 +334,7 @@ function QualityChapterSet({ go }) {
               <h3 className="q-block-title">受保护词命中 <span className="q-more">{safety.length}</span></h3>
               <ul className="q-lines">
                 {safety.slice(0, 12).map((f, i) => (
-                  <li key={i}>{f.term ? `「${f.term}」` : ""}{qPlainText(f.evidence_excerpt) || f.issue || ""}</li>
+                  <li key={i}>{f.term ? `「${f.term}」` : ""}{findingPlainText(f.evidence_excerpt) || f.issue || ""}</li>
                 ))}
               </ul>
             </section>
