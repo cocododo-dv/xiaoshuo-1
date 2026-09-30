@@ -96,6 +96,7 @@ from novel_system.services.style_reference.learn_card import (
     synthesis_payload,
 )
 from novel_system.services.style_reference.learn_extract import (
+    POSITION_LABELS,
     ExtractionSet,
     LayerParse,
     build_extraction_set,
@@ -1252,7 +1253,7 @@ class _LearnRun(JobRun):
                     {
                         "window": int(w.window_no),
                         "chapter": int(w.chapter_no or 0),
-                        "position": {"opening": "章首", "closing": "章末", "whole": "整章"}.get(str(w.position), "章中"),
+                        "position": POSITION_LABELS.get(str(w.position), "章中"),
                         "text": clip_window_text(texts.get(int(w.window_no), "")),
                     }
                     for w in batch_rows

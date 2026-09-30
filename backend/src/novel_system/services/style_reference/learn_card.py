@@ -48,12 +48,12 @@ from novel_system.services.style_reference.card import (
     line_id_for,
     normalize_card,
 )
-from novel_system.services.style_reference.learn_extract import clean_devices
+from novel_system.services.style_reference.cn_phrases import PUNCT_HABITS
+from novel_system.services.style_reference.learn_extract import clean_devices, score01
 from novel_system.services.style_reference.narrative_guidance import mark_forbidden_narrative_statement
 from novel_system.services.style_reference.schemas import FindingKind
 from novel_system.services.style_reference.text_utils import compact_ws
 from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
-from novel_system.services.style_reference.voice_signature import _PUNCT_HABITS
 
 SYNTH_QUOTES_PER_FINDING = 2
 SYNTH_QUOTE_MAX_CHARS = 40
@@ -281,18 +281,6 @@ def _fit_length(text: str, limit: int) -> str | None:
     return None
 
 
-def _clamp01(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number:
-        return None
-    if 1.0 < number <= 10.0:
-        number /= 10.0
-    return max(0.0, min(1.0, number))
-
-
 def _ref_key(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text.isdigit():
@@ -359,7 +347,7 @@ def assemble_card(
         if dim in entries:
             continue
         dim_meta = meta.get(dim) or DimensionMetaRow()
-        dim_distinct = _clamp01(raw.get("distinctiveness"))
+        dim_distinct = score01(raw.get("distinctiveness"))
         if dim_distinct is None:
             dim_distinct = dim_meta.distinctiveness if dim_meta.distinctiveness is not None else 0.5
         lines: list[CardLine] = []
@@ -386,7 +374,7 @@ def assemble_card(
                     result.drop(DROP_OVER_LIMIT)
                     continue
                 quote_ids = list(dict.fromkeys(q for f in refs for q in f.quote_ids))[:6]
-                distinct = _clamp01(item.get("distinctiveness"))
+                distinct = score01(item.get("distinctiveness"))
                 lines.append(
                     CardLine(
                         line_id=line_id_for(dim, fitted),
@@ -471,7 +459,7 @@ def _limit_mandatory(card: DimensionCard) -> DimensionCard:
 # 对账（台账 E6）
 # ---------------------------------------------------------------------------
 
-# 标点：(名字的写法, 测量核特征, 几乎不用的上限, 常用的下限)——与声音习惯同一套阈值(voice_signature._PUNCT_HABITS),
+# 标点：(名字的写法, 测量核特征, 几乎不用的上限, 常用的下限)——与声音习惯同一套阈值(cn_phrases.PUNCT_HABITS),
 # 另加逗号 / 句号
 _PUNCT_NAMES: dict[str, tuple[str, ...]] = {
     "punct_ellipsis_per_1k": ("省略号",),
@@ -489,7 +477,7 @@ _EXTRA_THRESHOLDS: dict[str, tuple[float, float]] = {
     "punct_period_per_1k": (10.0, 35.0),
 }
 MARK_THRESHOLDS: dict[str, tuple[float, float]] = {
-    **{name: (low, high) for name, _label, low, high in _PUNCT_HABITS},
+    **{name: (low, high) for name, _label, low, high in PUNCT_HABITS},
     **_EXTRA_THRESHOLDS,
 }
 _FREQUENT_CUES = (

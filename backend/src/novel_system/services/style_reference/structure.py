@@ -21,7 +21,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -39,6 +38,7 @@ from novel_system.services.style_reference.validation.plagiarism import (
     check_plagiarism,
     normalize_text_for_matching,
 )
+from novel_system.services.value_coercion import quantile
 
 # 2026-09-22 结构跟随参考书:v2 多了 ``chapter_titles``(章题形态与题名样例);旧画像缺键时
 # ``planning_context`` 按段落表惰性补算,不要求重新合成。
@@ -433,26 +433,11 @@ def chapter_boundary_habits(card: Mapping[str, Any] | None) -> dict[str, str]:
     }
 
 
-def _percentile(values: Sequence[int | float], q: float) -> float:
-    ordered = sorted(values)
-    if not ordered:
-        return 0.0
-    if len(ordered) == 1:
-        return float(ordered[0])
-    position = (len(ordered) - 1) * q
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return float(ordered[lower])
-    weight = position - lower
-    return float(ordered[lower]) * (1 - weight) + float(ordered[upper]) * weight
-
-
 def _spread(values: Sequence[int]) -> dict[str, int]:
     return {
-        "median": int(round(_percentile(values, 0.5))),
-        "p10": int(round(_percentile(values, 0.1))),
-        "p90": int(round(_percentile(values, 0.9))),
+        "median": int(round(quantile(values, 0.5))),
+        "p10": int(round(quantile(values, 0.1))),
+        "p90": int(round(quantile(values, 0.9))),
     }
 
 

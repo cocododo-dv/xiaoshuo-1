@@ -36,6 +36,13 @@ from novel_system.services.style_reference.card import (
     LINE_STATE_PINNED,
     DimensionCard,
 )
+from novel_system.services.style_reference.cn_phrases import (
+    cn_count,
+    cn_int,
+    every_n_sentences,
+    rate_phrase,
+    tenths_phrase,
+)
 from novel_system.services.style_reference.config_loader import load_optional_yaml_config
 from novel_system.services.style_reference.fidelity import (
     DEFAULT_MAX_PERCENTILE,
@@ -43,12 +50,6 @@ from novel_system.services.style_reference.fidelity import (
     FidelityReading,
     feature_phrase,
     within_author_range,
-)
-from novel_system.services.style_reference.voice_signature import (
-    _cn_count,
-    _cn_int,
-    _rate_phrase,
-    _tenths_phrase,
 )
 
 FIDELITY_CONFIG_SECTION = "fidelity"
@@ -198,10 +199,10 @@ _CHAR_LENGTHS = (
 
 
 def _every_n_sentences(ratio: float) -> str:
+    """同习惯句的说法，只是比例极低时说「几乎没有」（差距说明里要说出来，习惯句里干脆不提）。"""
     if ratio <= 0.005:
         return "几乎没有"
-    n = max(1, int(round(1.0 / ratio)))
-    return "几乎每句都有" if n <= 1 else f"大约每{_cn_count(n)}句一次"
+    return every_n_sentences(ratio)
 
 
 def level_words(feature: str, value: Any) -> str:
@@ -214,18 +215,18 @@ def level_words(feature: str, value: Any) -> str:
         return ""
     if feature.endswith("_per_1k"):
         unit = "个" if feature.startswith(("punct_", "fw_", "latin_")) else "处"
-        phrase = _rate_phrase(number, unit)
+        phrase = rate_phrase(number, unit)
         return phrase or "几乎没有"
     if feature in _SENTENCE_FINAL:
         return _every_n_sentences(number)
     if feature in _CHAR_LENGTHS:
-        return f"约{_cn_int(round(max(0.0, number)))}字"
+        return f"约{cn_int(round(max(0.0, number)))}字"
     if feature == "sent_pauses_mean":
-        return f"每句约{_cn_count(round(max(0.0, number)))}处停顿"
+        return f"每句约{cn_count(round(max(0.0, number)))}处停顿"
     if feature == "sent_short_run_mean":
-        return f"短句一串约{_cn_count(round(max(0.0, number)))}句"
+        return f"短句一串约{cn_count(round(max(0.0, number)))}句"
     if feature.endswith("_share") or feature in ("para_single_sentence_ratio", "para_dialogue_ratio", "sent_short_run_ratio"):
-        return _tenths_phrase(number)
+        return tenths_phrase(number)
     return ""
 
 

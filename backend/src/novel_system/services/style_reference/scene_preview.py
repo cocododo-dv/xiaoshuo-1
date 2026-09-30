@@ -25,23 +25,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard, StyleReferenceBook, StyleReferenceProfile, StyleReferenceWindow
 from novel_system.services.style_reference.binding_config import normalize_binding_config
-from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION, index_marker
-
-
-def _dominant_type(type_mix: Any) -> str:
-    """窗口里占比最大的段落类型(并列取键名靠前的,结果稳定);没有类型分布时给空串。"""
-    if not isinstance(type_mix, Mapping):
-        return ""
-    best = ""
-    best_share = 0.0
-    for key in sorted(str(k) for k in type_mix):
-        try:
-            share = float(type_mix[key] or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if share > best_share:
-            best, best_share = key, share
-    return best
+from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION, dominant_type, index_marker
 
 
 def window_tag_rows(session: Session, book_id: str | None, window_nos: Sequence[int]) -> dict[int, dict[str, Any]]:
@@ -67,7 +51,7 @@ def window_tag_rows(session: Session, book_id: str | None, window_nos: Sequence[
     for window_no, tags, type_mix in session.execute(stmt):
         out[int(window_no)] = {
             "tags": dict(tags) if isinstance(tags, Mapping) else {},
-            "paragraph_type": _dominant_type(type_mix),
+            "paragraph_type": dominant_type(type_mix),
         }
     return out
 

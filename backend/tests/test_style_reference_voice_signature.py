@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from novel_system.services.style_reference import cn_phrases
 from novel_system.services.style_reference import voice_signature as vs
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from tests import style_reference_voice_baseline_helpers as vbh
@@ -286,12 +287,12 @@ def test_render_accepts_features_only(luxun: dict) -> None:
 
 
 def test_render_habit_frequencies_are_spelled_in_words() -> None:
-    assert vs._every_n_sentences(0.1) == "大约每十句一次"
-    assert vs._every_n_sentences(0.5) == "大约每两句一次"
-    assert vs._rate_phrase(28.7, "个") == "每千字约二十九个"
-    assert vs._rate_phrase(0.4, "处") == "每两千字约一处"
-    assert vs._rate_phrase(0.05, "处") == ""
-    assert vs._cn_int(61) == "六十一" and vs._cn_int(166) == "一百六十六" and vs._cn_int(105) == "一百零五"
+    assert cn_phrases.every_n_sentences(0.1) == "大约每十句一次"
+    assert cn_phrases.every_n_sentences(0.5) == "大约每两句一次"
+    assert cn_phrases.rate_phrase(28.7, "个") == "每千字约二十九个"
+    assert cn_phrases.rate_phrase(0.4, "处") == "每两千字约一处"
+    assert cn_phrases.rate_phrase(0.05, "处") == ""
+    assert cn_phrases.cn_int(61) == "六十一" and cn_phrases.cn_int(166) == "一百六十六" and cn_phrases.cn_int(105) == "一百零五"
 
 
 def test_load_voice_baseline_missing_file_degrades(monkeypatch: pytest.MonkeyPatch, luxun: dict) -> None:

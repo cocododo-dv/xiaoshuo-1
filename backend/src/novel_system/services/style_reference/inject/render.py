@@ -281,7 +281,8 @@ def attach_chapter_position_mandate(user_tail: str, mandate: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _visible_chars(text: str) -> int:
+def _nonspace_chars(text: str) -> int:
+    """样例窗的「字数」：每个非空白字符（标点也算）——只给预算与界面用；测量核的「可见字」是 ``measure.visible_length``。"""
     return sum(1 for char in text if not char.isspace())
 
 
@@ -569,7 +570,7 @@ def card_example_clause(text: str, *, protected_terms: Sequence[str] = ()) -> st
     best_chars = 0
     for candidate in [safe, *_CLAUSE_SPLIT_RE.split(safe)]:
         candidate = candidate.strip()
-        chars = _visible_chars(candidate)
+        chars = _nonspace_chars(candidate)
         # 上限按可见字（标点也算一个字，只会更严）；下限按字母数字（「嗯，好，走」不算一个像样的例子）
         if _letter_chars(candidate) < CARD_EXAMPLE_MIN_CHARS or chars > CARD_EXAMPLE_MAX_CHARS or chars <= best_chars:
             continue
@@ -861,7 +862,7 @@ def _sample_windows(session: Session, book_id: str, refs: Sequence[WindowRef]) -
             SampleWindow(
                 ref=ref,
                 line=f"- ({window_position_tag(ref)})「{safe}」",
-                chars=_visible_chars(text),
+                chars=_nonspace_chars(text),
                 priority=priority,
             )
         )

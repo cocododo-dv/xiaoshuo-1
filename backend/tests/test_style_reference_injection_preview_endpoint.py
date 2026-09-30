@@ -130,10 +130,10 @@ def test_generation_banned_terms_reach_the_preview_red_line(client: TestClient) 
 
 
 def test_scene_preview_dominant_type_is_stable() -> None:
-    """主段落类型取占比最大的一类；并列时按键名取前者，结果稳定；没有分布给空串。"""
-    from novel_system.services.style_reference.scene_preview import _dominant_type
+    """主段落类型取占比最大的一类；并列时按键名取前者，结果稳定；没有分布给空串（选窗冻结与本场预览同一个函数）。"""
+    from novel_system.services.style_reference.windows import dominant_type
 
-    assert _dominant_type({"narration": 0.3, "dialogue": 0.7}) == "dialogue"
-    assert _dominant_type({"narration": 0.5, "dialogue": 0.5}) == "dialogue"
-    assert _dominant_type({}) == "" and _dominant_type(None) == ""
-    assert _dominant_type({"narration": "x", "action": 0.2}) == "action"
+    assert dominant_type({"narration": 0.3, "dialogue": 0.7}) == "dialogue"
+    assert dominant_type({"narration": 0.5, "dialogue": 0.5}) == "dialogue"
+    assert dominant_type({}) == "" and dominant_type(None) == ""
+    assert dominant_type({"narration": "x", "action": 0.2}) == "action"

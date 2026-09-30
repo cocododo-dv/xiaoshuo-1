@@ -63,6 +63,7 @@ from novel_system.services.style_reference.inject.request import (
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
 from novel_system.services.style_reference.windows import (
     WINDOW_INDEX_VERSION,
+    dominant_type,
     ensure_window_index,
     index_marker,
     marker_is_current,
@@ -404,15 +405,6 @@ def target_dimensions(policy: Any, request: StyleRenderRequest) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _dominant_type(type_mix: Any) -> str:
-    if not isinstance(type_mix, Mapping) or not type_mix:
-        return ""
-    try:
-        return str(max(type_mix, key=lambda name: float(type_mix[name] or 0.0)))
-    except (TypeError, ValueError):
-        return ""
-
-
 def load_index(
     session: Session,
     book_id: str,
@@ -470,7 +462,7 @@ def load_index(
                 typicality=float(typical or 0.0),
                 situations=tuple(str(s) for s in tags.get("situations") or () if str(s or "").strip()),
                 dimensions=_dimension_keys(tags.get("dimensions")),
-                paragraph_type=_dominant_type(type_mix),
+                paragraph_type=dominant_type(type_mix),
             )
         )
     notices: tuple[str, ...] = () if windows else (NOTICE_NO_WINDOWS,)

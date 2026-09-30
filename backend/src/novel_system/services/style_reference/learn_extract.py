@@ -250,7 +250,9 @@ class LayerParse:
         return out
 
 
-def _clamp01(value: Any) -> float | None:
+def score01(value: Any) -> float | None:
+    """模型给的 0–1 分（辨识度这类）：读不出数 / NaN → None；按 0–10 尺度给的（1 < x ≤ 10）折回 0–1；再夹进 [0, 1]。
+    抽取解析与文风卡合成共用这一份。"""
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -346,7 +348,7 @@ def parse_layer_output(structured: Any, layer: str, ext_set: ExtractionSet) -> L
         parse.meta[dim] = DimensionMeta(
             model_default=compact_ws(entry.get("model_default"))[:MODEL_DEFAULT_MAX_CHARS],
             devices=clean_devices(entry.get("devices")),
-            distinctiveness=_clamp01(entry.get("distinctiveness")),
+            distinctiveness=score01(entry.get("distinctiveness")),
         )
         for field_name, kind, limit in (
             ("observations", FindingKind.OBSERVATION.value, MAX_OBSERVATIONS),
@@ -377,7 +379,7 @@ def parse_layer_output(structured: Any, layer: str, ext_set: ExtractionSet) -> L
                     kind=kind,
                     statement=statement,
                     confidence=confidence if confidence in _CONFIDENCE else "medium",
-                    distinctiveness=_clamp01(raw.get("distinctiveness")),
+                    distinctiveness=score01(raw.get("distinctiveness")),
                     evidence=evidence,
                 )
                 if finding.key() in seen_keys:
@@ -553,5 +555,6 @@ __all__ = [
     "parse_layer_output",
     "persist_layer",
     "retry_instruction",
+    "score01",
     "shrink_to_fit",
 ]

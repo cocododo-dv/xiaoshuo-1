@@ -24,6 +24,13 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from novel_system.services.style_reference.cn_phrases import (
+    PUNCT_HABITS,
+    cn_int,
+    every_n_sentences,
+    rate_phrase,
+    tenths_phrase,
+)
 from novel_system.services.style_reference.config_loader import load_optional_yaml_config
 from novel_system.services.style_reference.measure import (
     FEATURE_NAMES,
@@ -241,66 +248,6 @@ def _level(
 # 习惯句渲染(绝对、具体:作者自己的高频词与大致频率,不与任何基线比)
 # ---------------------------------------------------------------------------
 
-_CN_DIGITS = "零一二三四五六七八九"
-
-
-def _cn_int(value: int) -> str:
-    """0–999 的中文读法(「两」用于量词前由调用方处理);超出按「上千」。"""
-    number = max(0, int(value))
-    if number < 10:
-        return _CN_DIGITS[number]
-    if number < 20:
-        return "十" + (_CN_DIGITS[number % 10] if number % 10 else "")
-    if number < 100:
-        tens, ones = divmod(number, 10)
-        return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
-    if number < 1000:
-        hundreds, rest = divmod(number, 100)
-        head = _CN_DIGITS[hundreds] + "百"
-        if rest == 0:
-            return head
-        if rest < 10:
-            return head + "零" + _CN_DIGITS[rest]
-        tens, ones = divmod(rest, 10)
-        return head + _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
-    return "上千"
-
-
-def _cn_count(value: int) -> str:
-    """量词前的数:2 → 「两」,其余同 :func:`_cn_int`。"""
-    return "两" if int(value) == 2 else _cn_int(value)
-
-
-def _rate_phrase(rate: float, unit: str) -> str:
-    """每千字的频率 → 「每千字约三个」/「每两千字约一处」/ ""(几乎没有)。"""
-    value = finite_or_zero(rate)
-    if value >= 1.0:
-        return f"每千字约{_cn_count(round(value))}{unit}"
-    if value >= 0.2:
-        return f"每{_cn_count(round(1.0 / value))}千字约一{unit}"
-    return ""
-
-
-def _every_n_sentences(ratio: float) -> str:
-    value = finite_or_zero(ratio)
-    if value <= 0:
-        return ""
-    n = max(1, int(round(1.0 / value)))
-    if n <= 1:
-        return "几乎每句都有"
-    return f"大约每{_cn_count(n)}句一次"
-
-
-def _tenths_phrase(share: float) -> str:
-    """0–1 的比例 → 「约四成」/「不到一成」/「几乎全部」。"""
-    value = finite_or_zero(share)
-    if value >= 0.95:
-        return "几乎全部"
-    if value < 0.05:
-        return "不到一成"
-    return f"约{_cn_int(max(1, round(value * 10)))}成"
-
-
 def _join_words(words: Sequence[str]) -> str:
     return "、".join(words)
 
@@ -317,18 +264,6 @@ def _author_words(top_words: Mapping[str, Any], group: str, *, limit: int = 3, m
         if len(result) >= limit:
             break
     return result
-
-
-# 标点「常用 / 很少用」的绝对门槛(每千字):低于 rare 算几乎不用,高于 frequent 算常用。
-_PUNCT_HABITS: tuple[tuple[str, str, float, float], ...] = (
-    ("punct_ellipsis_per_1k", "省略号", 0.2, 2.0),
-    ("punct_dash_per_1k", "破折号", 0.2, 1.5),
-    ("punct_semicolon_per_1k", "分号", 0.2, 1.0),
-    ("punct_exclamation_per_1k", "感叹号", 0.5, 4.0),
-    ("punct_question_per_1k", "问号", 0.5, 6.0),
-    ("punct_colon_per_1k", "冒号", 0.3, 4.0),
-    ("punct_enumeration_per_1k", "顿号", 0.3, 5.0),
-)
 
 
 def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
@@ -357,10 +292,10 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     # 1. 句长与起伏:平均几个字、短句与长句大约多长
     mean = value("sent_len_mean")
     if mean > 0:
-        line = f"句子平均约{_cn_int(round(mean))}字"
+        line = f"句子平均约{cn_int(round(mean))}字"
         short, long_ = value("sent_len_p10"), value("sent_len_p90")
         if long_ > short > 0:
-            line += f"，短的{_cn_int(round(short))}字上下、长的{_cn_int(round(long_))}字上下"
+            line += f"，短的{cn_int(round(short))}字上下、长的{cn_int(round(long_))}字上下"
         spread = value("sent_len_std") / mean
         if spread >= 0.75:
             line += "，长短交错明显"
@@ -371,10 +306,10 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     # 2. 段落
     para_mean = value("para_len_mean")
     if para_mean > 0:
-        line = f"段落平均约{_cn_int(round(para_mean))}字"
+        line = f"段落平均约{cn_int(round(para_mean))}字"
         single = value("para_single_sentence_ratio")
         if single >= 0.05:
-            line += f"，{_tenths_phrase(single)}的段落只有一句"
+            line += f"，{tenths_phrase(single)}的段落只有一句"
         lines.append(line)
 
     # 3. 对白比重与引导
@@ -383,7 +318,7 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         if dialogue >= 0.95:
             lines.append("几乎通篇是对白")
         elif dialogue >= 0.05:
-            lines.append(f"对白约占全文字数的{_cn_int(max(1, round(dialogue * 10)))}成")
+            lines.append(f"对白约占全文字数的{cn_int(max(1, round(dialogue * 10)))}成")
         else:
             lines.append("几乎没有对白，以叙述为主")
     guide = {placement: value(f"dialogue_guide_{placement}_share") for placement in ("pre", "post", "none")}
@@ -415,13 +350,13 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         ][:3]
         if modal_ratio >= 0.02:
             detail = _join_words(final_words) if final_words else "语气词"
-            lines.append(f"句末常带{detail}（{_every_n_sentences(modal_ratio)}）")
+            lines.append(f"句末常带{detail}（{every_n_sentences(modal_ratio)}）")
         else:
             lines.append("句末几乎不带语气词，话说完就停")
 
     # 5. 连接词(作者自己的高频词 + 频率)
     connective_words = _author_words(top_words, "connective", limit=4)
-    connective_rate = _rate_phrase(value("fw_connective_per_1k"), "个")
+    connective_rate = rate_phrase(value("fw_connective_per_1k"), "个")
     if connective_words:
         lines.append(
             f"连接多用{_join_words(connective_words)}" + (f"（连接词{connective_rate}）" if connective_rate else "")
@@ -430,8 +365,8 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         lines.append(f"连接词{connective_rate}")
 
     # 6. 标点:常用的与几乎不用的
-    frequent = [label for name, label, _low, high in _PUNCT_HABITS if name in values and value(name) >= high]
-    rare = [label for name, label, low, _high in _PUNCT_HABITS if name in values and value(name) < low]
+    frequent = [label for name, label, _low, high in PUNCT_HABITS if name in values and value(name) >= high]
+    rare = [label for name, label, low, _high in PUNCT_HABITS if name in values and value(name) < low]
     if frequent:
         lines.append(f"常用{_join_words(frequent[:3])}")
     if rare:
@@ -456,10 +391,10 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     # 8. 具体数字、英文词(只在确实常见时说)
     quantities = value("digit_run_per_1k") + value("numeral_unit_per_1k")
     if quantities >= 1.0:
-        lines.append(f"常写具体数字与计量（{_rate_phrase(quantities, '处')}）")
+        lines.append(f"常写具体数字与计量（{rate_phrase(quantities, '处')}）")
     latin = value("latin_word_per_1k")
     if latin >= 0.5:
-        rate = _rate_phrase(latin, "个")
+        rate = rate_phrase(latin, "个")
         lines.append("叙述和对白里常夹英文词" + (f"（{rate}）" if rate else ""))
 
     # 9. 副词 / 体标记 / 短句连打 / 四字格 / 叠词

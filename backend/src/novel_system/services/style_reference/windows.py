@@ -307,6 +307,24 @@ def _type_mix(ptypes: Iterable[str]) -> dict[str, float]:
     return {ptype: round(count / total, 4) for ptype, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))}
 
 
+def dominant_type(type_mix: Any) -> str:
+    """一窗占比最大的段落类型（并列取键名靠前的，结果稳定）；没有类型分布时给空串。
+
+    选窗冻结的 ``WindowRef.paragraph_type`` 与本场预览的窗口类型都用它，同一窗在两处叫法一样。"""
+    if not isinstance(type_mix, Mapping):
+        return ""
+    best = ""
+    best_share = 0.0
+    for key in sorted(str(k) for k in type_mix):
+        try:
+            share = float(type_mix[key] or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if share > best_share:
+            best, best_share = key, share
+    return best
+
+
 def window_typicality(features_list: Sequence[Mapping[str, Any]]) -> list[float]:
     """每窗在这组窗口自己的分布里有多典型：−mean(min(|稳健 z|, 6))（越大越典型）。"""
     if not features_list:
@@ -497,6 +515,7 @@ def set_window_tags(
 
 
 __all__ = [
+    "dominant_type",
     "DEFAULT_MIN_WINDOW_CHARS",
     "DEFAULT_WINDOW_MAX_CHARS",
     "DEFAULT_WINDOW_PARAGRAPHS",
