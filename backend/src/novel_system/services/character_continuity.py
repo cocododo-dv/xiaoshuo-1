@@ -12,30 +12,34 @@ def build_character_contract_digest(
     *,
     pov_character_id: str | None,
     onstage_character_ids: Iterable[str] | None,
-    voice_profile_content: str | None,
-    relation_profile_content: str | None,
+    voice_profile_content: str | None = None,
+    relation_profile_content: str | None = None,
     display_names: dict[str, str] | None = None,
 ) -> str:
+    """本场角色的身份契约（CHARACTER_CONTRACT_v1）：id 与权威显示名，按 POV 在前、在场角色依次、同名去重。
+
+    声线卡 / 关系卡已退役（批准 #15，重评 R8）：产品里没有任何地方能写它们，实库两张表都是空的。
+    ``voice_profile_content`` / ``relation_profile_content`` 只为还在传它们的调用方留着、一律不读；
+    没有卡的场（所有真实作品）契约逐字节与以前相同。
+    """
+    del voice_profile_content, relation_profile_content
     character_ids = _ordered_character_ids(pov_character_id, onstage_character_ids)
     if not character_ids:
         return ""
 
     names = display_names or {}
-    voice_metadata = _extract_voice_metadata(voice_profile_content or "")
     characters: list[dict[str, Any]] = []
     seen_identity_keys: set[str] = set()
     for character_id in character_ids:
-        is_pov = character_id == pov_character_id
-        metadata = voice_metadata if is_pov else {}
-        # 优先用 StoryCharacter 的权威 display_name；其次声线卡元数据；最后才退化到 id。
+        # 用 StoryCharacter 的权威 display_name；没有才退化到 id。
         # 否则裸 character_id 会被当成角色名写进提示词 → 模型把 id 当人名/线索写进正文。
-        display_name = (names.get(character_id) or "").strip() or metadata.get("display_name") or character_id
+        display_name = (names.get(character_id) or "").strip() or character_id
         character = {
             "character_id": character_id,
             "display_name": display_name,
-            "pronouns": metadata.get("pronouns") or [],
-            "role": metadata.get("role") or "",
-            "aliases": metadata.get("aliases") or [],
+            "pronouns": [],
+            "role": "",
+            "aliases": [],
         }
         identity_keys = _character_identity_keys(character)
         if seen_identity_keys.intersection(identity_keys):
@@ -47,49 +51,16 @@ def build_character_contract_digest(
         "contract_version": CHARACTER_CONTRACT_VERSION,
         "characters": characters,
     }
-    relationship_stance = _single_line(relation_profile_content or "")
-    if relationship_stance:
-        payload["relationship_stance"] = relationship_stance
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def detect_character_pronoun_drift(content: str, contract_digest: str | None) -> list[dict[str, Any]]:
-    contract = parse_character_contract_digest(contract_digest)
-    if not content.strip() or not contract:
-        return []
+    """已退役（批准 #15，重评 R8）：代词只来自声线卡，卡没有地方能写，人物契约也不再带代词——检查一次都不会命中。
 
-    issues: list[dict[str, Any]] = []
-    character_entries: list[tuple[dict[str, Any], list[str]]] = []
-    all_names: list[str] = []
-    for character in contract.get("characters", []):
-        if not isinstance(character, dict):
-            continue
-        names = _character_names(character)
-        character_entries.append((character, names))
-        all_names.extend(names)
-
-    for character, names in character_entries:
-        expected = _expected_chinese_pronoun(character.get("pronouns"))
-        if expected is None:
-            continue
-        found = "他" if expected == "她" else "她"
-        if not names:
-            continue
-        own_names = set(names)
-        other_names = [name for name in dict.fromkeys(all_names) if name not in own_names]
-        if _wrong_pronoun_near_name(content, names, found, other_names):
-            display_name = str(character.get("display_name") or names[0])
-            issues.append(
-                {
-                    "issue_key": "character_pronoun_drift",
-                    "message": f"{display_name} expects pronoun {expected} but nearby text uses {found}.",
-                    "character_id": str(character.get("character_id") or ""),
-                    "display_name": display_name,
-                    "expected_pronoun": expected,
-                    "found_pronoun": found,
-                }
-            )
-    return issues
+    质检与成稿门那一侧的调用由质量闸门包删掉；这个空壳只为还没合并那一侧的检出能导入而留着，合并后连同调用一起删。
+    """
+    del content, contract_digest
+    return []
 
 
 def detect_mechanical_required_beat_listing(
@@ -129,23 +100,6 @@ def detect_mechanical_required_beat_listing(
     }
 
 
-def parse_character_contract_digest(contract_digest: str | None) -> dict[str, Any] | None:
-    if not isinstance(contract_digest, str) or not contract_digest.strip():
-        return None
-    try:
-        payload = json.loads(contract_digest)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("contract_version") != CHARACTER_CONTRACT_VERSION:
-        return None
-    characters = payload.get("characters")
-    if not isinstance(characters, list):
-        return None
-    return payload
-
-
 def _ordered_character_ids(pov_character_id: str | None, onstage_character_ids: Iterable[str] | None) -> list[str]:
     values: list[str] = []
     if isinstance(pov_character_id, str) and pov_character_id.strip():
@@ -154,55 +108,6 @@ def _ordered_character_ids(pov_character_id: str | None, onstage_character_ids: 
         if isinstance(character_id, str) and character_id.strip():
             values.append(character_id.strip())
     return list(dict.fromkeys(values))
-
-
-def _extract_voice_metadata(content: str) -> dict[str, Any]:
-    return {
-        "display_name": _extract_labeled_value(content, ("角色名", "姓名", "display_name", "name")),
-        "pronouns": _extract_pronouns(content),
-        "role": _extract_labeled_value(content, ("角色职责", "职责", "身份", "role")),
-        "aliases": _extract_aliases(content),
-    }
-
-
-def _extract_labeled_value(content: str, labels: tuple[str, ...]) -> str:
-    for label in labels:
-        pattern = rf"(?im)^\s*{re.escape(label)}\s*[:：]\s*([^\n\r;；,，]+)"
-        match = re.search(pattern, content)
-        if match:
-            return match.group(1).strip()
-    return ""
-
-
-def _extract_pronouns(content: str) -> list[str]:
-    raw = _extract_labeled_value(content, ("称谓/代词", "代词", "pronouns", "pronoun"))
-    if not raw:
-        return []
-    tokens = [token.strip() for token in re.split(r"[,，、/;；\s]+", raw) if token.strip()]
-    allowed = {"她", "他", "TA", "ta", "其", "she", "her", "he", "him"}
-    return list(dict.fromkeys(token for token in tokens if token in allowed))
-
-
-def _extract_aliases(content: str) -> list[str]:
-    raw = _extract_labeled_value(content, ("别名", "aliases", "alias"))
-    if not raw:
-        return []
-    return list(dict.fromkeys(token.strip() for token in re.split(r"[,，、/;；\s]+", raw) if token.strip()))
-
-
-def _single_line(value: str) -> str:
-    return " ".join(part.strip() for part in value.splitlines() if part.strip())
-
-
-def _expected_chinese_pronoun(pronouns: Any) -> str | None:
-    if not isinstance(pronouns, list):
-        return None
-    normalized = {str(pronoun).strip().lower() for pronoun in pronouns if str(pronoun).strip()}
-    if "她" in normalized or "she" in normalized or "her" in normalized:
-        return "她"
-    if "他" in normalized or "he" in normalized or "him" in normalized:
-        return "他"
-    return None
 
 
 def _character_names(character: dict[str, Any]) -> list[str]:
@@ -216,25 +121,6 @@ def _character_names(character: dict[str, Any]) -> list[str]:
 
 def _character_identity_keys(character: dict[str, Any]) -> set[str]:
     return {name.casefold() for name in _character_names(character)}
-
-
-def _wrong_pronoun_near_name(content: str, names: list[str], wrong_pronoun: str, other_names: list[str]) -> bool:
-    pronoun_pattern = re.compile(rf"{re.escape(wrong_pronoun)}(?!们)")
-    for name in names:
-        for match in re.finditer(re.escape(name), content):
-            window = content[match.end() : match.end() + 80]
-            pronoun_match = pronoun_pattern.search(window)
-            if pronoun_match is None:
-                continue
-            if _other_character_name_before(window, pronoun_match.start(), other_names):
-                continue
-            return True
-    return False
-
-
-def _other_character_name_before(window: str, pronoun_position: int, other_names: list[str]) -> bool:
-    prefix = window[:pronoun_position]
-    return any(name and name in prefix for name in other_names)
 
 
 def _constraint_terms(text: str) -> list[str]:

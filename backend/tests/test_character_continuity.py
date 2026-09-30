@@ -4,89 +4,53 @@ import json
 
 from novel_system.services.character_continuity import (
     build_character_contract_digest,
-    detect_character_pronoun_drift,
     detect_mechanical_required_beat_listing,
 )
 
+CARD_LESS_CONTRACT = (
+    '{"contract_version":"CHARACTER_CONTRACT_v1","characters":['
+    '{"character_id":"CHAR_LINYUAN","display_name":"林远","pronouns":[],"role":"","aliases":[]},'
+    '{"character_id":"CHAR_SUWAN","display_name":"苏晚","pronouns":[],"role":"","aliases":[]},'
+    '{"character_id":"CHAR_GUZHOU","display_name":"CHAR_GUZHOU","pronouns":[],"role":"","aliases":[]}]}'
+)
 
-def test_build_character_contract_digest_extracts_chinese_voice_metadata() -> None:
+
+def test_card_less_contract_json_is_unchanged() -> None:
+    """声线卡 / 关系卡退役前后，没有卡的场（所有真实作品）契约逐字节相同（重评 R8 的 golden）。"""
     digest = build_character_contract_digest(
-        pov_character_id="LIN_CEN",
-        onstage_character_ids=["LIN_CEN", "XU_WANG"],
+        pov_character_id="CHAR_LINYUAN",
+        onstage_character_ids=["CHAR_LINYUAN", "CHAR_SUWAN", "林远", "CHAR_GUZHOU"],
+        display_names={"CHAR_LINYUAN": "林远", "CHAR_SUWAN": "苏晚"},
+    )
+    assert digest == CARD_LESS_CONTRACT
+    assert build_character_contract_digest(pov_character_id=None, onstage_character_ids=[]) == ""
+
+
+def test_voice_and_relation_card_content_is_ignored() -> None:
+    """还在传卡片内容的调用方拿到的契约与不传时相同：不再从卡里解析代词 / 职责 / 别名 / 关系立场（批准 #15）。"""
+    with_cards = build_character_contract_digest(
+        pov_character_id="CHAR_LINYUAN",
+        onstage_character_ids=["CHAR_LINYUAN", "CHAR_SUWAN", "林远", "CHAR_GUZHOU"],
         voice_profile_content="角色名：林岑\n代词：她\n角色职责：档案修复师\n别名：小林",
         relation_profile_content="林岑与许望互相信任，但在公开真相的时机上有分歧。",
+        display_names={"CHAR_LINYUAN": "林远", "CHAR_SUWAN": "苏晚"},
     )
-
-    payload = json.loads(digest)
-
-    assert payload["contract_version"] == "CHARACTER_CONTRACT_v1"
-    assert payload["characters"][0] == {
-        "character_id": "LIN_CEN",
-        "display_name": "林岑",
-        "pronouns": ["她"],
-        "role": "档案修复师",
-        "aliases": ["小林"],
-    }
-    assert payload["relationship_stance"] == "林岑与许望互相信任，但在公开真相的时机上有分歧。"
+    assert with_cards == CARD_LESS_CONTRACT
+    assert "relationship_stance" not in json.loads(with_cards)
 
 
-def test_build_character_contract_digest_dedupes_pov_display_name() -> None:
+def test_build_character_contract_digest_dedupes_by_display_name() -> None:
+    """POV 的权威显示名与在场名单里直接写的名字相同 → 只留一个角色。"""
     digest = build_character_contract_digest(
         pov_character_id="CHAR_LINCEN",
         onstage_character_ids=["林岑", "许望", "幸存者阿砚"],
-        voice_profile_content="角色名：林岑\n代词：她\n角色职责：档案修复师\n别名：小林",
-        relation_profile_content=None,
+        display_names={"CHAR_LINCEN": "林岑"},
     )
 
     payload = json.loads(digest)
 
+    assert [character["character_id"] for character in payload["characters"]] == ["CHAR_LINCEN", "许望", "幸存者阿砚"]
     assert [character["display_name"] for character in payload["characters"]] == ["林岑", "许望", "幸存者阿砚"]
-    assert payload["characters"][0]["pronouns"] == ["她"]
-
-
-def test_detect_character_pronoun_drift_flags_wrong_chinese_pronoun_near_name() -> None:
-    digest = build_character_contract_digest(
-        pov_character_id="LIN_CEN",
-        onstage_character_ids=["LIN_CEN", "XU_WANG"],
-        voice_profile_content="角色名：林岑\n代词：她\n角色职责：档案修复师",
-        relation_profile_content=None,
-    )
-
-    issues = detect_character_pronoun_drift(
-        "林岑把盐钟残片放在灯下。他确认刻痕被人改过，声音仍然很稳。",
-        digest,
-    )
-
-    assert issues == [
-        {
-            "issue_key": "character_pronoun_drift",
-            "message": "林岑 expects pronoun 她 but nearby text uses 他.",
-            "character_id": "LIN_CEN",
-            "display_name": "林岑",
-            "expected_pronoun": "她",
-            "found_pronoun": "他",
-        }
-    ]
-
-
-def test_detect_character_pronoun_drift_stops_when_other_character_is_named_first() -> None:
-    digest = build_character_contract_digest(
-        pov_character_id="CHAR_LINCEN",
-        onstage_character_ids=["林岑", "许望", "幸存者阿砚"],
-        voice_profile_content="角色名：林岑\n代词：她\n角色职责：档案修复师",
-        relation_profile_content=None,
-    )
-
-    issues = detect_character_pronoun_drift(
-        (
-            "林岑的指尖划过纸页边缘，语气冷硬：“公开真相会让更多人暴露。"
-            "我们得先转移幸存者。”\n\n"
-            "“阿砚的声音。”许望皱眉，“他还在被追踪。”"
-        ),
-        digest,
-    )
-
-    assert issues == []
 
 
 def test_detect_mechanical_required_beat_listing_flags_tail_loaded_checklist() -> None:
@@ -106,12 +70,10 @@ def test_detect_mechanical_required_beat_listing_flags_tail_loaded_checklist() -
 
 
 def test_build_character_contract_digest_uses_authoritative_display_names_over_raw_id() -> None:
-    """修复裸 id 泄漏：声线卡解析不出 display_name 时，用 StoryCharacter 权威名而非 character_id。"""
+    """修复裸 id 泄漏：用 StoryCharacter 权威名而非 character_id。"""
     digest = build_character_contract_digest(
         pov_character_id="CHAR_2457AE17E4",
         onstage_character_ids=None,
-        voice_profile_content="林深：保持其说话方式与内心独白的一致性。",  # 无「角色名:」标签 → 解析不出 name
-        relation_profile_content=None,
         display_names={"CHAR_2457AE17E4": "林深"},
     )
     payload = json.loads(digest)
@@ -122,12 +84,10 @@ def test_build_character_contract_digest_uses_authoritative_display_names_over_r
 
 
 def test_build_character_contract_digest_falls_back_to_id_without_name_source() -> None:
-    """无权威名且声线卡无元数据时退化到 id（对照：修复仅在有名源时生效）。"""
+    """没有权威名时退化到 id（对照：修复仅在有名源时生效）。"""
     digest = build_character_contract_digest(
         pov_character_id="CHAR_NONAME",
         onstage_character_ids=None,
-        voice_profile_content="自由文本，无标签。",
-        relation_profile_content=None,
     )
     payload = json.loads(digest)
     assert payload["characters"][0]["display_name"] == "CHAR_NONAME"
