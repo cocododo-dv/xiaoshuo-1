@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sqlalchemy import select
 
@@ -61,15 +61,18 @@ def check_consistency(
     # distinguish "character is at the WRONG named place" from generic prose.
     # Locations live both as location entities AND as `location` facts asserted
     # on characters (location_change events), so gather both.
-    # 地点实体按 id 记账，正文里写的是它的名字 / 别名：两样都算已知地名（B11-01）。
-    known_locations = set()
+    # 地点实体按 id 记账，正文里写的是它的名字 / 别名：两样都算已知地名（B11-01）。同一个实体的几种写法
+    # 另外记成一组：事实里记的是其中一个名字、正文用了另一个，指的还是同一个地方。
+    known_locations: set[str] = set()
+    place_groups: list[frozenset[str]] = []
     for location_id in snapshot.entities_of_type("location"):
         if not location_id:
             continue
-        known_locations.add(location_id.lower())
         known = names.get(location_id)
-        if known is not None:
-            known_locations |= {name.lower() for name in known.match_names()}
+        spellings = known.match_names() if known is not None else ()
+        place = frozenset({location_id.lower(), *(name.lower() for name in spellings)})
+        known_locations |= place
+        place_groups.append(place)
     loc_values = store.session.execute(
         select(NarrativeEvent.fact_value).where(
             NarrativeEvent.project_id == project_id,
@@ -98,6 +101,7 @@ def check_consistency(
                 fact_key,
                 projected.fact_value,
                 known_locations=known_locations,
+                place_groups=tuple(place_groups),
             )
             if violation is not None:
                 violations.append(violation)
@@ -419,6 +423,8 @@ class _FactCheck:
     text_lower: str
     clauses: list[str]
     known_locations: set[str]
+    # 每组是同一个地点实体的全部写法（小写的 id、显示名、别名）
+    place_groups: tuple[frozenset[str], ...] = ()
 
     def violation(self, *, expected: str, actual: str, evidence: str) -> ConsistencyViolation:
         return ConsistencyViolation(
@@ -447,14 +453,31 @@ def _check_alive(check: _FactCheck) -> ConsistencyViolation | None:
     return None
 
 
+def _expected_place_names(check: _FactCheck) -> frozenset[str]:
+    """事实记下的那个地方在正文里的全部写法：值本身，加上有一个名字就是这个值、或写在这个值里（「钟楼顶上」里的
+    「钟楼」）的地点实体的每一个写法。"""
+    value = check.value_lower
+    if not value:
+        return frozenset()
+    names = {value}
+    for place in check.place_groups:
+        if any(name and name in value for name in place):
+            names |= place
+    return frozenset(names)
+
+
 def _check_location(check: _FactCheck) -> ConsistencyViolation | None:
-    """location：正文说角色「还在」另一个已知的地方。"""
-    wrong_locs = {loc for loc in check.known_locations if loc and loc != check.value_lower}
+    """location：正文说角色「还在」另一个已知的地方。
+
+    同一个地点实体的几种写法都算事实记下的那个地方：事实记「旧钟楼」、正文写它的显示名「钟楼」，不是错地方
+    （地点实体的名字算进已知地名之后，B11-01，不这样就会把对的正文判成 Q1）。"""
+    expected_names = _expected_place_names(check)
+    wrong_locs = {loc for loc in check.known_locations if loc and loc not in expected_names}
     for clause in check.clauses:
         if not check.entity.in_clause(clause):
             continue
-        if check.value_lower and check.value_lower in clause:
-            continue  # correct location mentioned → assume consistent
+        if any(name in clause for name in expected_names):
+            continue  # correct location mentioned (under any of its names) → assume consistent
         if not any(p in clause for p in _STILL_AT_PHRASES):
             continue
         # 一句里同时出现几个错地名时取最先出现的那个（以前按集合次序取，随进程的哈希种子变）
@@ -542,15 +565,7 @@ def _check_physical_state(check: _FactCheck) -> ConsistencyViolation | None:
     missing_limb = _physical_state_missing_limb(check.value_lower)
     if missing_limb:
         limb_violation = _check_missing_limb(
-            _FactCheck(
-                entity=check.entity,
-                fact_key="missing_limb",
-                fact_value=missing_limb,
-                value_lower=missing_limb.lower(),
-                text_lower=check.text_lower,
-                clauses=check.clauses,
-                known_locations=check.known_locations,
-            )
+            replace(check, fact_key="missing_limb", fact_value=missing_limb, value_lower=missing_limb.lower())
         )
         if limb_violation is not None:
             return check.violation(
@@ -651,12 +666,14 @@ def check_fact_against_text(
     fact_value: str,
     *,
     known_locations: set[str] | None = None,
+    place_groups: tuple[frozenset[str], ...] = (),
 ) -> ConsistencyViolation | None:
     """Contradiction detection for hard facts (blueprint §15: hard facts only).
 
     Clause-level proximity + synonym matching so the detector survives realistic
     prose, not just textbook-exact phrasings. Returns at most one violation.
     Soft facts (tone, relationship nuance) are deliberately out of scope.
+    ``known_locations`` 是全部已知地名（小写）；``place_groups`` 每组是同一个地点实体的全部写法。
     """
     checker = _FACT_CHECKERS.get(fact_key)
     if checker is None:
@@ -670,5 +687,6 @@ def check_fact_against_text(
             text_lower=text_lower,
             clauses=_split_clauses(text_lower),
             known_locations=known_locations or set(),
+            place_groups=place_groups,
         )
     )

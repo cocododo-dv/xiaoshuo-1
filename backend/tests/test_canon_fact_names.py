@@ -50,6 +50,33 @@ def test_location_entity_names_count_as_known_places(session) -> None:
     ]
 
 
+def test_another_name_of_the_same_place_is_not_a_wrong_place(session) -> None:
+    """地点实体的几种写法指同一个地方：顾舟的位置记的是别名「旧钟楼」，正文写显示名「钟楼」不算把人放错了地方
+    （地点实体的名字算进已知地名之后，这样写对的正文曾被判成 Q1）；位置记得更细（「钟楼顶上」）也一样。"""
+    seed_narrative_world(session)
+    log_fixture_fact(
+        session, scene_id=world_scene(1, 2), event_type="location_change",
+        entity_id=GUZHOU, fact_key="location", fact_value="旧钟楼",
+    )
+    session.commit()
+
+    def wrong_places(text: str) -> list[tuple[str, str]]:
+        report = NarrativeEventLog(session).check_consistency(text, WORLD_PROJECT, WORLD_TARGET_SCENE, character_ids=CAST)
+        return [(v.entity_id, v.actual) for v in report.violations]
+
+    assert wrong_places("顾舟还在钟楼等消息。") == []
+    assert wrong_places("顾舟还在旧钟楼等消息。") == []
+    assert wrong_places("顾舟还在北境等消息。") == [(GUZHOU, "text places 顾舟 at 北境")]
+
+    log_fixture_fact(
+        session, scene_id=world_scene(2, 1), event_type="location_change",
+        entity_id=GUZHOU, fact_key="location", fact_value="钟楼顶上",
+    )
+    session.commit()
+    assert wrong_places("顾舟还在旧钟楼等消息。") == []
+    assert wrong_places("顾舟还在雨城等消息。") == [(GUZHOU, "text places 顾舟 at 雨城")]
+
+
 def test_single_character_aliases_are_not_used_to_find_a_character(session) -> None:
     """单字别名在中文正文里几乎处处命中：只用两个字以上的名字找人。"""
     seed_narrative_world(session)
