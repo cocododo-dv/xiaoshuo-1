@@ -144,7 +144,7 @@ def test_step_with_override_keeps_members_on_the_assistant_and_triage_paths():
     override = {"scenes": [{"scene_id": f"SC{i:03d}", "summary": f"改第{i}场"} for i in range(1, 6)],
                 "fe_dirty": True}
 
-    merged = SnowflakeWorkspaceService._step_with_override(step, override, latest_by_step={})
+    merged = SnowflakeWorkspaceService._step_with_override("P", step, override, latest_by_step={})
     scenes = merged["draft"]["scenes"]
 
     assert len(scenes) == 12, f"助手/三分类底稿丢了场景：只剩 {len(scenes)} 场"

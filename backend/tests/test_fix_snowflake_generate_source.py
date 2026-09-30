@@ -127,7 +127,7 @@ def test_generate_records_react_trigger_source_on_step_run(client, monkeypatch) 
     step = response.json()["data"]["step"]
     assert step["last_generation_source"] == "llm"
     assert step["health"]["trigger_source"] == "fe_scaffold_ai"
-    assert step["artifact"]["diagnosis_json"]["trigger_source"] == "fe_scaffold_ai"
+    assert "diagnosis_json" not in step["artifact"]  # 变更回包不再带 health 的深拷贝（B06-05）
 
     # 确认会重建 health_json：触发入口是这一版草稿的出处事实，不能在确认时被抹掉。
     _approve(client, pid, "book_brief", key="ok")
@@ -135,6 +135,7 @@ def test_generate_records_react_trigger_source_on_step_run(client, monkeypatch) 
     approved = next(s for s in ws["steps"] if s["step_key"] == "book_brief")
     assert approved["status"] == "approved"
     assert approved["health"]["trigger_source"] == "fe_scaffold_ai"
+    assert approved["artifact"]["diagnosis_json"]["trigger_source"] == "fe_scaffold_ai"
 
     history = client.get(f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief/history").json()["data"]
     assert history["items"][0]["trigger_source"] == "fe_scaffold_ai"

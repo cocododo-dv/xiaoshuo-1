@@ -17,30 +17,28 @@ from novel_system.db.models import SceneCard, SnowflakeStepRun, StoryCharacter, 
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _materialize, _plan, _seed
+from tests.test_snowflake_rendering_mode import PROJECT_ID, _edit_plan, _materialize, _plan, _seed
 
 
 def _fill_u1(session, service: SnowflakeWorkspaceService) -> None:
-    plan = _plan(session, "u1")
-    service.update_scene_plan(
-        PROJECT_ID,
-        plan.scene_plan_id,
-        {
-            "onstage_chars_json": ["c2", "c3"],
-            "story_time": "第三天傍晚",
-            "expected_reader_emotion": "替她捏一把汗，又暗暗希望她再赌一次。",
-        },
+    _edit_plan(
+        service,
+        "u1",
+        onstage_chars_json=["c2", "c3"],
+        story_time="第三天傍晚",
+        expected_reader_emotion="替她捏一把汗，又暗暗希望她再赌一次。",
     )
 
 
 def test_method_fields_persist_materialize_and_reach_the_structure_brief(session) -> None:
     service = _seed(session)
+    # 库里的角色 id 带作品前缀（B06-01）；第 10 步的草稿里写的是前端的 c1 / c2 / c3
     for character_id, name, role in (("c1", "她", "主角"), ("c2", "弟弟", "盟友"), ("c3", "债主", "对手")):
-        session.add(StoryCharacter(character_id=character_id, project_id=PROJECT_ID, display_name=name, role=role, summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
+        session.add(StoryCharacter(character_id=f"{PROJECT_ID}_{character_id}", project_id=PROJECT_ID, display_name=name, role=role, summary_json={}, synopsis_json={}, bible_json={}, status="approved"))
     session.flush()
     _fill_u1(session, service)
     plan = _plan(session, "u1")
-    assert plan.onstage_chars_json == ["c2", "c3"]
+    assert plan.onstage_chars_json == [f"{PROJECT_ID}_c2", f"{PROJECT_ID}_c3"]
     assert plan.story_time == "第三天傍晚"
     assert plan.expected_reader_emotion.startswith("替她捏一把汗")
     payload = next(step for step in service.workspace(PROJECT_ID)["steps"] if step["step_key"] == "scene_details")["draft"]["scenes"]
@@ -49,7 +47,7 @@ def test_method_fields_persist_materialize_and_reach_the_structure_brief(session
 
     _materialize(session, service)
     card = session.get(SceneCard, plan.scene_id)
-    assert card.onstage_chars_json == ["c2", "c3"]
+    assert card.onstage_chars_json == [f"{PROJECT_ID}_c2", f"{PROJECT_ID}_c3"]
     assert card.writer_brief_json["story_time"] == "第三天傍晚"
     assert card.writer_brief_json["expected_reader_emotion"].startswith("替她捏一把汗")
     brief = render_scene_structure_brief(card, session) or ""
@@ -58,7 +56,7 @@ def test_method_fields_persist_materialize_and_reach_the_structure_brief(session
     assert "Reader should feel (读者应感到): 替她捏一把汗，又暗暗希望她再赌一次。" in brief
     # 刚物化完没有待同步；改了故事时间之后回流能追上
     assert service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))["pending_count"] == 0
-    service.update_scene_plan(PROJECT_ID, plan.scene_plan_id, {"story_time": "第四天清晨"})
+    _edit_plan(service, "u1", story_time="第四天清晨")
     status = service._resync_status(PROJECT_ID, service._scene_plans(PROJECT_ID))
     assert plan.scene_id in status["pending_scene_plan_ids"] or any(item["scene_id"] == plan.scene_id for item in status["pending_scenes"])
     service.resync_materialized_scenes(PROJECT_ID, {"scene_ids": [plan.scene_id]})

@@ -9,25 +9,14 @@ from __future__ import annotations
 
 import pytest
 
+from tests.real_llm_fakes import install_skeleton_snowflake
+
 
 @pytest.fixture(autouse=True)
 def _skeleton_snowflake_generate(monkeypatch):
     """假生成已退役：本文件只回归失效 / 复核 / 重展的链路，不关心生成质量——把 generate_step 打成
     规划器骨架直通，并开 llm_enabled 过路由闸。"""
-    from novel_system.services.hash_engine import normalize
-    from novel_system.services.snowflake_planner import SnowflakePlannerService
-    from novel_system.services.snowflake_workspace_llm import (
-        SnowflakeWorkspaceLLMService,
-        WorkspaceLLMResult,
-    )
-
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
-
-    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
-        payload = SnowflakePlannerService(self.session)._build_artifact_json(project, step_key, dict(latest_by_step))
-        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
-
-    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
+    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
 
 
 def _create_project(client, key: str) -> str:

@@ -13,11 +13,6 @@ SnowflakeReference = Annotated[str, Field(min_length=1, max_length=255)]
 class SnowflakeStepGenerateRequest(StrictRequestModel):
     """Fixed command envelope around an evolvable snowflake draft."""
 
-    # Kept for v1/v2 callers that explicitly name regeneration intent.  The
-    # workspace generator always creates a new step-run, so ``True`` does not
-    # need a separate service branch; retaining it makes that contract visible
-    # without reopening the envelope to arbitrary ignored fields.
-    force_new: bool | None = None
     skip: bool | None = None
     skip_reason: str | None = Field(default=None, max_length=4000)
     direction_text: str | None = Field(default=None, max_length=2000)
@@ -47,27 +42,13 @@ class SnowflakeStepGenerateRequest(StrictRequestModel):
     direction_index: int | None = Field(default=None, ge=0, le=8)
 
 
-class LegacySnowflakeStepGenerateRequest(StrictRequestModel):
-    """Public V1 planner command; generated artifacts remain service-owned."""
-
-    force_new: bool | None = None
-    skip: bool | None = None
-    skip_reason: str | None = Field(default=None, max_length=4000)
-
-
-class LegacySnowflakeArtifactUpdateRequest(StrictRequestModel):
-    artifact_json: BoundedJsonObject | None = None
-    diagnosis_json: BoundedJsonObject | None = None
-
-
 class SnowflakeFeCandidatesRequest(StrictRequestModel):
-    context: str | None = Field(default=None, max_length=6000)
-    draft: str | None = Field(default=None, max_length=3000)
     target_chars: int | None = Field(default=None, ge=40, le=400)
     use_direction_brief: bool | None = None
     # 阶段 U（2026-09-17）：「先看 3 个方向」是教练日志里的一种回合。ask 是作者对这一组方向的要求
     # （教练输入框里的那句话）；draft_override 与 generate / assistant 同源（本地最新规范草稿盖在存档上），
-    # 取代以前前端折叠的 context 文本；focus_scene_id 让第 10 步的方向只针对选中的那一场。
+    # 取代以前前端折叠的 context / draft 文本（2026-09-30 删掉：前端早已不发）；focus_scene_id 让第 10 步的
+    # 方向只针对选中的那一场。
     ask: str | None = Field(default=None, max_length=600)
     draft_override: BoundedJsonObject | None = None
     focus_scene_id: str | None = Field(default=None, max_length=255)
@@ -108,14 +89,6 @@ class SnowflakeAssistantRequest(StrictRequestModel):
 
 class SnowflakeSceneTriageSuggestRequest(StrictRequestModel):
     draft_override: BoundedJsonObject | None = None
-
-
-class SnowflakeAcceptStaleScenesRequest(StrictRequestModel):
-    scene_plan_ids: list[SnowflakeReference] | None = Field(
-        default=None,
-        max_length=10_000,
-    )
-    note: str | None = Field(default=None, max_length=10_000)
 
 
 class SnowflakeOrphanResolveRequest(StrictRequestModel):

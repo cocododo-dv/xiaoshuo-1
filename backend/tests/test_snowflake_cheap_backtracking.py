@@ -12,6 +12,8 @@ Ingermanson 的核心动力是「早回溯、多回溯」；评估核实了四�
 from __future__ import annotations
 
 import pytest
+
+from tests.real_llm_fakes import install_skeleton_snowflake
 from sqlalchemy import select
 
 from novel_system.db.models import SceneRunState, SnowflakeScenePlan
@@ -28,20 +30,7 @@ from tests.test_snowflake_closeout import (
 
 @pytest.fixture(autouse=True)
 def _skeleton_snowflake_generate(monkeypatch):
-    from novel_system.services.hash_engine import normalize
-    from novel_system.services.snowflake_planner import SnowflakePlannerService
-    from novel_system.services.snowflake_workspace_llm import (
-        SnowflakeWorkspaceLLMService,
-        WorkspaceLLMResult,
-    )
-
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
-
-    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
-        payload = SnowflakePlannerService(self.session)._build_artifact_json(project, step_key, dict(latest_by_step))
-        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
-
-    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
+    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
 
 
 def _statuses(client, project_id: str) -> dict[str, str]:

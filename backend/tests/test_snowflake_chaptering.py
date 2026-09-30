@@ -910,11 +910,14 @@ def test_resync_survives_a_chapter_that_is_not_in_the_catalog_yet(client, sessio
     _rechapter_into_unmaterialized_chapters(client, project_id)
     # 真的改一处内容再回流。以前这里不改也能过：物化与回流的 exit_change 配方不同，刚物化完的
     # 每一场都被算成「有改动」（阶段 C 把两边配方统一后，这个假阳性消失了）。
-    board = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace").json()["data"]["scene_board"]
-    first_plan_id = board["scenes"][0]["scene_plan_id"]
+    workspace = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace").json()["data"]
+    rows = [dict(row) for row in next(s for s in workspace["steps"] if s["step_key"] == "scene_details")["draft"]["scenes"]]
+    first_plan_id = rows[0]["scene_plan_id"]
+    rows[0]["hook"] = "回流前改过的钩子"
+    # 作者改一场走第 10 步的草稿（R15a 删掉了逐场的 PATCH …/scenes/{id}）
     edited = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/scenes/{first_plan_id}",
-        json={"hook": "回流前改过的钩子"},
+        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/scene_details",
+        json={"draft": {"scenes": rows}},
     )
     assert edited.status_code == 200, edited.text
 

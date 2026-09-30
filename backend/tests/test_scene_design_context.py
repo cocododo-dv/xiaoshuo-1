@@ -39,13 +39,14 @@ from novel_system.services.scene_structure_brief import (
     render_scene_structure_brief,
 )
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
-from novel_system.services.snowflake_planner import _scene_writer_brief
+from novel_system.services.snowflake_scene_brief import scene_writer_brief
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from tests.real_llm_fakes import install_online_pipeline
 
 PROJECT_ID = "prj-design"
-POV_ID = "c1"
-FOE_ID = "c2"
+# 库里的角色 id 带作品前缀（B06-01：雪花写入时规范成 f"{project_id}_{raw}"）
+POV_ID = f"{PROJECT_ID}_c1"
+FOE_ID = f"{PROJECT_ID}_c2"
 LOGLINE = "林一鸣必须在真凶今晚动手前证明自己无罪，但唯一的证据握在想让他认罪的人手里。"
 PENDING_LOGLINE = "一个还没确认的新一句话。"
 SENTENCES = [
@@ -491,8 +492,8 @@ def test_budget_compresses_then_omits_the_design_context_but_never_the_structure
 
 
 def test_writer_brief_leaves_unplanned_slots_empty_instead_of_inventing_them() -> None:
-    proactive = _scene_writer_brief("proactive", {})
-    reactive = _scene_writer_brief("reactive", {})
+    proactive = scene_writer_brief("proactive", {})
+    reactive = scene_writer_brief("reactive", {})
     for brief in (proactive, reactive):
         assert brief["scene_crucible"] == ""
         assert brief["must_withhold"] == ""
@@ -500,7 +501,7 @@ def test_writer_brief_leaves_unplanned_slots_empty_instead_of_inventing_them() -
     assert proactive["goal"] == "" and proactive["conflict"] == "" and proactive["setback"] == ""
     assert reactive["reaction"] == "" and reactive["dilemma"] == "" and reactive["decision"] == ""
     # 作者真写了就原样带走
-    explicit = _scene_writer_brief("proactive", {"goal": "拿到许可", "must_withhold": "别提旧案"})
+    explicit = scene_writer_brief("proactive", {"goal": "拿到许可", "must_withhold": "别提旧案"})
     assert explicit["goal"] == "拿到许可" and explicit["must_withhold"] == "别提旧案"
 
 

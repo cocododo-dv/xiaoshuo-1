@@ -31,7 +31,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from novel_system.db.models import SnowflakeDirectionBrief, utcnow
 from novel_system.services.hash_engine import sha256_json_normalized
-from novel_system.services.snowflake_steps import STEP_ORDER, list_step_definitions
+from novel_system.services.snowflake_steps import STEP_ORDER, step_definition_views
 
 KINDS = ("decision", "rejection", "constraint", "pending")
 SCOPES = ("step", "book")
@@ -399,7 +399,7 @@ class DirectionBriefStore:
         self.session = session
         self._labels = {
             str(definition["step_key"]): str(definition.get("label") or definition["step_key"])
-            for definition in list_step_definitions()
+            for definition in step_definition_views()
         }
 
     # ---------- 读 ----------
@@ -465,7 +465,7 @@ class DirectionBriefStore:
     def all_payloads(self, project_id: str) -> dict[str, dict[str, Any]]:
         rows = self.rows(project_id)
         out: dict[str, dict[str, Any]] = {}
-        for definition in list_step_definitions():
+        for definition in step_definition_views():
             key = str(definition["step_key"])
             payload = self.payload_for(project_id, key, rows)
             if payload is not None:

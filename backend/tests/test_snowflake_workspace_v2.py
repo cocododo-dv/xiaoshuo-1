@@ -431,7 +431,7 @@ def test_workspace_v2_step_history_restore_rejects_cross_project_runs(client) ->
     assert response.json()["error"]["code"] == "SNOWFLAKE_STEP_RUN_NOT_FOUND"
 
 
-def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(client, session) -> None:
+def test_workspace_v2_uses_structured_scene_plans_and_persists_triage_repair_patches(client, session) -> None:
     project = _create_project(client, key="structured-scene-plans")
     for step_key in [
         "book_brief",
@@ -469,13 +469,26 @@ def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(clie
     assert scene_plan is not None
     assert scene_plan.scene_plan_id
 
-    broken_response = client.patch(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scenes/{scene_plan.scene_plan_id}",
-        json={"setback": "", "goal": "Get the witness statement before the train leaves."},
+    def patch_scene(**fields) -> dict:
+        # 作者改一场走第 10 步的草稿（R15a 删掉了逐场的 PATCH …/scenes/{id}）
+        workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+        rows = [dict(row) for row in next(s for s in workspace["steps"] if s["step_key"] == "scene_details")["draft"]["scenes"]]
+        for row in rows:
+            if row["scene_plan_id"] == scene_plan.scene_plan_id:
+                row.update(fields)
+        response = client.patch(
+            f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details",
+            json={"draft": {"scenes": rows}},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["data"]["workspace"]
+
+    broken_workspace = patch_scene(setback="", goal="Get the witness statement before the train leaves.")
+    broken_scene = next(
+        item
+        for item in next(s for s in broken_workspace["steps"] if s["step_key"] == "scene_details")["draft"]["scenes"]
+        if item["scene_plan_id"] == scene_plan.scene_plan_id
     )
-    assert broken_response.status_code == 200, broken_response.text
-    broken_workspace = broken_response.json()["data"]["workspace"]
-    broken_scene = next(item for item in broken_workspace["scene_board"]["scenes"] if item["scene_plan_id"] == scene_plan.scene_plan_id)
     assert broken_scene["goal"].startswith("Get the witness")
     assert broken_scene["setback"] == ""
 
@@ -501,15 +514,8 @@ def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(clie
     assert triage_item["triage_id"]
     assert triage_item["repair_patch"]["setback"].startswith("The witness gives proof")
 
-    apply_response = client.post(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scene-triage/{triage_item['triage_id']}/apply",
-        json={},
-    )
-    assert apply_response.status_code == 200, apply_response.text
-    applied_scene = next(
-        item for item in apply_response.json()["data"]["workspace"]["scene_board"]["scenes"] if item["scene_plan_id"] == scene_plan.scene_plan_id
-    )
-    assert applied_scene["setback"].startswith("The witness gives proof")
+    # 修复补丁由作者在第 10 步里采纳（前端写进本地计划、随草稿上行）；服务端不再有「一键应用」的旁路
+    patch_scene(setback=triage_item["repair_patch"]["setback"])
 
     session.expire_all()
     stored_triage = session.get(SnowflakeSceneTriageItem, triage_item["triage_id"])
@@ -519,12 +525,13 @@ def test_workspace_v2_uses_structured_scene_plans_and_applies_triage_repair(clie
     assert stored_scene.setback.startswith("The witness gives proof")
 
 
-def test_workspace_v2_records_revision_links_when_upstream_step_is_reapproved(client, session) -> None:
+def test_workspace_v2_logs_one_cascade_event_when_upstream_step_is_reapproved(client, session) -> None:
+    """B06-14：一次失效级联留一条操作日志；snowflake_revision_links 不再写（从来没有读者）。"""
     project = _create_project(client, key="structured-revision-links")
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
-    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief")
     client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
         json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
@@ -551,17 +558,22 @@ def test_workspace_v2_records_revision_links_when_upstream_step_is_reapproved(cl
         )
         .one()
     )
-    link = (
-        session.query(SnowflakeRevisionLink)
+    approved_brief = (
+        session.query(SnowflakeStepRun)
         .filter(
-            SnowflakeRevisionLink.project_id == project["project_id"],
-            SnowflakeRevisionLink.source_step_key == "book_brief",
-            SnowflakeRevisionLink.affected_kind == "step_run",
-            SnowflakeRevisionLink.affected_id == stale_run.step_run_id,
+            SnowflakeStepRun.project_id == project["project_id"],
+            SnowflakeStepRun.step_key == "book_brief",
+            SnowflakeStepRun.status == "approved",
         )
         .one()
     )
-    assert link.status == "open"
+    [log] = session.query(OperationLog).filter_by(event_type="snowflake_downstream_marked_stale").all()
+    assert log.object_ref == approved_brief.step_run_id
+    assert log.payload_json["step_key"] == "book_brief"
+    assert log.payload_json["affected_step_run_ids"] == [stale_run.step_run_id]
+    assert log.payload_json["affected_step_keys"] == ["one_sentence_summary"]
+    assert log.payload_json["reasons"]["one_sentence_summary"] == stale_run.stale_reason
+    assert session.query(SnowflakeRevisionLink).filter_by(project_id=project["project_id"]).count() == 0
 
 
 def test_workspace_v2_supports_structured_save_assistant_and_step_approval(client, session) -> None:
@@ -647,7 +659,12 @@ def test_workspace_v2_step_health_reports_structural_pressure_gaps(client) -> No
     assert health["gaps"] == health["pressure_flags"]
     assert health["next_actions"] == health["fix_steps"]
     assert isinstance(health["hard_blockers"], list)
-    assert step["artifact"]["diagnosis_json"]["pressure_score"] == health["pressure_score"]
+    # 变更回包不再带 health 的深拷贝（B06-05）；GET 的工作台照旧带
+    assert "diagnosis_json" not in step["artifact"]
+    assert "diagnosis_json" not in response.json()["data"]["step_run"]
+    fetched = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    fetched_step = next(item for item in fetched["steps"] if item["step_key"] == "book_brief")
+    assert fetched_step["artifact"]["diagnosis_json"]["pressure_score"] == health["pressure_score"]
 
 
 def test_workspace_v2_marks_downstream_steps_stale_after_upstream_regeneration(client) -> None:
@@ -657,7 +674,7 @@ def test_workspace_v2_marks_downstream_steps_stale_after_upstream_regeneration(c
 
     # P0-3: staleness is diff-aware, so the upstream revision must actually change
     # book_brief's content to invalidate the step that consumed it.
-    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief")
     client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
         json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
@@ -674,7 +691,7 @@ def test_workspace_v2_accepts_stale_step_with_audit_trail(client, session) -> No
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
 
-    replacement = _generate_step(client, project["project_id"], "book_brief", {"force_new": True})
+    replacement = _generate_step(client, project["project_id"], "book_brief")
     client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief",
         json={"draft": {**replacement["step"]["draft"], "target_reader": "改稿后聚焦的全新读者群体。"}},
@@ -718,7 +735,7 @@ def test_workspace_v2_accepts_stale_step_with_audit_trail(client, session) -> No
     assert log.payload_json["note"] == "The one-sentence promise still matches the revised audience."
 
 
-def test_workspace_v2_accepts_stale_scenes_for_materialization(client, session) -> None:
+def test_workspace_v2_step_accept_stale_clears_stale_scenes_for_materialization(client, session) -> None:
     project = _create_project(client, key="accept-stale-scenes")
     for step_key in [
         "book_brief",
@@ -744,20 +761,34 @@ def test_workspace_v2_accepts_stale_scenes_for_materialization(client, session) 
     for scene in scene_plans:
         scene.status = "stale"
         scene.stale_reason = "book_brief was revised; review dependent scene work."
+    details_run = (
+        session.query(SnowflakeStepRun)
+        .filter(
+            SnowflakeStepRun.project_id == project["project_id"],
+            SnowflakeStepRun.step_key == "scene_details",
+            SnowflakeStepRun.status == "approved",
+        )
+        .one()
+    )
+    details_run.status = "stale"
+    details_run.stale_reason = "scene_list 改了被消费字段 ['scenes']"
     session.commit()
 
     blocked = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
     assert blocked["materialization_gate"]["status"] == "blocked"
 
+    # R15a：第 10 步的「已复核」连同过期的场景计划一起复核（逐场的接口已删）
     accept_response = client.post(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scenes/accept-stale",
-        json={"scene_plan_ids": [scene.scene_plan_id for scene in scene_plans], "note": "Reviewed after premise update."},
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details/accept-stale",
+        json={"note": "Reviewed after premise update."},
         headers={"X-Operator-Ref": "author-b"},
     )
     assert accept_response.status_code == 200, accept_response.text
     accepted_workspace = accept_response.json()["data"]["workspace"]
     assert accepted_workspace["materialization_gate"]["status"] != "blocked"
-    accepted_scene = accepted_workspace["scene_board"]["scenes"][0]
+    accepted_scene = next(
+        s for s in accepted_workspace["steps"] if s["step_key"] == "scene_details"
+    )["draft"]["scenes"][0]
     assert accepted_scene["status"] == "stale"
     assert accepted_scene["stale_accepted_at"]
     assert accepted_scene["stale_accepted_by"] == "author-b"
@@ -1443,9 +1474,11 @@ def test_workspace_v2_scene_triage_suggest_returns_non_persistent_suggestions(cl
     )
 
 
-def test_workspace_v2_scene_triage_fallback_uses_chinese_coaching_copy(client, monkeypatch) -> None:
+def test_workspace_v2_scene_triage_suggest_is_fail_closed_without_llm(client, session, monkeypatch) -> None:
+    """B06-20：AI 分诊与教练 / 方向同一条路——没有模型就 409 + 去配置的 author_action，不拿规则诊断冒充 AI 分诊。
+    规则诊断照旧不用点就在 triage_items 里（triage_source = auto_diagnosis）。"""
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
-    project = _create_project(client, key="triage-fallback-cn")
+    project = _create_project(client, key="triage-fail-closed")
     for step_key in [
         "book_brief",
         "one_sentence_summary",
@@ -1460,35 +1493,26 @@ def test_workspace_v2_scene_triage_fallback_uses_chinese_coaching_copy(client, m
     ]:
         _approve_generated_step(client, project["project_id"], step_key)
 
-    workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
-    scene_step = next(step for step in workspace["steps"] if step["step_key"] == "scene_details")
-    weak_scene = {
-        **scene_step["draft"]["scenes"][0],
-        "scene_type": "proactive",
-        "scene_crucible": "A room.",
-        "goal": "Talk to the witness.",
-        "conflict": "They argue.",
-        "setback": "",
-    }
-    save_response = client.patch(
-        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details",
-        json={"draft": {"scenes": [weak_scene]}},
-    )
-    assert save_response.status_code == 200, save_response.text
-
     response = client.post(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/scene-triage/suggest",
         json={},
     )
-    assert response.status_code == 200, response.text
-    payload = response.json()["data"]
-    item = payload["items"][0]
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "SNOWFLAKE_LLM_NOT_CONFIGURED"
+    assert error["details"]["author_action"]
+    assert error["details"]["node_id"] == "snowflake_scene_triage"
 
-    assert payload["source"] == "fallback"
-    assert "修复场景压力" in item["notes"]
-    assert "Repair scene pressure" not in item["notes"]
-    assert item["fix_steps"]
-    assert all("setback" not in step for step in item["fix_steps"])
+    workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    assert workspace["triage_items"]
+    assert all(item["triage_source"] == "auto_diagnosis" for item in workspace["triage_items"])
+    session.expire_all()
+    assert (
+        session.query(SnowflakeSceneTriageItem)
+        .filter(SnowflakeSceneTriageItem.project_id == project["project_id"])
+        .count()
+        == 0
+    )
 
 
 def test_workspace_v2_persists_triage_repair_metadata_and_blocks_rewrite_materialization(client, session) -> None:
@@ -1561,6 +1585,18 @@ def test_workspace_v2_computes_rule_first_scene_diagnostics_and_blocks_auto_rewr
         "scene_details",
     ]:
         _approve_generated_step(client, project["project_id"], step_key)
+
+    # 形态归 09（第 10 步的草稿不改已有场的形态 / 视角）：先在场景列表里把前两场的形态对调并确认
+    workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    listed = [dict(row) for row in next(step for step in workspace["steps"] if step["step_key"] == "scene_list")["draft"]["scenes"]]
+    listed[0].update(primary_form="reactive", scene_type="reactive")
+    listed[1].update(primary_form="proactive", scene_type="proactive")
+    relisted = client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_list",
+        json={"draft": {"scenes": listed}},
+    )
+    assert relisted.status_code == 200, relisted.text
+    _approve_step(client, project["project_id"], "scene_list")
 
     workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
     scene_step = next(step for step in workspace["steps"] if step["step_key"] == "scene_details")

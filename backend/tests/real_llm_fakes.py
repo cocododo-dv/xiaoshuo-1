@@ -245,35 +245,11 @@ def install_online_writer_pipeline(monkeypatch) -> None:
         monkeypatch.setattr(f"{module}.LLMNodeRunner", _runner_factory)
 
 
-def install_skeleton_snowflake(monkeypatch) -> None:
-    """假生成已退役：把雪花 generate_step 整体替换成「规划器骨架直通」。
+def install_skeleton_snowflake(monkeypatch, *, llm_enabled: bool = False) -> None:
+    """假生成已退役：把雪花 generate_step 整体替换成「骨架直通」（实现与说明在 tests/snowflake_skeleton.py）。"""
+    from tests.snowflake_skeleton import install_skeleton_snowflake as _install
 
-    只回归物化/失效/收口链路、不关心生成质量的雪花用例用它。整体替换 generate_step
-    即绕过内部 _run_structured_task 的 llm_enabled 闸，故**不**设 NOVEL_SYSTEM_LLM_ENABLED
-    ——留 LLM 关闭，让同文件里的诚实回退用例（场景急救/驻场教练 fallback）继续走 fallback 分支。"""
-    from novel_system.services.hash_engine import normalize
-    from novel_system.services.snowflake_planner import SnowflakePlannerService
-    from novel_system.services.snowflake_workspace_llm import (
-        SnowflakeWorkspaceLLMService,
-        WorkspaceLLMResult,
-    )
-    from novel_system.settings import get_settings
-
-    original_generate_step = SnowflakeWorkspaceLLMService.generate_step
-
-    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
-        # 显式设了 llm_enabled 的「live」用例自带 LLM 替身，委托真实 generate_step 走它们的
-        # 设定；LLM 关闭的物化/失效用例才用规划器骨架直通。
-        if get_settings().llm_enabled:
-            return original_generate_step(
-                self, project=project, step_key=step_key, latest_by_step=latest_by_step, **kwargs
-            )
-        payload = SnowflakePlannerService(self.session)._build_artifact_json(
-            project, step_key, dict(latest_by_step)
-        )
-        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
-
-    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
+    _install(monkeypatch, llm_enabled=llm_enabled)
 
 
 def _response(request: LLMRequest, payload: dict, sequence: int) -> LLMResponse:

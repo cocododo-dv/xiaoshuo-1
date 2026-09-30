@@ -1,7 +1,7 @@
 """Retire the pre-v3 style-reference repairs that ran on every boot (data only).
 
 Revision ID: 20260929_0094
-Revises: 20260924_0092
+Revises: 20260929_0093
 Create Date: 2026-09-29
 
 B03-29：启动恢复每次开机都扫两遍旧版遗留的状态，第一次 v3 开机之后就再也没有候选了：
@@ -27,7 +27,7 @@ from alembic import op
 
 
 revision = "20260929_0094"
-down_revision = "20260924_0092"
+down_revision = "20260929_0093"
 branch_labels = None
 depends_on = None
 

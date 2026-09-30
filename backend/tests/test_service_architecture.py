@@ -231,6 +231,10 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
         "novel_system.db.models",
         "novel_system.services.catalog_ordering",
     },
+    # 2026-09-30 P03：雪花构思的纯函数叶子（三种草稿合并、场景简报、步骤目录）
+    "novel_system.services.snowflake_draft_merge": {"novel_system.services.hash_engine"},
+    "novel_system.services.snowflake_scene_brief": {"novel_system.services.value_coercion"},
+    "novel_system.services.snowflake_step_catalog": set(),
 }
 
 

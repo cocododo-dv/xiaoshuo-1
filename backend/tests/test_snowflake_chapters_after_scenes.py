@@ -177,5 +177,6 @@ def test_outline_prompt_no_longer_hardcodes_a_chapter_count() -> None:
     )["templates"]
     outline = templates["snowflake_generate_long_synopsis"]
     assert "12-20 chapters" not in outline["task_prompt"]
-    assert "`chapters: []`" in outline["task_prompt"] or "chapters: []" in outline["task_prompt"]
+    # R11（v7）：07 不再要章表——分章在分章面板里做（阶段 K 的 `chapters: []` 约定随之收掉）
+    assert "Do not return a chapter table" in outline["task_prompt"]
     assert "600-1000 Chinese characters" in outline["task_prompt"]

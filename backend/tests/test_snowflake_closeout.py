@@ -24,27 +24,14 @@ from novel_system.services.snowflake_steps import (
 )
 import pytest
 
+from tests.real_llm_fakes import install_skeleton_snowflake
+
 
 @pytest.fixture(autouse=True)
 def _skeleton_snowflake_generate(monkeypatch):
     """假生成已退役：本文件回归收口三项（行级不可变身份/三幕单向派生/祖先快照失效），
     不关心生成质量——把 generate_step 打成「规划器骨架直通」，并开 llm_enabled 过路由闸。"""
-    from novel_system.services.hash_engine import normalize
-    from novel_system.services.snowflake_planner import SnowflakePlannerService
-    from novel_system.services.snowflake_workspace_llm import (
-        SnowflakeWorkspaceLLMService,
-        WorkspaceLLMResult,
-    )
-
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
-
-    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
-        payload = SnowflakePlannerService(self.session)._build_artifact_json(
-            project, step_key, dict(latest_by_step)
-        )
-        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
-
-    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
+    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
 
 
 def _create_project(client, *, key: str) -> dict:
@@ -329,7 +316,7 @@ def test_closeout2_generator_does_not_persist_three_act(client) -> None:
 
 
 class _Row:
-    """Minimal stand-in for a SnowflakeStepRun / SnowflakeArtifact in unit tests."""
+    """Minimal stand-in for a SnowflakeStepRun in unit tests."""
 
     def __init__(self, step_key: str, consumed: dict | None) -> None:
         self.step_key = step_key
@@ -469,9 +456,9 @@ def test_closeout3_stale_accept_does_not_disturb_other_steps(client) -> None:
     assert _step(workspace, "one_sentence_summary")["status"] == "approved"
 
 
-def test_closeout3_planner_and_workspace_agree_on_stale_set(client, session) -> None:
-    # Both stacks route through the same recompute_stale judgment, so an identical
-    # spine revision must invalidate the identical set of downstream steps.
+def test_closeout3_spine_revision_stales_exactly_its_consumers(client, session) -> None:
+    # A spine revision invalidates exactly the downstream steps that consume the changed field
+    # (the retired v1 planner used to be checked against the same judgment here).
     ws = _create_project(client, key="agree-ws")
     wpid = ws["project_id"]
     _approve_through(client, wpid, "short_synopsis")
@@ -494,7 +481,7 @@ def test_closeout3_planner_and_workspace_agree_on_stale_set(client, session) -> 
     }
 
     assert ws_stale == {"character_sheets", "short_synopsis"}
-    # The shared field map is what guarantees the planner stack would agree: the
-    # revision touched only `sentences`, which short_synopsis consumes.
+    # The field map is what makes it exact: the revision touched only `sentences`,
+    # which short_synopsis (and the character sheets) consume.
     assert FIELDS_CONSUMED["short_synopsis"]["one_paragraph_summary"] == {"sentences"}
     assert changed_fields(field_sigs(para), field_sigs({**para, "sentences": new_sentences})) == {"sentences"}
