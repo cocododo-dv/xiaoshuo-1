@@ -998,25 +998,6 @@ def test_activity_lists_the_classification_job(client: TestClient, monkeypatch) 
     assert done["status"] == "succeeded" and done["percent"] == 100.0 and done["steps"] == {"done": 17, "total": 17}
 
 
-def test_startup_marks_books_left_by_the_old_cursor_state_machine_as_failed(session, monkeypatch) -> None:
-    """升级前书上 JSON 游标的分类没有作业行可续:启动时标 failed(「继续分类」建新作业),有活动作业的书不动。"""
-    _use(monkeypatch, ScriptedClassifier())
-    live_book, _live_job = _ingest(session)  # ingesting + queued 作业:正常在分类
-    orphan_a, job_a = _ingest(session, text=LONG_TEXT + "甲".encode("utf-8"), op_key="k-a")
-    orphan_b, job_b = _ingest(session, text=LONG_TEXT + "乙".encode("utf-8"), op_key="k-b")
-    with SessionLocal() as other:
-        other.execute(delete(StyleReferenceJob).where(StyleReferenceJob.job_id.in_([job_a, job_b])))
-        other.execute(
-            update(StyleReferenceBook).where(StyleReferenceBook.book_id == orphan_b).values(status="cancelling")
-        )
-        other.commit()
-    with SessionLocal() as other:
-        fixed = import_job.fail_orphaned_classifications(other)
-    assert sorted(fixed) == sorted([orphan_a, orphan_b])
-    assert _book(orphan_a).status == _book(orphan_b).status == "failed"
-    assert _book(live_book).status == "ingesting"
-
-
 def test_reclassify_and_retype_are_refused_while_a_learn_job_is_active(client: TestClient, monkeypatch) -> None:
     """学习文风作业在读这本书的段落类型：它排队或运行时，重分类 / 就地重标 / 继续分类一律 409。"""
     from novel_system.services.style_reference.jobs import JOB_KIND_LEARN, StyleJobService

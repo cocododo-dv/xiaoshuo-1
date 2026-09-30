@@ -30,7 +30,6 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_drafts import AuthorDraftService
-from novel_system.services.bundle_builder import resolve_scene_style_runtime_contract
 from novel_system.services.context_budget import finalize_request_budget
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
 from novel_system.services.near_final import NearFinalPlanningService, _planning_user_prompt
@@ -47,7 +46,7 @@ from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
     resolve_style_scope,
 )
-from novel_system.services.style_policy import policy_from_contract
+from novel_system.services.style_policy import style_policy_live
 from novel_system.services.style_reference.inject.render import render_style
 from novel_system.services.style_reference.inject.request import PLAN_K, StyleRenderRequest
 from novel_system.services.style_reference.planning_context import (
@@ -289,7 +288,8 @@ def test_render_honours_the_k_cap(session) -> None:
     _seed_scene(session)
     _bind_project("wp6_kcap")
     scene = session.get(SceneCard, SCENE_ID)
-    policy = policy_from_contract(resolve_scene_style_runtime_contract(session, scene), mode="resolved")
+    policy = style_policy_live(session, scene)  # 按这一场现解析并冻结一份契约（与起草同一条路）
+    assert policy.bound and policy.contract is not None
 
     def _render(k_cap):
         return render_style(session, policy, StyleRenderRequest(scene_id=SCENE_ID, k_cap=k_cap))
@@ -335,7 +335,7 @@ def test_inject_style_reference_prefix_caps_windows_and_labels_resolved_contract
     assert len(capped["_style_reference_runtime_audit"]["contract_hash"]) == 64
 
     # 调用方给出自己解析的契约：审计标 resolved_live，契约哈希与给出的契约一致
-    contract = resolve_scene_style_runtime_contract(session, scene)
+    contract = style_policy_live(session, scene).contract
     assert contract is not None
     resolved = inject_style_reference_prefix(
         session,

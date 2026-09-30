@@ -1,18 +1,7 @@
-"""Style Reference v1.1 文本工具(纯函数)。
+"""风格参考的文本工具(纯函数):解码(UTF-8 → GB18030)、规范化、校验和、切段(带偏移)、切句、压空白,副文本 /
+场分隔行的判定与场界的记录 / 重映射。
 
-本文件的函数全部从仓库内已验证的实现拷贝而来,**不通过 import 旧模块复用**
-(全局纪律 C:新模块不依赖旧模块);旧模块在整体下线时一并删除。
-
-拷贝来源:
-- `decode_text`             ← `services/reference_learning.py:1638-1644` `_decode_text`
-- `normalize_text`          ← `services/reference_learning.py:2123-2124` `_normalize_text`
-- `compute_text_checksum`   ← `services/reference_learning.py:199` 内联实现
-- `split_paragraphs`        ← `services/reference_learning.py:2131` 内联 + offset 追踪
-- `split_sentences`         ← `services/literary_quality.py:1701-1702` `_sentences`(扩 `…`;
-  2026-09 v2 重写:闭引号归并前句、ASCII 句点仅在空白 / 行尾前切、不产生纯标点片段)
-- `compact_ws`              ← `services/literary_quality.py:1748-1749` `_compact_ws`
-
-新模块的 book_id 命名为 `sr_book_{sha256[:12]}`(旧模块用 `refbook_{sha256[:12]}`)。
+新导入的书的 book_id 命名为 ``sr_book_{校验和[:12]}``(见 :func:`compute_text_checksum`)。
 """
 
 from __future__ import annotations

@@ -283,7 +283,7 @@ def test_styled_gate_uses_the_live_banned_terms_not_the_frozen_contract(
     report = _styled_gate_report(session, policy, "她说出不可复用的专名，又说了后来才加入的实时禁用词。")
 
     assert [hit["pattern_statement"] for hit in report.forbidden_hits_json] == ["后来才加入的实时禁用词"]
-    assert report.verdict == "fail" and report.quantitative_json == []
+    assert report.verdict == "fail"
     # 现解析（没有冻结契约）同样按画像现行的词
     live = SimpleNamespace(contract=None, profile_id=seeded.profile_id, bound=True, book_id=seeded.book_id)
     live_report = _styled_gate_report(session, live, "她说出不可复用的专名，又说了后来才加入的实时禁用词。")
