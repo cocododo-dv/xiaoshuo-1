@@ -1079,6 +1079,11 @@ class QcReport(Base):
 
 class WriterEvaluation(Base):
     __tablename__ = "writer_evaluations"
+    __table_args__ = (
+        # 场景诊断按（对象、评审口径）取最新一行、按父行取各镜头行（迁移 20260929_0095）
+        Index("ix_writer_evaluations_object", "object_type", "object_id", "rubric_id", "created_at"),
+        Index("ix_writer_evaluations_parent", "parent_evaluation_id"),
+    )
 
     evaluation_id: Mapped[str] = mapped_column(String, primary_key=True)
     object_type: Mapped[str] = mapped_column(String)
@@ -1147,6 +1152,8 @@ class PassagePatchCandidate(Base):
             "author_decision IN ('pending','accepted','rejected','regenerate')",
             name="ck_passage_patch_candidates_author_decision",
         ),
+        # 一个对象（场 / 章）的改写候选按时间取（迁移 20260929_0095）
+        Index("ix_passage_patch_candidates_object", "object_type", "object_id", "created_at"),
     )
 
     patch_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -1212,6 +1219,8 @@ class AuthorDraft(Base):
     __table_args__ = (
         CheckConstraint("object_type IN ('scene','chapter','project')", name="ck_author_drafts_object_type"),
         CheckConstraint("status IN ('current','superseded','archived')", name="ck_author_drafts_status"),
+        # 「这一场 / 这一章的当前作者稿」：十来处按（对象、状态）取最新一份（迁移 20260929_0095）
+        Index("ix_author_drafts_object", "object_type", "object_id", "status", "updated_at"),
     )
 
     draft_id: Mapped[str] = mapped_column(String, primary_key=True)
