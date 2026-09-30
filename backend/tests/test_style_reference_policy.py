@@ -171,3 +171,77 @@ def test_light_live_policy_degrades_when_the_bound_profile_is_not_active(session
     session.commit()
     revived = style_policy_live(session, _scope(project_id), freeze_contract=False)
     assert revived.bound and revived.binding_id == binding.binding_id and revived.profile_id == archived
+
+
+def test_light_and_frozen_paths_rank_bindings_the_same_way(session) -> None:
+    """轻量现解析与冻结路径是同一份排序（inject.bindings.rank_bindings）：随机的一组绑定（各作用域、同层多条、
+    有的画像已归档、创建时间有并列）上，两条路径选中同一条；可用的一条都没有时轻量路径降级、指向排在最前的那条。"""
+    import random
+
+    from novel_system.db.models import StoryProject, StyleReferenceInjectionBinding
+    from novel_system.services.style_policy import MODE_DEGRADED, style_policy_live
+    from novel_system.services.style_reference.inject.bindings import (
+        ordered_character_ids,
+        rank_bindings,
+        resolve_active_binding,
+    )
+    from tests.style_reference_factories import make_binding, make_book, make_profile, synthetic_paragraphs
+
+    project_id = "PRJ_RANK"
+    session.add(StoryProject(project_id=project_id, title="rank", outline_text=""))
+    book_id = make_book(session, "book_rank", paragraphs=synthetic_paragraphs(4))
+    # 同一画像在同一目标上只能有一条绑定（唯一索引）：多备几份画像，同层才会有多条
+    profiles = [
+        make_profile(session, book_id, profile_id=f"profile_rank_{n}", status="archived" if n % 3 == 2 else "active")
+        for n in range(9)
+    ]
+    targets = [
+        ("scene", "SC_RANK"),
+        ("scene", "SC_ELSEWHERE"),
+        ("character", "C_POV"),
+        ("character", "C_TWO"),
+        ("character", "C_OFFSTAGE"),
+        ("project", project_id),
+        ("project", "PRJ_ELSEWHERE"),
+        ("global", None),
+    ]
+    scope = SimpleNamespace(
+        project_id=project_id, scene_id="SC_RANK", pov_character_id="C_POV", onstage_chars_json=["C_TWO", "C_POV"]
+    )
+    character_ids = ordered_character_ids(scope.pov_character_id, scope.onstage_chars_json)
+    rng = random.Random(29)
+    degraded_seen = bound_seen = 0
+    for trial in range(10):
+        session.query(StyleReferenceInjectionBinding).delete()
+        used: set[tuple[str, str, str | None]] = set()
+        # 每四轮有一轮只绑已归档的画像：轻量路径要降级
+        pool = profiles[2::3] if trial % 4 == 3 else profiles
+        for number in range(rng.randint(1, 6)):
+            target_scope, ref = rng.choice(targets)
+            profile_id = rng.choice(pool)
+            if (profile_id, target_scope, ref) in used:
+                continue
+            used.add((profile_id, target_scope, ref))
+            binding = make_binding(
+                session,
+                profile_id,
+                binding_id=f"bind_rank_{trial}_{number}",
+                scope=target_scope,
+                scope_ref_id=ref,
+            )
+            binding.created_at = f"2026-09-0{rng.randint(1, 2)}T00:00:00.00000{rng.randint(0, 1)}+00:00"
+        session.commit()
+        light = style_policy_live(session, scope, freeze_contract=False)
+        frozen = resolve_active_binding(
+            session, project_id, "scene_generation", character_ids=character_ids, scene_id="SC_RANK"
+        )
+        ranked = rank_bindings(session, project_id, "scene_generation", character_ids=character_ids, scene_id="SC_RANK")
+        if frozen is not None:
+            bound_seen += 1
+            assert light.bound and light.binding_id == frozen.binding_id, trial
+        elif ranked:
+            degraded_seen += 1
+            assert light.mode == MODE_DEGRADED and light.binding_id == ranked[0].binding.binding_id, trial
+        else:
+            assert not light.bound and light.mode != MODE_DEGRADED, trial
+    assert bound_seen and degraded_seen

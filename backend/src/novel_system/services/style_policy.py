@@ -35,7 +35,6 @@ from novel_system.services.style_reference.binding_config import (
     sends_card,
     sends_samples,
 )
-from novel_system.services.style_reference.inject.bindings import SCOPE_RANK
 from novel_system.services.style_reference.runtime_contract import (
     contract_layer,
     contract_payload_fingerprint,
@@ -55,7 +54,6 @@ MODE_DEGRADED = "degraded"
 # 2026-09-24（契约文档 §8.1 C7）：轻量现解析里，作者的绑定指向的画像不是 active（归档 / 草稿）——不是「没有绑定」，
 # 是「绑了、暂时用不了」：策略降级并带上画像 / 绑定 / 书的 id，抄袭门由此报 unavailable（不是 0 本书通过）
 PROFILE_NOT_ACTIVE_CODE = "STYLE_REFERENCE_PROFILE_NOT_ACTIVE"
-_UNMATCHED_RANK = 99
 
 _CACHE_MAX = 64
 _CACHE: "OrderedDict[str, StylePolicy]" = OrderedDict()
@@ -195,8 +193,8 @@ def style_policy_live(
 
     ``freeze_contract=False``（P5a）：只读绑定 / 画像状态 / 书的云策略三处的几列，不冻结契约（``contract`` /
     ``contract_hash`` 为 None）——给只需要「绑没绑、是否让位、参考的是哪本书 / 哪份画像」的节点用
-    （场景诊断逐场判定、抄袭门、写作台采纳）。冻结一份契约要读全书段落算根哈希（真实库约 0.8 s），
-    逐场做不起；要渲染参考的节点仍用默认的冻结路径。选层规则与注入单选一致：scene > character（POV
+    （场景诊断逐场判定、抄袭门、写作台采纳）。冻结一份契约要读整份画像与书快照（段落根哈希已存在 ``stats_json``
+    里，真实库每次约 20–50 ms，轻路径约 2 ms），逐场做太贵；要渲染参考的节点仍用默认的冻结路径。选层规则与注入单选一致：scene > character（POV
     优先）> project > global，同层取最新——最具体的一层说了算。命中的绑定里没有一条指向 active 画像时
     **降级**（``error_code=STYLE_REFERENCE_PROFILE_NOT_ACTIVE``，带最具体那条的 profile / binding / book id），
     不当作未绑定（C7）。
@@ -235,86 +233,43 @@ def style_policy_live(
     return policy_from_contract(contract, mode=MODE_LIVE)
 
 
-def _scope_character_ids(scope: Any) -> list[str]:
-    ids: list[str] = []
-    for value in [getattr(scope, "pov_character_id", None), *(getattr(scope, "onstage_chars_json", None) or [])]:
-        text = str(value or "").strip()
-        if text and text not in ids:
-            ids.append(text)
-    return ids
-
-
 def _live_policy_without_contract(session: Any, scope: Any, *, task_type: str) -> StylePolicy:
     """``style_policy_live(..., freeze_contract=False)`` 的实现：只查几列，不加载画像 JSON、不冻结契约。
 
-    与冻结路径同一条选层规则（``inject.bindings.SCOPE_RANK``：scene > character（POV 在前）> project > global，
-    同层取最新），且同样只在指向 active 画像的绑定里选；命中的绑定**全部**指向非 active 画像时不再回答
+    选层与冻结路径是同一份排序（``inject.bindings.rank_bindings``：scene > character（POV 在前）> project >
+    global，同层取最新），同样只在指向 active 画像的绑定里选；命中的绑定**全部**指向非 active 画像时不再回答
     「未绑定」，而是降级（C7）——冻结路径在这种情形下冻不出契约，这里给出同样的降级形状。"""
-    project_id = str(getattr(scope, "project_id", None) or "") or None
-    scene_id = str(getattr(scope, "scene_id", None) or "") or None
-    character_ids = _scope_character_ids(scope)
-    if not project_id and not scene_id and not character_ids:
-        return UNBOUND
     try:
         from sqlalchemy import select
 
-        from novel_system.db.models import (
-            StyleReferenceBook,
-            StyleReferenceInjectionBinding,
-            StyleReferenceProfile,
-        )
+        from novel_system.db.models import StyleReferenceBook
+        from novel_system.services.style_reference.inject.bindings import ordered_character_ids, rank_bindings
         from novel_system.services.style_reference.runtime_contract import resolve_draft_mode
 
-        bindings = list(
-            session.execute(
-                select(StyleReferenceInjectionBinding).where(
-                    StyleReferenceInjectionBinding.task_type == task_type,
-                    StyleReferenceInjectionBinding.status == "active",
-                )
-            ).scalars()
+        ranked = rank_bindings(
+            session,
+            getattr(scope, "project_id", None),
+            task_type,
+            character_ids=ordered_character_ids(
+                getattr(scope, "pov_character_id", None), getattr(scope, "onstage_chars_json", None)
+            ),
+            scene_id=getattr(scope, "scene_id", None),
         )
-
-        def rank(binding: Any) -> tuple[int, int]:
-            ref = str(binding.scope_ref_id or "")
-            scope_name = str(binding.scope or "")
-            if scene_id and scope_name == "scene" and ref == scene_id:
-                return SCOPE_RANK["scene"], 0
-            if scope_name == "character" and ref in character_ids:
-                return SCOPE_RANK["character"], character_ids.index(ref)
-            if project_id and scope_name == "project" and ref == project_id:
-                return SCOPE_RANK["project"], 0
-            if scope_name == "global":
-                return SCOPE_RANK["global"], 0
-            return _UNMATCHED_RANK, 0
-
-        candidates = [binding for binding in bindings if rank(binding)[0] < _UNMATCHED_RANK]
-        if not candidates:
+        if not ranked:
             return UNBOUND
-        profile_rows = {
-            str(row[0]): (str(row[1] or ""), str(row[2] or ""))
-            for row in session.execute(
-                select(
-                    StyleReferenceProfile.profile_id,
-                    StyleReferenceProfile.status,
-                    StyleReferenceProfile.book_id,
-                ).where(StyleReferenceProfile.profile_id.in_({b.profile_id for b in candidates}))
-            ).all()
-        }
-        # 同层同序取最新（created_at 是 ISO 字符串，字典序即时间序）
-        candidates.sort(key=lambda b: str(b.created_at or ""), reverse=True)
-        usable = [b for b in candidates if profile_rows.get(str(b.profile_id), ("", ""))[0] == "active"]
-        if not usable:
+        chosen = next((entry for entry in ranked if entry.usable), None)
+        if chosen is None:
             # 绑了、但画像都不是 active（归档 / 草稿 / 已删）：降级，不是未绑定
-            stuck = min(candidates, key=rank)
+            stuck = ranked[0]
             return StylePolicy(
                 mode=MODE_DEGRADED,
                 error_code=PROFILE_NOT_ACTIVE_CODE,
-                profile_id=str(stuck.profile_id),
-                binding_id=str(stuck.binding_id),
-                book_id=profile_rows.get(str(stuck.profile_id), ("", ""))[1] or None,
+                profile_id=str(stuck.binding.profile_id),
+                binding_id=str(stuck.binding.binding_id),
+                book_id=stuck.book_id,
             )
-        best = min(usable, key=rank)
-        book_id = profile_rows[str(best.profile_id)][1] or None
+        best = chosen.binding
+        book_id = chosen.book_id
         cloud_policy = None
         if book_id:
             cloud_policy = session.execute(

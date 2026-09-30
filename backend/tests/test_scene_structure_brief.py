@@ -382,16 +382,16 @@ def test_preflight_checks_the_beats_instead_of_asking_for_v2_intent(session) -> 
     _seed(session)
     preflight = SceneRunPreflightService(session)
 
-    complete = [item["code"] for item in preflight.build(_scene(session, PROACTIVE_ID), {})["warning_items"]]
+    complete = [item["code"] for item in preflight.build(_scene(session, PROACTIVE_ID))["warning_items"]]
     assert "SCENE_LITERARY_INTENT_INCOMPLETE" not in complete
     assert "SCENE_STRUCTURE_INCOMPLETE" not in complete
 
-    incomplete = preflight.build(_scene(session, INCOMPLETE_ID), {})["warning_items"]
+    incomplete = preflight.build(_scene(session, INCOMPLETE_ID))["warning_items"]
     structure_item = next(item for item in incomplete if item["code"] == "SCENE_STRUCTURE_INCOMPLETE")
     assert "conflict, setback" in structure_item["detail"]
     assert all(item["code"] != "SCENE_LITERARY_INTENT_INCOMPLETE" for item in incomplete)
 
-    v2_only = [item["code"] for item in preflight.build(_scene(session, V2_ONLY_ID), {})["warning_items"]]
+    v2_only = [item["code"] for item in preflight.build(_scene(session, V2_ONLY_ID))["warning_items"]]
     assert "SCENE_LITERARY_INTENT_INCOMPLETE" in v2_only
     assert "SCENE_STRUCTURE_INCOMPLETE" not in v2_only
 

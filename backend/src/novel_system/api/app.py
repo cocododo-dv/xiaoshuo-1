@@ -61,22 +61,28 @@ async def _lifespan(_app: FastAPI):
     from novel_system.services.background_recovery import run_startup_recovery
 
     run_startup_recovery()
-    # 风格参考 v3 统一作业表:处理器在各自模块导入时注册(register_job_handler);常驻清扫线程启动时
+    # 风格参考 v3 统一作业表:先显式登记三种作业的处理器与维护任务(install_workers);常驻清扫线程启动时
     # 先清扫一次(心跳过期的 running → queued)并派发全部排队作业,之后每 30 s 一次——重启 /
     # --reload 留下的作业不需要人工介入。
-    from novel_system.services.style_reference import import_job  # noqa: F401 — 注册 classify 处理器
-    from novel_system.services.style_reference import learn_job  # noqa: F401 — 注册 learn 处理器
-    from novel_system.services.style_reference import check_job  # noqa: F401 — 注册 check 处理器
-    from novel_system.services.style_reference import cleanup  # noqa: F401 — 登记维护任务（审计遥测 90 天留存）
     from novel_system.services.style_reference.jobs import (
         shutdown_job_workers,
         start_job_sweeper,
     )
+    from novel_system.services.style_reference.workers import install_workers
+    # 场景 / 章节运行任务：进程还活着时每分钟收拾一次租约过期的孤儿；lifespan 结束时把本进程持有的租约就地
+    # 到期，重启后的启动恢复立刻接着跑（B03-01）。
+    from novel_system.services.background_recovery import (
+        shutdown_run_job_workers,
+        start_run_job_sweeper,
+    )
 
+    install_workers()
     start_job_sweeper()
+    start_run_job_sweeper()
     try:
         yield
     finally:
+        shutdown_run_job_workers()
         shutdown_job_workers(wait=False)
 
 

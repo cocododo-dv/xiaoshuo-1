@@ -11,7 +11,6 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -23,13 +22,12 @@ from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
     client_host,
-    dispatch,
+    dispatch_response_job,
     llm_client_and_enabled,
 )
-from novel_system.db.models import StyleReferenceParagraph
 from novel_system.services.errors import DomainError
-from novel_system.services.style_reference.cleanup import delete_reference_book
-from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.cleanup import delete_reference_book, delete_reference_books
+from novel_system.services.style_reference.errors import LLMRequiredError, book_not_found
 from novel_system.services.style_reference.import_job import (
     cancel_classification,
     classification_payload,
@@ -120,7 +118,7 @@ def import_book_path(
         path_template=f"{PATH_PREFIX}/books/import-path",
         payload=body,
         action=_do,
-        after_commit=_dispatch_classification,
+        after_commit=dispatch_response_job,
     )
 
 
@@ -150,13 +148,6 @@ def _import_response(session: Session, result) -> dict[str, Any]:
         "classification": classification_payload(job),
         "job_id": job.job_id if job is not None else None,
     }
-
-
-def _dispatch_classification(result: dict[str, Any]) -> None:
-    """事务提交后把分类作业投给工人(认领是条件写,重复投递无害;漏投的由清扫线程补派)。"""
-    job_id = str(result.get("job_id") or (result.get("classification") or {}).get("job_id") or "")
-    if job_id:
-        dispatch(job_id)
 
 
 """上传体积上限:参考书是纯文本,30 万字 UTF-8 约 1MB;10MB 已极宽裕,
@@ -235,7 +226,7 @@ async def import_book_upload(
             path_template=f"{PATH_PREFIX}/books/import-upload",
             payload=payload,
             action=_do,
-            after_commit=_dispatch_classification,
+            after_commit=dispatch_response_job,
         )
 
     return await run_in_threadpool(_run_import)
@@ -283,11 +274,7 @@ def get_book(
     """一本书的完整载荷:列表的全部字段 + ``stats_json``(段落类型分布、语料评估、校准信息……)。"""
     book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
-        raise DomainError(
-            "STYLE_REFERENCE_BOOK_NOT_FOUND",
-            f"book {book_id!r} not found",
-            status_code=404,
-        )
+        raise book_not_found(book_id)
     return ok({"book": _book_payload(session, book)}, req_id=request_id_of(request))
 
 
@@ -304,11 +291,7 @@ def estimate_book_classification(
     """
     book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
-        raise DomainError(
-            "STYLE_REFERENCE_BOOK_NOT_FOUND",
-            f"book {book_id!r} not found",
-            status_code=404,
-        )
+        raise book_not_found(book_id)
     return ok({"estimate": estimate_classification(session, book)}, req_id=request_id_of(request))
 
 
@@ -330,11 +313,7 @@ def get_book_paragraph_range(
     repo = StyleReferenceRepository(session)
     book = repo.get_book(book_id)
     if book is None:
-        raise DomainError(
-            "STYLE_REFERENCE_BOOK_NOT_FOUND",
-            f"book {book_id!r} not found",
-            status_code=404,
-        )
+        raise book_not_found(book_id)
     if start < 0 or end < start:
         raise DomainError(
             "STYLE_REFERENCE_PARAGRAPH_RANGE_INVALID",
@@ -343,15 +322,7 @@ def get_book_paragraph_range(
             details={"start": start, "end": end},
         )
     effective_end = min(end, start + PARAGRAPH_RANGE_MAX - 1)
-    rows = session.scalars(
-        select(StyleReferenceParagraph)
-        .where(
-            StyleReferenceParagraph.book_id == book_id,
-            StyleReferenceParagraph.paragraph_index >= start,
-            StyleReferenceParagraph.paragraph_index <= effective_end,
-        )
-        .order_by(StyleReferenceParagraph.paragraph_index)
-    ).all()
+    rows = repo.paragraph_range(book_id, start, effective_end)
     return ok(
         {
             "book_id": book_id,
@@ -394,44 +365,18 @@ def delete_book(
     )
 
 
-def _open_outer_transaction(session: Session) -> None:
-    """pysqlite 旧式事务控制下,没有未决写时 ``SAVEPOINT`` 自己开事务、``RELEASE`` 就是提交——每本书各自提交,
-    与幂等记录不在一个事务里(中途进程死掉,重放时已删的书报 404)。先把外层事务开起来,保存点才是真的嵌套:
-    整批删除与幂等记录一起提交或一起回滚。"""
-    connection = session.connection()
-    if connection.dialect.name != "sqlite":
-        return
-    dbapi_connection = connection.connection.dbapi_connection
-    if not dbapi_connection.in_transaction:
-        connection.exec_driver_sql("BEGIN")
-
-
 @router.post(f"{PATH_PREFIX}/books/bulk-delete")
 def bulk_delete_books(
     payload: BulkDeleteRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """书库多选删除(台账 U4 / L6):每本书与单本删除走同一个函数,各在一个保存点里——一本失败(不存在)
-    不影响其余的;结果逐本给出 ``deleted`` / ``error``。"""
+    """书库多选删除(台账 U4 / L6,``cleanup.delete_reference_books``):每本书与单本删除走同一个函数,各在一个保存点
+    里——一本失败(不存在)不影响其余的;结果逐本给出 ``deleted`` / ``error``;整批与幂等记录一起提交或回滚。"""
     book_ids = list(dict.fromkeys(str(book_id) for book_id in payload.book_ids))
 
     def _do() -> dict[str, Any]:
-        _open_outer_transaction(session)
-        results: list[dict[str, Any]] = []
-        for book_id in book_ids:
-            try:
-                with session.begin_nested():
-                    outcome = delete_reference_book(session, book_id)
-                results.append(
-                    {"book_id": book_id, "title": outcome["title"], "deleted": True, "unbound": outcome["unbound"]}
-                )
-            except DomainError as exc:
-                results.append(
-                    {"book_id": book_id, "deleted": False, "error": {"code": exc.code, "message": exc.message}}
-                )
-        deleted = sum(1 for item in results if item["deleted"])
-        return {"results": results, "deleted_count": deleted, "failed_count": len(results) - deleted}
+        return delete_reference_books(session, book_ids)
 
     return idempotent_response(
         request,
@@ -490,7 +435,7 @@ def reclassify_book(
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
         payload={"book_id": book_id, "resume": resume, "mode": mode},
         action=_do,
-        after_commit=_dispatch_classification,
+        after_commit=dispatch_response_job,
     )
 
 
@@ -506,11 +451,7 @@ def cancel_book_classification(
 
     def _do() -> dict[str, Any]:
         if StyleReferenceRepository(session).get_book(book_id) is None:
-            raise DomainError(
-                "STYLE_REFERENCE_BOOK_NOT_FOUND",
-                f"book {book_id!r} not found",
-                status_code=404,
-            )
+            raise book_not_found(book_id)
         job = cancel_classification(session, book_id)
         if job is None:
             raise DomainError(

@@ -38,7 +38,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.prompt_builder import load_prompt_templates
-from novel_system.services.style_reference import import_job
+from novel_system.services.style_reference import classify_run, import_job
 from novel_system.services.style_reference import policy as policy_module
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.jobs import StyleJobService, run_job_inline
@@ -60,6 +60,14 @@ LONG_TEXT = "\n\n".join(
 ).encode("utf-8")
 
 _BOUNDARY_RE = re.compile(r"\[UNTRUSTED_REFERENCE_DATA:[^\]]+\]\n")
+
+
+@pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
 
 
 def _items(request) -> list[dict]:
@@ -159,12 +167,12 @@ def _small_batches(monkeypatch):
     """60 段的书:锚定集 25 段、每批至多 5 段 → 强模型 5 批 + 快模型 5 批 + 余段 7 批;退避不等待。"""
     monkeypatch.setattr(seg, "ANCHOR_SIZE", 25)
     monkeypatch.setattr(seg, "BATCH_MAX_PARAGRAPHS", 5)
-    monkeypatch.setattr(import_job, "BATCH_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
-    monkeypatch.setattr(import_job, "WAIT_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(classify_run, "BATCH_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(classify_run, "WAIT_POLL_SECONDS", 0.05)
 
 
 def _use(monkeypatch, fake) -> ScriptedClassifier:
-    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (fake, True))
+    monkeypatch.setattr(classify_run, "resolve_classification_client", lambda: (fake, True))
     return fake
 
 
@@ -353,7 +361,7 @@ def test_a_batch_that_keeps_failing_fails_the_job_and_resume_finishes_only_the_r
     assert job.error_json["code"] == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
     details = job.error_json["details"]
     assert details["reason_code"] == "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED"
-    assert details["phase"] == "rest" and details["attempts"] == import_job.BATCH_ATTEMPTS == 3
+    assert details["phase"] == "rest" and details["attempts"] == classify_run.BATCH_ATTEMPTS == 3
     assert details["author_action"]["view"] == "systemConfig"
     assert job.error_json["retryable"] is True
     assert _book(book_id).status == "failed"
@@ -396,7 +404,7 @@ def test_control_plane_failures_are_not_retried(session, monkeypatch) -> None:
 
 
 def test_job_without_llm_fails_with_llm_required(session, monkeypatch) -> None:
-    monkeypatch.setattr(import_job, "resolve_classification_client", lambda: (None, False))
+    monkeypatch.setattr(classify_run, "resolve_classification_client", lambda: (None, False))
     book_id, job_id = _ingest(session)
     run_job_inline(job_id)
     job = _job(job_id)
@@ -407,8 +415,8 @@ def test_job_without_llm_fails_with_llm_required(session, monkeypatch) -> None:
 # ---------------------------------------------------------------- unit: parsing / planning / anchors
 
 
-def test_parse_batch_output_is_strict() -> None:
-    ok = seg.parse_batch_output(
+def test_parse_batch_items_flags_every_mismatch() -> None:
+    ok = seg.parse_batch_items(
         {
             "classifications": [
                 {"paragraph_index": 7, "paragraph_type": "dialogue", "confidence": "high"},
@@ -417,7 +425,7 @@ def test_parse_batch_output_is_strict() -> None:
         },
         [7, 8],
     )
-    assert ok == {7: ("dialogue", 0.9), 8: ("action", 0.5)}
+    assert ok == ({7: ("dialogue", 0.9), 8: ("action", 0.5)}, [], 2)
     bad_outputs = [
         None,
         {"classifications": "nope"},
@@ -442,8 +450,8 @@ def test_parse_batch_output_is_strict() -> None:
         ]},
     ]
     for output in bad_outputs:
-        with pytest.raises(seg.ClassificationBatchMismatch):
-            seg.parse_batch_output(output, [7, 8])
+        _results, problems, _received = seg.parse_batch_items(output, [7, 8])
+        assert problems, output
 
 
 def test_plan_batches_respects_char_and_paragraph_limits() -> None:
@@ -559,7 +567,8 @@ def test_app_startup_sweeps_and_finishes_a_job_left_by_a_dead_process(session, m
     _claim_as_dead_worker(job_id)
     with TestClient(create_app()) as client:
         assert jobs._SWEEPER is not None and jobs._SWEEPER.is_alive()
-        assert jobs.registered_job_handler("classify") is import_job.run_classification_job
+        # lifespan 先 install_workers() 再起清扫线程：处理器是显式登记的，不靠导入副作用
+        assert jobs._HANDLERS.get("classify") is classify_run.run_classification_job
         book = wait_book_status(client, book_id)
     assert jobs._SWEEPER is None and jobs._SWEEPER_STOP.is_set()
     assert book["classification"]["state"] == "succeeded" and book["classification"]["attempt"] == 2
@@ -813,7 +822,6 @@ def test_a_legacy_half_classified_book_can_resume_without_a_job_row(session, mon
         other.commit()
         new_job_id = job.job_id
     assert new_job_id != job_id
-    assert "classification" not in _book(book_id).stats_json
     run_job_inline(new_job_id)
     assert _job(new_job_id).state == "succeeded"
     assert _book(book_id).status == "ready"
@@ -990,25 +998,6 @@ def test_activity_lists_the_classification_job(client: TestClient, monkeypatch) 
     assert done["status"] == "succeeded" and done["percent"] == 100.0 and done["steps"] == {"done": 17, "total": 17}
 
 
-def test_startup_marks_books_left_by_the_old_cursor_state_machine_as_failed(session, monkeypatch) -> None:
-    """升级前书上 JSON 游标的分类没有作业行可续:启动时标 failed(「继续分类」建新作业),有活动作业的书不动。"""
-    _use(monkeypatch, ScriptedClassifier())
-    live_book, _live_job = _ingest(session)  # ingesting + queued 作业:正常在分类
-    orphan_a, job_a = _ingest(session, text=LONG_TEXT + "甲".encode("utf-8"), op_key="k-a")
-    orphan_b, job_b = _ingest(session, text=LONG_TEXT + "乙".encode("utf-8"), op_key="k-b")
-    with SessionLocal() as other:
-        other.execute(delete(StyleReferenceJob).where(StyleReferenceJob.job_id.in_([job_a, job_b])))
-        other.execute(
-            update(StyleReferenceBook).where(StyleReferenceBook.book_id == orphan_b).values(status="cancelling")
-        )
-        other.commit()
-    with SessionLocal() as other:
-        fixed = import_job.fail_orphaned_classifications(other)
-    assert sorted(fixed) == sorted([orphan_a, orphan_b])
-    assert _book(orphan_a).status == _book(orphan_b).status == "failed"
-    assert _book(live_book).status == "ingesting"
-
-
 def test_reclassify_and_retype_are_refused_while_a_learn_job_is_active(client: TestClient, monkeypatch) -> None:
     """学习文风作业在读这本书的段落类型：它排队或运行时，重分类 / 就地重标 / 继续分类一律 409。"""
     from novel_system.services.style_reference.jobs import JOB_KIND_LEARN, StyleJobService
@@ -1085,7 +1074,7 @@ def test_an_unclassifiable_paragraph_fails_the_job_without_losing_the_rest_of_it
     assert job.state == "failed" and job.error_json["code"] == "STYLE_REFERENCE_CLASSIFICATION_FAILED"
     details = job.error_json["details"]
     assert details["unresolved"] == 1 and details["first_unresolved_index"] == target["index"]
-    assert details["attempts"] == import_job.BATCH_ATTEMPTS
+    assert details["attempts"] == classify_run.BATCH_ATTEMPTS
     # 同一批里其余的段已经收下、记在游标里;失败的那一批不算「完成一批」
     done_rest = {pos for start, end in job.cursor_json["done"]["rest"] for pos in range(start, end + 1)}
     assert set(last_batch[1:]) <= done_rest and target["index"] not in done_rest
@@ -1101,21 +1090,35 @@ def test_an_unclassifiable_paragraph_fails_the_job_without_losing_the_rest_of_it
 
 
 def test_in_flight_batches_are_drained_and_applied_when_another_batch_fails(session, monkeypatch) -> None:
-    """一批失败:不再派发新批,已经在飞的批(已花钱)等它们回来、照常落库。"""
-    target: dict[str, list[int]] = {}
+    """一批失败:不再派发新批,已经在飞的批(已花钱)等它们回来、照常落库。
 
-    def fail_first_rest_batch_slow_others(node, indexes, _call_no):
+    确定性(不靠睡多久):另外两批卡在调用里,直到作业线程已经落下失败的那一批(``_apply`` 带着失败)才回来——
+    机器再忙,也不会在失败被看见之前先回来一批、腾出位置去派发第 4 批。"""
+    target: dict[str, list[int]] = {}
+    failure_applied = threading.Event()
+    real_apply = classify_run._ClassificationRun._apply
+
+    def apply_and_signal(self, phase, positions, outcome):  # noqa: ANN001
+        real_apply(self, phase, positions, outcome)
+        if outcome.failure is not None:
+            failure_applied.set()
+
+    monkeypatch.setattr(classify_run._ClassificationRun, "_apply", apply_and_signal)
+
+    def fail_first_rest_batch_hold_others(node, indexes, _call_no):
         if node != seg.NODE_BULK:
             return None
         if indexes == target["failing"]:
             return "fail"
-        time.sleep(0.4)  # 另外两批还在飞时,第一批已经三次失败
+        if indexes in target["held"]:
+            assert failure_applied.wait(timeout=60), "失败的那一批一直没有落库"
         return None
 
-    fake = _use(monkeypatch, ScriptedClassifier(fail_first_rest_batch_slow_others))
+    fake = _use(monkeypatch, ScriptedClassifier(fail_first_rest_batch_hold_others))
     book_id, job_id = _ingest(session)
     batches = _rest_batches(session, book_id)
     target["failing"] = batches[0]
+    target["held"] = [batches[1], batches[2]]
     run_job_inline(job_id)
 
     job = _job(job_id)
@@ -1164,14 +1167,12 @@ def test_parse_batch_items_keeps_valid_items_and_drops_duplicated_indexes() -> N
             {"paragraph_index": 9, "paragraph_type": "dialogue", "confidence": "low"},
         ]
     }
-    results, problems, received = seg._parse_batch_items(structured, [1, 2, 3, 4])
+    results, problems, received = seg.parse_batch_items(structured, [1, 2, 3, 4])
     assert results == {1: ("narration", results[1][1])} and received == 5
     assert any("invalid paragraph_type" in p for p in problems)
     assert any("more than once" in p for p in problems)
     assert any("not in this batch" in p for p in problems)
     assert any("missing" in p for p in problems)
-    with pytest.raises(seg.ClassificationBatchMismatch):
-        seg.parse_batch_output(structured, [1, 2, 3, 4])
 
 
 @pytest.mark.parametrize("mode, status_after", [("import", "failed"), ("retype", "ready")])

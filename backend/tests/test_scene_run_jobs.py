@@ -113,6 +113,79 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> 
     assert session.get(ChapterRunJob, job["job_id"]).scene_id == "CHJOB_SC01"
 
 
+def test_scene_run_workers_run_at_most_two_pipelines_at_once(client, monkeypatch) -> None:
+    """B03-13：场景任务的工人跑在有界的守护车道上（一次最多两条管线）。修之前每个任务一条不设上限的线程，
+    启动恢复扫到 N 个排队任务就在 2 核的机器上同时起 N 条管线。"""
+    import time
+    from threading import Event
+
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    for seq in (2, 3):
+        created = client.post(
+            "/api/v1/scenes",
+            json={
+                "scene_id": f"CHJOB_SC0{seq}",
+                "chapter_id": "CHJOB",
+                "scene_seq": seq,
+                "pov_character_id": "",
+                "onstage_chars_json": [],
+                "location": "Control room",
+                "scene_goal": f"Queue run {seq}",
+                "beats_json": ["start", "poll"],
+                "target_length_band": "short",
+                "scene_type": "test",
+            },
+            headers={"X-Idempotency-Key": f"scene-job-lane-{seq}"},
+        )
+        assert created.status_code == 200, created.text
+    lock = Lock()
+    release = Event()
+    started: list[str] = []
+    running = 0
+    peak = 0
+
+    class _Pipeline:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, **_kwargs) -> dict:
+            nonlocal running, peak
+            with lock:
+                running += 1
+                peak = max(peak, running)
+                started.append(scene_id)
+            release.wait(30)
+            with lock:
+                running -= 1
+            return {"scene_status": "archived"}
+
+    def wait_until(predicate, timeout: float = 20.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not predicate():
+            time.sleep(0.05)
+        return bool(predicate())
+
+    def statuses() -> list[str]:
+        with SessionLocal() as observer:
+            return [observer.get(ChapterRunJob, job_id).status for job_id in job_ids]
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Pipeline)
+    job_ids = [
+        client.post(f"/api/v1/scenes/CHJOB_SC0{seq}/run/jobs").json()["data"]["job_id"] for seq in (1, 2, 3)
+    ]
+    try:
+        assert wait_until(lambda: len(started) == 2)
+        time.sleep(0.5)
+        assert len(started) == 2
+        assert sorted(statuses()) == ["queued", "running", "running"]
+    finally:
+        release.set()
+    assert wait_until(lambda: statuses() == ["completed"] * 3)
+    assert peak == 2 and len(started) == 3
+
+
 def test_scene_run_job_idempotency_replay_does_not_start_a_second_worker(client, monkeypatch) -> None:
     _create_chapter_and_scene(client)
     started: list[str] = []
@@ -129,6 +202,123 @@ def test_scene_run_job_idempotency_replay_does_not_start_a_second_worker(client,
     assert replay.headers.get("X-Idempotency-Status") == "replayed"
     assert replay.json()["data"]["job_id"] == first.json()["data"]["job_id"]
     assert started == [first.json()["data"]["job_id"]]
+
+
+@pytest.mark.parametrize(
+    ("node_key", "stage"),
+    [
+        ("budget_ready", "planning_running"),
+        ("planning_ready", "bundle_built"),
+        ("bundle_ready", "neutral_running"),
+        ("neutral_ready", "hard_qc_running"),
+        ("hard_qc_ready", "style_running"),
+        ("style_ready", "soft_qc_running"),
+        ("selection_wait", "awaiting_candidate_selection"),
+        ("soft_qc_ready", "acceptance_review_running"),
+        ("near_final_ready", "near_final"),
+        ("archived", "archived"),
+    ],
+)
+def test_running_scene_job_reports_the_stage_in_progress_not_the_checkpoint_node(
+    session, node_key: str, stage: str
+) -> None:
+    """B03-03：检查点每存一次都把节点名（budget_ready / planning_ready …）写进任务的 current_step，
+    前端的步位表只认管线阶段词，作者看到的是原样的英文词。任务视图只说一套词：检查点节点 → 进行中的阶段。"""
+    _seed_job_scene(session, scene_id=f"SC_STEP_{node_key}")
+    job = ChapterRunJob(
+        job_id=f"scene_run_step_{node_key}",
+        scene_id=f"SC_STEP_{node_key}",
+        status="running",
+        job_type="scene_run_full",
+        worker_id="worker-a",
+        attempt_no=1,
+        payload_json={"current_step": node_key, "current_sub_index": 4},
+        result_summary_json={"current_step": node_key, "current_sub_index": 4},
+    )
+    session.add(job)
+    session.commit()
+
+    serialized = SceneRunJobService(session).serialize_job(job)
+
+    assert serialized["current_step"] == stage
+
+
+def test_every_checkpoint_node_maps_into_the_scene_stage_vocabulary() -> None:
+    from novel_system.services.run_job_leases import SCENE_RUN_STAGE_ORDER, scene_job_step
+    from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER
+
+    known = {*SCENE_RUN_STAGE_ORDER, "awaiting_candidate_selection"}
+    for node_key in RUN_CHECKPOINT_ORDER:
+        assert scene_job_step(node_key) in known, node_key
+    for token in (*SCENE_RUN_STAGE_ORDER, "queued", "preflight_blocked", "blocked", "failed", "cancelled"):
+        assert scene_job_step(token) == token
+
+
+def test_claimed_scene_job_starts_at_planning_not_at_the_draft(client, session, monkeypatch) -> None:
+    """B03-03：认领时写的是 neutral_running（「中性稿」），而管线先做的是规划；认领写 planning_running。"""
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
+    observed: list[str] = []
+
+    class _Observer:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            with SessionLocal() as other:
+                observed.append(SceneRunJobService(other).serialize_job(other.get(ChapterRunJob, job_id))["current_step"])
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Observer)
+    job_module._run_scene_job_worker(job_id)
+
+    assert observed == ["planning_running"]
+
+
+def test_polling_a_running_scene_job_reads_its_frozen_bundle_once(session, monkeypatch) -> None:
+    """B03-10：前端运行中每 2 秒轮询一次任务，任务视图的 draft_mode 每次都去读整份冻结 bundle（实库约 200 KB）。
+    冻结 bundle 不再变：同一个 bundle 的起草方式只读一次。"""
+    from novel_system.db.models import SceneBundle
+    from novel_system.services import style_policy as style_policy_module
+
+    _seed_job_scene(session, scene_id="SC_DRAFT_MODE")
+    session.add(
+        SceneBundle(
+            bundle_id="bundle_SC_DRAFT_MODE_v1",
+            scene_id="SC_DRAFT_MODE",
+            chapter_id="CH_SCENE_JOB",
+            execution_mode="P2",
+            bundle_snapshot_hash="hash",
+            frozen_snapshot_json={"inline_digests": {}, "source_version_refs": {}},
+        )
+    )
+    session.add(SceneRunState(scene_id="SC_DRAFT_MODE", current_bundle_id="bundle_SC_DRAFT_MODE_v1"))
+    job = ChapterRunJob(
+        job_id="scene_run_draft_mode_poll",
+        scene_id="SC_DRAFT_MODE",
+        status="running",
+        job_type="scene_run_full",
+        worker_id="worker-a",
+        attempt_no=1,
+        payload_json={"current_step": "bundle_ready"},
+        result_summary_json={"current_step": "bundle_ready"},
+    )
+    session.add(job)
+    session.commit()
+    reads: list[int] = []
+    original = style_policy_module.style_policy_for_bundle
+    monkeypatch.setattr(
+        style_policy_module,
+        "style_policy_for_bundle",
+        lambda snapshot, *args, **kwargs: reads.append(1) or original(snapshot, *args, **kwargs),
+    )
+
+    polls = [SceneRunJobService(session).serialize_job(job) for _ in range(3)]
+
+    assert {poll["draft_mode"] for poll in polls} == {"neutral_first"}
+    assert reads == [1]
 
 
 def test_scene_run_job_serialization_prefers_authoritative_scene_column(session) -> None:
@@ -390,6 +580,167 @@ def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(clien
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "RUN_BUDGET_RESUME_UNAVAILABLE"
+
+
+def _create_budget_resume_job(client, session) -> tuple[str, str]:
+    """一场被预算闸拦下的首跑 + 作者「追加预算后续跑」建的续跑任务（未启动）→ (父任务 id, 续跑任务 id)。"""
+    _create_chapter_and_scene(client)
+    first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]
+    first_job = session.get(ChapterRunJob, first["job_id"])
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    assert first_job is not None and state is not None
+    first_job.status = "blocked"
+    first_job.error_code = "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"
+    state.active_run_job_id = None
+    state.active_execution_id = first_job.job_id
+    state.run_execution_status = "failed"
+    state.run_checkpoint = "hard_qc_ready"
+    state.run_checkpoint_json = {
+        "execution_id": first_job.job_id,
+        "node_key": "hard_qc_ready",
+        "artifact_refs": {},
+        "artifact_hashes": {},
+        "superseded_execution_ids": [],
+    }
+    session.commit()
+    resumed = client.post(
+        "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
+        json={"resume_budget": True},
+    )
+    assert resumed.status_code == 200, resumed.text
+    return first_job.job_id, resumed.json()["data"]["job_id"]
+
+
+def test_budget_resume_job_that_died_after_its_handoff_resumes_on_recovery(
+    client, session, monkeypatch
+) -> None:
+    """B03-02：续跑任务交接完检查点后进程退出（--reload / 崩溃），恢复时不能再要求「父执行仍是失败态」。
+
+    修之前：再次认领后交接报 RUN_BUDGET_RESUME_UNAVAILABLE，回滚把认领一起撤掉，记失败又因不是主人抛
+    RUN_OWNER_LEASE_LOST 出线程——任务永远 running、这一场永远 409，每次重启都一样。
+    """
+    from novel_system.services import scene_run_jobs as job_module
+
+    parent_id, resumed_id = _create_budget_resume_job(client, session)
+
+    class _ProcessKilled:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            raise SystemExit("process killed mid-run")
+
+    monkeypatch.setattr(job_module, "Orchestrator", _ProcessKilled)
+    with pytest.raises(SystemExit):
+        job_module._run_scene_job_worker(resumed_id)
+
+    session.expire_all()
+    orphan = session.get(ChapterRunJob, resumed_id)
+    assert orphan is not None and orphan.status == "running"
+    assert session.get(SceneRunState, "CHJOB_SC01").active_execution_id == resumed_id
+    # 重启：死掉的工人的租约过期了，恢复把任务再派发一次
+    orphan.lease_expires_at = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    session.commit()
+
+    calls: list[tuple[str, str | None, str | None]] = []
+
+    class _Resumed:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, *, execution_id=None, run_job_id=None, **_kwargs) -> dict:
+            calls.append((scene_id, execution_id, run_job_id))
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Resumed)
+    job_module._run_scene_job_worker(resumed_id)
+
+    assert calls == [("CHJOB_SC01", resumed_id, resumed_id)]
+    session.expire_all()
+    job = session.get(ChapterRunJob, resumed_id)
+    assert job is not None and job.status == "completed" and job.attempt_no == 2
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    assert state.active_run_job_id is None
+    assert state.active_execution_id == resumed_id
+    assert parent_id in state.run_checkpoint_json["artifact_execution_lineage_ids"]
+
+
+def test_worker_failure_after_losing_its_lease_does_not_raise_out_of_the_thread(
+    client, session, monkeypatch
+) -> None:
+    """B03-02 (c)：租约过期后别的工人接手了任务，这个工人随后失败——记失败被 fence 拒绝时只记日志，
+    不能把 RUN_OWNER_LEASE_LOST 抛出工人线程，也不能碰新主人的任务。"""
+    from sqlalchemy import update
+
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
+
+    class _LeaseTakenOver:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            with SessionLocal() as other:
+                other.execute(
+                    update(ChapterRunJob)
+                    .where(ChapterRunJob.job_id == job_id)
+                    .values(lease_expires_at=(datetime.now(UTC) - timedelta(seconds=5)).isoformat())
+                )
+                other.commit()
+                SceneRunJobService(other).claim_running(
+                    job_id,
+                    worker_id="worker-after-expiry",
+                    current_step="planning_running",
+                    lease_seconds=600,
+                )
+                other.commit()
+            raise DomainError("LLM_PROVIDER_FAILED", "provider failed after the lease was taken over")
+
+    monkeypatch.setattr(job_module, "Orchestrator", _LeaseTakenOver)
+    job_module._run_scene_job_worker(job_id)
+
+    session.expire_all()
+    job = session.get(ChapterRunJob, job_id)
+    assert job is not None
+    assert (job.status, job.worker_id, job.attempt_no, job.error_code) == (
+        "running",
+        "worker-after-expiry",
+        2,
+        None,
+    )
+
+
+def test_worker_whose_claim_was_rolled_back_fails_the_unowned_job_instead_of_leaving_it_queued(
+    client, session, monkeypatch
+) -> None:
+    """B03-02 (c)：认领在工人手里被回滚（这里：场景被别的任务占着），任务没有活着的主人——按任务 id 记失败
+    （error_details.retryable，认领路径可以重领），不再永远停在 queued、也不把异常抛出线程。"""
+    from novel_system.services import scene_run_jobs as job_module
+
+    _create_chapter_and_scene(client)
+    job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
+    state = session.get(SceneRunState, "CHJOB_SC01")
+    state.active_run_job_id = "scene_run_other_owner"
+    session.commit()
+
+    class _NeverCalled:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, *_args, **_kwargs) -> dict:
+            raise AssertionError("the pipeline must not run without owning the scene")
+
+    monkeypatch.setattr(job_module, "Orchestrator", _NeverCalled)
+    job_module._run_scene_job_worker(job_id)
+
+    session.expire_all()
+    job = session.get(ChapterRunJob, job_id)
+    assert job is not None
+    assert job.status == "failed" and job.error_code == "RUN_JOB_IN_PROGRESS"
+    assert job.result_summary_json["error_details"]["retryable"] is True
+    assert session.get(SceneRunState, "CHJOB_SC01").active_run_job_id == "scene_run_other_owner"
 
 
 def test_scene_job_retry_reuses_execution_checkpoint_without_recharging(client, session, monkeypatch) -> None:

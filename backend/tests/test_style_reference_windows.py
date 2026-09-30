@@ -141,8 +141,8 @@ def test_ensure_builds_windows_with_kernel_features_and_marker(session) -> None:
         assert window.position in {"opening", "closing", "middle", "whole"}
         assert 600 <= window.chars <= 5000 and 1 <= window.paragraph_count <= 75
         assert tuple(window.features_json) == FEATURE_NAMES
-        # 特征就是在 window_text 那段文字上测的;对白占比取测量核的唯一定义
-        text = W.window_text(session, window)
+        # 特征就是在这一窗的正文(window_texts 取的那段文字)上测的;对白占比取测量核的唯一定义
+        text = W.window_texts(session, [window])[window.window_no]
         assert kernel_features(measure_text(text)) == window.features_json
         assert window.dialogue_share == window.features_json["dialogue_char_share"]
         assert set(window.type_mix_json) <= {"dialogue", "narration"}
@@ -152,13 +152,12 @@ def test_ensure_builds_windows_with_kernel_features_and_marker(session) -> None:
     # 典型度按本书自己的窗口分布排序,不全相同
     assert len({w.typicality for w in windows}) > 1
     batch = W.window_texts(session, windows)
-    assert batch == {w.window_no: W.window_text(session, w) for w in windows}
+    # 挨得近的窗口合并成一次范围查询,结果与一窗一查相同
+    assert batch == {w.window_no: W.window_texts(session, [w])[w.window_no] for w in windows}
     # 隔得远的窗口各查各的范围,结果一样
     sparse = [windows[0], windows[-1]]
     assert windows[-1].start_index - windows[0].end_index > 200
     assert W.window_texts(session, sparse) == {w.window_no: batch[w.window_no] for w in sparse}
-    ref = W.window_ref(windows[0])
-    assert ref["window_no"] == 1 and "text" not in ref
 
 
 def test_warm_calls_reuse_the_rows(session, monkeypatch) -> None:

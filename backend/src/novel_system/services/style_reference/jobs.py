@@ -8,7 +8,8 @@
 
 **所有权**：认领时 ``attempt`` +1 并换一枚新的 ``owner_token``；之后的每一次写（心跳 / 进度 / 游标 /
 结束）都是「owner_token 仍是我、state 仍是 running」的条件 UPDATE。作业被清扫重排、被取消、所属的书被删，
-旧工人的写全部落空（返回 False），工人据此停下——这就是作业的身份，不靠进程内状态。
+旧工人的写全部落空（返回 False），工人据此停下——这就是作业的身份，不靠进程内状态。检查点与进度写只读用得着的列
+（状态 / 主人 / 取消标记、进度），不整行重读几十 KB 的游标。
 
 **恢复**：常驻清扫线程每 ``SWEEP_INTERVAL_SECONDS`` 秒把心跳过期的 running 放回 queued 并把所有 queued
 派发出去；启动时先清扫一次。重复派发无害——认领是条件写，只有一个工人能拿到。
@@ -25,15 +26,21 @@ cancelled，运行中的由工人在下一个检查点（``check_continue``）�
 **互斥**：同一本书的分类与学习互斥（各自也只能有一个活动作业）。建作业是「先插入、再查」：这条 INSERT 已拿到
 SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一定看得见先到的那一行（先查后插时两个都查不到）。
 
-处理器约定（``register_job_handler(kind, handler)``）：``handler(session, claimed, service)`` 在工人线程里
-运行，自己负责周期性调用 ``service.check_continue(claimed)``（取消 → ``JobCancelled``，丢了所有权 →
-``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` / ``service.save_cursor``，最后
-``service.succeed``；抛出的 ``DomainError`` 由框架记为失败（错误码原样保留），其余异常记为
-``STYLE_REFERENCE_JOB_FAILED``——进程退出期间冒出来的异常（代已变 / 线程池已关）一律按中断放回队列。
-三种处理器共用的脚手架（检查点、并行调用循环、终态映射）在 ``job_runtime.JobRun``。
+处理器约定（``register_job_handler(kind, handler)``，三种作业由 ``workers.install_workers`` 显式登记）：
+``handler(session, claimed, service)`` 在工人线程里运行，自己负责周期性调用 ``service.check_continue(claimed)``
+（取消 → ``JobCancelled``，丢了所有权 → ``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` /
+``service.save_cursor``，最后 ``service.succeed``；抛出的异常由框架按 :func:`job_failure` 记为失败（``DomainError``
+的错误码原样保留，其余异常记为 ``STYLE_REFERENCE_JOB_FAILED``）——进程退出期间冒出来的异常（代已变 / 线程池
+已关）一律按中断放回队列。三种处理器共用的脚手架（检查点、并行调用循环、终态收尾）在 ``job_runtime.JobRun``，
+它记失败用的也是 :func:`job_failure`。
 
-**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（例：``cleanup`` 登记的遥测 90 天留存
-清理）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记日志、不影响清扫。
+**维护任务**（``register_maintenance_task``）：随清扫线程跑的定期任务（``cleanup`` 的遥测 90 天留存清理与作业
+留存——结束 30 天以上的对照检查作业删掉，每本书每类只留最近一个分类 / 学习作业；``workers.install_workers``
+登记）——清扫线程启动时先跑一次，之后每隔登记的间隔再跑；任务自己开会话，异常只记日志、不影响清扫。
+
+与业务无关的运行时（工人代、守护调用池、维护任务登记簿、带自己停止信号的周期线程）在
+``services.background_jobs``；这里转出旧名字（``DaemonCallPool``、``current_worker_generation`` …），调用方与
+测试照旧从本模块取。
 """
 
 from __future__ import annotations
@@ -41,10 +48,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -53,7 +59,17 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleReferenceJob, utcnow
+from novel_system.services.background_jobs import (
+    DaemonCallPool,
+    MaintenanceRegistry,
+    MaintenanceTask,
+    PeriodicThread,
+    bump_worker_generation,
+    current_worker_generation,
+    generation_changed,
+)
 from novel_system.services.errors import DomainError
+from novel_system.services.periodic_heartbeat import periodic_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +88,8 @@ TERMINAL_STATES = (STATE_SUCCEEDED, STATE_FAILED, STATE_CANCELLED)
 
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 STALE_AFTER_SECONDS = 60.0
+# 活动面板除了在跑的作业，还列这么久之内结束的（保留期清理也不删这样的作业）
+RECENT_FINISHED_SECONDS = 600.0
 SWEEP_INTERVAL_SECONDS = 30.0
 EXECUTOR_MAX_WORKERS = 2
 # 对照检查一次一个评审调用：单独一条车道，不在几十分钟的分类 / 学习后面排队
@@ -246,7 +264,9 @@ class StyleJobService:
             stmt.order_by(StyleReferenceJob.created_at.desc()).limit(1)
         ).scalar_one_or_none()
 
-    def list_recent(self, *, finished_within_seconds: float = 600.0, limit: int = 100) -> list[StyleReferenceJob]:
+    def list_recent(
+        self, *, finished_within_seconds: float = RECENT_FINISHED_SECONDS, limit: int = 100
+    ) -> list[StyleReferenceJob]:
         """活动面板：**全部**活动作业 + 最近结束的作业（默认 10 分钟内，至多 ``limit`` 条）。
 
         活动作业不受 ``limit`` 限制：界面把 ``/activity`` 当完整清单，清单里不再有的在跑条目会被收掉——十分钟里结束的
@@ -289,6 +309,7 @@ class StyleJobService:
                     finished_at=now,
                     updated_at=now,
                     error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled before start"},
+                    **_finished_values(job.kind, job.params_json),
                 )
             )
             self.session.flush()
@@ -347,18 +368,27 @@ class StyleJobService:
     def heartbeat(self, claimed: ClaimedJob) -> bool:
         return self._owned_update(claimed, heartbeat_at=utcnow())
 
+    def _ownership(self, job_id: str) -> Any:
+        """检查点只读这三列（状态、主人、取消标记）：模型调用在飞时每 2 秒一次，不能每次把几十 KB 的游标 JSON
+        整行重读一遍（B10-18）。没有这一行 → None。"""
+        return self.session.execute(
+            select(StyleReferenceJob.state, StyleReferenceJob.owner_token, StyleReferenceJob.cancel_requested).where(
+                StyleReferenceJob.job_id == job_id
+            )
+        ).one_or_none()
+
     def still_owner(self, claimed: ClaimedJob) -> bool:
-        job = self.get(claimed.job_id, fresh=True)
-        return bool(job is not None and job.state == STATE_RUNNING and job.owner_token == claimed.owner_token)
+        row = self._ownership(claimed.job_id)
+        return bool(row is not None and row.state == STATE_RUNNING and row.owner_token == claimed.owner_token)
 
     def check_continue(self, claimed: ClaimedJob) -> None:
         """处理器的检查点：进程要退出 → ``JobInterrupted``；取消 → ``JobCancelled``；不再是主人 → ``JobLost``。"""
         if worker_generation_changed(claimed):
             raise JobInterrupted(claimed.job_id)
-        job = self.get(claimed.job_id, fresh=True)
-        if job is None or job.state != STATE_RUNNING or job.owner_token != claimed.owner_token:
+        row = self._ownership(claimed.job_id)
+        if row is None or row.state != STATE_RUNNING or row.owner_token != claimed.owner_token:
             raise JobLost(claimed.job_id)
-        if int(job.cancel_requested or 0):
+        if int(row.cancel_requested or 0):
             raise JobCancelled(claimed.job_id)
 
     # ------------------------------------------------------------------ 进度 / 游标
@@ -374,10 +404,13 @@ class StyleJobService:
         llm_calls_delta: int = 0,
         extra: Mapping[str, Any] | None = None,
     ) -> bool:
-        job = self.get(claimed.job_id, fresh=True)
-        if job is None:
+        # 只读进度这一列（不带游标 JSON，B10-18）；写仍是条件写，落空返回 False
+        current = self.session.execute(
+            select(StyleReferenceJob.progress_json).where(StyleReferenceJob.job_id == claimed.job_id)
+        ).one_or_none()
+        if current is None:
             return False
-        progress = dict(job.progress_json or {})
+        progress = dict(current.progress_json or {})
         if phase is not None:
             if progress.get("phase") != phase:
                 progress["phase_started_at"] = utcnow()
@@ -414,6 +447,7 @@ class StyleJobService:
             finished_at=now,
             heartbeat_at=now,
             owner_token=None,
+            **_finished_values(claimed.kind, claimed.params),
         )
 
     def fail(
@@ -436,6 +470,7 @@ class StyleJobService:
             finished_at=now,
             heartbeat_at=now,
             owner_token=None,
+            **_finished_values(claimed.kind, claimed.params),
         )
 
     def release(self, claimed: ClaimedJob) -> bool:
@@ -451,6 +486,7 @@ class StyleJobService:
             finished_at=now,
             heartbeat_at=now,
             owner_token=None,
+            **_finished_values(claimed.kind, claimed.params),
         )
 
     # ------------------------------------------------------------------ 取消 / 重排 / 清扫
@@ -470,6 +506,7 @@ class StyleJobService:
                 finished_at=now,
                 owner_token=None,
                 error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled"},
+                **_finished_values(job.kind, job.params_json),
             )
         result = self.session.execute(
             update(StyleReferenceJob)
@@ -590,6 +627,7 @@ class StyleJobService:
                         finished_at=_iso(current),
                         updated_at=_iso(current),
                         error_json={"code": JOB_CANCELLED_CODE, "message": "cancelled"},
+                        **_finished_values(job.kind, job.params_json),
                     )
                 )
                 self.session.flush()
@@ -653,7 +691,7 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
         "eta_seconds": round(eta, 1) if eta is not None else None,
         "stalled": stalled,
         "cancellable": job.state in ACTIVE_STATES,
-        "resumable": job.state in (STATE_FAILED, STATE_CANCELLED),
+        "resumable": job_resumable(job),
         "cancel_requested": bool(job.cancel_requested),
         "error": dict(job.error_json) if job.error_json else None,
         "result": dict(job.result_json) if job.result_json else None,
@@ -666,8 +704,12 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
 # ---------------------------------------------------------------------- 工人框架
 JobHandler = Callable[[Session, ClaimedJob, StyleJobService], None]
 CancelHook = Callable[[Session, StyleReferenceJob], None]
+ResumableRule = Callable[[StyleReferenceJob], bool]
+FinishedParamsRule = Callable[[Mapping[str, Any]], dict[str, Any]]
 _HANDLERS: dict[str, JobHandler] = {}
 _CANCEL_HOOKS: dict[str, CancelHook] = {}
+_RESUMABLE_RULES: dict[str, ResumableRule] = {}
+_FINISHED_PARAMS_RULES: dict[str, FinishedParamsRule] = {}
 _EXECUTORS: dict[str, ThreadPoolExecutor] = {}
 _EXECUTOR_LOCK = threading.Lock()
 _DISPATCHED: set[str] = set()
@@ -676,25 +718,59 @@ _SWEEPER: threading.Thread | None = None
 # 当前清扫线程自己的停止信号：每次启动换一个新的（线程闭包里抓住的是自己那一个），停下后不再清。旧做法共用一个事件：
 # 旧线程还在一拍里时下一个 lifespan 启动、把事件清掉，旧线程醒来看到的是没置位的事件，就接着每 30 s 清扫一次。
 _SWEEPER_STOP = threading.Event()
-# 工人代：``shutdown_job_workers`` 每次 +1；认领时记下当时的代，检查点发现代变了 = 进程要退出
-_GENERATION = 0
+# 工人代在 background_jobs：``shutdown_job_workers`` 每次 +1；认领时记下当时的代，检查点发现代变了 = 进程要退出
 
 _LANE_LONG = "long"
 _LANE_CHECK = "check"
 _LANE_WORKERS = {_LANE_LONG: EXECUTOR_MAX_WORKERS, _LANE_CHECK: CHECK_EXECUTOR_MAX_WORKERS}
 
 
-def register_job_handler(kind: str, handler: JobHandler, *, on_cancelled: CancelHook | None = None) -> None:
-    """登记一类作业的处理器；``on_cancelled(session, job)`` 在请求 / 认领 / 清扫里直接收尾取消时调用（同一事务）。"""
+def register_job_handler(
+    kind: str,
+    handler: JobHandler,
+    *,
+    on_cancelled: CancelHook | None = None,
+    resumable: ResumableRule | None = None,
+    finished_params: FinishedParamsRule | None = None,
+) -> None:
+    """登记一类作业的处理器；``on_cancelled(session, job)`` 在请求 / 认领 / 清扫里直接收尾取消时调用（同一事务）；
+    ``resumable(job)`` 是这类作业「能不能继续」的规则（活动条目的 ``resumable``；缺省：失败 / 取消的都能）；
+    ``finished_params(params)`` 是作业结束（成功 / 失败 / 取消，走哪条路都一样）时参数换成的样子——对照检查用它把
+    送检的原文换成哈希与字数（续不了的作业结束后没人再读参数）。"""
     if kind not in JOB_KINDS:
         raise ValueError(f"unknown style job kind: {kind!r}")
     _HANDLERS[kind] = handler
     if on_cancelled is not None:
         _CANCEL_HOOKS[kind] = on_cancelled
+    if resumable is not None:
+        _RESUMABLE_RULES[kind] = resumable
+    if finished_params is not None:
+        _FINISHED_PARAMS_RULES[kind] = finished_params
 
 
-def registered_job_handler(kind: str) -> JobHandler | None:
-    return _HANDLERS.get(kind)
+def finished_params(kind: str | None, params: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """这类作业结束时参数要换成的样子（没有登记规则、或换了也一样 → None：参数照旧）。"""
+    rule = _FINISHED_PARAMS_RULES.get(str(kind or ""))
+    if rule is None:
+        return None
+    current = dict(params or {})
+    finished = dict(rule(current))
+    return None if finished == current else finished
+
+
+def _finished_values(kind: str | None, params: Mapping[str, Any] | None) -> dict[str, Any]:
+    """结束写要带上的列（参数按这类作业的规则换好）；没有要换的给空。"""
+    finished = finished_params(kind, params)
+    return {} if finished is None else {"params_json": finished}
+
+
+def job_resumable(job: StyleReferenceJob) -> bool:
+    """这个作业能不能从游标处继续：按这类作业登记的规则（学习作业看失败的 ``error.retryable``，对照检查从不续跑）；
+    没登记规则的种类按缺省——失败 / 取消的都能。"""
+    rule = _RESUMABLE_RULES.get(str(job.kind))
+    if rule is not None:
+        return bool(rule(job))
+    return job.state in (STATE_FAILED, STATE_CANCELLED)
 
 
 def run_cancel_hook(session: Session, job_id: str) -> None:
@@ -712,12 +788,8 @@ def run_cancel_hook(session: Session, job_id: str) -> None:
         logger.exception("style job %s cancel hook failed", job_id)
 
 
-def current_worker_generation() -> int:
-    return _GENERATION
-
-
 def worker_generation_changed(claimed: ClaimedJob) -> bool:
-    return claimed.generation is not None and claimed.generation != _GENERATION
+    return generation_changed(claimed.generation)
 
 
 def is_worker_interruption(exc: BaseException, claimed: ClaimedJob | None = None) -> bool:
@@ -727,46 +799,17 @@ def is_worker_interruption(exc: BaseException, claimed: ClaimedJob | None = None
     return isinstance(exc, RuntimeError) and "after" in str(exc) and "shutdown" in str(exc)
 
 
-class DaemonCallPool:
-    """给处理器的 LLM 调用用的「线程池」：每个调用一条守护线程，并发上限由调用方控制（在飞数）。
+def job_failure(exc: BaseException) -> tuple[str, str, bool, Mapping[str, Any] | None]:
+    """作业里冒出来的异常 → 记在作业行上的 ``(错误码, 说法, retryable, details)``——唯一的一处：工人框架（处理器直接
+    抛出的）与 ``job_runtime.JobRun.run``（分类 / 学习）都按它记失败，两条路不会各说各的。
 
-    ``concurrent.futures.ThreadPoolExecutor`` 的线程在解释器退出时会被逐个 join——``--reload`` / 停服要等在飞的
-    网络请求回来（最长到 LLM 超时）。这里的线程是守护线程：进程退出时直接丢下，作业由框架放回队列，下次续跑；
-    丢下的调用的记账预留由记账层按 TTL 回收。接口是处理器用到的那部分 ``Executor``（``submit`` / ``shutdown``）。
-    """
-
-    def __init__(self, max_workers: int | None = None, thread_name_prefix: str = "sr_call") -> None:
-        del max_workers  # 并发由调用方控制
-        self._prefix = thread_name_prefix
-        self._closed = False
-        self._lock = threading.Lock()
-        self._count = 0
-
-    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("cannot schedule new futures after shutdown")
-            self._count += 1
-            name = f"{self._prefix}_{self._count}"
-        future: Future = Future()
-
-        def runner() -> None:
-            if not future.set_running_or_notify_cancel():
-                return
-            try:
-                result = fn(*args, **kwargs)
-            except BaseException as exc:  # noqa: BLE001 — 原样交给 Future
-                future.set_exception(exc)
-            else:
-                future.set_result(result)
-
-        threading.Thread(target=runner, name=name, daemon=True).start()
-        return future
-
-    def shutdown(self, wait: bool = False, *, cancel_futures: bool = False) -> None:
-        del wait, cancel_futures  # 守护线程不等；已开始的调用无法撤回（结果被丢弃）
-        with self._lock:
-            self._closed = True
+    ``DomainError``：错误码与说法原样，``retryable`` = 异常的 ``retryable`` 属性或 ``details.retryable``；其余异常：
+    异常自带的 ``code``（没有就 ``STYLE_REFERENCE_JOB_FAILED``）、「类型: 说法」、可续跑（游标保留）。"""
+    if isinstance(exc, DomainError):
+        details = exc.details if isinstance(exc.details, Mapping) else None
+        retryable = bool(getattr(exc, "retryable", False) or (details or {}).get("retryable"))
+        return exc.code, str(exc.message), retryable, details
+    return str(getattr(exc, "code", None) or JOB_FAILED_CODE), f"{type(exc).__name__}: {exc}", True, None
 
 
 def _session_factory():
@@ -824,8 +867,6 @@ def _release_interrupted(session: Session, service: StyleJobService, claimed: Cl
 
 
 def _run_job(job_id: str) -> None:
-    from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
-
     generation = current_worker_generation()
     try:
         with _session_factory() as session:
@@ -861,31 +902,15 @@ def _run_job(job_id: str) -> None:
                 except JobLost:
                     session.rollback()
                     logger.info("style job %s lost ownership; worker stops", job_id)
-                except DomainError as exc:
+                except Exception as exc:  # noqa: BLE001 — 作业边界：记失败（job_failure），不让线程静默死
                     if is_worker_interruption(exc, claimed):
                         _release_interrupted(session, service, claimed)
                         return
                     session.rollback()
-                    service.fail(
-                        claimed,
-                        code=exc.code,
-                        message=str(exc.message),
-                        retryable=bool(getattr(exc, "retryable", False)),
-                        details=exc.details if isinstance(exc.details, Mapping) else None,
-                    )
-                    session.commit()
-                except Exception as exc:  # noqa: BLE001 — 作业边界：记失败，不让线程静默死
-                    if is_worker_interruption(exc, claimed):
-                        _release_interrupted(session, service, claimed)
-                        return
-                    session.rollback()
-                    logger.exception("style job %s failed", job_id)
-                    service.fail(
-                        claimed,
-                        code=getattr(exc, "code", None) or JOB_FAILED_CODE,
-                        message=f"{type(exc).__name__}: {exc}",
-                        retryable=True,
-                    )
+                    if not isinstance(exc, DomainError):
+                        logger.exception("style job %s failed", job_id)
+                    code, message, retryable, details = job_failure(exc)
+                    service.fail(claimed, code=code, message=message, retryable=retryable, details=details)
                     session.commit()
                 except (KeyboardInterrupt, SystemExit):
                     # Ctrl-C / 正常退出：进程要走了——作业放回队列（游标保留），再往上抛。被 SIGKILL 的进程什么也
@@ -926,34 +951,22 @@ def _job_kind(job_id: str) -> str | None:
 
 
 # ---------------------------------------------------------------------- 维护任务（随清扫线程跑）
-MaintenanceTask = Callable[[], Any]
-_MAINTENANCE: dict[str, tuple[MaintenanceTask, float]] = {}
-_MAINTENANCE_LAST_RUN: dict[str, float] = {}
+_STYLE_MAINTENANCE = MaintenanceRegistry("style job")
+# 登记簿的两张表原样转出（测试直接读写它们）
+_MAINTENANCE: dict[str, tuple[MaintenanceTask, float]] = _STYLE_MAINTENANCE.tasks
+_MAINTENANCE_LAST_RUN: dict[str, float] = _STYLE_MAINTENANCE.last_run
 
 
 def register_maintenance_task(name: str, task: MaintenanceTask, *, interval_seconds: float) -> None:
-    """登记一项随清扫线程跑的定期维护任务（模块导入时登记，与处理器同一种约定）：清扫线程启动时先跑一次，之后每
-    ``interval_seconds`` 秒跑一次。任务自己开会话、自己提交；抛出的异常由清扫线程记日志，不影响清扫与别的任务。
-    同名重复登记覆盖（模块被重新导入时无害）。"""
-    _MAINTENANCE[str(name)] = (task, max(1.0, float(interval_seconds)))
+    """登记一项随清扫线程跑的定期维护任务（``workers.install_workers`` 登记风格参考自己的）：清扫线程启动时先跑一次，
+    之后每 ``interval_seconds`` 秒跑一次。任务自己开会话、自己提交；抛出的异常由清扫线程记日志，不影响清扫与别的
+    任务。同名重复登记覆盖。"""
+    _STYLE_MAINTENANCE.register(name, task, interval_seconds=interval_seconds)
 
 
 def run_due_maintenance(*, now: float | None = None) -> list[str]:
     """跑一遍到期的维护任务（``now`` 是单调时钟秒数，缺省当前）；返回这一轮跑了的任务名（失败的不算）。"""
-    current = time.monotonic() if now is None else float(now)
-    ran: list[str] = []
-    for name, (task, interval) in list(_MAINTENANCE.items()):
-        last = _MAINTENANCE_LAST_RUN.get(name)
-        if last is not None and current - last < interval:
-            continue
-        _MAINTENANCE_LAST_RUN[name] = current
-        try:
-            task()
-        except Exception:  # noqa: BLE001 — 维护任务失败只记日志，下一个间隔再试
-            logger.exception("style job maintenance task %s failed", name)
-            continue
-        ran.append(name)
-    return ran
+    return _STYLE_MAINTENANCE.run_due(now=now)
 
 
 def sweeper_tick(*, now: float | None = None) -> None:
@@ -966,30 +979,29 @@ def start_job_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> No
     """常驻清扫线程（FastAPI lifespan 启动时调用一次；重复调用无害）。启动时先跑一拍（清扫 + 全部维护任务），
     之后每 ``interval_seconds`` 秒一拍（维护任务只在各自的间隔到期时才跑）。"""
     global _SWEEPER, _SWEEPER_STOP
+    missing = [kind for kind in JOB_KINDS if kind not in _HANDLERS]
+    if missing:
+        # 处理器由 workers.install_workers() 登记（lifespan 在这之前调用）；漏了的种类排队的作业不会被派发
+        logger.error("style job sweeper starting without handlers for %s (install_workers() not called?)", missing)
     with _EXECUTOR_LOCK:
         if _SWEEPER is not None and _SWEEPER.is_alive():
             return
-        stop = threading.Event()
-        _MAINTENANCE_LAST_RUN.clear()
-
-        def _loop() -> None:
-            sweeper_tick()
-            while not stop.wait(max(1.0, float(interval_seconds))):
-                sweeper_tick()
-
-        _SWEEPER_STOP = stop
-        _SWEEPER = threading.Thread(target=_loop, name=SWEEPER_THREAD_NAME, daemon=True)
-        _SWEEPER.start()
+        _STYLE_MAINTENANCE.reset_schedule()
+        # 每一拍按名字取本模块的 sweeper_tick（测试会替换它）
+        sweeper = PeriodicThread(SWEEPER_THREAD_NAME, lambda: sweeper_tick(), interval_seconds=interval_seconds)
+        _SWEEPER_STOP = sweeper.stop_event
+        _SWEEPER = sweeper.thread
+        sweeper.start()
 
 
 def shutdown_job_workers(*, wait: bool = False) -> None:
     """lifespan 结束：停清扫、工人代 +1（在跑的处理器在下一个检查点把作业放回队列）、关线程池。
 
     ``wait=True`` 等在跑的处理器放回作业再返回（测试用）；缺省不等——它们在几秒内自己放回。"""
-    global _SWEEPER, _GENERATION
+    global _SWEEPER
     with _EXECUTOR_LOCK:
         _SWEEPER_STOP.set()
-        _GENERATION += 1
+        bump_worker_generation()
         executors = list(_EXECUTORS.values())
         _EXECUTORS.clear()
         _SWEEPER = None
@@ -1015,6 +1027,7 @@ __all__ = [
     "JobCancelled",
     "JobInterrupted",
     "JobLost",
+    "RECENT_FINISHED_SECONDS",
     "STALE_AFTER_SECONDS",
     "STATE_CANCELLED",
     "STATE_FAILED",
@@ -1027,12 +1040,14 @@ __all__ = [
     "already_active_error",
     "current_worker_generation",
     "dispatch_job",
+    "finished_params",
     "heartbeat_is_stale",
     "is_worker_interruption",
     "job_activity_entry",
+    "job_failure",
+    "job_resumable",
     "register_job_handler",
     "register_maintenance_task",
-    "registered_job_handler",
     "run_cancel_hook",
     "run_due_maintenance",
     "run_job_inline",

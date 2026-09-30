@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,14 +15,11 @@ from novel_system.db.models import (
     LlmCall,
     LlmCallAttempt,
     SceneCard,
-    StyleReferenceBook,
-    StyleReferenceRun,
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.background_recovery import (
     acquire_startup_recovery_lease,
     recover_run_job_dispatches,
-    retire_legacy_style_reference_runs,
     run_startup_recovery,
 )
 from novel_system.services.errors import DomainError
@@ -414,58 +412,175 @@ def test_startup_recovery_uses_configured_ttl_for_legacy_llm_reservations(
     assert session.get(LlmCall, "legacy-startup-recovery").accounting_status == "released"
 
 
-def test_legacy_style_reference_runs_are_retired_and_learn_runs_are_left_alone(session) -> None:
-    """旧抽取流程(RunOrchestrator,2026-09-23 删除)留下的「运行中」run 标 failed;学习作业的血缘 run 不动。"""
-    session.add(
-        StyleReferenceBook(
-            book_id="book-recovery",
-            title="Recovery",
-            source_kind="upload",
-            cloud_policy="segments_only",
-            text_checksum="book-recovery-checksum",
+# ---------------------------------------------------------------------------
+# B03-01：进程重启 / --reload 之后运行任务不再干等租约过期
+# ---------------------------------------------------------------------------
+
+
+def _wait_until(predicate, *, timeout: float = 20.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return bool(predicate())
+
+
+def _job_status(job_id: str) -> str | None:
+    with SessionLocal() as observer:
+        job = observer.get(ChapterRunJob, job_id)
+        return job.status if job is not None else None
+
+
+def test_app_shutdown_releases_its_run_leases_so_a_restart_resumes_at_once(session, monkeypatch) -> None:
+    """lifespan 结束（--reload / 停服）时，本进程工人持有的租约就地到期：重启后的启动恢复立刻把任务接着跑，
+    不再因为「租约还有 600 秒」跳过它（修之前：任务一直 running、这一场一直 409，直到很久以后的某次重启）。
+    进程退出之后工人的续约不再生效（心跳线程续不回来）。"""
+    from novel_system.services import scene_run_jobs as job_module
+    from novel_system.services.run_job_leases import lease_is_active
+    from tests.test_scene_run_jobs import _create_chapter_and_scene
+
+    started = threading.Event()
+    release = threading.Event()
+    lease_after_shutdown: list[str | None] = []
+
+    class _BlockingPipeline:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, *, run_job_id=None, lease_renewer=None, **_kwargs) -> dict:
+            started.set()
+            release.wait(30)
+            lease_renewer(lease_seconds=600)  # 进程已在退出：不再续约
+            with SessionLocal() as observer:
+                lease_after_shutdown.append(observer.get(ChapterRunJob, run_job_id).lease_expires_at)
+            return {"scene_status": "archived"}
+
+    monkeypatch.setattr(job_module, "Orchestrator", _BlockingPipeline)
+    with TestClient(create_app()) as client:
+        _create_chapter_and_scene(client)
+        job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs").json()["data"]["job_id"]
+        assert started.wait(10)
+        with SessionLocal() as observer:
+            assert lease_is_active(observer.get(ChapterRunJob, job_id).lease_expires_at)
+
+    try:
+        with SessionLocal() as observer:
+            orphan = observer.get(ChapterRunJob, job_id)
+            assert orphan.status == "running"
+            assert not lease_is_active(orphan.lease_expires_at)
+            dispatched: list[str] = []
+            result = recover_run_job_dispatches(
+                observer, scene_dispatch=dispatched.append, chapter_dispatch=lambda *_args: None
+            )
+        assert dispatched == [job_id]
+        assert result["active_lease_skipped"] == []
+    finally:
+        release.set()
+        assert _wait_until(lambda: bool(lease_after_shutdown))
+    assert not lease_is_active(lease_after_shutdown[0])
+    assert _wait_until(lambda: _job_status(job_id) == "completed")
+
+
+def test_periodic_run_job_sweep_recovers_orphans_without_a_restart(session, monkeypatch) -> None:
+    """周期恢复：租约已过期、本进程里没有它的工人的 running 任务再派发一次（排队中的不归它管，启动恢复负责）；
+    主人已死的取消请求收尾为 cancelled。修之前只有启动时扫一次。"""
+    import novel_system.services.background_recovery as recovery_module
+    from novel_system.services.run_job_leases import mark_dispatched, unmark_dispatched
+
+    _seed_run_job_parents(session, chapter_ids=("C9",), scene_ids=("S1", "S2", "S3", "S4", "S5"))
+    now = datetime.now(UTC)
+    expired = (now - timedelta(seconds=5)).isoformat()
+    active = (now + timedelta(minutes=5)).isoformat()
+
+    def _running(job_id: str, scene_id: str, lease: str, *, status: str = "running") -> ChapterRunJob:
+        return ChapterRunJob(
+            job_id=job_id,
+            scene_id=scene_id,
+            status=status,
+            job_type="scene_run_full",
+            worker_id="dead-worker",
+            attempt_no=1,
+            lease_expires_at=lease,
         )
-    )
+
     session.add_all(
         [
-            StyleReferenceRun(
-                run_id="run-queued",
-                book_id="book-recovery",
+            _running("scene-orphan", "S1", expired),
+            _running("scene-alive-elsewhere", "S2", active),
+            ChapterRunJob(job_id="scene-queued", scene_id="S3", status="queued", job_type="scene_run_full"),
+            _running("scene-running-here", "S4", expired),
+            _running("scene-cancel-orphan", "S5", expired, status="cancel_requested"),
+            ChapterRunJob(
+                job_id="chapter-orphan",
+                chapter_id="C9",
                 status="running",
-                phase="extract",
-                dispatch_state="queued",
-                requested_layers_json=["language", "scene"],
-            ),
-            StyleReferenceRun(
-                run_id="run-running",
-                book_id="book-recovery",
-                status="running",
-                phase="extract",
-                dispatch_state="running",
-                requested_layers_json=["language"],
-            ),
-            StyleReferenceRun(
-                run_id="run-learn",
-                book_id="book-recovery",
-                status="running",
-                phase="extract",
-                dispatch_state="learn_job",
-            ),
-            StyleReferenceRun(
-                run_id="run-done",
-                book_id="book-recovery",
-                status="done",
-                phase="done",
-                dispatch_state="completed",
+                job_type="chapter_run_full",
+                worker_id="dead-worker",
+                attempt_no=1,
+                lease_expires_at=expired,
             ),
         ]
     )
     session.commit()
+    scenes: list[str] = []
+    chapters: list[str] = []
+    monkeypatch.setattr(recovery_module, "_dispatch_scene", scenes.append)
+    monkeypatch.setattr(recovery_module, "_dispatch_chapter", lambda job_id, *_args: chapters.append(job_id))
+    assert mark_dispatched("scene-running-here")
+    try:
+        summary = recovery_module.sweep_orphaned_run_jobs()
+    finally:
+        unmark_dispatched("scene-running-here")
 
-    assert sorted(retire_legacy_style_reference_runs(session)) == ["run-queued", "run-running"]
+    assert scenes == ["scene-orphan"]
+    assert chapters == ["chapter-orphan"]
+    assert [item["job_id"] for item in summary["expired_cancel_requests"]] == ["scene-cancel-orphan"]
     session.expire_all()
-    for run_id in ("run-queued", "run-running"):
-        run = session.get(StyleReferenceRun, run_id)
-        assert run.status == "failed" and run.error_code == "STYLE_REFERENCE_RUN_RETIRED"
-    assert session.get(StyleReferenceRun, "run-learn").status == "running"
-    assert session.get(StyleReferenceRun, "run-done").status == "done"
-    assert retire_legacy_style_reference_runs(session) == []
+    assert session.get(ChapterRunJob, "scene-cancel-orphan").status == "cancelled"
+    assert session.get(ChapterRunJob, "scene-queued").status == "queued"
+
+
+def test_run_job_sweeper_tick_runs_due_system_maintenance(monkeypatch) -> None:
+    """巡检线程的一拍顺带跑到期的全系统维护任务（``services/maintenance.py``）：启动时就跑的任务第一拍跑，
+    ``run_at_start=False`` 的等满一个间隔；一个任务失败不影响别的任务，也不影响巡检本身。"""
+    from novel_system.services import background_recovery as recovery_module
+    from novel_system.services import maintenance
+
+    ran: list[str] = []
+
+    def failing() -> None:
+        raise RuntimeError("maintenance task failed")
+
+    monkeypatch.setattr(recovery_module, "sweep_orphaned_run_jobs", lambda: {"run_jobs": {}})
+    maintenance.register_maintenance_task("t_eager", lambda: ran.append("eager"), interval_seconds=3600)
+    maintenance.register_maintenance_task("t_failing", failing, interval_seconds=3600)
+    maintenance.register_maintenance_task(
+        "t_deferred", lambda: ran.append("deferred"), interval_seconds=3600, run_at_start=False
+    )
+    try:
+        maintenance.reset_maintenance_schedule()
+        summary = recovery_module.run_job_sweeper_tick()
+        assert summary == {"run_jobs": {}, "maintenance": ["t_eager"]}
+        assert ran == ["eager"]
+        # 同一个间隔内的下一拍什么也不跑
+        assert recovery_module.run_job_sweeper_tick()["maintenance"] == []
+        assert maintenance.run_due_maintenance(now=time.monotonic() + 3601) == ["t_eager", "t_deferred"]
+        assert ran == ["eager", "eager", "deferred"]
+    finally:
+        for name in ("t_eager", "t_failing", "t_deferred"):
+            maintenance.unregister_maintenance_task(name)
+
+
+def test_lifespan_runs_the_run_job_sweeper_only_while_the_app_is_up() -> None:
+    from novel_system.services.background_recovery import RUN_JOB_SWEEPER_THREAD_NAME
+
+    def sweepers() -> list[threading.Thread]:
+        return [t for t in threading.enumerate() if t.name == RUN_JOB_SWEEPER_THREAD_NAME and t.is_alive()]
+
+    with TestClient(create_app()) as client:
+        assert client.get("/live").status_code == 200
+        assert len(sweepers()) == 1
+    assert _wait_until(lambda: not sweepers(), timeout=10)

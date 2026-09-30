@@ -1,7 +1,7 @@
 """规划层的风格参考解析（2026-09-12 结构跟随，Step 2 Track B）。
 
-场景运行有 ``bundle_builder.resolve_scene_style_runtime_contract``（scene > character >
-project > global）；规划一章 / 排一张场表时还没有具体的场，只能按 **project + global**
+场景运行按这一场解析绑定（scene > character > project > global，``style_policy.style_policy_live`` /
+bundle 里冻结的契约）；规划一章 / 排一张场表时还没有具体的场，只能按 **project + global**
 作用域解析——绑定只在 ``style_policy.style_policy_live`` 解析（2026-09-24 S3，这里不再自己走层）。本模块把
 冻结契约里最具体一层的 ``structure_card`` / ``planning_guidance`` 渲染成规划节点可直接注入的中文块：
 
@@ -42,6 +42,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_binding_config,
 )
+from novel_system.services.style_reference.book_text import is_title_paragraph
 from novel_system.services.style_reference.card import (
     LINE_STATE_EXCLUDED,
     LINE_STATE_PINNED,
@@ -56,12 +57,10 @@ from novel_system.services.style_reference.narrative_guidance import (
 from novel_system.services.style_reference.policy import ReferenceRouteDecision, decide_reference_route
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import contract_layer
-from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
-from novel_system.services.style_reference.structure import (
+from novel_system.services.style_reference.structure_card import STRUCTURE_TITLE_MAX_CHARS, chapter_titles_summary
+from novel_system.services.style_reference.structure_render import (
     PLANNING_GUIDANCE_HEADER,
     PLANNING_GUIDANCE_MAX_LINES,
-    STRUCTURE_TITLE_MAX_CHARS,
-    chapter_titles_summary,
     render_planning_guidance,
     render_structure_card_parts,
 )

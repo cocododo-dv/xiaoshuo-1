@@ -1,13 +1,15 @@
 """StyleReference 运行时 cleanup:删书(单本 / 批量共用 ``delete_reference_book``)/ 破坏式重新分类时清派生数据,
-遥测留存清理(``cleanup_metric_events``;2026-09-24 §8 C8 起由清扫线程定期跑,见文件末尾的登记)。"""
+遥测留存清理(``cleanup_metric_events``;2026-09-24 §8 C8 起由清扫线程定期跑)与作业表保留期(``prune_style_jobs``,
+批准 #23);两项维护任务由 ``workers.install_workers`` 登记。"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 import logging
+from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -22,7 +24,6 @@ from novel_system.db.models import (
     StyleReferenceRun,
     StyleReferenceWindow,
 )
-from novel_system.services.style_reference.jobs import register_maintenance_task
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ _LOGGER = logging.getLogger(__name__)
 METRIC_EVENTS_RETENTION_DAYS = 90
 METRIC_EVENTS_CLEANUP_INTERVAL_SECONDS = 24 * 3600.0
 METRIC_EVENTS_MAINTENANCE_TASK = "style_reference_metric_events_retention"
+# 作业表的保留期（批准 #23，重评 R14）：结束了的对照检查作业留 30 天；分类 / 学习每本书每种只留最近一个
+CHECK_JOB_RETENTION_DAYS = 30
+JOB_RETENTION_INTERVAL_SECONDS = 24 * 3600.0
+JOB_RETENTION_MAINTENANCE_TASK = "style_reference_job_retention"
 
 
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
@@ -169,16 +174,12 @@ def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
     (与解除绑定同一口径)→ :func:`purge_derived_data` 清派生数据 → 段落 → 书。书不存在 404。
     """
     from novel_system.db.models import StyleReferenceBook, StyleReferenceParagraph
-    from novel_system.services.errors import DomainError
+    from novel_system.services.style_reference.errors import book_not_found
     from novel_system.services.style_reference.jobs import StyleJobService
 
     book = session.get(StyleReferenceBook, str(book_id))
     if book is None:
-        raise DomainError(
-            "STYLE_REFERENCE_BOOK_NOT_FOUND",
-            f"book {book_id!r} not found",
-            status_code=404,
-        )
+        raise book_not_found(book_id)
     title = book.title
     cancelled = StyleJobService(session).cancel_all_for_book(book_id)
     unbound = supersede_book_bindings(session, book_id, reason=f"style_reference_book_deleted:{book_id}")
@@ -201,6 +202,39 @@ def delete_reference_book(session: Session, book_id: str) -> dict[str, Any]:
         "unbound": unbound,
         "counts": counts,
     }
+
+
+def _begin_outer_transaction(session: Session) -> None:
+    """pysqlite 旧式事务控制下,没有未决写时 ``SAVEPOINT`` 自己开事务、``RELEASE`` 就是提交——每本书各自提交,
+    与幂等记录不在一个事务里(中途进程死掉,重放时已删的书报 404)。先把外层事务开起来,保存点才是真的嵌套:
+    整批删除与调用方的其余写(幂等记录)一起提交或一起回滚。"""
+    connection = session.connection()
+    if connection.dialect.name != "sqlite":
+        return
+    dbapi_connection = connection.connection.dbapi_connection
+    if not dbapi_connection.in_transaction:
+        connection.exec_driver_sql("BEGIN")
+
+
+def delete_reference_books(session: Session, book_ids: Sequence[str]) -> dict[str, Any]:
+    """书库多选删除(台账 U4 / L6;flush 不 commit):每本书与单本删除走同一个 :func:`delete_reference_book`,各在一个
+    保存点里——一本失败(不存在)不影响其余的;结果逐本给出 ``deleted`` / ``error``。保存点只用来逐本收集这类业务错误,
+    其它异常(连库失败……)照常抛出,整批连同调用方的写一起回滚。"""
+    from novel_system.services.errors import DomainError
+
+    _begin_outer_transaction(session)
+    results: list[dict[str, Any]] = []
+    for book_id in book_ids:
+        try:
+            with session.begin_nested():
+                outcome = delete_reference_book(session, book_id)
+            results.append(
+                {"book_id": book_id, "title": outcome["title"], "deleted": True, "unbound": outcome["unbound"]}
+            )
+        except DomainError as exc:
+            results.append({"book_id": book_id, "deleted": False, "error": {"code": exc.code, "message": exc.message}})
+    deleted = sum(1 for item in results if item["deleted"])
+    return {"results": results, "deleted_count": deleted, "failed_count": len(results) - deleted}
 
 
 def cleanup_metric_events(
@@ -276,10 +310,97 @@ def run_metric_events_retention() -> dict[str, Any]:
     return summary
 
 
-# 清扫线程启动时跑一次、之后每 24 小时一次。模块导入时登记(与作业处理器同一种约定):书库路由在应用装配时就导入
-# 本模块,所以 lifespan 起清扫线程之前一定登记过;jobs 不能反过来导入本模块(本模块要用 StyleJobService,会成环)。
-register_maintenance_task(
-    METRIC_EVENTS_MAINTENANCE_TASK,
-    run_metric_events_retention,
-    interval_seconds=METRIC_EVENTS_CLEANUP_INTERVAL_SECONDS,
-)
+def prune_style_jobs(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    check_days: int = CHECK_JOB_RETENTION_DAYS,
+) -> dict[str, Any]:
+    """作业表的保留期（批准 #23，重评 R14；flush 不 commit）。
+
+    - 结束了的对照检查作业留 ``check_days`` 天（按结束时间；读数照旧留在读数表里，「像不像」的走势不受影响）；
+    - 分类 / 学习作业每本书每种只留最近一个（按创建时间，与书卡读的是同一个）：书卡、「继续学习」/「继续分类」都只看
+      最近一个，更早的没有界面会读；
+    - 没结束的作业一个不删；还在活动面板上的（``jobs.RECENT_FINISHED_SECONDS`` 之内结束的）也不删；
+    - 留下的已结束作业，参数按这类作业登记的结束规则换好（对照检查：送检的原文换成哈希与字数）——规则上线之前
+      就结束了的旧行也在这里补上。
+    """
+    from datetime import timedelta
+
+    from novel_system.services.style_reference.jobs import (
+        JOB_KIND_CHECK,
+        RECENT_FINISHED_SECONDS,
+        TERMINAL_STATES,
+        finished_params,
+    )
+
+    current = now or datetime.now(UTC)
+    check_cutoff = (current - timedelta(days=int(check_days))).isoformat()
+    recent_cutoff = (current - timedelta(seconds=RECENT_FINISHED_SECONDS)).isoformat()
+    rows = session.execute(
+        select(
+            StyleReferenceJob.job_id,
+            StyleReferenceJob.kind,
+            StyleReferenceJob.book_id,
+            StyleReferenceJob.state,
+            StyleReferenceJob.created_at,
+            StyleReferenceJob.finished_at,
+        ).order_by(StyleReferenceJob.created_at, StyleReferenceJob.job_id)
+    ).all()
+    latest: dict[tuple[str, str], str] = {}
+    for job_id, kind, book_id, _state, _created, _finished in rows:
+        if kind != JOB_KIND_CHECK:
+            latest[(str(kind), str(book_id or ""))] = str(job_id)  # 升序：最后写入的就是最近一个
+    expired_checks: list[str] = []
+    superseded: list[str] = []
+    for job_id, kind, book_id, state, _created, finished in rows:
+        if state not in TERMINAL_STATES:
+            continue
+        finished_at = str(finished or "")
+        if kind == JOB_KIND_CHECK:
+            if finished_at < check_cutoff:
+                expired_checks.append(str(job_id))
+        elif latest.get((str(kind), str(book_id or ""))) != str(job_id) and finished_at < recent_cutoff:
+            superseded.append(str(job_id))
+    doomed = expired_checks + superseded
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(StyleReferenceJob).where(StyleReferenceJob.job_id.in_(doomed[start : start + 500])))
+    scrubbed = 0
+    for job_id, kind, params in session.execute(
+        select(StyleReferenceJob.job_id, StyleReferenceJob.kind, StyleReferenceJob.params_json).where(
+            StyleReferenceJob.state.in_(TERMINAL_STATES),
+            StyleReferenceJob.kind == JOB_KIND_CHECK,
+        )
+    ).all():
+        finished = finished_params(kind, params if isinstance(params, dict) else {})
+        if finished is not None:
+            session.execute(
+                update(StyleReferenceJob).where(StyleReferenceJob.job_id == job_id).values(params_json=finished)
+            )
+            scrubbed += 1
+    session.flush()
+    return {
+        "deleted_check_jobs": len(expired_checks),
+        "deleted_superseded_jobs": len(superseded),
+        "scrubbed_check_jobs": scrubbed,
+        "check_cutoff": check_cutoff,
+    }
+
+
+def run_job_retention() -> dict[str, Any]:
+    """清扫线程的维护任务（R14）：自己开会话，按保留期清作业表并提交；异常由清扫线程记日志。"""
+    from novel_system.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        summary = prune_style_jobs(session)
+        session.commit()
+    if summary["deleted_check_jobs"] or summary["deleted_superseded_jobs"] or summary["scrubbed_check_jobs"]:
+        _LOGGER.info(
+            "style-reference job retention: deleted %d check job(s) older than %s, %d superseded "
+            "classify/learn job(s); scrubbed %d finished check job(s)",
+            summary["deleted_check_jobs"],
+            summary["check_cutoff"],
+            summary["deleted_superseded_jobs"],
+            summary["scrubbed_check_jobs"],
+        )
+    return summary

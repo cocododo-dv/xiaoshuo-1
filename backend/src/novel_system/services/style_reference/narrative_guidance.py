@@ -20,7 +20,6 @@ from typing import Any, Mapping, Sequence
 
 NARRATIVE_GUIDANCE_MAX_LINES = 8
 NARRATIVE_GUIDANCE_SECTION_KEY = "style_narrative_guidance"
-NARRATIVE_GUIDANCE_SECTION_LABEL = "Style Reference — Narrative Mechanisms"
 _NARRATIVE_SECTION_PREFIX = (
     "以下是参考作品的叙事取舍机制（只决定先说什么、何处停顿、透露多少、时间如何"
     "推进；不决定用词，也不是需要复述的文本）："
@@ -181,17 +180,11 @@ def render_narrative_section(lines: Sequence[str]) -> str:
     return "\n".join([_NARRATIVE_SECTION_PREFIX, *(f"- {line}" for line in cleaned)])
 
 
-# 规格 §2.W5.1 用的短名；保留别名以便两种称呼都可用。
-render_section = render_narrative_section
-
-
 __all__ = [
     "NARRATIVE_AVOID_MARKER",
     "NARRATIVE_GUIDANCE_MAX_LINES",
     "NARRATIVE_GUIDANCE_SECTION_KEY",
-    "NARRATIVE_GUIDANCE_SECTION_LABEL",
     "collect_narrative_guidance",
     "mark_forbidden_narrative_statement",
     "render_narrative_section",
-    "render_section",
 ]

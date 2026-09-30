@@ -1,63 +1,29 @@
-"""风格参考 v3（P5b）—「像不像」读数与对照检查的接口。
+"""风格参考 v3（P5b）—「像不像」读数的两个读接口。
 
 - ``GET /api/v1/scenes/{scene_id}/style-fidelity``：这一场每个阶段最新的读数（首稿 / 定向修改 / 补丁 / 终稿 / 对照检查）、
   风格步与补丁的决定、最近的参考评审分；
-- ``GET /api/v1/projects/{project_id}/style-fidelity``：作品的读数走势、近期常见偏差、按维平均（确定性分与评审分分开）；
-- ``GET /api/v2/style-reference/readings/{reading_id}``：一条读数；
-- ``POST /api/v2/style-reference/checks``：对照检查——建一个作业（作业表 kind=check），读数 + 参考评审 + 抄袭门；
-- ``GET /api/v2/style-reference/checks/{job_id}``：对照检查作业的进度与结果读数；
-- ``POST /api/v2/style-reference/checks/{job_id}/cancel``：取消（排队中 / 心跳过期的当场收尾，运行中的在下一个检查点收尾；
-  已结束 409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``），响应与 ``GET`` 同形。
+- ``GET /api/v1/projects/{project_id}/style-fidelity``：作品的读数走势、近期常见偏差、按维平均（确定性分与评审分分开）。
 
 读数入库只有 ``services.style_reference.readings.record_fidelity_reading`` 一个入口；这里的读接口都不写库。
-旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）与它的报告表都已删除（迁移 0091）。
+对照检查（``/api/v2/style-reference/checks*``）在风格参考路由包里（``api/routes/style_reference/checks.py``）。
+旧的「回测」接口（``/profiles/{id}/validate``、``/reports``）与它的报告表都已删除（迁移 0091）；单读一条读数的
+``GET /api/v2/style-reference/readings/{id}`` 没有界面调用（读数随场景 / 作品 / 对照检查的载荷给出），2026-09-30 删除。
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.db.models import StyleFidelityReading
-from novel_system.services.errors import DomainError
 from novel_system.services.style_fidelity_view import (
     project_style_fidelity,
     scene_style_fidelity,
 )
-from novel_system.services.style_reference import check_job as check_job_service
-from novel_system.services.style_reference.check_job import (
-    CHECK_MAX_TEXT_CHARS,
-    cancel_check_job,
-    check_job_or_404,
-    check_job_payload,
-    start_check_job,
-)
-from novel_system.services.style_reference.errors import LLMRequiredError
-from novel_system.services.style_reference.jobs import dispatch_job
-from novel_system.services.style_reference.readings import reading_payload
 from novel_system.services.scene_lookup import get_scene_or_404, require_project
 
 router = APIRouter(tags=["style_fidelity"])
-
-STYLE_REFERENCE_PREFIX = "/api/v2/style-reference"
-
-
-class CheckRequest(BaseModel):
-    """对照检查：``text`` 与 ``scene_id`` 恰好给一个；文字要说对照哪份参考（``profile_id`` 或 ``project_id``）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str | None = Field(default=None, max_length=CHECK_MAX_TEXT_CHARS)
-    scene_id: str | None = Field(default=None, max_length=255)
-    profile_id: str | None = Field(default=None, max_length=255)
-    project_id: str | None = Field(default=None, max_length=255)
 
 
 @router.get("/api/v1/scenes/{scene_id}/style-fidelity")
@@ -78,106 +44,3 @@ def get_project_style_fidelity(
 ):
     require_project(session, project_id)
     return ok(project_style_fidelity(session, project_id), req_id=request_id_of(request))
-
-
-@router.get(f"{STYLE_REFERENCE_PREFIX}/readings/{{reading_id}}")
-def get_fidelity_reading(
-    reading_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    row = session.get(StyleFidelityReading, reading_id)
-    if row is None:
-        raise DomainError(
-            "STYLE_REFERENCE_READING_NOT_FOUND",
-            f"reading {reading_id!r} not found",
-            status_code=404,
-        )
-    return ok({"reading": reading_payload(row)}, req_id=request_id_of(request))
-
-
-@router.post(f"{STYLE_REFERENCE_PREFIX}/checks")
-def create_style_check(
-    request: Request,
-    payload: CheckRequest,
-    session: Session = Depends(get_session),
-):
-    """建一个对照检查作业（事务提交后派发）。没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``；没有可对照的参考
-    409 ``STYLE_REFERENCE_CHECK_NOT_BOUND``；参数不对 400 ``STYLE_REFERENCE_CHECK_TARGET_INVALID``。"""
-    body = payload.model_dump(mode="json")
-    # 按模块取（运行时与测试都只在 check_job 一处换客户端工厂）
-    client, enabled = check_job_service.resolve_check_client()
-    if not enabled or client is None:
-        raise LLMRequiredError(operation="style_check")
-    op_key = request.headers.get("X-Idempotency-Key")
-
-    def _do() -> dict[str, Any]:
-        job = start_check_job(
-            session,
-            text=body.get("text"),
-            scene_id=body.get("scene_id"),
-            profile_id=body.get("profile_id"),
-            project_id=body.get("project_id"),
-            op_key=op_key,
-            llm_client=client,
-            llm_enabled=enabled,
-        )
-        return {"job_id": job.job_id, "state": job.state, **check_job_payload(session, job)}
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{STYLE_REFERENCE_PREFIX}/checks",
-        payload=body,
-        action=_do,
-        after_commit=_dispatch_check,
-    )
-
-
-def _dispatch_check(result: dict[str, Any]) -> None:
-    """事务提交后把对照检查作业投给工人（认领是条件写，重复投递无害；漏投的由清扫线程补派）。"""
-    job_id = str((result or {}).get("job_id") or "")
-    if job_id:
-        dispatch_job(job_id)
-
-
-@router.get(f"{STYLE_REFERENCE_PREFIX}/checks/{{job_id}}")
-def get_style_check(
-    job_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    job = check_job_or_404(session, job_id)
-    return ok(check_job_payload(session, job), req_id=request_id_of(request))
-
-
-@router.post(f"{STYLE_REFERENCE_PREFIX}/checks/{{job_id}}/cancel")
-def cancel_style_check(
-    job_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    """取消一次对照检查（与分类 / 学习的取消同形）：排队中 / 心跳过期的作业在这个请求里收尾为 cancelled，运行中的置
-    取消标记、工人在下一个检查点收尾；已结束 409 ``STYLE_REFERENCE_CHECK_NOT_ACTIVE``，没有 404。响应 = ``GET`` 的
-    作业载荷（``job`` / ``reading``）加 ``job_id`` / ``state`` / ``cancel_requested`` / ``finished``。"""
-
-    def _do() -> dict[str, Any]:
-        job = cancel_check_job(session, job_id)
-        return {
-            "job_id": job.job_id,
-            "state": job.state,
-            "cancel_requested": True,
-            "finished": job.state == "cancelled",
-            **check_job_payload(session, job),
-        }
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template=f"{STYLE_REFERENCE_PREFIX}/checks/{{job_id}}/cancel",
-        payload={"job_id": job_id},
-        action=_do,
-    )

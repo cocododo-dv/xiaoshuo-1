@@ -22,7 +22,6 @@ from novel_system.services.style_prompt_injection import (
     inject_style_reference_prefix,
 )
 from novel_system.services.style_reference.inject.bindings import (
-    describe_binding_layers,
     most_specific_binding,
     resolve_binding_layers,
 )
@@ -304,6 +303,67 @@ def test_dimension_emphasis_and_revise_pull_dimension_windows(session) -> None:
     swapped = render_style(session, policy, StyleRenderRequest(role=ROLE_REVISE, scene_id="SC_DEV", bundle_id="B", revise_dimensions=("narrative.pacing",)))
     new = {r["window_no"] for r in swapped.window_refs} - {r["window_no"] for r in draft.window_refs}
     assert 1 <= len(new) <= 2 and new <= set(tagged)
+
+
+def test_reusing_a_frozen_selection_reads_the_window_index_only_for_revise_swaps(session, monkeypatch) -> None:
+    """复用这一场冻结的选窗不先读整张窗口索引（真实书约 500 窗、每次渲染几十毫秒）；改稿要换窗时才读一次。"""
+    from novel_system.services.style_reference.inject import selection as selection_module
+
+    book_id, profile_id = seed_reference(session, "lazyidx")
+    ensure_window_index(session, book_id)
+    numbers = [int(w.window_no) for w in load_windows(session, book_id)]
+    tag_windows(session, book_id, {no: {"dimensions": ["narrative.pacing"]} for no in numbers[5:9]})
+    policy, _ = _policy_from_existing(session, "lazyidx", profile_id)
+    first = render_style(session, policy, StyleRenderRequest(scene_id="SC_LAZY", bundle_id="B"))
+    session.commit()
+    loads: list[int] = []
+    real_load = selection_module.load_index
+
+    def counting_load(*args, **kwargs):  # noqa: ANN002, ANN003
+        loads.append(1)
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(selection_module, "load_index", counting_load)
+    review = render_style(
+        session, policy, StyleRenderRequest(role=ROLE_REVIEW, scene_id="SC_LAZY", bundle_id="B"), use_cache=False
+    )
+    assert loads == []
+    assert [r["window_no"] for r in review.window_refs] and {r["window_no"] for r in review.window_refs} <= {
+        r["window_no"] for r in first.window_refs
+    }
+    assert review.audit["selection"]["reused"] is True
+    assert review.audit["selection"]["index_window_count"] == len(numbers)
+    swapped = render_style(
+        session,
+        policy,
+        StyleRenderRequest(role=ROLE_REVISE, scene_id="SC_LAZY", bundle_id="B", revise_dimensions=("narrative.pacing",)),
+        use_cache=False,
+    )
+    assert loads == [1]
+    assert {r["window_no"] for r in swapped.window_refs} - {r["window_no"] for r in first.window_refs}
+
+
+def test_a_live_scene_render_looks_up_the_current_bundle_selection_once(session, monkeypatch) -> None:
+    """没有 bundle 的场景渲染：「用的是当前 bundle 的冻结选窗还是自己的」进缓存键——查缓存与存缓存共用一次查询。"""
+    from novel_system.services.style_reference.inject import render as render_module
+
+    book_id, profile_id = seed_reference(session, "anchor_once")
+    ensure_window_index(session, book_id)
+    session.commit()
+    policy, _ = _policy_from_existing(session, "anchor_once", profile_id)
+    calls: list[str] = []
+    real = render_module.current_bundle_selection
+
+    def counting(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs.get("root") or "")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render_module, "current_bundle_selection", counting)
+    rendered = render_style(session, policy, StyleRenderRequest(scene_id="SC_ANCHOR"))
+    assert rendered.window_refs and len(calls) == 1
+    # 第二次命中缓存：同样只查一次
+    assert render_style(session, policy, StyleRenderRequest(scene_id="SC_ANCHOR")) is rendered
+    assert len(calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -771,19 +831,19 @@ def test_preview_uses_the_drafting_selection_and_order(session) -> None:
     assert card_only["stats"]["few_shot_windows"] == 0 and "strategy" not in card_only["fragments"]
 
 
-def test_describe_binding_layers_is_cheap_and_marks_the_applied_layer(session, monkeypatch) -> None:
+def test_binding_layers_list_every_hit_and_only_the_most_specific_applies(session, monkeypatch) -> None:
+    """命中层由泛到具体（登记来源用），生效的是最具体的一层；解析只查列、不渲染。"""
     from novel_system.services.style_reference.inject import render as render_module
 
     _b1, project_profile = seed_reference(session, "layers_p")
     _b2, scene_profile = seed_reference(session, "layers_s")
     bind(session, project_profile, binding_id="layers_project")
     bind(session, scene_profile, binding_id="layers_scene", scope="scene", scope_ref_id="SC_LAYERS", config_json={"sample_windows": 8})
-    monkeypatch.setattr(render_module, "render_style", lambda *a, **k: pytest.fail("describe must not render"))
-    data = describe_binding_layers(session, PROJECT_ID, "scene_generation", scene_id="SC_LAYERS")
-    assert [layer["binding_id"] for layer in data["layers"]] == ["layers_project", "layers_scene"]
-    assert [layer["applied"] for layer in data["layers"]] == [False, True]
-    assert data["merged"]["binding_id"] == "layers_scene" and data["merged"]["sample_windows"] == 8
-    assert [item["binding_id"] for item in data["deduplicated"]] == ["layers_project"]
+    monkeypatch.setattr(render_module, "render_style", lambda *a, **k: pytest.fail("resolving layers must not render"))
+    layers = resolve_binding_layers(session, PROJECT_ID, "scene_generation", scene_id="SC_LAYERS")
+    assert [layer.binding_id for layer in layers] == ["layers_project", "layers_scene"]
+    applied = most_specific_binding(layers)
+    assert applied.binding_id == "layers_scene" and applied.config_json["sample_windows"] == 8
 
 
 # ---------------------------------------------------------------------------

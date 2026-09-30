@@ -47,7 +47,6 @@ from novel_system.services.style_reference.card import (
     UNIT_PRIMARY,
     normalize_card,
     plan_card_block,
-    render_card_block,
 )
 from novel_system.services.style_reference.errors import CloudPolicyBlockedError
 from novel_system.services.style_reference.inject import selection as selection_module
@@ -291,7 +290,7 @@ def test_preview_is_judged_against_the_drafting_route(client, monkeypatch) -> No
     assert blocked.json()["error"]["code"] == "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED"
     _routes(monkeypatch, {"style_draft"})
     ok = client.post(url, json={})
-    assert ok.status_code == 200 and ok.json()["data"]["stats"]["few_shot_windows"] == 12
+    assert ok.status_code == 200 and ok.json()["data"]["sizes"]["sample_windows"] == 12
 
 
 # ---------------------------------------------------------------------------
@@ -346,13 +345,13 @@ def _card_sections(text: str) -> tuple[str, list[str]]:
 
 def test_card_budget_keeps_pinned_and_mandatory_lines_and_an_avoid_share() -> None:
     card, states, pinned, must = _card_fixture()
-    text = render_card_block(
+    text = plan_card_block(
         card,
         dimension_states=states,
         line_states={pinned.line_id: "pinned"},
         recent_gaps=["逗号比作者少，句子一口气说到底"],
         budget_chars=2600,
-    )
+    ).text
     assert len(text) <= 2600
     assert pinned.text in text and ("（必须）" + must.text) in text
     main, avoid = _card_sections(text)

@@ -3,8 +3,8 @@
 - :func:`book_summaries`:``GET /books`` 每本书一条——状态、段落类型的来源与一致率、最近一次分类 / 学习作业、
   这本书的画像摘要(``needs_relearn``:段落类型在学完之后又更新过、或正文变过)、用在了哪些作品上;
   不带 ``stats_json``(详情端点才带);
-- :func:`list_profile_summaries` / :func:`profile_summaries`:``GET /profiles`` 的摘要——**不带** ``profile_json``
-  (旧画像一份就有几百 KB,列表只要几个字段:画像版本、学在何时、文风卡几句、要不要重新学);
+- :func:`profile_summaries`:画像摘要(书库载荷的 ``profile``、绑定载荷的画像)——**不带** ``profile_json``
+  (旧画像一份就有几百 KB,摘要只要几个字段:画像版本、学在何时、文风卡几句、要不要重新学);
 - :func:`profile_detail`:``GET /profiles/{id}`` 的文风画像页——规范化后的 16 维文风卡、每句的 ✓ / ✗ 状态与
   依据(发现 → 证据 → 引文;引文是参考作者自己的原话,只在本机给作者看)、气质、声音习惯、结构摘要、各维计数、
   ``learned_from``。没有文风卡的旧画像(迁移 0092 已归档)只是 ``has_card=False`` 的空壳:旧的「卡替身」视图与
@@ -52,7 +52,7 @@ from novel_system.services.style_reference.jobs import JOB_KIND_CLASSIFY, JOB_KI
 from novel_system.services.style_reference.learn_job import learn_payload
 from novel_system.services.style_reference.paragraph_root import ROOT_KEY
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
-from novel_system.services.style_reference.structure import render_structure_card_parts
+from novel_system.services.style_reference.structure_render import render_structure_card_parts
 
 RELEARN_TYPES_CHANGED = "types_changed"
 RELEARN_TEXT_CHANGED = "text_changed"
@@ -180,22 +180,6 @@ def _summary_of(row: Mapping[str, Any], marks: Mapping[str, Any] | None) -> dict
     }
 
 
-def list_profile_summaries(
-    session: Session,
-    *,
-    book_id: str | None = None,
-    status: str | None = None,
-) -> list[dict[str, Any]]:
-    clauses = []
-    if book_id is not None:
-        clauses.append(StyleReferenceProfile.book_id == book_id)
-    if status is not None:
-        clauses.append(StyleReferenceProfile.status == status)
-    rows = _profile_light_rows(session, *clauses)
-    marks = _book_marks(session, (row["book_id"] for row in rows))
-    return [_summary_of(row, marks.get(row["book_id"])) for row in rows]
-
-
 def profile_summaries(session: Session, profile_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
     ids = sorted({str(p) for p in profile_ids if p})
     if not ids:
@@ -246,6 +230,35 @@ def _book_base(book: StyleReferenceBook) -> dict[str, Any]:
     }
 
 
+def _latest_jobs(session: Session, book_ids: Sequence[str]) -> dict[tuple[str, str], StyleReferenceJob]:
+    """每本书每种（分类 / 学习）最近的一个作业（按创建时间、同一时刻按作业 id）。窗口函数先挑出每组的第一行，
+    只把这几行整行读出来——原来把每本书的全部作业连同几十 KB 的游标都读进来再在内存里取最后一个（B10-18）。"""
+    ranked = (
+        select(
+            StyleReferenceJob.job_id.label("job_id"),
+            func.row_number()
+            .over(
+                partition_by=(StyleReferenceJob.kind, StyleReferenceJob.book_id),
+                order_by=(StyleReferenceJob.created_at.desc(), StyleReferenceJob.job_id.desc()),
+            )
+            .label("rank"),
+        )
+        .where(
+            StyleReferenceJob.kind.in_((JOB_KIND_CLASSIFY, JOB_KIND_LEARN)),
+            StyleReferenceJob.book_id.in_(list(book_ids)),
+        )
+        .subquery()
+    )
+    return {
+        (job.kind, str(job.book_id)): job
+        for job in session.scalars(
+            select(StyleReferenceJob).where(
+                StyleReferenceJob.job_id.in_(select(ranked.c.job_id).where(ranked.c.rank == 1))
+            )
+        )
+    }
+
+
 def book_summaries(
     session: Session,
     books: Sequence[StyleReferenceBook],
@@ -256,16 +269,7 @@ def book_summaries(
     if not books:
         return []
     book_ids = [str(b.book_id) for b in books]
-    latest: dict[tuple[str, str], StyleReferenceJob] = {}
-    for job in session.scalars(
-        select(StyleReferenceJob)
-        .where(
-            StyleReferenceJob.kind.in_((JOB_KIND_CLASSIFY, JOB_KIND_LEARN)),
-            StyleReferenceJob.book_id.in_(book_ids),
-        )
-        .order_by(StyleReferenceJob.created_at, StyleReferenceJob.job_id)
-    ):
-        latest[(job.kind, str(job.book_id))] = job  # 升序:最后写入的就是最近一个
+    latest = _latest_jobs(session, book_ids)
     profiles = _profile_light_rows(session, StyleReferenceProfile.book_id.in_(book_ids))
     by_book: dict[str, list[dict[str, Any]]] = {}
     for row in profiles:
@@ -544,7 +548,6 @@ __all__ = [
     "RELEARN_TYPES_CHANGED",
     "book_summaries",
     "choose_book_profile",
-    "list_profile_summaries",
     "profile_detail",
     "profile_summaries",
     "relearn_reason",

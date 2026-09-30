@@ -177,9 +177,9 @@ def test_profile_needs_relearn_when_the_text_changed(client: TestClient) -> None
         book = session.get(StyleReferenceBook, book_id)
         book.stats_json = {**dict(book.stats_json or {}), "paragraph_root_sha256": "0" * 64}
         session.commit()
-    profiles = client.get(f"{PREFIX}/profiles", params={"book_id": book_id}).json()["data"]["profiles"]
-    assert [p["profile_id"] for p in profiles] == [profile_id]
-    assert profiles[0]["relearn_reason"] == "text_changed" and "profile_json" not in profiles[0]
+    summary = client.get(f"{PREFIX}/books/{book_id}").json()["data"]["book"]["profile"]
+    assert summary["profile_id"] == profile_id
+    assert summary["relearn_reason"] == "text_changed" and "profile_json" not in summary
 
 
 # ---------------------------------------------------------------------------
@@ -468,11 +468,11 @@ def test_removed_endpoints_are_gone(client: TestClient, method: str, path: str) 
 def test_bulk_delete_is_one_transaction_with_its_idempotency_record(client: TestClient, monkeypatch) -> None:
     """保存点只用来逐本收集「不存在」这类业务错误;整批删除与幂等记录一起提交或一起回滚——第二本删到一半
     进程出错时,第一本不能已经悄悄提交(pysqlite 旧式事务下外层 SAVEPOINT 的 RELEASE 就是提交)。"""
-    from novel_system.api.routes.style_reference import books as books_routes
+    from novel_system.services.style_reference import cleanup
 
     book_a, _profile_a = _v3_reference("atomic_a")
     book_b, _profile_b = _v3_reference("atomic_b")
-    real = books_routes.delete_reference_book
+    real = cleanup.delete_reference_book
     calls: list[str] = []
 
     def crash_on_second(session, book_id):
@@ -481,7 +481,7 @@ def test_bulk_delete_is_one_transaction_with_its_idempotency_record(client: Test
             raise RuntimeError("disk vanished")
         return real(session, book_id)
 
-    monkeypatch.setattr(books_routes, "delete_reference_book", crash_on_second)
+    monkeypatch.setattr(cleanup, "delete_reference_book", crash_on_second)
     resp = client.post(f"{PREFIX}/books/bulk-delete", json={"book_ids": [book_a, book_b]}, headers=_key("atomic"))
     assert resp.status_code == 500
     with SessionLocal() as session:

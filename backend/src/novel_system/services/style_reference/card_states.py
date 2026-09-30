@@ -23,6 +23,7 @@ from novel_system.services.style_reference.card import (
     card_from_profile_json,
     line_states_from_profile_json,
 )
+from novel_system.services.style_reference.errors import profile_not_found
 
 LINE_ID_RE = re.compile(r"^cl_[0-9a-f]{12}$")
 CARD_LINE_NOT_FOUND_CODE = "STYLE_REFERENCE_CARD_LINE_NOT_FOUND"
@@ -49,11 +50,7 @@ def set_card_line_state(session: Session, profile_id: str, line_id: str, state: 
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if profile is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
+        raise profile_not_found(profile_id)
     card = card_from_profile_json(profile.profile_json)
     if card is None:
         raise DomainError(

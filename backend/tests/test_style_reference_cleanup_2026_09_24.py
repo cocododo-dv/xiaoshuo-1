@@ -243,16 +243,15 @@ def test_profile_page_payload_has_no_legacy_view_and_no_sub_dimension_counts(ses
 
 
 def test_preview_contract_and_request_have_no_v2_fields() -> None:
+    from novel_system.services.style_reference.inject.render import render_stats
     from novel_system.services.style_reference.schemas import (
         InjectionPreviewRequest,
-        InjectionPreviewStats,
         InjectionStrategy,
-        SystemPromptFragments,
         TaskType,
     )
 
-    assert set(SystemPromptFragments.model_fields) == {"positive_block", "voice_block", "few_shot_block", "anti_plagiarism_block"}
-    assert set(InjectionPreviewStats.model_fields) == {
+    # 读数的键（审计的 render_stats；预览的 sizes 由它换算）——没有 v2 的旧名
+    assert set(render_stats(system_prefix="", user_tail="", blocks={}, k=0)) == {
         "positive_lines", "avoid_lines", "voice_lines", "few_shot_windows", "few_shot_chars", "total_prefix_chars",
         "card_chars", "few_shot_k",
     }

@@ -14,12 +14,14 @@ from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 # 场景运行管线在这些模块里按 `LLMNodeRunner(session)`（无显式 client）取默认运行器。
 # API 驱动的整链场景运行统一把这些默认运行器替换为在线记账替身。
+# 准定稿的运行器在 near_final_planning / near_final_review 里取；near_final 只是转出名字的门面，不绑 LLMNodeRunner。
 _SCENE_PIPELINE_RUNNER_MODULES = (
     "novel_system.services.orchestrator",
     "novel_system.services.scene_blueprint",
     "novel_system.services.scene_generation",
     "novel_system.services.qc_engine.base",
-    "novel_system.services.near_final",
+    "novel_system.services.near_final_planning",
+    "novel_system.services.near_final_review",
 )
 
 

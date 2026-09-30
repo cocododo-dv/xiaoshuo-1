@@ -18,8 +18,9 @@ KNOWN_CACHES = {
     "novel_system.services.llm_client": ("llm_client.connectivity_caps",),
     "novel_system.services.pricing": ("pricing.price_book",),
     "novel_system.services.reference_copy_gate": ("reference_copy_gate",),
+    "novel_system.services.run_job_leases": ("run_job_leases.held",),
     "novel_system.services.scene_diagnosis": ("scene_diagnosis.findings", "scene_diagnosis.reference_craft"),
-    "novel_system.services.scene_run_jobs": ("scene_run_jobs.cancelled_hints",),
+    "novel_system.services.scene_run_jobs": ("scene_run_jobs.bundle_draft_modes",),
     "novel_system.services.style_policy": ("style_policy",),
     "novel_system.services.style_reference.config_loader": ("style_reference.config_loader",),
     "novel_system.services.style_reference.fidelity": ("style_reference.fidelity.reference_distribution",),
@@ -54,7 +55,14 @@ def test_registry_replaces_by_name_and_resets_everything(monkeypatch) -> None:
 
 
 def _fill_every_known_cache() -> None:
-    from novel_system.services import pricing, reference_copy_gate, scene_diagnosis, scene_run_jobs, style_policy
+    from novel_system.services import (
+        pricing,
+        reference_copy_gate,
+        run_job_leases,
+        scene_diagnosis,
+        scene_run_jobs,
+        style_policy,
+    )
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
 
@@ -62,7 +70,8 @@ def _fill_every_known_cache() -> None:
     reference_copy_gate._RESULT_CACHE[("probe",)] = object()
     scene_diagnosis._FINDINGS_CACHE[("probe",)] = {"findings": [], "waived": []}
     scene_diagnosis._REFERENCE_CRAFT_CACHE[("probe", 1, "")] = {}
-    scene_run_jobs.remember_committed_cancellation("probe-job")
+    run_job_leases.mark_dispatched("probe-job")
+    scene_run_jobs._BUNDLE_DRAFT_MODES["probe-bundle"] = "style_first"
     style_policy._CACHE["probe"] = style_policy.UNBOUND
     config_loader.load_yaml_config("input_thresholds")
     fidelity._DIST_CACHE[("probe", "probe", "probe", "probe")] = object()
@@ -78,14 +87,22 @@ def test_caches_filled_by_one_test_part_1_fill() -> None:
 
 
 def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
-    from novel_system.services import pricing, reference_copy_gate, scene_diagnosis, scene_run_jobs, style_policy
+    from novel_system.services import (
+        pricing,
+        reference_copy_gate,
+        run_job_leases,
+        scene_diagnosis,
+        scene_run_jobs,
+        style_policy,
+    )
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
 
     assert pricing._CACHE is None
     assert not reference_copy_gate._RESULT_CACHE and not reference_copy_gate._INDEX_CACHE
     assert not scene_diagnosis._FINDINGS_CACHE and not scene_diagnosis._REFERENCE_CRAFT_CACHE
-    assert scene_run_jobs.is_cancellation_cached("probe-job") is False
+    assert not run_job_leases.busy_job_ids()
+    assert not scene_run_jobs._BUNDLE_DRAFT_MODES
     assert not style_policy._CACHE
     assert config_loader._load_yaml.cache_info().currsize == 0
     assert not fidelity._DIST_CACHE

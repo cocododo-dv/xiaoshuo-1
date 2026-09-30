@@ -17,8 +17,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from novel_system.services.style_reference import cn_phrases
 from novel_system.services.style_reference import voice_signature as vs
 from novel_system.services.style_reference.config_loader import load_yaml_config
+from tests import style_reference_voice_baseline_helpers as vbh
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 from novel_system.tools import build_voice_baseline
 
@@ -167,7 +169,7 @@ def test_degenerate_inputs_are_safe(text: str, baseline: dict) -> None:
     signature = vs.compute_voice_signature_for_text(text, baseline=baseline)
     _assert_signature_shape(signature)
     assert vs.render_voice_habits(signature) == []
-    assert vs.distinctive_features(signature, baseline) is not None
+    assert vbh.distinctive_features(signature, baseline) is not None
 
 
 def test_empty_paragraph_list_returns_all_zero(baseline: dict) -> None:
@@ -193,8 +195,8 @@ def test_for_text_matches_paragraph_list(baseline: dict) -> None:
 
 def test_two_authors_differ_on_multiple_features(luxun: dict, zhuziqing: dict, baseline: dict) -> None:
     """块级 z(block_count=1)之差 ≥1 的特征至少 3 个,且其中含虚词组特征。"""
-    z_lu = vs.feature_z_scores(luxun["features"], baseline["features"], block_count=1)
-    z_zhu = vs.feature_z_scores(zhuziqing["features"], baseline["features"], block_count=1)
+    z_lu = vbh.feature_z_scores(luxun["features"], baseline["features"], block_count=1)
+    z_zhu = vbh.feature_z_scores(zhuziqing["features"], baseline["features"], block_count=1)
     separated = {name for name in vs.FEATURE_NAMES if abs(z_lu[name] - z_zhu[name]) >= 1.0}
     assert len(separated) >= 3, separated
     assert any(name.startswith("fw_") for name in separated), separated
@@ -209,7 +211,7 @@ def test_two_authors_differ_on_multiple_features(luxun: dict, zhuziqing: dict, b
 
 
 def test_distinctive_features_for_whole_book_are_non_empty_and_sorted(luxun: dict, baseline: dict) -> None:
-    distinctive = vs.distinctive_features(luxun, baseline, min_abs_z=1.0)
+    distinctive = vbh.distinctive_features(luxun, baseline, min_abs_z=1.0)
     assert len(distinctive) >= 3
     magnitudes = [abs(item["z"]) for item in distinctive]
     assert magnitudes == sorted(magnitudes, reverse=True)
@@ -218,17 +220,17 @@ def test_distinctive_features_for_whole_book_are_non_empty_and_sorted(luxun: dic
         assert item["direction"] == ("high" if item["z"] > 0 else "low")
         assert abs(item["z"]) >= 1.0
     # 阈值抬高后只会变少
-    assert len(vs.distinctive_features(luxun, baseline, min_abs_z=3.0)) <= len(distinctive)
-    assert vs.distinctive_features(luxun, {}) == []
+    assert len(vbh.distinctive_features(luxun, baseline, min_abs_z=3.0)) <= len(distinctive)
+    assert vbh.distinctive_features(luxun, {}) == []
 
 
 def test_z_scores_shrink_std_for_aggregated_signature(luxun: dict, baseline: dict) -> None:
     """整书签名聚合了 n 块,std 按 1/sqrt(min(n,16)) 收窄;显式 block_count=1 给字面块级 z。"""
-    aggregated = vs.feature_z_scores(luxun, baseline["features"])
-    block_level = vs.feature_z_scores(luxun["features"], baseline["features"])
-    explicit = vs.feature_z_scores(luxun, baseline["features"], block_count=1)
+    aggregated = vbh.feature_z_scores(luxun, baseline["features"])
+    block_level = vbh.feature_z_scores(luxun["features"], baseline["features"])
+    explicit = vbh.feature_z_scores(luxun, baseline["features"], block_count=1)
     assert explicit == block_level
-    factor = math.sqrt(vs.Z_MAX_AGGREGATION_BLOCKS)
+    factor = math.sqrt(vbh.Z_MAX_AGGREGATION_BLOCKS)
     for name in ("fw_connective_per_1k", "punct_comma_per_1k", "sent_len_std"):
         assert aggregated[name] == pytest.approx(block_level[name] * factor, rel=1e-4)
 
@@ -285,12 +287,12 @@ def test_render_accepts_features_only(luxun: dict) -> None:
 
 
 def test_render_habit_frequencies_are_spelled_in_words() -> None:
-    assert vs._every_n_sentences(0.1) == "大约每十句一次"
-    assert vs._every_n_sentences(0.5) == "大约每两句一次"
-    assert vs._rate_phrase(28.7, "个") == "每千字约二十九个"
-    assert vs._rate_phrase(0.4, "处") == "每两千字约一处"
-    assert vs._rate_phrase(0.05, "处") == ""
-    assert vs._cn_int(61) == "六十一" and vs._cn_int(166) == "一百六十六" and vs._cn_int(105) == "一百零五"
+    assert cn_phrases.every_n_sentences(0.1) == "大约每十句一次"
+    assert cn_phrases.every_n_sentences(0.5) == "大约每两句一次"
+    assert cn_phrases.rate_phrase(28.7, "个") == "每千字约二十九个"
+    assert cn_phrases.rate_phrase(0.4, "处") == "每两千字约一处"
+    assert cn_phrases.rate_phrase(0.05, "处") == ""
+    assert cn_phrases.cn_int(61) == "六十一" and cn_phrases.cn_int(166) == "一百六十六" and cn_phrases.cn_int(105) == "一百零五"
 
 
 def test_load_voice_baseline_missing_file_degrades(monkeypatch: pytest.MonkeyPatch, luxun: dict) -> None:
@@ -298,7 +300,7 @@ def test_load_voice_baseline_missing_file_degrades(monkeypatch: pytest.MonkeyPat
     assert vs.load_voice_baseline() == {}
     signature = vs.compute_voice_signature(_paragraphs("luxun_kongyiji.txt"))
     assert signature["deliberate_repetition"] is False
-    assert vs.distinctive_features(luxun) == []
+    assert vbh.distinctive_features(luxun) == []
     assert isinstance(vs.render_voice_habits(luxun), list)
 
 
@@ -353,7 +355,7 @@ def test_deliberate_repetition_uses_literal_p85_for_whole_book(luxun: dict, zhuz
     (2026-09-23 起习惯句不再与基线挂钩,旗标只管新鲜度守卫。)
     """
     for signature, name in ((luxun, "sent_short_run_ratio"), (zhuziqing, "redup_total_per_1k")):
-        assert vs._block_count_of(signature) >= vs.Z_MAX_AGGREGATION_BLOCKS
+        assert vbh.block_count_of(signature) >= vbh.Z_MAX_AGGREGATION_BLOCKS
         stats = baseline["features"][name]
         value = signature["features"][name]
         assert stats["p50"] < value < stats["p85"], (name, value, stats)
@@ -368,14 +370,14 @@ def test_deliberate_repetition_threshold_is_block_count_independent(baseline: di
     short_run_p85 = baseline["features"]["sent_short_run_ratio"]["p85"]
 
     below = vs.compute_voice_signature(_MID_REDUP_PARAGRAPHS * 320, baseline=baseline)
-    assert vs._block_count_of(below) >= vs.Z_MAX_AGGREGATION_BLOCKS
+    assert vbh.block_count_of(below) >= vbh.Z_MAX_AGGREGATION_BLOCKS
     assert redup["p50"] < below["features"]["redup_total_per_1k"] < redup["p85"]
     assert below["features"]["sent_short_run_ratio"] < short_run_p85
     assert below["deliberate_repetition"] is False
     assert vs.compute_voice_signature(_MID_REDUP_PARAGRAPHS * 6, baseline=baseline)["deliberate_repetition"] is False
 
     above = vs.compute_voice_signature(_DENSE_REDUP_PARAGRAPHS * 300, baseline=baseline)
-    assert vs._block_count_of(above) >= vs.Z_MAX_AGGREGATION_BLOCKS
+    assert vbh.block_count_of(above) >= vbh.Z_MAX_AGGREGATION_BLOCKS
     assert above["features"]["redup_total_per_1k"] >= redup["p85"]
     assert above["deliberate_repetition"] is True
     # 习惯句按作者自己的绝对密度说「常用叠词」
@@ -434,20 +436,20 @@ def test_person_shares_and_four_char_segments(baseline: dict) -> None:
 
 def test_feature_z_scores_handles_all_baseline_forms() -> None:
     features = {"a": 3.0, "b": 10.0, "c": 5.0, "missing": 1.0}
-    numeric = vs.feature_z_scores(features, {"a": 1.0, "b": 10.0, "c": 0.0})
+    numeric = vbh.feature_z_scores(features, {"a": 1.0, "b": 10.0, "c": 0.0})
     # 仅均值时 std 退到下限(均值 5% 或 1e-6),z 裁到 ±8 且有限
     assert numeric["a"] == 8.0
     assert numeric["b"] == 0.0
     assert numeric["c"] == 8.0
     assert "missing" not in numeric
-    mapped = vs.feature_z_scores(features, {"a": {"mean": 1.0, "std": 2.0}, "b": {"mean": 12.0, "std": 4.0}})
+    mapped = vbh.feature_z_scores(features, {"a": {"mean": 1.0, "std": 2.0}, "b": {"mean": 12.0, "std": 4.0}})
     assert mapped["a"] == pytest.approx(1.0)
     assert mapped["b"] == pytest.approx(-0.5)
-    overridden = vs.feature_z_scores(features, {"a": {"mean": 1.0, "std": 2.0}}, {"a": 1.0})
+    overridden = vbh.feature_z_scores(features, {"a": {"mean": 1.0, "std": 2.0}}, {"a": 1.0})
     assert overridden["a"] == pytest.approx(2.0)
     assert all(math.isfinite(value) for value in {**numeric, **mapped, **overridden}.values())
-    assert vs.feature_z_scores({"a": float("nan")}, {"a": {"mean": 0.0, "std": 1.0}})["a"] == 0.0
-    assert vs.feature_z_scores(features, {}) == {}
+    assert vbh.feature_z_scores({"a": float("nan")}, {"a": {"mean": 0.0, "std": 1.0}})["a"] == 0.0
+    assert vbh.feature_z_scores(features, {}) == {}
 
 
 def test_signature_is_deterministic_and_fast_on_golden_corpus(baseline: dict) -> None:

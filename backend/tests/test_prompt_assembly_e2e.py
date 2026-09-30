@@ -41,11 +41,6 @@ PREVIOUSLY_DROPPED_KEYS = (
     "volume_summary",            # §2 summary tower (wave-2 E5)
 )
 
-# 2026-09-30 R1 / R8 / R5：相似场景、声线卡、关系卡、作者偏好四段从 SECTION_SPECS 退役（P01a）；bundle_builder 里写这四个
-# 键的几处由 P01b 删。两边合并之前 bundle_builder 还在写它们——对账只放过这四个，而且它们不许再有渲染位。
-# P01b 合并之后这四个键没人再写，这张表随之删掉（合并时由 lead 删）。
-RETIRING_BUNDLE_DIGESTS = frozenset({"similar_scene", "voice_card", "relation_card", "author_preference_profile"})
-
 # digest_key -> (rendered section label, sentinel value injected for the test)
 REVIVED = {
     "volume_summary": ("Volume Summary (atmosphere only)", "VOLUME_SUMMARY_SENTINEL"),
@@ -104,26 +99,42 @@ def test_known_dropped_keys_now_registered() -> None:
 
 
 def test_section_specs_covers_all_bundle_writes() -> None:
-    """Reconcile both sides: every inline_digests key bundle_builder writes must have a
+    """Reconcile both sides: every business digest key the bundle can write must have a
     render slot in SECTION_SPECS, otherwise it is silent dead code.
 
     This is the durable guard — it catches future drift, not just today's four keys.
-    Internal signal keys (leading underscore, e.g. ``_drift_ptype_priority``) are not
-    rendered sections and are excluded.
+    The bundle writes its sections only through ``bundle_sections.BundleSections``, which
+    refuses keys that are not declared there (B03-19), so the declared set is the complete
+    list. Internal signal keys (leading underscore, e.g. ``_style_reference_runtime_contract``)
+    are not rendered sections and are excluded.
     """
-    source = Path(bundle_builder_module.__file__).read_text(encoding="utf-8")
-    written_keys = set(
-        re.findall(r"""inline_digests\[\s*["'](\w+)["']\s*\]\s*=""", source)
+    from novel_system.services.bundle_sections import (
+        BUNDLE_SECTION_DIGEST_KEYS,
+        BUNDLE_SIGNAL_DIGEST_KEYS,
     )
-    assert written_keys, "regex failed to find any inline_digests writes — pattern drift?"
 
-    business_keys = {k for k in written_keys if not k.startswith("_")} - RETIRING_BUNDLE_DIGESTS
+    assert BUNDLE_SECTION_DIGEST_KEYS, "no declared bundle digest keys — declaration drift?"
+    assert all(key.startswith("_") for key in BUNDLE_SIGNAL_DIGEST_KEYS)
+    assert not any(key.startswith("_") for key in BUNDLE_SECTION_DIGEST_KEYS)
     registered = _registered_digest_keys()
-    missing = business_keys - registered
-    assert not RETIRING_BUNDLE_DIGESTS & registered, "retired digests must not get a render slot back"
+    missing = BUNDLE_SECTION_DIGEST_KEYS - registered
 
     assert not missing, (
-        "inline_digests keys written by bundle_builder but NOT registered in "
+        "inline_digests keys the bundle can write but NOT registered in "
         f"context_budget.SECTION_SPECS (they will be silently dropped from every "
         f"prompt — register a render slot for each): {sorted(missing)}"
     )
+
+
+def test_bundle_builder_writes_sections_only_through_the_declared_registry() -> None:
+    """No bundle module assigns ``inline_digests[...]`` directly: every section goes through
+    ``BundleSections`` (which checks the key against the declared set above)."""
+    services_dir = Path(bundle_builder_module.__file__).parent
+    offenders = []
+    for path in sorted(services_dir.glob("bundle_*.py")):
+        if path.name == "bundle_sections.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"""inline_digests\[[^\]]+\]\s*=""", source):
+            offenders.append(path.name)
+    assert offenders == []

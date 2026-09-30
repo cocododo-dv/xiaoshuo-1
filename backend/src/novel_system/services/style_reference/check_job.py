@@ -54,12 +54,7 @@ from novel_system.db.models import (
     StyleFidelityReading,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.llm_accounting import (
-    LLMAccountingError,
-    LLMCallContext,
-    execute_accounted_call,
-    is_llm_control_plane_failure,
-)
+from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
 from novel_system.services.manuscript_html import plain_manuscript_text
 from novel_system.services.style_reference import readings
 from novel_system.services.style_reference.binding_config import (
@@ -67,7 +62,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_binding_config,
 )
-from novel_system.services.style_reference.errors import LLMRequiredError
+from novel_system.services.style_reference.errors import LLMRequiredError, profile_not_found
 from novel_system.services.style_reference.job_runtime import JobRun
 from novel_system.services.style_reference.jobs import (
     JOB_KIND_CHECK,
@@ -76,7 +71,12 @@ from novel_system.services.style_reference.jobs import (
     JobLost,
     StyleJobService,
     job_activity_entry,
-    register_job_handler,
+)
+from novel_system.services.style_reference.llm_nodes import (
+    NodeConfigUnavailable,
+    NodeRuntime,
+    accounted_call,
+    load_node_runtimes,
 )
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.untrusted_data import (
@@ -161,9 +161,7 @@ def _profile_policy(session: Session, profile_id: str) -> Any:
 
     profile = session.get(StyleReferenceProfile, str(profile_id))
     if profile is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND", f"profile {profile_id!r} not found", status_code=404
-        )
+        raise profile_not_found(profile_id)
     contract = preview_contract(session, profile, normalize_binding_config({}))
     return policy_from_contract(contract, mode=POLICY_MODE_CHECK)
 
@@ -175,11 +173,7 @@ def _light_policy(session: Session, params: Mapping[str, Any]) -> Any:
     if params.get("profile_id"):
         profile = session.get(StyleReferenceProfile, str(params["profile_id"]))
         if profile is None:
-            raise DomainError(
-                "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-                f"profile {params['profile_id']!r} not found",
-                status_code=404,
-            )
+            raise profile_not_found(params['profile_id'])
         return SimpleNamespace(bound=True, profile_id=profile.profile_id, book_id=profile.book_id)
     if params.get("scene_id"):
         scene = session.get(SceneCard, str(params["scene_id"]))
@@ -216,22 +210,27 @@ def _not_bound_error(params: Mapping[str, Any]) -> DomainError:
     )
 
 
-def _ensure_config() -> None:
-    """模板与节点路由要在（保存过提示词快照、还没 sync 的安装缺新模板）；缺 → 409。"""
-    from novel_system.services.llm_client import load_model_routing_config, resolve_node_route
-    from novel_system.services.prompt_builder import load_prompt_templates
-
+def _judge_runtime() -> NodeRuntime:
+    """评审节点的路由（``soft_qc``）与模板（``style_ref_check_judge``）；读不出来 / 没有路由 / 模板不在（保存过提示词
+    快照、还没 sync 的安装缺新模板）→ 409。建作业时查一次，作业开工时再载一次。"""
     try:
-        templates = load_prompt_templates()
-        route = resolve_node_route(load_model_routing_config(), CHECK_NODE_ID)
-    except Exception as exc:  # noqa: BLE001 — 读不到配置按缺配置报
+        load = load_node_runtimes((CHECK_NODE_ID,), template_names={CHECK_NODE_ID: CHECK_TEMPLATE})
+    except NodeConfigUnavailable as exc:
         raise DomainError(
             CHECK_CONFIG_MISSING_CODE,
             "对照检查的评审节点（文学质检 soft_qc）或它的提示词模板读不出来。",
             status_code=409,
-            details={"reason": type(exc).__name__},
-        ) from exc
-    if CHECK_TEMPLATE not in templates or route is None:
+            details={"reason": type(exc.cause).__name__},
+        ) from exc.cause
+    if load.missing_routes:
+        raise DomainError(
+            CHECK_CONFIG_MISSING_CODE,
+            "对照检查的评审节点（文学质检 soft_qc）或它的提示词模板读不出来。",
+            status_code=409,
+            details={"reason": "route_missing", "node_id": CHECK_NODE_ID},
+        )
+    runtime = load.runtimes.get(CHECK_NODE_ID)
+    if runtime is None:
         raise DomainError(
             CHECK_CONFIG_MISSING_CODE,
             "这台机器的提示词快照里还没有对照检查的评审模板：运行 sync_prompt_templates --execute 后再试。",
@@ -246,6 +245,7 @@ def _ensure_config() -> None:
                 },
             },
         )
+    return runtime
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +320,7 @@ def start_check_job(
     light = _light_policy(session, params)
     if not getattr(light, "bound", False) or not getattr(light, "book_id", None):
         raise _not_bound_error(params)
-    _ensure_config()
+    _judge_runtime()
     ensure_cloud_llm_allowed(
         session.get(StyleReferenceBook, str(light.book_id)),
         operation="style_check",
@@ -491,9 +491,7 @@ def run_reference_judge(
     project_id: str | None,
 ) -> dict[str, Any]:
     """一次参考评审调用 → 10 分制的按维分与总分；渲染不出参考 / 调用失败 / 没给分数 → ``DomainError``（作业失败）。"""
-    from novel_system.db.session import SessionLocal
-    from novel_system.services.llm_client import build_llm_request, load_model_routing_config, resolve_node_route
-    from novel_system.services.prompt_builder import load_prompt_templates
+    from novel_system.services.llm_client import build_llm_request
     from novel_system.services.style_prompt_injection import (
         PLACEMENT_SYSTEM,
         ROLE_REVIEW,
@@ -502,11 +500,8 @@ def run_reference_judge(
     from novel_system.services.style_reference.inject.fit import fit_rendered
     from novel_system.services.style_reference.inject.render import render_style
 
-    templates = load_prompt_templates()
-    template = templates.get(CHECK_TEMPLATE)
-    if template is None:
-        _ensure_config()
-        template = load_prompt_templates().get(CHECK_TEMPLATE)
+    runtime = _judge_runtime()
+    template = runtime.template
     # 参考块按 soft_qc 的实际路由判云策略（H1）：「仅本机」的书遇云端路由 → 409，参考一个字都不渲染
     request = style_render_request_for_scene(
         session, scope, policy, role=ROLE_REVIEW, placement=PLACEMENT_SYSTEM, node_ids=(CHECK_NODE_ID,)
@@ -539,36 +534,31 @@ def run_reference_judge(
                 "target_input_tokens": budget_fit.get("target_input_tokens"),
             },
         )
-    route = resolve_node_route(load_model_routing_config(), CHECK_NODE_ID)
     llm_request = build_llm_request(
-        route,
+        runtime.route,
         node_id=CHECK_NODE_ID,
         messages=_judge_messages(rendered.system_prefix, template, text),
         response_schema=getattr(template, "structured_schema", None),
     )
     llm_call_id = f"llm_style_check_{uuid.uuid4().hex}"
-    try:
-        with SessionLocal() as ledger_session:
-            response = execute_accounted_call(
-                ledger_session,
-                llm_client,
-                llm_request,
-                LLMCallContext(
-                    scope_type="style_reference_check",
-                    scope_id=str(context_scope_id),
-                    node_id=CHECK_NODE_ID,
-                    step=CHECK_STEP,
-                    project_id=project_id,
-                ),
-                llm_call_id=llm_call_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — 记账 / 控制面失败原样抛出，其余按评审失败报
-        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-            raise
-        raise _judge_failed(
+    # 记账用自己的会话（上面已把选窗的写提交掉）；记账 / 控制面失败原样抛出，其余按评审失败报
+    response = accounted_call(
+        llm_client,
+        llm_request,
+        context=LLMCallContext(
+            scope_type="style_reference_check",
+            scope_id=str(context_scope_id),
+            node_id=CHECK_NODE_ID,
+            step=CHECK_STEP,
+            project_id=project_id,
+        ),
+        llm_call_id=llm_call_id,
+        execute=execute_accounted_call,
+        wrap_error=lambda exc: _judge_failed(
             "参考评审的模型调用失败：检查模型接入后重新检查。",
             {"error_type": type(exc).__name__, "llm_call_id": llm_call_id},
-        ) from exc
+        ),
+    )
     structured = getattr(response, "structured_output", None)
     if not isinstance(structured, Mapping):
         raise _judge_failed(
@@ -592,7 +582,8 @@ def run_reference_judge(
 
 
 def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobService) -> None:
-    """``check`` 作业处理器。终态由框架写（取消 / 失败没有附带状态要落，所以不走 ``JobRun.run``），检查点
+    """``check`` 作业处理器。终态由框架写（取消 / 失败没有附带状态要落，所以不走 ``JobRun.run``；失败记什么按
+    ``jobs.job_failure``，与 ``JobRun`` 同一条规则），检查点
     （``check_continue`` / ``checkpoint``：进度写落空 → ``JobLost``，写成了立刻提交，不带着 SQLite 的写锁去建窗口
     索引、跑抄袭门、等模型）与分类 / 学习共用 ``JobRun``。"""
     run = JobRun(session, claimed, service)
@@ -685,7 +676,21 @@ def check_job_payload(session: Session, job: StyleReferenceJob) -> dict[str, Any
     return {"job": job_activity_entry(job), "reading": reading}
 
 
-register_job_handler(JOB_KIND_CHECK, run_check_job)
+def check_never_resumes(_job: StyleReferenceJob) -> bool:
+    """对照检查没有续跑:失败 / 取消了就「重新检查」(新作业),活动条目不给「继续」。"""
+    return False
+
+
+def finished_check_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """对照检查作业结束(成功 / 失败 / 取消)时的参数:送检的原文(至多 6 万字)不再留在作业行上,只留哈希与字数
+    ——读数表本来就只存 ``text_sha256``(同一个哈希),检查作业从不续跑,结束后没人再读这段文字。"""
+    finished = dict(params)
+    text = finished.pop("text", None)
+    if isinstance(text, str) and text:
+        finished["text_sha256"] = readings.text_sha256(text)
+        finished["text_chars"] = len(text)
+    return finished
+
 
 
 __all__ = [
@@ -706,6 +711,8 @@ __all__ = [
     "check_job_payload",
     "normalize_judge_output",
     "resolve_check_client",
+    "check_never_resumes",
+    "finished_check_params",
     "run_check_job",
     "run_reference_judge",
     "scene_current_text",

@@ -17,6 +17,7 @@ from __future__ import annotations
 import array
 import bisect
 import unicodedata
+from collections.abc import Iterable
 
 from novel_system.services.style_reference.schemas import (
     PlagiarismHit,
@@ -32,18 +33,6 @@ def _is_ignorable(ch: str) -> bool:
     return cat.startswith("P") or cat.startswith("S")
 
 
-def _normalize_with_map(text: str) -> tuple[str, list[int]]:
-    """返回 (规范化文本, 每个规范化字符在原文中的下标)。"""
-    chars: list[str] = []
-    index_map: list[int] = []
-    for i, ch in enumerate(text):
-        if _is_ignorable(ch):
-            continue
-        chars.append(ch.lower())
-        index_map.append(i)
-    return "".join(chars), index_map
-
-
 def normalize_text_for_matching(text: str) -> str:
     """Normalize by lowering and stripping whitespace/punctuation for comparison."""
     return "".join(ch.lower() for ch in text if not _is_ignorable(ch))
@@ -51,8 +40,19 @@ def normalize_text_for_matching(text: str) -> str:
 
 def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
     """与 :func:`normalize_text_for_matching` 同一规则，另返回每个规范化字符在原文里的下标
-    （风格参考 v3 的抄袭门据此把命中区间映射回被检查的文字）。"""
-    return _normalize_with_map(text)
+    （:func:`check_plagiarism` 与风格参考 v3 的抄袭门据此把命中区间映射回被检查的文字）。
+
+    两个列表逐位对齐：一个原文字符小写后可能不止一个码位（``"İ"`` → ``"i"`` + U+0307），每个码位记同一个原文
+    下标——只记一个的话规范化文本比下标表长，命中映射回原文时位置错开，命中延伸到末尾还会越界。"""
+    chars: list[str] = []
+    offsets: list[int] = []
+    for index, ch in enumerate(text):
+        if _is_ignorable(ch):
+            continue
+        for lowered in ch.lower():
+            chars.append(lowered)
+            offsets.append(index)
+    return "".join(chars), offsets
 
 
 _normalize = normalize_text_for_matching
@@ -91,7 +91,7 @@ def check_plagiarism(
     if not generated_text or not corpus_texts:
         return empty
 
-    gen_norm, gen_map = _normalize_with_map(generated_text)
+    gen_norm, gen_map = normalize_with_offsets(generated_text)
     if len(gen_norm) < ngram_size:
         return empty
 
@@ -154,59 +154,62 @@ def check_plagiarism(
     )
 
 
-class CorpusOverlapIndex:
-    """语料的 ``threshold_chars``-gram 哈希索引:一次建好,逐行 O(len(line)) 判「有无重叠」。
+class BookNgramIndex:
+    """一组段落（一本书）的 ``threshold_chars`` 字元哈希索引 + 规范化全文：一次建好，逐行 O(len(line)) 判重合。
 
-    2026-09-15:合成画像要对上百行(风格特征 / 叙事模式 / 禁忌 / 规划指引)逐行做源文重合
-    过滤,每行调一次 ``check_plagiarism`` 都要重新规范化并单遍扫描整本书——190 万字的书
-    实测 2.5 s/行,一次合成 3 到 5 分钟耗在这里。
+    学习作业给文风卡 / 规划陈述逐行做原文重合过滤用它：每行调一次 ``check_plagiarism`` 要重新规范化并单遍扫描整本书
+    （190 万字实测约 2 s/行，一次合成几分钟耗在这里）。抄袭门（``reference_copy_gate``）的书索引是同一个结构，
+    :meth:`overlap_spans` 与 ``book_id`` 是给它按区间找命中、按书标命中用的。
 
-    判定与 ``check_plagiarism(text, corpus, ngram_size=k, threshold_chars=t)``(``k ≤ t``)
-    完全等价:存在 ≥ t 个规范化字符的连续重叠 ⇔ 该行某个 t-gram 是某段语料的子串。索引
-    存的是段内 t-gram 的 64 位哈希(排序数组 + 二分,190 万字约 12 MB),否定答案精确;
-    肯定答案再用 ``check_plagiarism`` 精确复核,哈希碰撞不会误删一行。
+    - :meth:`contains`：规范化后的一个 t 字元是不是某段的子串——先查有序哈希数组（二分；否定精确），命中再在
+      规范化全文里逐字复核，哈希碰撞不会误报。段落之间用换行相连：规范化文本里没有空白，复核不会跨段拼出假命中。
+    - :meth:`overlaps`：与 ``not check_plagiarism(text, corpus, ngram_size=k, threshold_chars=t).passed``（``k ≤ t``）
+      同值——存在 ≥ t 个规范化字符的连续重叠 ⇔ 这行某个 t 字元是某段的子串。
+    - :meth:`overlap_spans`：被检查文字（已规范化）里所有命中 t 字元的并集，合并成区间。
     """
 
-    def __init__(self, corpus_texts: list[str], *, threshold_chars: int = 12) -> None:
-        self.corpus_texts = [text for text in corpus_texts if text]
-        self.threshold_chars = max(1, int(threshold_chars))
-        width = self.threshold_chars
-        hashes = array.array("q")
-        append = hashes.append
-        for text in self.corpus_texts:
-            norm = _normalize(text)
+    __slots__ = ("book_id", "threshold_chars", "hashes", "joined", "paragraph_count")
+
+    def __init__(self, texts: Iterable[str], *, threshold_chars: int = 12, book_id: str | None = None) -> None:
+        width = max(1, int(threshold_chars))
+        norms = [_normalize(text) for text in texts if text]
+        raw = array.array("q")
+        append = raw.append
+        for norm in norms:
             for i in range(len(norm) - width + 1):
                 append(hash(norm[i : i + width]))
-        self._hashes = array.array("q", sorted(hashes))
-        self.ngram_count = len(self._hashes)
+        self.book_id = book_id
+        self.threshold_chars = width
+        self.hashes = array.array("q", sorted(raw))
+        self.joined = "\n".join(norms)
+        self.paragraph_count = len(norms)
 
-    def __len__(self) -> int:
-        return len(self.corpus_texts)
+    def contains(self, gram: str) -> bool:
+        """``gram``（已规范化的一个 t 字元）是不是某段的子串。"""
+        value = hash(gram)
+        position = bisect.bisect_left(self.hashes, value)
+        if position >= len(self.hashes) or self.hashes[position] != value:
+            return False
+        return gram in self.joined
 
-    def _has_ngram(self, value: int) -> bool:
-        pos = bisect.bisect_left(self._hashes, value)
-        return pos < len(self._hashes) and self._hashes[pos] == value
-
-    def may_overlap(self, text: str) -> bool:
-        """有任一 t-gram 命中索引;False 是精确的否定。"""
-        norm = _normalize(text or "")
+    def overlaps(self, text: str) -> bool:
+        """这行与语料有没有 ≥ t 个规范化字符的连续重合（与 ``check_plagiarism`` 判定同值）。"""
+        if not text or not text.strip():
+            return False
+        norm = _normalize(text)
         width = self.threshold_chars
-        if len(norm) < width:
-            return False
-        for i in range(len(norm) - width + 1):
-            if self._has_ngram(hash(norm[i : i + width])):
-                return True
-        return False
+        return any(self.contains(norm[i : i + width]) for i in range(len(norm) - width + 1))
 
-    def contains_overlap(self, text: str, *, ngram_size: int = 8) -> bool:
-        """与 ``not check_plagiarism(...).passed`` 同值;命中先过索引,再精确复核。"""
-        if not self.corpus_texts or not text or not text.strip():
-            return False
-        if not self.may_overlap(text):
-            return False
-        return not check_plagiarism(
-            text,
-            self.corpus_texts,
-            ngram_size=min(int(ngram_size), self.threshold_chars),
-            threshold_chars=self.threshold_chars,
-        ).passed
+    def overlap_spans(self, normalized: str) -> list[tuple[int, int]]:
+        """``normalized``（已按 :func:`normalize_text_for_matching` 规范化）里所有命中 t 字元的并集：升序、合并后的
+        ``[start, end)`` 区间（规范化坐标）。"""
+        width = self.threshold_chars
+        spans: list[list[int]] = []
+        for start in range(len(normalized) - width + 1):
+            if not self.contains(normalized[start : start + width]):
+                continue
+            if spans and start <= spans[-1][1]:
+                spans[-1][1] = start + width
+            else:
+                spans.append([start, start + width])
+        return [(begin, end) for begin, end in spans]

@@ -36,10 +36,10 @@ from novel_system.services.style_reference.structure import (
     compute_structure_card,
     derive_planning_guidance,
     render_planning_guidance,
-    render_structure_card,
     render_structure_card_parts,
 )
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
+from novel_system.services.style_reference.validation.plagiarism import BookNgramIndex
 
 GOLDEN_CORPUS = (
     Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus" / "luxun_short_stories.txt"
@@ -252,7 +252,7 @@ def test_structure_card_without_markers_treats_the_book_as_one_chapter() -> None
     assert len(card["samples"]["chapter_endings"]) == 1
     assert card["samples"]["chapter_openings"][0]["text"] == rows[0]["text"]
     assert card["samples"]["chapter_endings"][0]["text"] == "第5章的结尾，他说：“走吧。”"
-    rendered = render_structure_card({"structure_card": card})
+    rendered = "\n".join(render_structure_card_parts({"structure_card": card}))
     assert "无章节标记" in rendered
 
 
@@ -268,7 +268,7 @@ def test_structure_card_truncates_long_excerpts_and_marks_them() -> None:
     ending = card["samples"]["chapter_endings"][0]
     assert len(opening["text"]) == 150 and opening["truncated"] is True
     assert len(ending["text"]) == 150 and ending["truncated"] is True
-    rendered = render_structure_card({"structure_card": card})
+    rendered = "\n".join(render_structure_card_parts({"structure_card": card}))
     assert f"{opening['text']}……" in rendered
     assert f"……{ending['text']}" in rendered
 
@@ -319,13 +319,12 @@ def test_render_structure_card_is_bounded_numeric_and_wraps_samples() -> None:
     assert "章首样例：" in samples and "章尾样例：" in samples
     assert samples.count("（第 ") == 6
     assert "第3章的开头" in samples and "“走吧。”" in samples
-    # 合并渲染 = 画像 + 样例；不含样例时没有边界
-    assert render_structure_card(profile_json) == f"{stats}\n{samples}"
-    assert SAMPLES_BOUNDARY not in render_structure_card(profile_json, include_samples=False)
+    # 不含样例时样例块为空（没有边界）
+    assert render_structure_card_parts(profile_json, include_samples=False) == (stats, "")
     # 旧画像 / 形状不对 → 空
-    assert render_structure_card({"style_features": ["短句"]}) == ""
-    assert render_structure_card({"structure_card": {"chapter_count": 0}}) == ""
-    assert render_structure_card(None) == ""
+    assert render_structure_card_parts({"style_features": ["短句"]}) == ("", "")
+    assert render_structure_card_parts({"structure_card": {"chapter_count": 0}}) == ("", "")
+    assert render_structure_card_parts(None) == ("", "")
 
 
 def test_planning_guidance_derivation_round_robins_and_filters() -> None:
@@ -342,7 +341,9 @@ def test_planning_guidance_derivation_round_robins_and_filters() -> None:
         _Finding("scene.sensory_priority", "她把灯芯拨小，屋里暗下去一半，谁也没有说话"),  # 原文重合
         _Finding("theme.motifs", "对白短促，常以反问收束"),  # 与对白行重复
     ]
-    lines = derive_planning_guidance(findings, corpus_texts=corpus)
+    # 原文重合过滤按 8 字连续重合（与 check_plagiarism(ngram_size=6, threshold_chars=8) 同值）
+    overlap = BookNgramIndex(corpus, threshold_chars=8)
+    lines = derive_planning_guidance(findings, overlap_filter=overlap.overlaps)
     assert lines == [
         "对白：对白短促，常以反问收束",
         "环境：环境只在情绪转折处出现",
@@ -351,8 +352,8 @@ def test_planning_guidance_derivation_round_robins_and_filters() -> None:
         "对白：对白后常接一段沉默",
     ]
     many = [_Finding("scene.dialogue", f"对白手法 {index}") for index in range(20)]
-    assert len(derive_planning_guidance(many)) == PLANNING_GUIDANCE_MAX_LINES
-    assert derive_planning_guidance([_Finding("language.vocabulary", "只有语言层")]) == []
+    assert len(derive_planning_guidance(many, overlap_filter=overlap.overlaps)) == PLANNING_GUIDANCE_MAX_LINES
+    assert derive_planning_guidance([_Finding("language.vocabulary", "只有语言层")], overlap_filter=overlap.overlaps) == []
 
     rendered = render_planning_guidance({"planning_guidance": lines})
     assert rendered.startswith("[场景手法]")

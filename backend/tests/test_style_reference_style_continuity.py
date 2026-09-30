@@ -2,7 +2,7 @@
 
 风格参考 v3（2026-09-23）删掉了漂移驾驶：归档期的 ``observe_style_drift`` / ``style_drift_observed`` 事件、
 下一场 bundle 的漂移校准段与漂移优先选窗。这里留下：其它测试共用的种子 helper、契约读取
-（``contract_voice_reference`` / ``contract_deliberate_repetition``）与归档读数槽位的守卫。
+（``contract_deliberate_repetition``）与归档读数槽位的守卫。
 """
 
 from __future__ import annotations
@@ -151,32 +151,28 @@ def _add_final_scene(session, *, scene_id: str, content: str, status: str = "arc
     return row_id
 
 
-def test_contract_voice_reference_blends_layers_generic_to_specific() -> None:
-    contract = {
-        "layers": [
-            {"order": 1, "profile": {"profile_id": "specific", "profile_json": {"voice_signature": {"features": {"sent_len_mean": 30.0}}}}},
-            {"order": 0, "profile": {"profile_id": "generic", "profile_json": {"voice_signature": {"features": {"sent_len_mean": 12.0, "punct_comma_per_1k": 80.0}}}}},
-        ]
-    }
-    blended = sc.contract_voice_reference(contract)
-    # 泛层权重 1、具体层权重 2：(12×1 + 30×2) / 3 = 24
-    assert blended["sent_len_mean"] == pytest.approx(24.0)
-    assert blended["punct_comma_per_1k"] == pytest.approx(80.0)
-    assert sc.contract_voice_reference({"layers": [{"profile": {"profile_json": {}}}]}) == {}
-    assert sc.contract_voice_reference(None) == {}
+def _layer(scope: str, deliberate: bool | None, order: int = 0) -> dict:
+    voice = {} if deliberate is None else {"voice_signature": {"deliberate_repetition": deliberate}}
+    return {"order": order, "binding": {"scope": scope}, "profile": {"profile_json": voice}}
 
 
-def test_contract_deliberate_repetition_any_layer() -> None:
-    off = {"layers": [{"profile": {"profile_json": {"voice_signature": {"deliberate_repetition": False}}}}]}
-    on = {
-        "layers": [
-            {"profile": {"profile_json": {"voice_signature": {"deliberate_repetition": False}}}},
-            {"profile": {"profile_json": {"voice_signature": {"deliberate_repetition": True}}}},
-        ]
-    }
-    assert sc.contract_deliberate_repetition(off) is False
-    assert sc.contract_deliberate_repetition(on) is True
-    assert sc.contract_deliberate_repetition({"layers": [{"profile": {"profile_json": {}}}]}) is False
+def test_contract_deliberate_repetition_reads_the_layer_that_takes_effect() -> None:
+    """刻意复沓看生效的那一层（最具体的一层，J7——渲染与策略读的也是它），不是「任一层」（B10-24）：旧的多层 v1
+    契约里作品层标了复沓、场景层没标，这一场的重复不能当成作者的复沓放过。"""
+    single_on = {"layers": [_layer("project", True)]}
+    single_off = {"layers": [_layer("project", False)]}
+    assert sc.contract_deliberate_repetition(single_on) is True
+    assert sc.contract_deliberate_repetition(single_off) is False
+    # v1 多层（按层序由泛到具体）：场景层生效
+    generic_marks_it = {"layers": [_layer("project", True, 0), _layer("scene", False, 1)]}
+    assert sc.contract_deliberate_repetition(generic_marks_it) is False
+    specific_marks_it = {"layers": [_layer("global", False, 0), _layer("character", True, 1)]}
+    assert sc.contract_deliberate_repetition(specific_marks_it) is True
+    # 角色层之间 POV 在前（层序靠前的那个）
+    pov_first = {"layers": [_layer("character", True, 0), _layer("character", False, 1)]}
+    assert sc.contract_deliberate_repetition(pov_first) is True
+    assert sc.contract_deliberate_repetition({"layers": [_layer("project", None)]}) is False
+    assert sc.contract_deliberate_repetition({"layers": []}) is False
     assert sc.contract_deliberate_repetition(None) is False
 
 

@@ -89,16 +89,6 @@ class UntrustedPayload:
             raise TypeError("UntrustedPayload value must be a Mapping")
 
 
-def find_instruction_patterns(text: str) -> list[str]:
-    """返回命中的疑似指令子串（用于测试/观测）。"""
-    if not text:
-        return []
-    hits: list[str] = []
-    for pat in _INSTRUCTION_PATTERNS:
-        hits.extend(m.group(0) for m in pat.finditer(text))
-    return hits
-
-
 def neutralize_instructions(text: str) -> str:
     """中和疑似指令模式（次级层）。已中和 marker 不会被再匹配（稳定）。"""
     if not text:

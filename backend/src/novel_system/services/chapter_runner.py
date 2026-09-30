@@ -1,62 +1,48 @@
 from __future__ import annotations
 
-import inspect
 import logging
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
-from novel_system.db.session import SessionLocal
+from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneRunState, utcnow
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_actions import author_action
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
+from novel_system.services.run_job_leases import (
+    JOB_TYPE_CHAPTER_FULL,
+    STATUS_BLOCKED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_RUNNING,
+    RunJobLease,
+    cas_claim,
+    drop_lease,
+    hold_lease,
+    lease_is_active,
+)
 from novel_system.services.scene_run_checkpoint import chapter_scene_execution_id
-from novel_system.services.scene_lookup import get_scene_or_404
+from novel_system.services.scene_lookup import active_chapter_scenes, get_scene_or_404
 
-JOB_TYPE_CHAPTER_FULL = "chapter_run_full"
-JOB_STATUS_PENDING = "pending"
-JOB_STATUS_RUNNING = "running"
-JOB_STATUS_BLOCKED = "blocked"
-JOB_STATUS_COMPLETED = "completed"
-JOB_STATUS_FAILED = "failed"
+JOB_STATUS_PENDING = STATUS_PENDING
+JOB_STATUS_RUNNING = STATUS_RUNNING
+JOB_STATUS_BLOCKED = STATUS_BLOCKED
+JOB_STATUS_COMPLETED = STATUS_COMPLETED
+JOB_STATUS_FAILED = STATUS_FAILED
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ChapterRunLease:
-    job_id: str
-    worker_id: str
-    attempt_no: int
-    lease_expires_at: str
-    _service: "ChapterRunnerService" = field(repr=False, compare=False)
-
-    def renew(self, *, lease_seconds: int) -> str:
-        self.lease_expires_at = self._service._renew_lease(self, lease_seconds=lease_seconds)
-        return self.lease_expires_at
-
-    def renew_detached(self, *, lease_seconds: int) -> str:
-        """Renew with an independent session for long provider calls."""
-
-        with SessionLocal() as session:
-            service = ChapterRunnerService(session)
-            detached = ChapterRunLease(
-                job_id=self.job_id,
-                worker_id=self.worker_id,
-                attempt_no=self.attempt_no,
-                lease_expires_at=self.lease_expires_at,
-                _service=service,
-            )
-            expires = service._renew_lease(detached, lease_seconds=lease_seconds)
-            session.commit()
-            return expires
+class ChapterRunLease(RunJobLease):
+    job_type: ClassVar[str] = JOB_TYPE_CHAPTER_FULL
+    lost_message: ClassVar[str] = "chapter run owner lease was lost"
 
 
 @dataclass
@@ -78,15 +64,27 @@ class _CompositeLeaseRenewer:
             renew(lease_seconds=lease_seconds)
 
 
+class _ReconciledJobView:
+    """GET run-status 的只读视图：收敛后的字段盖在任务行上，其余照读任务行（不改 ORM 行，B03-26）。"""
+
+    def __init__(self, job: ChapterRunJob, fields: dict[str, Any]) -> None:
+        self._job = job
+        self._fields = fields
+
+    def __getattr__(self, name: str) -> Any:
+        fields = self.__dict__["_fields"]
+        return fields[name] if name in fields else getattr(self.__dict__["_job"], name)
+
+
 class ChapterRunnerService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self._active_owner: ChapterRunLease | None = None
 
-    def run_full(self, chapter_id: str, *, restart: bool = False, request_lease=None) -> dict[str, Any]:
+    def run_full(self, chapter_id: str, *, request_lease=None) -> dict[str, Any]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
-        job = None if restart else self._resumeable_job(chapter_id)
+        job = self._latest_job(chapter_id)
         if job is None:
             job = self._create_job(chapter_id, scene_ids)
         else:
@@ -104,6 +102,8 @@ class ChapterRunnerService:
         )
         self._active_owner = owner
         self.session.commit()
+        # 进程退出（lifespan 结束）时这份租约就地到期，重启后的恢复立刻接着跑（B03-01）
+        hold_lease(owner)
 
         renew_all = _CompositeLeaseRenewer(owner, request_lease)
 
@@ -179,6 +179,8 @@ class ChapterRunnerService:
                 error_text="chapter run failed; see server logs for the request details",
             )
             raise
+        finally:
+            drop_lease(owner)
 
     def _run_claimed_scene(
         self,
@@ -192,20 +194,12 @@ class ChapterRunnerService:
         """执行一个场景；执行异常时按失败落库并返回 None（调用方直接序列化任务）。"""
 
         try:
-            call_parameters = inspect.signature(orchestrator.run_scene).parameters
-            if "execution_id" in call_parameters:
-                call_kwargs = {
-                    "execution_id": chapter_scene_execution_id(job.job_id, scene_id),
-                    "lease_renewer": lease_renewer,
-                }
-                if "run_job_id" in call_parameters or any(
-                    parameter.kind == inspect.Parameter.VAR_KEYWORD
-                    for parameter in call_parameters.values()
-                ):
-                    call_kwargs["run_job_id"] = job.job_id
-                result = orchestrator.run_scene(scene_id, **call_kwargs)
-            else:  # compatibility for focused test doubles
-                result = orchestrator.run_scene(scene_id)
+            result = orchestrator.run_scene(
+                scene_id,
+                execution_id=chapter_scene_execution_id(job.job_id, scene_id),
+                run_job_id=job.job_id,
+                lease_renewer=lease_renewer,
+            )
         except Exception as exc:  # pragma: no cover - safety net for runtime failures
             self._release_scene_job_ownership(scene_id, job.job_id)
             logger.exception(
@@ -291,14 +285,14 @@ class ChapterRunnerService:
                 "finished_at": None,
                 "source": None,
             }
-        self._reconcile_job(job, self._scene_ids(chapter_id))
-        self.session.flush()
-        return self._serialize_job(job)
+        # 轮询路径只读（B03-26）：收敛结果只进视图，不写回任务行、不拿写锁
+        fields = self._reconciled_fields(job, self._scene_ids(chapter_id))
+        return self._serialize_job(_ReconciledJobView(job, fields))
 
     def prepare_full_run(self, chapter_id: str) -> tuple[dict[str, Any], bool]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
-        job = self._resumeable_job(chapter_id)
+        job = self._latest_job(chapter_id)
         should_start_worker = False
         if job is None:
             job = self._create_job(chapter_id, scene_ids)
@@ -340,12 +334,7 @@ class ChapterRunnerService:
         self.session.flush()
 
     def _scene_ids(self, chapter_id: str) -> list[str]:
-        scenes = self.session.execute(
-            select(SceneCard)
-            .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
-            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-        ).scalars().all()
-        return [scene.scene_id for scene in scenes]
+        return [scene.scene_id for scene in active_chapter_scenes(self.session, chapter_id)]
 
     def _latest_job(self, chapter_id: str) -> ChapterRunJob | None:
         return self.session.execute(
@@ -353,9 +342,6 @@ class ChapterRunnerService:
             .where(ChapterRunJob.chapter_id == chapter_id, ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL)
             .order_by(ChapterRunJob.created_at.desc(), ChapterRunJob.job_id.desc())
         ).scalars().first()
-
-    def _resumeable_job(self, chapter_id: str) -> ChapterRunJob | None:
-        return self._latest_job(chapter_id)
 
     def _create_job(self, chapter_id: str, scene_ids: list[str]) -> ChapterRunJob:
         now = utcnow()
@@ -389,26 +375,37 @@ class ChapterRunnerService:
     def _is_stale_running(job: ChapterRunJob) -> bool:
         """running 但租约（非空）已过期：没有任何 worker 还持有它。
 
-        与 `_claim_running` 的 CAS 判定同一口径（ISO 字符串比较）。租约为 None 的
+        与 `_claim_running` 的判定同一口径（run_job_leases.lease_is_active）。租约为 None 的
         running 行不算过期——那是遗留/手工行，仍按"有 worker 在跑"处理。
         """
 
         if job.status != JOB_STATUS_RUNNING or not job.lease_expires_at:
             return False
-        return job.lease_expires_at <= datetime.now(UTC).isoformat()
+        return not lease_is_active(job.lease_expires_at)
 
     def _reconcile_job(self, job: ChapterRunJob, scene_ids: list[str]) -> None:
+        for name, value in self._reconciled_fields(job, scene_ids).items():
+            if getattr(job, name) != value:
+                setattr(job, name, value)
+
+    def _reconciled_fields(self, job: ChapterRunJob, scene_ids: list[str]) -> dict[str, Any]:
+        """任务按场景现状收敛后的字段（纯计算，不改 job）：``_reconcile_job`` 写回，``run_status`` 只拿来做视图。"""
+        status = job.status
+        lease_expires_at = job.lease_expires_at
+        finished_at = job.finished_at
+        error_code = job.error_code
+        error_text = job.error_text
         if self._is_stale_running(job):
             # 过期租约的 running 对外不能再报"运行中"：回到 pending 让 run-job 重新
             # 拉起 worker（_claim_running 本来就允许接管这种行，这里只是让状态与之一致）。
-            job.status = JOB_STATUS_PENDING
-            job.lease_expires_at = None
-            job.finished_at = None
+            status = JOB_STATUS_PENDING
+            lease_expires_at = None
+            finished_at = None
         payload = self._payload(job)
         # failed 是作者可见的终态：错误码 / author_action 必须一直保留到作者显式重试
         # （_transition_explicit_failed_retry）。归档步失败时 near-final 早已写下定稿行，
         # 若仍从场景状态反推"完成"，失败任务会被伪装成 completed / 100% 且错误被清空。
-        failed = job.status == JOB_STATUS_FAILED
+        failed = status == JOB_STATUS_FAILED
         finalized_scene_ids = set() if failed else self._finalized_scene_ids(scene_ids)
         completed_set = {
             scene_id
@@ -438,28 +435,35 @@ class ChapterRunnerService:
                 "current_scene_id": current_scene_id,
             }
         )
-        job.payload_json = payload
         summary = dict(job.result_summary_json or {})
         latest_error = summary.get("latest_error")
         if blocked_scene_id is None and not failed:
             if next_scene_id is None:
                 latest_error = None
-                job.error_code = None
-                job.error_text = None
-                job.status = JOB_STATUS_COMPLETED
-                job.finished_at = job.finished_at or utcnow()
-            elif job.status in {JOB_STATUS_BLOCKED, JOB_STATUS_COMPLETED}:
+                error_code = None
+                error_text = None
+                status = JOB_STATUS_COMPLETED
+                finished_at = finished_at or utcnow()
+            elif status in {JOB_STATUS_BLOCKED, JOB_STATUS_COMPLETED}:
                 latest_error = None
-                job.error_code = None
-                job.error_text = None
-                job.status = JOB_STATUS_PENDING
-                job.finished_at = None
+                error_code = None
+                error_text = None
+                status = JOB_STATUS_PENDING
+                finished_at = None
         summary["scene_ids"] = scene_ids
         summary["completed_scene_ids"] = completed
         summary["blocked_scene_id"] = blocked_scene_id
         summary["current_scene_id"] = current_scene_id
         summary["latest_error"] = latest_error
-        job.result_summary_json = summary
+        return {
+            "status": status,
+            "lease_expires_at": lease_expires_at,
+            "finished_at": finished_at,
+            "error_code": error_code,
+            "error_text": error_text,
+            "payload_json": payload,
+            "result_summary_json": summary,
+        }
 
     def _finalized_scene_ids(self, scene_ids: list[str]) -> set[str]:
         """章任务可以跳过的场景：已归档且有定稿行。
@@ -489,14 +493,8 @@ class ChapterRunnerService:
     ) -> ChapterRunLease:
         self.session.refresh(job)
         now = datetime.now(UTC)
-        now_iso = now.isoformat()
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        running_without_active_lease = (
-            job.status == JOB_STATUS_RUNNING
-            and (
-                job.lease_expires_at is None
-                or job.lease_expires_at <= now_iso
-            )
+        running_without_active_lease = job.status == JOB_STATUS_RUNNING and not lease_is_active(
+            job.lease_expires_at, now=now
         )
         if job.status == JOB_STATUS_RUNNING and not running_without_active_lease:
             raise DomainError(
@@ -512,32 +510,16 @@ class ChapterRunnerService:
                 status_code=409,
                 details={"job_id": job.job_id, "status": job.status},
             )
-        old_status = job.status
-        old_worker = job.worker_id
         old_attempt = int(job.attempt_no or 0)
-        old_expiry = job.lease_expires_at
-        conditions = [
-            ChapterRunJob.job_id == job.job_id,
-            ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL,
-            ChapterRunJob.status == old_status,
-            ChapterRunJob.attempt_no == old_attempt,
-            ChapterRunJob.worker_id.is_(None) if old_worker is None else ChapterRunJob.worker_id == old_worker,
-            ChapterRunJob.lease_expires_at.is_(None) if old_expiry is None else ChapterRunJob.lease_expires_at == old_expiry,
-        ]
-        claimed = self.session.execute(
-            update(ChapterRunJob)
-            .where(*conditions)
-            .values(
-                status=JOB_STATUS_RUNNING,
-                worker_id=worker_id,
-                attempt_no=old_attempt + 1,
-                started_at=job.started_at or now_iso,
-                heartbeat_at=now_iso,
-                lease_expires_at=expires,
-            )
-            .execution_options(synchronize_session=False)
+        expires = cas_claim(
+            self.session,
+            job,
+            job_type=JOB_TYPE_CHAPTER_FULL,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            now=now,
         )
-        if claimed.rowcount != 1:
+        if expires is None:
             self.session.rollback()
             raise DomainError("RUN_JOB_IN_PROGRESS", "another worker won the chapter run claim", status_code=409)
         self.session.flush()
@@ -549,47 +531,15 @@ class ChapterRunnerService:
             worker_id=worker_id,
             attempt_no=old_attempt + 1,
             lease_expires_at=expires,
-            _service=self,
+            _session=self.session,
         )
-
-    def _renew_lease(self, owner: ChapterRunLease, *, lease_seconds: int) -> str:
-        now = datetime.now(UTC)
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        renewed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_CHAPTER_FULL,
-                ChapterRunJob.status == JOB_STATUS_RUNNING,
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
-            .execution_options(synchronize_session=False)
-        )
-        if renewed.rowcount != 1:
-            self.session.rollback()
-            raise DomainError("RUN_OWNER_LEASE_LOST", "chapter run owner lease was lost", status_code=409)
-        self.session.flush()
-        return expires
 
     def _fence_active_owner(self, job: ChapterRunJob) -> None:
         owner = self._active_owner
         if owner is None:
             return
         self.session.flush()
-        fenced = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.status == JOB_STATUS_RUNNING,
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(heartbeat_at=utcnow())
-            .execution_options(synchronize_session=False)
-        )
-        if fenced.rowcount != 1:
+        if not owner.update_owned(self.session, statuses=(JOB_STATUS_RUNNING,), values={"heartbeat_at": utcnow()}):
             self.session.rollback()
             raise DomainError("RUN_OWNER_LEASE_LOST", "chapter run owner was replaced", status_code=409)
         self.session.flush()
@@ -749,10 +699,11 @@ class ChapterRunnerService:
         return dict(action) if isinstance(action, dict) else None
 
     def _chapter_gate_error(self, chapter_id: str, *, scene_id: str | None = None) -> dict[str, Any] | None:
-        human_review_error = self._scene_human_review_error(scene_id)
-        if human_review_error is not None:
-            return human_review_error
-        return None
+        """章节起草在每一场之前 / 之后的唯一闸门：这一场有没处理完的人工审核。
+
+        章级的其他闸门（待回填、人工挂起）随 2026-09 的减法删了。
+        """
+        return self._scene_human_review_error(scene_id)
 
     def _scene_human_review_error(self, scene_id: str | None) -> dict[str, Any] | None:
         if not scene_id:
@@ -799,17 +750,31 @@ class ChapterRunnerService:
         evidence = [f"场景：{scene_id}"]
         if event_id:
             evidence.append(f"审核：{event_id}")
-        return {
-            "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
-            "message": "scene requires human review before chapter run can continue",
-            "author_action": author_action(
+        event = self.session.get(HumanReviewEvent, event_id) if event_id else None
+        if event is not None and event.event_source == "candidate_selection":
+            # 关键场景的匿名候选终选只能在 AI 起草台做（批准#2，重评 R2）：指引直接指向那一场
+            action = author_action(
+                "这一场在等你终选",
+                "关键场景起草了几份候选，在等你选定一份。去 AI 起草台读完候选再选，选完这一场会自动续跑；"
+                "然后回到这里重新运行本章。",
+                target_view="scene",
+                target_ref=f"scene_card:{scene_id}",
+                primary_button_label="去 AI 起草台终选",
+                evidence_summary=evidence,
+            )
+        else:
+            action = author_action(
                 "场景需要人工审核",
                 "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
                 target_view="review",
                 target_ref=target_ref,
                 primary_button_label="去待处理建议",
                 evidence_summary=evidence,
-            ),
+            )
+        return {
+            "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+            "message": "scene requires human review before chapter run can continue",
+            "author_action": action,
         }
 
     def _scene_incomplete_error(self, scene_id: str, result: dict[str, Any] | None) -> dict[str, Any] | None:

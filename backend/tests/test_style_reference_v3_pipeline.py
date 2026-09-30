@@ -588,12 +588,8 @@ def test_bundle_builds_the_style_contract_once_and_the_budget_reads_its_policy(s
         calls.append(1)
         return original(*args, **kwargs)
 
+    # 新鲜度预算不另建第二份契约：整次 build 只冻结一次
     monkeypatch.setattr(bundle_module, "build_style_runtime_contract", counting)
-    monkeypatch.setattr(
-        bundle_module,
-        "resolve_scene_style_runtime_contract",
-        lambda *args, **kwargs: pytest.fail("the freshness budget must not build a second contract"),
-    )
     snapshot = bundle_module.BundleBuilder(session).build(SCENE_ID)["snapshot"]
     assert calls == [1]
     import json

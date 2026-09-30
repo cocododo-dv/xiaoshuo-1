@@ -12,9 +12,9 @@ from novel_system.services.style_reference.learn_llm import (
     NODE_PROTECTED_TERMS,
     NODE_SYNTHESIZE,
     NODE_TAG_WINDOWS,
-    LearnNodeRuntime,
     call_structured,
 )
+from novel_system.services.style_reference.llm_nodes import NodeRuntime
 from novel_system.services.style_reference import check_job
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
@@ -138,7 +138,7 @@ def test_learn_job_requests_are_bounded_and_retry_notes_stay_outside(_fake_nodes
     """学习作业的七个节点:载荷(含原文窗口)在唯一的不可信数据边界里;重试说明是我们自己的话,在边界之外。"""
     client = _CaptureClient()
     for node_id in LEARN_FLOW_NODES:
-        runtime = LearnNodeRuntime(node_id=node_id, route=_cfg(), template=_fake_nodes[node_id])
+        runtime = NodeRuntime(node_id=node_id, route=_cfg(), template=_fake_nodes[node_id])
         call_structured(
             runtime,
             _malicious_payload(node_id),

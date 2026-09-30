@@ -4,7 +4,8 @@
 学习文风作业(kind=learn,七步进度写在作业行上)与对照检查作业(kind=check),条目由 ``jobs.job_activity_entry``
 给出(键 ``job:<id>``;分类作业另带书名、分类方式与段数 / 字数,学习作业另带书名与做完的步骤)。作业行持久,
 重启之后照样列得出来;抽取 run 行只作血缘,不单列。终态条目只保留最近 ``RECENT_FINISHED_SECONDS``,让前端的
-最后几次轮询读到结果。
+最后几次轮询读到结果——这个窗口是 ``jobs`` 的那一个常量:作业表保留期清理(``cleanup.prune_style_jobs``)不删
+「还在活动面板上」的作业,读的也是它,两边不会各调各的。
 """
 
 from __future__ import annotations
@@ -12,34 +13,49 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from novel_system.db.models import StyleReferenceBook
 
 from novel_system.services.style_reference.import_job import classification_activity_entry
 from novel_system.services.style_reference.jobs import (
     ACTIVE_STATES,
     JOB_KIND_CLASSIFY,
     JOB_KIND_LEARN,
+    RECENT_FINISHED_SECONDS,
     StyleJobService,
     job_activity_entry,
 )
-from novel_system.services.style_reference.repository import StyleReferenceRepository
 
-RECENT_FINISHED_SECONDS = 600
 MAX_ITEMS = 50
+
+
+def _book_briefs(session: Session, book_ids: set[str]) -> dict[str, tuple[str | None, int]]:
+    """清单里各书的书名与字数，一条 SQL（原来每个作业查一次书行，连同整份 stats_json，B10-18）。"""
+    if not book_ids:
+        return {}
+    rows = session.execute(
+        select(StyleReferenceBook.book_id, StyleReferenceBook.title, StyleReferenceBook.total_chars).where(
+            StyleReferenceBook.book_id.in_(sorted(book_ids))
+        )
+    )
+    return {str(book_id): (title, int(total_chars or 0)) for book_id, title, total_chars in rows}
 
 
 def list_activity(session: Session, *, now: datetime | None = None) -> list[dict[str, Any]]:
     current = now or datetime.now(timezone.utc)
-    repo = StyleReferenceRepository(session)
     items: dict[str, dict[str, Any]] = {}
 
     # 作业表:活动作业 + 十分钟内结束的作业
-    for job in StyleJobService(session).list_recent(finished_within_seconds=RECENT_FINISHED_SECONDS):
-        book = repo.get_book(job.book_id) if job.book_id else None
-        title = book.title if book is not None else None
+    jobs = StyleJobService(session).list_recent(finished_within_seconds=RECENT_FINISHED_SECONDS)
+    books = _book_briefs(session, {str(job.book_id) for job in jobs if job.book_id})
+    for job in jobs:
+        brief = books.get(str(job.book_id)) if job.book_id else None
+        title = brief[0] if brief is not None else None
         if job.kind == JOB_KIND_CLASSIFY:
             entry = classification_activity_entry(
-                job, title=title, total_chars=int(book.total_chars or 0) if book is not None else None
+                job, title=title, total_chars=brief[1] if brief is not None else None
             )
         else:
             entry = job_activity_entry(job, now=current)

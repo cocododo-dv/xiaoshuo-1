@@ -30,13 +30,20 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EXCLUDE,
     normalize_dimension_states,
 )
+from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.card import (
     DIMENSION_LABELS,
     LINE_STATE_EXCLUDED,
     LINE_STATE_PINNED,
     DimensionCard,
 )
-from novel_system.services.style_reference.config_loader import load_optional_yaml_config
+from novel_system.services.style_reference.cn_phrases import (
+    cn_count,
+    cn_int,
+    every_n_sentences,
+    rate_phrase,
+    tenths_phrase,
+)
 from novel_system.services.style_reference.fidelity import (
     DEFAULT_MAX_PERCENTILE,
     MEASURABLE_DIMENSIONS,
@@ -44,14 +51,7 @@ from novel_system.services.style_reference.fidelity import (
     feature_phrase,
     within_author_range,
 )
-from novel_system.services.style_reference.voice_signature import (
-    _cn_count,
-    _cn_int,
-    _rate_phrase,
-    _tenths_phrase,
-)
 
-FIDELITY_CONFIG_SECTION = "fidelity"
 # 软补丁的去留记在这一步的尝试上（编排器写，工作台 / 读数接口读）。
 STYLE_PATCH_KEEP_STEP = "style_patch_keep"
 MAX_REVISE_DIMENSIONS = 4
@@ -117,12 +117,8 @@ def _number(value: Any, default: float, *, low: float = 0.0, high: float = math.
 
 
 def fidelity_thresholds() -> FidelityThresholds:
-    """``injection_budget.yaml`` 的 ``fidelity:`` 段（缺键 / 坏值按默认）。"""
-    try:
-        raw = load_optional_yaml_config("injection_budget").get(FIDELITY_CONFIG_SECTION)
-    except Exception:  # noqa: BLE001 — 坏配置按默认
-        raw = None
-    section = raw if isinstance(raw, Mapping) else {}
+    """``injection_budget.yaml`` 的 ``fidelity:`` 段（``budget_config`` 读文件；缺键 / 坏值按默认）。"""
+    section = injection_budget().fidelity
     return FidelityThresholds(
         style_step_max_percentile=_number(
             section.get("style_step_max_percentile"), DEFAULT_THRESHOLDS.style_step_max_percentile, high=100.0
@@ -198,10 +194,10 @@ _CHAR_LENGTHS = (
 
 
 def _every_n_sentences(ratio: float) -> str:
+    """同习惯句的说法，只是比例极低时说「几乎没有」（差距说明里要说出来，习惯句里干脆不提）。"""
     if ratio <= 0.005:
         return "几乎没有"
-    n = max(1, int(round(1.0 / ratio)))
-    return "几乎每句都有" if n <= 1 else f"大约每{_cn_count(n)}句一次"
+    return every_n_sentences(ratio)
 
 
 def level_words(feature: str, value: Any) -> str:
@@ -214,18 +210,18 @@ def level_words(feature: str, value: Any) -> str:
         return ""
     if feature.endswith("_per_1k"):
         unit = "个" if feature.startswith(("punct_", "fw_", "latin_")) else "处"
-        phrase = _rate_phrase(number, unit)
+        phrase = rate_phrase(number, unit)
         return phrase or "几乎没有"
     if feature in _SENTENCE_FINAL:
         return _every_n_sentences(number)
     if feature in _CHAR_LENGTHS:
-        return f"约{_cn_int(round(max(0.0, number)))}字"
+        return f"约{cn_int(round(max(0.0, number)))}字"
     if feature == "sent_pauses_mean":
-        return f"每句约{_cn_count(round(max(0.0, number)))}处停顿"
+        return f"每句约{cn_count(round(max(0.0, number)))}处停顿"
     if feature == "sent_short_run_mean":
-        return f"短句一串约{_cn_count(round(max(0.0, number)))}句"
+        return f"短句一串约{cn_count(round(max(0.0, number)))}句"
     if feature.endswith("_share") or feature in ("para_single_sentence_ratio", "para_dialogue_ratio", "sent_short_run_ratio"):
-        return _tenths_phrase(number)
+        return tenths_phrase(number)
     return ""
 
 
@@ -415,7 +411,6 @@ __all__ = [
     "DECISION_REVISION_KEPT",
     "DECISION_REVISION_REJECTED",
     "DEFAULT_THRESHOLDS",
-    "FIDELITY_CONFIG_SECTION",
     "FidelityThresholds",
     "MAX_REVISE_DIMENSIONS",
     "PATCH_DECISION_KEPT",

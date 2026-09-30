@@ -23,7 +23,8 @@ book into every bundle.
 - **绑定快照**存规范化后的 v3 配置（``binding_config.normalize_binding_config``：参考方式 / 样例窗数 / 维度状态 /
   起草方式）；顶层 ``draft_mode`` 不变。
 - v1 契约（旧 bundle 里冻结的）照旧能校验、能用（``style_policy.policy_from_contract`` 经 :func:`contract_layer`
-  读最具体的一层）：``_validate_v1`` 与多层分支是不可变历史的读取器，不是兼容债。
+  读最具体的一层）：它的校验器在 ``runtime_contract_v1``（冻结的历史，不扩展），这里只按版本号分派——本模块写的
+  只有 v2。
 - 校验按内容指纹记忆（J1：一场里 40 多次深拷贝校验），每次返回新的对象（调用方改了也不污染缓存）。
 """
 
@@ -33,49 +34,36 @@ import copy
 import hashlib
 import json
 import logging
-import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from novel_system.cache_registry import register_cache_reset
-from novel_system.services.hash_engine import sha256_json_normalized, sha256_text
+from novel_system.services.hash_engine import sha256_text
 from novel_system.services.style_reference.binding_config import normalize_binding_config
-from novel_system.services.style_reference.config_loader import load_yaml_config
+from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.inject.bindings import SCOPE_RANK, most_specific_binding
 from novel_system.services.style_reference.paragraph_root import ensure_paragraph_root
 from novel_system.services.style_reference.policy import book_allows_cloud
+# v1 读取器（冻结的历史）与两个版本共用的旧口径：旧策略值 A / B / C、v1 画像键、契约哈希、sha256 形状——两个版本
+# 必须按同一把尺子算（旧名 ``_json_hash`` 等照旧从这里取）
+from novel_system.services.style_reference.runtime_contract_v1 import (
+    FROZEN_PROFILE_JSON_KEYS_V1 as _FROZEN_PROFILE_JSON_KEYS_V1,
+    LEGACY_STRATEGIES as _ALLOWED_STRATEGIES,
+    SHA256_RE as _SHA256_RE,
+    STYLE_RUNTIME_CONTRACT_VERSION_V1,
+    contract_json_hash as _json_hash,
+    validate_v1 as _validate_v1,
+)
 from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION
 
 logger = logging.getLogger(__name__)
 
 
-STYLE_RUNTIME_CONTRACT_VERSION_V1 = "style_reference_runtime_contract_v1"
 STYLE_RUNTIME_CONTRACT_VERSION_V2 = "style_reference_runtime_contract_v2"
 STYLE_RUNTIME_CONTRACT_VERSION = STYLE_RUNTIME_CONTRACT_VERSION_V2
 SUPPORTED_CONTRACT_VERSIONS = frozenset({STYLE_RUNTIME_CONTRACT_VERSION_V1, STYLE_RUNTIME_CONTRACT_VERSION_V2})
-# v1 契约的画像白名单（只用于校验旧 bundle 里冻结的 v1 契约）
-_FROZEN_PROFILE_JSON_KEYS_V1 = frozenset(
-    {
-        "reference_basis",
-        "narrative_summary",
-        "qualitative_summary",
-        "metrics_baseline",
-        "scene_samples_index",
-        "sub_dimensions",
-        "style_features",
-        "narrative_patterns",
-        "banned_replication_rules",
-        "calibration_guidance",
-        "generation_safe_forbidden_findings",
-        "source_overlap_filter",
-        "voice_signature",
-        "narrative_guidance",
-        "structure_card",
-        "planning_guidance",
-    }
-)
 # v2：v3 画像键（文风卡、行状态、声音、结构画像、规划手法、叙事机制、概述、来源、学习标记、版本）
 V3_PROFILE_JSON_KEYS = frozenset(
     {
@@ -104,36 +92,20 @@ _VOICE_KEYS = ("version", "habits", "deliberate_repetition", "features")
 _STRUCTURE_CARD_DROPPED_KEYS = frozenset({"chapters"})
 _V2_FORBIDDEN_LAYER_KEYS = ("sample_quote_refs", "sample_paragraph_refs")
 # 读侧：新契约的绑定快照恒写 ``strategy: "mixed"``（迁移 0092 统一了列值），旧 bundle 里冻结的契约还带 A / B / C——
-# 旧 bundle 是不可变历史，校验放行
-_ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-
-
-def _json_hash(payload: Mapping[str, Any]) -> str:
-    return sha256_json_normalized(dict(payload))
-
+# 旧 bundle 是不可变历史，校验放行（``_ALLOWED_STRATEGIES``，见上面的导入）
 
 DRAFT_MODE_STYLE_FIRST = "style_first"
 DRAFT_MODE_NEUTRAL_FIRST = "neutral_first"
 _ALLOWED_DRAFT_MODES = frozenset({DRAFT_MODE_STYLE_FIRST, DRAFT_MODE_NEUTRAL_FIRST})
 
 
-def _default_draft_mode() -> str:
-    """``injection_budget.yaml`` 的 ``draft_mode_default``(缺省 style_first)。"""
-    try:
-        budget = load_yaml_config("injection_budget")
-    except FileNotFoundError:
-        budget = {}
-    value = str(budget.get("draft_mode_default") or "").strip().lower()
-    return value if value in _ALLOWED_DRAFT_MODES else DRAFT_MODE_STYLE_FIRST
-
-
 def resolve_draft_mode(config_json: Mapping[str, Any] | None) -> str:
-    """一个绑定的生效起草方式:``config_json.draft_mode`` 合法即用,否则取 yaml 缺省。"""
+    """一个绑定的生效起草方式:``config_json.draft_mode`` 合法即用,否则取 ``injection_budget.yaml`` 的
+    ``draft_mode_default``(缺省 style_first,``budget_config`` 解析)。"""
     raw = ""
     if isinstance(config_json, Mapping):
         raw = str(config_json.get("draft_mode") or "").strip().lower()
-    return raw if raw in _ALLOWED_DRAFT_MODES else _default_draft_mode()
+    return raw if raw in _ALLOWED_DRAFT_MODES else injection_budget().draft_mode_default
 
 
 def compute_paragraph_root(repo: Any, book_id: str) -> tuple[str, int]:
@@ -458,153 +430,6 @@ def _validate_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
     if contract.get("profile_ids") != [profile_id]:
         raise ValueError("style runtime contract profile ids mismatch")
     if contract.get("binding_ids") != [binding_id]:
-        raise ValueError("style runtime contract binding ids mismatch")
-    computed_hash = _json_hash(contract)
-    if not supplied_hash or supplied_hash != computed_hash:
-        raise ValueError("style runtime contract hash mismatch")
-    contract["contract_hash"] = supplied_hash
-    return contract
-
-
-def _validate_v1(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """v1 契约（v3 之前冻结进旧 bundle 的多层契约）的原校验，逐字保留。"""
-    contract = copy.deepcopy(dict(payload))
-    supplied_hash = str(contract.pop("contract_hash", "") or "")
-    if (
-        type(contract.get("schema_version")) is not int
-        or contract.get("schema_version") != 1
-        or contract.get("contract_version") != STYLE_RUNTIME_CONTRACT_VERSION_V1
-    ):
-        raise ValueError("unsupported style runtime contract")
-    layers = contract.get("layers")
-    if not isinstance(layers, list) or not layers:
-        raise ValueError("style runtime contract has no layers")
-    if (
-        type(contract.get("layer_count")) is not int
-        or contract.get("layer_count") != len(layers)
-    ):
-        raise ValueError("style runtime contract layer count mismatch")
-    task_type = str(contract.get("task_type") or "")
-    if not task_type:
-        raise ValueError("style runtime contract task type is missing")
-    expected_profile_ids: list[str] = []
-    expected_binding_ids: list[str] = []
-    for expected_order, layer in enumerate(layers):
-        if (
-            not isinstance(layer, Mapping)
-            or type(layer.get("order")) is not int
-            or layer.get("order") != expected_order
-        ):
-            raise ValueError("style runtime contract layer order is invalid")
-        layer_copy = copy.deepcopy(dict(layer))
-        layer_hash = str(layer_copy.pop("layer_hash", "") or "")
-        if not layer_hash or _json_hash(layer_copy) != layer_hash:
-            raise ValueError("style runtime contract layer hash mismatch")
-        binding = layer.get("binding")
-        profile = layer.get("profile")
-        if not isinstance(binding, Mapping) or not isinstance(profile, Mapping):
-            raise ValueError("style runtime contract layer snapshot is invalid")
-        if not isinstance(binding.get("config_json"), Mapping) or not isinstance(
-            profile.get("profile_json"), Mapping
-        ):
-            raise ValueError("style runtime contract payload shape is invalid")
-        if not set(profile["profile_json"]).issubset(_FROZEN_PROFILE_JSON_KEYS_V1):
-            raise ValueError("style runtime contract profile payload is not allow-listed")
-        if not isinstance(profile.get("source_finding_ids_json"), list):
-            raise ValueError("style runtime contract finding ids are invalid")
-        if not isinstance(layer.get("forbidden_findings"), list) or not isinstance(
-            layer.get("banned_terms"), list
-        ):
-            raise ValueError("style runtime contract safety inputs are invalid")
-        if (
-            not isinstance(layer.get("sample_quote_refs"), list)
-            or not isinstance(layer.get("sample_paragraph_refs", []), list)
-            or not isinstance(layer.get("book"), Mapping)
-        ):
-            raise ValueError("style runtime contract source references are invalid")
-        if any(
-            not isinstance(finding_id, str) or not finding_id
-            for finding_id in profile["source_finding_ids_json"]
-        ):
-            raise ValueError("style runtime contract finding ids are malformed")
-        if any(
-            not isinstance(item, Mapping)
-            or not str(item.get("finding_id") or "")
-            or not isinstance(item.get("statement"), str)
-            for item in layer["forbidden_findings"]
-        ):
-            raise ValueError("style runtime contract forbidden findings are malformed")
-        if any(
-            not isinstance(term, str) or not term for term in layer["banned_terms"]
-        ):
-            raise ValueError("style runtime contract banned terms are malformed")
-        paragraph_ids: list[str] = []
-        for paragraph_ref in layer.get("sample_paragraph_refs", []):
-            if not isinstance(paragraph_ref, Mapping):
-                raise ValueError("style runtime contract paragraph reference is malformed")
-            paragraph_id = str(paragraph_ref.get("paragraph_id") or "")
-            paragraph_sha256 = str(paragraph_ref.get("paragraph_sha256") or "")
-            if (
-                not paragraph_id
-                or paragraph_id in paragraph_ids
-                or _SHA256_RE.fullmatch(paragraph_sha256) is None
-            ):
-                raise ValueError("style runtime contract paragraph reference is malformed")
-            paragraph_ids.append(paragraph_id)
-
-        quote_ids: list[str] = []
-        for quote_ref in layer["sample_quote_refs"]:
-            if not isinstance(quote_ref, Mapping):
-                raise ValueError("style runtime contract quote reference is malformed")
-            quote_id = str(quote_ref.get("quote_id") or "")
-            quote_sha256 = str(quote_ref.get("quote_sha256") or "")
-            paragraph_id = str(quote_ref.get("paragraph_id") or "")
-            if (
-                not quote_id
-                or quote_id in quote_ids
-                or _SHA256_RE.fullmatch(quote_sha256) is None
-                or (paragraph_id and paragraph_id not in paragraph_ids)
-            ):
-                raise ValueError("style runtime contract quote reference is malformed")
-            quote_ids.append(quote_id)
-        profile_id = str(profile.get("profile_id") or "")
-        binding_id = str(binding.get("binding_id") or "")
-        book_id = str(profile.get("book_id") or "")
-        book = layer["book"]
-        if (
-            not profile_id
-            or not binding_id
-            or not book_id
-            or not str(profile.get("run_id") or "")
-            or str(binding.get("profile_id") or "") != profile_id
-            or str(binding.get("task_type") or "") != task_type
-            or str(binding.get("status") or "") != "active"
-            or str(binding.get("strategy") or "") not in _ALLOWED_STRATEGIES
-            or not str(binding.get("scope") or "")
-            or str(profile.get("status") or "") != "active"
-            or str(book.get("book_id") or "") != book_id
-            or type(book.get("cloud_llm_allowed_at_freeze")) is not bool
-        ):
-            raise ValueError("style runtime contract layer lineage is invalid")
-        paragraph_root = book.get("paragraph_root_sha256")
-        if paragraph_root is not None and (
-            not isinstance(paragraph_root, str)
-            or _SHA256_RE.fullmatch(paragraph_root) is None
-            or type(book.get("paragraph_count")) is not int
-            or int(book.get("paragraph_count")) < 0
-        ):
-            raise ValueError("style runtime contract book paragraph root is malformed")
-        if profile_id not in expected_profile_ids:
-            expected_profile_ids.append(profile_id)
-        expected_binding_ids.append(binding_id)
-    if "draft_mode" in contract and (
-        not isinstance(contract.get("draft_mode"), str)
-        or contract.get("draft_mode") not in _ALLOWED_DRAFT_MODES
-    ):
-        raise ValueError("style runtime contract draft mode is invalid")
-    if contract.get("profile_ids") != expected_profile_ids:
-        raise ValueError("style runtime contract profile ids mismatch")
-    if contract.get("binding_ids") != expected_binding_ids:
         raise ValueError("style runtime contract binding ids mismatch")
     computed_hash = _json_hash(contract)
     if not supplied_hash or supplied_hash != computed_hash:

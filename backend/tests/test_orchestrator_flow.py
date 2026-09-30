@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 from sqlalchemy import select
@@ -107,7 +108,9 @@ def seed_traceable_bundle_sources(session) -> None:
     session.commit()
 
 
-def test_run_full_scene_records_voice_and_relation_bundle_provenance(client, session) -> None:
+def test_run_full_scene_bundle_carries_no_voice_or_relation_card_even_when_rows_exist(client, session) -> None:
+    """批准#15（重评 R8）：声线卡 / 关系卡不再进 bundle——库里即便还留着这两类行，起草上下文里也既没有这两节，
+    也没有它们的出处，卡的内容不会从任何一节（包括角色身份契约）漏进去。"""
     seed_story(client, session=session)
 
     response = client.post(
@@ -123,14 +126,11 @@ def test_run_full_scene_records_voice_and_relation_bundle_provenance(client, ses
     assert bundle is not None
     snapshot = bundle.frozen_snapshot_json
     source_refs = snapshot["source_version_refs"]
-    assert source_refs["voice_profile_id"] == "VOICE_CHAR_A"
-    assert source_refs["voice_profile_row_id"] == "voice_profile_VOICE_CHAR_A_v1"
-    assert source_refs["voice_profile_version"] == 1
-    assert source_refs["relation_profile_id"] == "REL_CHAR_A_CHAR_B"
-    assert source_refs["relation_profile_row_id"] == "relation_profile_REL_CHAR_A_CHAR_B_v1"
-    assert source_refs["relation_profile_version"] == 1
-    assert snapshot["inline_digests"]["voice_card"] == "short clipped lines; pressure makes the tone harder"
-    assert snapshot["inline_digests"]["relation_card"] == "reunion tension; B knows slightly more than A"
+    assert not [key for key in source_refs if key.startswith(("voice_profile", "relation_profile"))]
+    assert "voice_card" not in snapshot["inline_digests"]
+    assert "relation_card" not in snapshot["inline_digests"]
+    assert "short clipped lines" not in json.dumps(snapshot, ensure_ascii=False)
+    assert "reunion tension" not in json.dumps(snapshot, ensure_ascii=False)
 
 
 def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -> None:

@@ -63,17 +63,6 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
     shared = {
         "calls": [],
         "execution_contexts": [],
-        "gate": {
-            "chapter_id": "CH900",
-            "chapter_passed_scene_count": 0,
-            "chapter_backfill_pending_count": 0,
-            "mid_aggregate_enabled_effective": 0,
-            "aggregate_block_reason": "none",
-            "manual_hold_reason": None,
-            "last_interim_memory_row_id": None,
-            "last_final_memory_row_id": None,
-            "staged_backfill_items": [],
-        },
     }
 
     class FakeOrchestrator:
@@ -85,6 +74,7 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
             scene_id: str,
             *,
             execution_id: str | None = None,
+            run_job_id: str | None = None,
             lease_renewer=None,
         ) -> dict:
             shared["calls"].append(scene_id)
@@ -101,6 +91,32 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
                     "scene_status": "human_review_required",
                     "current_human_review_event_id": state.current_human_review_event_id,
                 }
+            if blocked_scene == scene_id and block_kind == "candidate_selection":
+                # 关键场景的匿名候选终选（orchestrator 的终选闸门写的就是这样一条审核）
+                from novel_system.db.models import SceneCard
+
+                event_id = f"hre_sel_{scene_id}"
+                self.session.add(
+                    HumanReviewEvent(
+                        event_id=event_id,
+                        scene_id=scene_id,
+                        chapter_id=self.session.get(SceneCard, scene_id).chapter_id,
+                        object_ref=f"candidate_selection:{scene_id}",
+                        event_source="candidate_selection",
+                        priority="high",
+                        status="awaiting_review",
+                        allowed_actions_json=["select"],
+                        details_json={"gate_type": "style_candidate_selection", "decision_status": "awaiting"},
+                        default_action="select",
+                    )
+                )
+                state.scene_status = "awaiting_candidate_selection"
+                state.current_human_review_event_id = event_id
+                self.session.flush()
+                return {
+                    "scene_status": "awaiting_candidate_selection",
+                    "current_human_review_event_id": event_id,
+                }
             if blocked_scene == scene_id and block_kind == "partial_rewrite":
                 state.scene_status = "hard_qc_partial_rewrite_required"
                 state.current_human_review_event_id = None
@@ -116,41 +132,48 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
             state.current_human_review_event_id = None
             state.current_final_scene_row_id = f"final_scene_{scene_id}"
             self.session.flush()
-
-            if blocked_scene == scene_id and block_kind == "backfill":
-                shared["gate"] = {
-                    **shared["gate"],
-                    "chapter_backfill_pending_count": 1,
-                    "aggregate_block_reason": "blocked_waiting_backfill",
-                    "staged_backfill_items": [
-                        {
-                            "stage_id": f"stage_{scene_id}",
-                            "chapter_id": "CH900",
-                            "scene_id": scene_id,
-                            "marker_id": "F001",
-                            "marker_text": "marker text",
-                            "marker_token": '{{backfill id=F001 text="marker text"}}',
-                            "status": "pending",
-                            "linked_tracker_row_id": None,
-                            "last_strategy": None,
-                        }
-                    ],
-                }
             return {
                 "scene_status": "archived",
                 "current_human_review_event_id": None,
                 "current_final_scene_row_id": state.current_final_scene_row_id,
             }
 
-    class FakeChapterRuntimeService:
-        def __init__(self, session) -> None:
-            self.session = session
-
-        def chapter_state_payload(self, chapter_id: str) -> dict:
-            return {**shared["gate"], "chapter_id": chapter_id}
-
     monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", FakeOrchestrator)
     return shared
+
+
+def test_run_status_is_a_read_only_projection(session) -> None:
+    """B03-26：GET run-status 是前端章节运行时的轮询路径：视图按场景状态收敛（租约过期的 running 显示成
+    pending），但不改 ORM 行、不 flush——修之前每次轮询都把收敛结果写进会话、拿 SQLite 写锁，再随请求丢掉。"""
+    from novel_system.db.models import SceneCard
+
+    _add_job_parent(session, "CH_RO")
+    session.add(SceneCard(scene_id="CH_RO_SC01", chapter_id="CH_RO", scene_seq=1, scene_goal="goal"))
+    expired = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    session.add(
+        ChapterRunJob(
+            job_id="chapter-run-status-ro",
+            chapter_id="CH_RO",
+            status="running",
+            job_type="chapter_run_full",
+            worker_id="dead-worker",
+            attempt_no=1,
+            lease_expires_at=expired,
+            payload_json={"scene_ids": ["CH_RO_SC01"], "completed_scene_ids": []},
+            result_summary_json={"scene_ids": ["CH_RO_SC01"], "completed_scene_ids": []},
+        )
+    )
+    session.commit()
+    job = session.get(ChapterRunJob, "chapter-run-status-ro")
+
+    view = ChapterRunnerService(session).run_status("CH_RO")
+
+    assert view["status"] == "pending"
+    assert view["scene_ids"] == ["CH_RO_SC01"] and view["completed_scene_ids"] == []
+    assert job.status == "running" and job.lease_expires_at == expired
+    assert not session.dirty and not session.new
+    with SessionLocal() as observer:
+        assert observer.get(ChapterRunJob, "chapter-run-status-ro").status == "running"
 
 
 def test_chapter_job_detached_renewal_is_visible_to_other_sessions(session) -> None:
@@ -423,7 +446,7 @@ def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
         def __init__(self, worker_session) -> None:
             self.session = worker_session
 
-        def run_scene(self, scene_id: str, *, execution_id=None, lease_renewer=None) -> dict:
+        def run_scene(self, scene_id: str, *, execution_id=None, run_job_id=None, lease_renewer=None) -> dict:
             nonlocal provider_dispatches
             observed_execution_ids.append(execution_id)
             checkpoints = SceneRunCheckpointService(self.session)
@@ -527,12 +550,6 @@ def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scen
     )
     session.commit()
 
-    shared["gate"] = {
-        **shared["gate"],
-        "aggregate_block_reason": "none",
-        "chapter_backfill_pending_count": 0,
-        "staged_backfill_items": [],
-    }
     shared["calls"].clear()
     _install_fake_runner(monkeypatch)
 
@@ -652,6 +669,52 @@ def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, sess
     completed = resumed_after_resolution.json()["data"]
     assert completed["status"] == "completed"
     assert completed["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02"]
+
+
+def test_chapter_run_blocked_on_candidate_selection_points_at_the_drafting_desk(client, session, monkeypatch) -> None:
+    """批准#2（重评 R2）：关键场景停在匿名候选终选时，章节起草的指引是「这一场在等你终选」、指向 AI 起草台的这一场
+
+    （终选只能在起草台做；过去指向「待处理建议」，那里没有这张卡，作者找不到出口）。选完之前重新运行本章
+    仍然停在这一场、同一个指引，不会再跑这一场。
+    """
+    _create_chapter(client, "CH903")
+    _create_scene(client, "CH903", "CH903_SC01", 1)
+    _create_scene(client, "CH903", "CH903_SC02", 2, is_chapter_last=1)
+    shared = _install_fake_runner(monkeypatch, blocked_scene="CH903_SC01", block_kind="candidate_selection")
+
+    expected_error = {
+        "code": "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
+        "message": "scene requires human review before chapter run can continue",
+        "author_action": {
+            "title": "这一场在等你终选",
+            "message": "关键场景起草了几份候选，在等你选定一份。去 AI 起草台读完候选再选，选完这一场会自动续跑；然后回到这里重新运行本章。",
+            "target_view": "scene",
+            "target_ref": "scene_card:CH903_SC01",
+            "primary_button_label": "去 AI 起草台终选",
+            "evidence_summary": ["场景：CH903_SC01", "审核：hre_sel_CH903_SC01"],
+        },
+    }
+    blocked_response = client.post(
+        "/api/v1/chapters/CH903/run/full",
+        headers={"X-Idempotency-Key": "chapter-run-candidate-selection"},
+    )
+    assert blocked_response.status_code == 200
+    blocked = blocked_response.json()["data"]
+    assert blocked["status"] == "blocked"
+    assert blocked["blocked_scene_id"] == "CH903_SC01"
+    assert blocked["latest_error"] == expected_error
+
+    shared["calls"].clear()
+    _install_fake_runner(monkeypatch)
+    rerun_response = client.post(
+        "/api/v1/chapters/CH903/run/full",
+        headers={"X-Idempotency-Key": "chapter-run-candidate-selection-rerun"},
+    )
+    assert rerun_response.status_code == 200
+    rerun = rerun_response.json()["data"]
+    assert rerun["status"] == "blocked"
+    assert rerun["latest_error"] == expected_error
+    assert shared["calls"] == []
 
 
 def test_prepare_full_run_restarts_resolved_blocked_job(client, session, monkeypatch) -> None:

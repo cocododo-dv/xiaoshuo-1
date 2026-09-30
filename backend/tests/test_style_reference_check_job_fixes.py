@@ -33,6 +33,14 @@ from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.style_reference_inject_helpers import seed_reference
 
 
+@pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+
+
 def _routes(monkeypatch, local_nodes: set[str] | None) -> None:
     """节点路由打桩：``local_nodes`` 里的节点走本机模型，其余走云端；``None`` = 全部本机。"""
     monkeypatch.setattr(

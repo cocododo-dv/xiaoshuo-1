@@ -12,7 +12,9 @@
 - ``reference_mode``:书的云策略压过之后**真正生效**的参考方式(``requested_reference_mode`` 是配置里写的);
 - ``notices``:渲染时的提示码(样例被书的云策略挡下、书被改过按当前索引选窗、没有窗口……)。
 
-旧预览端点的字段(``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs``)原样保留。
+端点只回这些(外加生效的 ``sample_windows``、``draft_mode``、``dimension_states``、``scene``、``samples_blocked``);旧预览
+端点的 ``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs`` 界面一个都不读、样例原文因此传两遍,
+2026-09-30 不再回(B10-22)。
 """
 
 from __future__ import annotations
@@ -25,23 +27,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard, StyleReferenceBook, StyleReferenceProfile, StyleReferenceWindow
 from novel_system.services.style_reference.binding_config import normalize_binding_config
-from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION, index_marker
-
-
-def _dominant_type(type_mix: Any) -> str:
-    """窗口里占比最大的段落类型(并列取键名靠前的,结果稳定);没有类型分布时给空串。"""
-    if not isinstance(type_mix, Mapping):
-        return ""
-    best = ""
-    best_share = 0.0
-    for key in sorted(str(k) for k in type_mix):
-        try:
-            share = float(type_mix[key] or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if share > best_share:
-            best, best_share = key, share
-    return best
+from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION, dominant_type, index_marker
 
 
 def window_tag_rows(session: Session, book_id: str | None, window_nos: Sequence[int]) -> dict[int, dict[str, Any]]:
@@ -67,7 +53,7 @@ def window_tag_rows(session: Session, book_id: str | None, window_nos: Sequence[
     for window_no, tags, type_mix in session.execute(stmt):
         out[int(window_no)] = {
             "tags": dict(tags) if isinstance(tags, Mapping) else {},
-            "paragraph_type": _dominant_type(type_mix),
+            "paragraph_type": dominant_type(type_mix),
         }
     return out
 

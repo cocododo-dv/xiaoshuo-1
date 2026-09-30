@@ -15,6 +15,20 @@ class StyleReferenceError(Exception):
     """所有 style_reference 模块异常的基类。"""
 
 
+BOOK_NOT_FOUND_CODE = "STYLE_REFERENCE_BOOK_NOT_FOUND"
+PROFILE_NOT_FOUND_CODE = "STYLE_REFERENCE_PROFILE_NOT_FOUND"
+
+
+def book_not_found(book_id: Any) -> DomainError:
+    """404:参考书不存在(路由与服务共用这一份,不各写一遍错误码与说法)。"""
+    return DomainError(BOOK_NOT_FOUND_CODE, f"book {book_id!r} not found", status_code=404)
+
+
+def profile_not_found(profile_id: Any) -> DomainError:
+    """404:文风画像不存在。"""
+    return DomainError(PROFILE_NOT_FOUND_CODE, f"profile {profile_id!r} not found", status_code=404)
+
+
 class DuplicateBookError(StyleReferenceError, DomainError):
     """同 text_checksum 的书已存在(同一份文本不重复导入):409 + 已有书的 id / 标题 / 状态 + 打开动作。"""
 

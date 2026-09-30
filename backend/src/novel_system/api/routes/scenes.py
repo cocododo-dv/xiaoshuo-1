@@ -59,7 +59,6 @@ from novel_system.services.scene_notes import SceneNotesService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import (
     SceneRunJobService,
-    remember_committed_cancellation,
     start_scene_run_job_worker,
 )
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
@@ -600,9 +599,6 @@ def cancel_run_job(
         payload={"job_id": job_id, "body": body},
         action=cancel,
     )
-    # Reasserting the process-local signal is safe and is useful after a replay
-    # served by a process that did not execute the original cancellation.
-    remember_committed_cancellation(job_id)
     return response
 
 
@@ -1476,7 +1472,7 @@ def scene_workbench(
     chapter = session.get(ChapterGoal, scene.chapter_id)
     state = session.get(SceneRunState, scene_id)
     chapter_state = chapter_state_snapshot(session, scene.chapter_id)
-    run_preflight = SceneRunPreflightService(session).build(scene, chapter_state)
+    run_preflight = SceneRunPreflightService(session).build(scene)
     bundle = (
         session.get(SceneBundle, state.current_bundle_id)
         if state is not None and state.current_bundle_id

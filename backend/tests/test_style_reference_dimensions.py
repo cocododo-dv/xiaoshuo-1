@@ -9,7 +9,6 @@ from novel_system.services.style_reference.dimensions import (
     LAYER_TO_SUB_DIMS,
     Layer,
     SubDimension,
-    layer_of,
 )
 
 
@@ -50,10 +49,3 @@ def test_sub_dimension_values_match_design_doc() -> None:
         "theme.narrative_philosophy",
     }
     assert {sub.value for sub in SubDimension} == expected
-
-
-def test_layer_of_reverse_lookup() -> None:
-    assert layer_of(SubDimension.LANGUAGE_RHETORIC) is Layer.LANGUAGE
-    assert layer_of(SubDimension.NARRATIVE_PACING) is Layer.NARRATIVE
-    assert layer_of(SubDimension.SCENE_DIALOGUE) is Layer.SCENE
-    assert layer_of(SubDimension.THEME_MOTIFS) is Layer.THEME

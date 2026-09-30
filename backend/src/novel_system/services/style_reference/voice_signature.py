@@ -10,8 +10,8 @@
   就、也、还、可是」「句末常带吧、呢、啊（大约每十句一次）」「几乎不用分号」），**不再**拿 1920 年代的鲁迅 /
   朱自清基线比「偏多 / 偏少」（v1 对真实网文说「连接词整体偏少」，而生成稿用得比作者还少得多）；不含阿拉伯数字；
 - 基线（``voice_baseline.yaml``）在管线里只剩一处用途：``deliberate_repetition``（叠词 / 短句连打 ≥ 基线字面 p85）。
-  z 值接口（``feature_z_scores`` / ``distinctive_features``）已没有管线调用方——样例窗口的典型度在 ``windows.py``、
-  「像不像作者」的读数看作者自己的窗口分布（``fidelity.py``）——只留作检验基线本身的工具（黄金语料测试用）。
+  样例窗口的典型度在 ``windows.py``、「像不像作者」的读数看作者自己的窗口分布（``fidelity.py``）；检验基线本身的
+  z 值工具只给黄金语料测试用，在 ``tests/style_reference_voice_baseline_helpers.py``。
 
 基线由运维工具 ``python -m novel_system.tools.build_voice_baseline build-baseline`` 用
 ``backend/tests/golden/style_reference/corpus`` 全部文本按 1500 字块生成（2026-09-24 从本模块的 ``__main__`` 搬过去）；
@@ -24,6 +24,13 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from novel_system.services.style_reference.cn_phrases import (
+    PUNCT_HABITS,
+    cn_int,
+    every_n_sentences,
+    rate_phrase,
+    tenths_phrase,
+)
 from novel_system.services.style_reference.config_loader import load_optional_yaml_config
 from novel_system.services.style_reference.measure import (
     FEATURE_NAMES,
@@ -52,13 +59,10 @@ VOICE_BASELINE_VERSION = "voice_baseline_v2"
 BASELINE_BLOCK_CHARS = 1500
 TOP_WORDS_PER_GROUP = 5
 MAX_HABIT_LINES = 12
-# 整书签名是 n 块的聚合,块间 std 对它过宽——旧 z 值接口按 1/sqrt(min(n, 16)) 收窄;
-# REPETITION_FEATURES(叠词 / 短句连打)始终按字面 p85 判(deliberate_repetition 的规格口径)。
-Z_MAX_AGGREGATION_BLOCKS = 16
+# REPETITION_FEATURES(叠词 / 短句连打)按基线字面 p85 判(deliberate_repetition 的规格口径),整书签名也不收窄。
 REPETITION_FEATURES: tuple[str, ...] = ("redup_total_per_1k", "sent_short_run_ratio")
 # 少于这些可见字符的文本不渲染习惯句(统计无意义)。
 MIN_RENDER_CHARS = 200
-_Z_CLIP = 8.0
 
 # top_words 的组:8 个虚词组 + 句末助词 + 引导动词。
 TOP_WORD_GROUPS: tuple[str, ...] = (*FUNCTION_WORD_GROUPS, "sentence_final", "speech_verb")
@@ -182,36 +186,14 @@ def _baseline_stat(baseline: Mapping[str, Any] | None, feature: str, key: str) -
     return value if math.isfinite(value) else None
 
 
-def _block_count_of(features_or_signature: Mapping[str, Any] | None) -> int:
-    """签名覆盖的基线块数(由 stats.char_count 推出);仅 features 时视为 1 块。"""
-    if not isinstance(features_or_signature, Mapping):
-        return 1
-    stats = features_or_signature.get("stats")
-    if not isinstance(stats, Mapping):
-        return 1
-    try:
-        char_count = float(stats.get("char_count", 0))
-    except (TypeError, ValueError):
-        return 1
-    if not math.isfinite(char_count) or char_count <= 0:
-        return 1
-    return max(1, int(round(char_count / BASELINE_BLOCK_CHARS)))
-
-
-def _aggregation_scale(block_count: int | None) -> float:
-    count = 1 if block_count is None else max(1, int(block_count))
-    return math.sqrt(min(count, Z_MAX_AGGREGATION_BLOCKS))
-
-
 def _deliberate_repetition(
     features: Mapping[str, float],
     baseline: Mapping[str, Any] | None,
 ) -> bool:
     """叠词密度或短句连打高于基线**字面** p85 → True;无基线时 False(fail-closed)。
 
-    规格 §2.W3:「显著高于基线(≥p85)」。这里不套 1/sqrt(n) 聚合收窄——那只属于
-    z 值接口;整书签名对照块级 p85 本身判定。旗标只放松下游的新鲜度守卫(作者本就爱叠词 /
-    连打短句时,不把重复当毛病),不进习惯句。
+    规格 §2.W3:「显著高于基线(≥p85)」。整书签名也对照块级 p85 本身判定,不按块数收窄。
+    旗标只放松下游的新鲜度守卫(作者本就爱叠词 / 连打短句时,不把重复当毛病),不进习惯句。
     """
     return any(_level(features, baseline, name) == "high" for name in REPETITION_FEATURES)
 
@@ -235,87 +217,14 @@ def _unpack(features_or_signature: Mapping[str, Any] | None) -> tuple[dict[str, 
     return {str(k): finite_or_zero(v) for k, v in features_or_signature.items() if isinstance(v, (int, float))}, {}
 
 
-def feature_z_scores(
-    features: Mapping[str, Any],
-    baseline_features: Mapping[str, Any],
-    baseline_std: Mapping[str, Any] | None = None,
-    *,
-    block_count: int | None = None,
-) -> dict[str, float]:
-    """逐特征 z 值。
-
-    ``baseline_features`` 的值可以是均值数字,也可以是 ``{"mean", "std", ...}``
-    映射(voice_baseline.yaml 的形态);``baseline_std`` 显式给出时覆盖 std。
-    std 有下限(均值的 5% 或 1e-6)避免除零;结果裁到 ±8 且恒有限。
-    缺失的特征(任一侧)跳过。
-
-    基线 std 是块级(1500 字)波动。``features`` 传整份签名时按 ``stats.char_count``
-    推出它聚合的块数 n,std 按 1/sqrt(min(n, 16)) 收窄;显式 ``block_count`` 覆盖
-    (传 1 即得字面块级 z)。仅传 features 时 n=1。
-    """
-    values, _ = _unpack(features)
-    result: dict[str, float] = {}
-    if not isinstance(baseline_features, Mapping):
-        return result
-    scale = _aggregation_scale(block_count if block_count is not None else _block_count_of(features))
-    for name, value in values.items():
-        entry = baseline_features.get(name)
-        if entry is None:
-            continue
-        if isinstance(entry, Mapping):
-            mean = finite_or_zero(entry.get("mean", 0.0))
-            std = finite_or_zero(entry.get("std", 0.0))
-        else:
-            mean = finite_or_zero(entry)
-            std = 0.0
-        if baseline_std is not None and name in baseline_std:
-            std = finite_or_zero(baseline_std.get(name))
-        floor = max(1e-6, 0.05 * abs(mean))
-        effective_std = max(std, floor) / scale
-        z = (value - mean) / effective_std
-        result[name] = _round(max(-_Z_CLIP, min(_Z_CLIP, z)))
-    return result
-
-
-def distinctive_features(
-    features: Mapping[str, Any],
-    baseline: Mapping[str, Any] | None = None,
-    *,
-    min_abs_z: float = 1.0,
-    block_count: int | None = None,
-) -> list[dict[str, Any]]:
-    """相对基线偏离显著(|z| ≥ min_abs_z)的特征,按 |z| 降序。
-
-    返回 ``[{"feature", "z", "direction": "high"|"low"}]``;无基线时返回空表。
-    ``block_count`` 语义同 :func:`feature_z_scores`。
-    """
-    if baseline is None:
-        baseline = load_voice_baseline()
-    baseline_features = baseline.get("features") if isinstance(baseline, Mapping) else None
-    if not isinstance(baseline_features, Mapping):
-        return []
-    scores = feature_z_scores(features, baseline_features, block_count=block_count)
-    selected = [
-        {"feature": name, "z": z, "direction": "high" if z > 0 else "low"}
-        for name, z in scores.items()
-        if abs(z) >= min_abs_z
-    ]
-    selected.sort(key=lambda item: (-abs(item["z"]), item["feature"]))
-    return selected
-
-
 def _level(
     features: Mapping[str, float],
     baseline: Mapping[str, Any] | None,
     name: str,
-    *,
-    scale: float = 1.0,
 ) -> str | None:
-    """对照 p15 / p85 判「偏低 / 偏高」;无基线或落在中段返回 None。
+    """对照基线字面 p15 / p85 判「偏低 / 偏高」;无基线或落在中段返回 None。
 
-    ``scale`` > 1 时(整书聚合签名)把 p15 / p85 带按 1/scale 向 p50 收窄,
-    与 :func:`feature_z_scores` 的 std 收窄同一口径;scale=1 即字面 p15 / p85。
-    """
+    上下界按 p50 ± 半带算(旧的收窄口径去掉 scale 之后逐位不变)。"""
     if name not in features:
         return None
     p15 = _baseline_stat(baseline, name, "p15")
@@ -325,9 +234,8 @@ def _level(
         return None
     if p50 is None or not (p15 <= p50 <= p85):
         p50 = (p15 + p85) / 2.0
-    factor = max(1.0, float(scale))
-    high_bound = p50 + (p85 - p50) / factor
-    low_bound = p50 - (p50 - p15) / factor
+    high_bound = p50 + (p85 - p50)
+    low_bound = p50 - (p50 - p15)
     value = features[name]
     if value > high_bound and high_bound > low_bound:
         return "high"
@@ -339,66 +247,6 @@ def _level(
 # ---------------------------------------------------------------------------
 # 习惯句渲染(绝对、具体:作者自己的高频词与大致频率,不与任何基线比)
 # ---------------------------------------------------------------------------
-
-_CN_DIGITS = "零一二三四五六七八九"
-
-
-def _cn_int(value: int) -> str:
-    """0–999 的中文读法(「两」用于量词前由调用方处理);超出按「上千」。"""
-    number = max(0, int(value))
-    if number < 10:
-        return _CN_DIGITS[number]
-    if number < 20:
-        return "十" + (_CN_DIGITS[number % 10] if number % 10 else "")
-    if number < 100:
-        tens, ones = divmod(number, 10)
-        return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
-    if number < 1000:
-        hundreds, rest = divmod(number, 100)
-        head = _CN_DIGITS[hundreds] + "百"
-        if rest == 0:
-            return head
-        if rest < 10:
-            return head + "零" + _CN_DIGITS[rest]
-        tens, ones = divmod(rest, 10)
-        return head + _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
-    return "上千"
-
-
-def _cn_count(value: int) -> str:
-    """量词前的数:2 → 「两」,其余同 :func:`_cn_int`。"""
-    return "两" if int(value) == 2 else _cn_int(value)
-
-
-def _rate_phrase(rate: float, unit: str) -> str:
-    """每千字的频率 → 「每千字约三个」/「每两千字约一处」/ ""(几乎没有)。"""
-    value = finite_or_zero(rate)
-    if value >= 1.0:
-        return f"每千字约{_cn_count(round(value))}{unit}"
-    if value >= 0.2:
-        return f"每{_cn_count(round(1.0 / value))}千字约一{unit}"
-    return ""
-
-
-def _every_n_sentences(ratio: float) -> str:
-    value = finite_or_zero(ratio)
-    if value <= 0:
-        return ""
-    n = max(1, int(round(1.0 / value)))
-    if n <= 1:
-        return "几乎每句都有"
-    return f"大约每{_cn_count(n)}句一次"
-
-
-def _tenths_phrase(share: float) -> str:
-    """0–1 的比例 → 「约四成」/「不到一成」/「几乎全部」。"""
-    value = finite_or_zero(share)
-    if value >= 0.95:
-        return "几乎全部"
-    if value < 0.05:
-        return "不到一成"
-    return f"约{_cn_int(max(1, round(value * 10)))}成"
-
 
 def _join_words(words: Sequence[str]) -> str:
     return "、".join(words)
@@ -416,18 +264,6 @@ def _author_words(top_words: Mapping[str, Any], group: str, *, limit: int = 3, m
         if len(result) >= limit:
             break
     return result
-
-
-# 标点「常用 / 很少用」的绝对门槛(每千字):低于 rare 算几乎不用,高于 frequent 算常用。
-_PUNCT_HABITS: tuple[tuple[str, str, float, float], ...] = (
-    ("punct_ellipsis_per_1k", "省略号", 0.2, 2.0),
-    ("punct_dash_per_1k", "破折号", 0.2, 1.5),
-    ("punct_semicolon_per_1k", "分号", 0.2, 1.0),
-    ("punct_exclamation_per_1k", "感叹号", 0.5, 4.0),
-    ("punct_question_per_1k", "问号", 0.5, 6.0),
-    ("punct_colon_per_1k", "冒号", 0.3, 4.0),
-    ("punct_enumeration_per_1k", "顿号", 0.3, 5.0),
-)
 
 
 def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
@@ -456,10 +292,10 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     # 1. 句长与起伏:平均几个字、短句与长句大约多长
     mean = value("sent_len_mean")
     if mean > 0:
-        line = f"句子平均约{_cn_int(round(mean))}字"
+        line = f"句子平均约{cn_int(round(mean))}字"
         short, long_ = value("sent_len_p10"), value("sent_len_p90")
         if long_ > short > 0:
-            line += f"，短的{_cn_int(round(short))}字上下、长的{_cn_int(round(long_))}字上下"
+            line += f"，短的{cn_int(round(short))}字上下、长的{cn_int(round(long_))}字上下"
         spread = value("sent_len_std") / mean
         if spread >= 0.75:
             line += "，长短交错明显"
@@ -470,10 +306,10 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     # 2. 段落
     para_mean = value("para_len_mean")
     if para_mean > 0:
-        line = f"段落平均约{_cn_int(round(para_mean))}字"
+        line = f"段落平均约{cn_int(round(para_mean))}字"
         single = value("para_single_sentence_ratio")
         if single >= 0.05:
-            line += f"，{_tenths_phrase(single)}的段落只有一句"
+            line += f"，{tenths_phrase(single)}的段落只有一句"
         lines.append(line)
 
     # 3. 对白比重与引导
@@ -482,7 +318,7 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         if dialogue >= 0.95:
             lines.append("几乎通篇是对白")
         elif dialogue >= 0.05:
-            lines.append(f"对白约占全文字数的{_cn_int(max(1, round(dialogue * 10)))}成")
+            lines.append(f"对白约占全文字数的{cn_int(max(1, round(dialogue * 10)))}成")
         else:
             lines.append("几乎没有对白，以叙述为主")
     guide = {placement: value(f"dialogue_guide_{placement}_share") for placement in ("pre", "post", "none")}
@@ -514,13 +350,13 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         ][:3]
         if modal_ratio >= 0.02:
             detail = _join_words(final_words) if final_words else "语气词"
-            lines.append(f"句末常带{detail}（{_every_n_sentences(modal_ratio)}）")
+            lines.append(f"句末常带{detail}（{every_n_sentences(modal_ratio)}）")
         else:
             lines.append("句末几乎不带语气词，话说完就停")
 
     # 5. 连接词(作者自己的高频词 + 频率)
     connective_words = _author_words(top_words, "connective", limit=4)
-    connective_rate = _rate_phrase(value("fw_connective_per_1k"), "个")
+    connective_rate = rate_phrase(value("fw_connective_per_1k"), "个")
     if connective_words:
         lines.append(
             f"连接多用{_join_words(connective_words)}" + (f"（连接词{connective_rate}）" if connective_rate else "")
@@ -529,8 +365,8 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
         lines.append(f"连接词{connective_rate}")
 
     # 6. 标点:常用的与几乎不用的
-    frequent = [label for name, label, _low, high in _PUNCT_HABITS if name in values and value(name) >= high]
-    rare = [label for name, label, low, _high in _PUNCT_HABITS if name in values and value(name) < low]
+    frequent = [label for name, label, _low, high in PUNCT_HABITS if name in values and value(name) >= high]
+    rare = [label for name, label, low, _high in PUNCT_HABITS if name in values and value(name) < low]
     if frequent:
         lines.append(f"常用{_join_words(frequent[:3])}")
     if rare:
@@ -555,10 +391,10 @@ def render_voice_habits(features: Mapping[str, Any]) -> list[str]:
     # 8. 具体数字、英文词(只在确实常见时说)
     quantities = value("digit_run_per_1k") + value("numeral_unit_per_1k")
     if quantities >= 1.0:
-        lines.append(f"常写具体数字与计量（{_rate_phrase(quantities, '处')}）")
+        lines.append(f"常写具体数字与计量（{rate_phrase(quantities, '处')}）")
     latin = value("latin_word_per_1k")
     if latin >= 0.5:
-        rate = _rate_phrase(latin, "个")
+        rate = rate_phrase(latin, "个")
         lines.append("叙述和对白里常夹英文词" + (f"（{rate}）" if rate else ""))
 
     # 9. 副词 / 体标记 / 短句连打 / 四字格 / 叠词
@@ -599,15 +435,12 @@ __all__ = [
     "MAX_HABIT_LINES",
     "MIN_RENDER_CHARS",
     "REPETITION_FEATURES",
-    "Z_MAX_AGGREGATION_BLOCKS",
     "SPEECH_VERB_KEYS",
     "TOP_WORD_GROUPS",
     "VOICE_BASELINE_VERSION",
     "VOICE_SIGNATURE_VERSION",
     "compute_voice_signature",
     "compute_voice_signature_for_text",
-    "distinctive_features",
-    "feature_z_scores",
     "load_voice_baseline",
     "load_voice_lexicon",
     "quantile",

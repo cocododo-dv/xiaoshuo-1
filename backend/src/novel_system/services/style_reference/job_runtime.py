@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import StyleReferenceBook, StyleReferenceJob
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.jobs import (
-    JOB_FAILED_CODE,
     ClaimedJob,
     DaemonCallPool,
     JobCancelled,
@@ -37,6 +36,7 @@ from novel_system.services.style_reference.jobs import (
     JobLost,
     StyleJobService,
     is_worker_interruption,
+    job_failure,
 )
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 
@@ -89,7 +89,8 @@ class JobRun:
 
     # ---- lifecycle ------------------------------------------------------
     def run(self) -> None:
-        """异常 → 终态：取消 / 领域错误 / 其他异常在这里收尾（子类的钩子写附带状态）；丢所有权与进程中断原样上抛
+        """异常 → 终态：取消 / 领域错误 / 其他异常在这里收尾（子类的钩子写附带状态；失败记什么由
+        ``jobs.job_failure`` 定，与工人框架给直接抛出的处理器用的是同一条规则）；丢所有权与进程中断原样上抛
         （框架回滚 / 放回队列）；进程退出期间冒出来的异常一律按中断处理。"""
         try:
             self._run()
@@ -98,26 +99,14 @@ class JobRun:
             raise
         except JobCancelled:
             self.finish_cancelled()
-        except DomainError as exc:
+        except Exception as exc:  # noqa: BLE001 — 作业边界：记失败（jobs.job_failure，与工人框架同一条规则），游标保留
             if is_worker_interruption(exc, self.claimed):
                 self.session.rollback()
                 raise JobInterrupted(self.claimed.job_id) from exc
-            self.finish_failed(
-                code=exc.code,
-                message=str(exc.message),
-                retryable=bool(getattr(exc, "retryable", False) or (exc.details or {}).get("retryable")),
-                details=exc.details if isinstance(exc.details, Mapping) else None,
-            )
-        except Exception as exc:  # noqa: BLE001 — 作业边界：记失败（可续跑），游标保留
-            if is_worker_interruption(exc, self.claimed):
-                self.session.rollback()
-                raise JobInterrupted(self.claimed.job_id) from exc
-            logger.exception("%s job %s failed", self.claimed.kind, self.claimed.job_id)
-            self.finish_failed(
-                code=str(getattr(exc, "code", None) or JOB_FAILED_CODE),
-                message=f"{type(exc).__name__}: {exc}",
-                retryable=True,
-            )
+            if not isinstance(exc, DomainError):
+                logger.exception("%s job %s failed", self.claimed.kind, self.claimed.job_id)
+            code, message, retryable, details = job_failure(exc)
+            self.finish_failed(code=code, message=message, retryable=retryable, details=details)
 
     def _run(self) -> None:
         raise NotImplementedError

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 import threading
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from collections import OrderedDict
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
@@ -13,14 +14,43 @@ from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import ChapterRunJob, LlmCall, OperationLog, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.background_jobs import daemon_lane
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.run_job_leases import (
+    JOB_TYPE_SCENE_FULL,
+    OWNED_STATUSES,
+    SCENE_RUN_LANE,
+    SCENE_RUN_LANE_WORKERS,
+    SCENE_RUN_STAGE_ORDER,
+    SCENE_STEP_CLAIMED,
+    RunJobLease,
+    begin_immediate,
+    cas_claim,
+    drop_lease,
+    hold_lease,
+    lease_expiry,
+    lease_is_active,
+    mark_dispatched,
+    parse_iso,
+    scene_job_step,
+    unmark_dispatched,
+    update_observed,
+)
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, scene_job_execution_id
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 
-JOB_TYPE_SCENE_FULL = "scene_run_full"
+_LOGGER = logging.getLogger(__name__)
+
+# 冻结 bundle 的起草方式（B03-10）：bundle 冻结后不再变，任务轮询（运行中每 2 秒一次）只在第一次读整份快照。
+# 按 bundle_id 记，库换了 id 会重复（测试每个用例一个新库），所以登记复位。
+_BUNDLE_DRAFT_MODES: OrderedDict[str, str | None] = OrderedDict()
+_BUNDLE_DRAFT_MODES_LIMIT = 256
+_BUNDLE_DRAFT_MODES_LOCK = threading.Lock()
+register_cache_reset("scene_run_jobs.bundle_draft_modes", _BUNDLE_DRAFT_MODES.clear)
+
 RUN_JOB_CANCEL_REQUESTED = "RUN_JOB_CANCEL_REQUESTED_BY_AUTHOR"
 RUN_JOB_CANCELLED = "RUN_JOB_CANCELLED_BY_AUTHOR"
 _BUDGET_REJECTION_CODES = frozenset(
@@ -37,50 +67,14 @@ _BUDGET_REJECTION_CODES = frozenset(
         "LLM_DAILY_COST_LIMIT",
     }
 )
-_CANCELLED_JOB_REGISTRY: set[str] = set()
-_CANCELLED_JOB_REGISTRY_LOCK = threading.Lock()
-register_cache_reset("scene_run_jobs.cancelled_hints", _CANCELLED_JOB_REGISTRY.clear)
-SCENE_RUN_STAGE_ORDER = [
-    "planning_running",
-    "bundle_built",
-    "neutral_running",
-    "hard_qc_running",
-    "style_running",
-    "soft_qc_running",
-    "rewrite_running",
-    "acceptance_review_running",
-    "near_final",
-    "archived",
-]
 
 
-@dataclass
-class SceneRunJobLease:
-    job_id: str
-    worker_id: str
-    attempt_no: int
-    lease_expires_at: str
-    _service: "SceneRunJobService" = field(repr=False, compare=False)
+class SceneRunJobLease(RunJobLease):
+    """场景任务的租约：请求取消之后（cancel_requested）主人仍可续约，把在飞的结算做完。"""
 
-    def renew(self, *, lease_seconds: int) -> str:
-        self.lease_expires_at = self._service.renew_lease(self, lease_seconds=lease_seconds)
-        return self.lease_expires_at
-
-    def renew_detached(self, *, lease_seconds: int) -> str:
-        """Renew with an independent session for long provider calls."""
-
-        with SessionLocal() as session:
-            service = SceneRunJobService(session)
-            detached = SceneRunJobLease(
-                job_id=self.job_id,
-                worker_id=self.worker_id,
-                attempt_no=self.attempt_no,
-                lease_expires_at=self.lease_expires_at,
-                _service=service,
-            )
-            expires = service.renew_lease(detached, lease_seconds=lease_seconds)
-            session.commit()
-            return expires
+    job_type: ClassVar[str] = JOB_TYPE_SCENE_FULL
+    renewable_statuses: ClassVar[tuple[str, ...]] = OWNED_STATUSES
+    lost_message: ClassVar[str] = "scene run job owner lease was lost"
 
 
 class SceneRunJobService:
@@ -97,7 +91,7 @@ class SceneRunJobService:
         budget_resume_parent_execution_id: str | None = None,
     ) -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
-        run_preflight = SceneRunPreflightService(self.session).build(scene, {})
+        run_preflight = SceneRunPreflightService(self.session).build(scene)
         can_run = bool(run_preflight.get("can_run"))
         current_step = "queued" if can_run else "preflight_blocked"
         status = "queued" if can_run else "blocked"
@@ -150,8 +144,6 @@ class SceneRunJobService:
                 "scene_id": scene_id,
                 "actor_ref": actor_ref,
                 "current_step": current_step,
-                "stage_order": SCENE_RUN_STAGE_ORDER,
-                "lock_wait_ms": 0,
                 "run_preflight_status": run_preflight.get("overall_status"),
                 **({"author_note": note} if note else {}),
                 # Wave 2：运行策略随任务下发（reliable|strict|auto，列属 Wave 3）
@@ -252,7 +244,7 @@ class SceneRunJobService:
             worker_id=job.worker_id,
             attempt_no=int(job.attempt_no),
             lease_expires_at=str(job.lease_expires_at or ""),
-            _service=self,
+            _session=self.session,
         )
 
     def claim_scene_active_job(self, owner: SceneRunJobLease, scene_id: str) -> None:
@@ -383,16 +375,26 @@ class SceneRunJobService:
     def _scene_draft_mode(self, scene_state: SceneRunState | None) -> str | None:
         if scene_state is None or not scene_state.current_bundle_id:
             return None
+        bundle_id = str(scene_state.current_bundle_id)
+        with _BUNDLE_DRAFT_MODES_LOCK:
+            if bundle_id in _BUNDLE_DRAFT_MODES:
+                _BUNDLE_DRAFT_MODES.move_to_end(bundle_id)
+                return _BUNDLE_DRAFT_MODES[bundle_id]
         try:
             from novel_system.db.models import SceneBundle
             from novel_system.services.style_policy import style_policy_for_bundle
 
-            bundle_row = self.session.get(SceneBundle, scene_state.current_bundle_id)
+            bundle_row = self.session.get(SceneBundle, bundle_id)
             if bundle_row is None:
                 return None
-            return style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
+            draft_mode = style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
         except Exception:  # noqa: BLE001 — 只读展示,不影响任务视图
             return None
+        with _BUNDLE_DRAFT_MODES_LOCK:
+            _BUNDLE_DRAFT_MODES[bundle_id] = draft_mode
+            while len(_BUNDLE_DRAFT_MODES) > _BUNDLE_DRAFT_MODES_LIMIT:
+                _BUNDLE_DRAFT_MODES.popitem(last=False)
+        return draft_mode
 
     def serialize_job(self, job: ChapterRunJob) -> dict[str, Any]:
         payload = dict(job.payload_json or {})
@@ -405,7 +407,10 @@ class SceneRunJobService:
         # 历史真值仍在 payload/result_summary 里，只有视图层收敛。
         scene_state = self.session.get(SceneRunState, str(scene_id)) if scene_id else None
         scene_status = scene_state.scene_status if scene_state else None
-        current_step = payload.get("current_step") or summary.get("current_step") or job.status
+        # 检查点把节点名（budget_ready …）写进 current_step；任务视图只说作者词表里的阶段（B03-03）
+        current_step = scene_job_step(
+            payload.get("current_step") or summary.get("current_step") or job.status
+        )
         if scene_status == "archived" and job.status not in {"queued", "running", "cancel_requested"}:
             current_step = "archived"
         return {
@@ -419,12 +424,10 @@ class SceneRunJobService:
             # 2026-09-12 风格直起:运行中即可知道中性步位写的是作者手笔首稿还是中性稿
             # (bundle 冻结后才有;之前为 None,前端回退到工作台读数)。
             "draft_mode": self._scene_draft_mode(scene_state),
-            "stage_order": payload.get("stage_order") or SCENE_RUN_STAGE_ORDER,
+            "stage_order": list(SCENE_RUN_STAGE_ORDER),
             "started_at": job.started_at,
             "finished_at": job.finished_at,
             "elapsed_ms": _elapsed_ms(job.started_at or job.created_at, job.finished_at),
-            "current_model_call": summary.get("current_model_call"),
-            "lock_wait_ms": payload.get("lock_wait_ms", 0),
             "latest_qc": latest_qc,
             "needs_human_review": bool(summary.get("needs_human_review")),
             "error_code": job.error_code,
@@ -457,14 +460,10 @@ class SceneRunJobService:
         job = self.get_job(job_id)
         self.session.refresh(job)
         now = datetime.now(UTC)
-        now_iso = now.isoformat()
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
         # A RUNNING row without a lease is an abandoned pre-lease/crash state,
         # not an immortal owner.  The CAS below still fences on the observed
         # worker/attempt/NULL lease so only one recovery worker can take it.
-        if job.status == "running" and (
-            job.lease_expires_at is not None and job.lease_expires_at > now_iso
-        ):
+        if job.status == "running" and lease_is_active(job.lease_expires_at, now=now):
             self.session.rollback()
             raise DomainError(
                 "RUN_JOB_IN_PROGRESS",
@@ -489,50 +488,21 @@ class SceneRunJobService:
                 details={"job_id": job_id, "status": job.status},
             )
 
-        old_status = job.status
-        old_worker = job.worker_id
         old_attempt = int(job.attempt_no or 0)
-        old_expiry = job.lease_expires_at
-        conditions = [
-            ChapterRunJob.job_id == job_id,
-            ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-            ChapterRunJob.status == old_status,
-            ChapterRunJob.attempt_no == old_attempt,
-        ]
-        conditions.append(
-            ChapterRunJob.worker_id.is_(None)
-            if old_worker is None
-            else ChapterRunJob.worker_id == old_worker
+        expires = cas_claim(
+            self.session,
+            job,
+            job_type=JOB_TYPE_SCENE_FULL,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            now=now,
+            clear_outcome=True,
         )
-        conditions.append(
-            ChapterRunJob.lease_expires_at.is_(None)
-            if old_expiry is None
-            else ChapterRunJob.lease_expires_at == old_expiry
-        )
-        claimed = self.session.execute(
-            update(ChapterRunJob)
-            .where(*conditions)
-            .values(
-                status="running",
-                worker_id=worker_id,
-                attempt_no=old_attempt + 1,
-                started_at=job.started_at or now_iso,
-                heartbeat_at=now_iso,
-                lease_expires_at=expires,
-                finished_at=None,
-                error_code=None,
-                error_text=None,
-            )
-            .execution_options(synchronize_session=False)
-        )
-        if claimed.rowcount != 1:
+        if expires is None:
             self.session.rollback()
             current = self.get_job(job_id)
             self.session.refresh(current)
-            if current.status == "running" and (
-                current.lease_expires_at is not None
-                and current.lease_expires_at > now_iso
-            ):
+            if current.status == "running" and lease_is_active(current.lease_expires_at, now=now):
                 raise DomainError(
                     "RUN_JOB_IN_PROGRESS",
                     "another worker won the scene run job claim",
@@ -556,38 +526,8 @@ class SceneRunJobService:
             worker_id=worker_id,
             attempt_no=old_attempt + 1,
             lease_expires_at=expires,
-            _service=self,
+            _session=self.session,
         )
-
-    def renew_lease(self, owner: SceneRunJobLease, *, lease_seconds: int) -> str:
-        now = datetime.now(UTC)
-        expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        renewed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status.in_(("running", "cancel_requested")),
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(heartbeat_at=now.isoformat(), lease_expires_at=expires)
-            .execution_options(synchronize_session=False)
-        )
-        if renewed.rowcount != 1:
-            self.session.rollback()
-            raise DomainError(
-                "RUN_OWNER_LEASE_LOST",
-                "scene run job owner lease was lost",
-                status_code=409,
-                details={
-                    "job_id": owner.job_id,
-                    "worker_id": owner.worker_id,
-                    "attempt_no": owner.attempt_no,
-                },
-            )
-        self.session.flush()
-        return expires
 
     def mark_finished(
         self,
@@ -637,6 +577,58 @@ class SceneRunJobService:
             self.session.refresh(job)
         job.status = status
         job.finished_at = utcnow()
+        self._record_failure(
+            job, status=status, error_code=error_code, error_text=error_text, details=details
+        )
+
+    def fail_unowned(
+        self,
+        job_id: str,
+        *,
+        error_code: str,
+        error_text: str,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        """工人的认领没能落库（被回滚）或已丢：任务没有活着的主人时按任务 id 记失败（B03-02）。
+
+        只收 queued、或租约已过期 / 没有租约的 running——有活着的主人的任务不碰。失败带
+        ``error_details.retryable``：出问题的是工人的认领，不是管线，认领路径可以重领。返回是否记上了。
+        """
+        self.session.commit()
+        _begin_immediate(self.session)
+        job = self.get_job(job_id)
+        self.session.refresh(job)
+        live_owner = job.status == "running" and lease_is_active(job.lease_expires_at)
+        if job.status not in {"queued", "running"} or live_owner:
+            self.session.rollback()
+            return False
+        if not update_observed(
+            self.session,
+            job,
+            job_type=JOB_TYPE_SCENE_FULL,
+            values={"status": "failed", "finished_at": utcnow()},
+        ):
+            self.session.rollback()
+            return False
+        self.session.refresh(job)
+        self._record_failure(
+            job,
+            status="failed",
+            error_code=error_code,
+            error_text=error_text,
+            details={**dict(details or {}), "retryable": True},
+        )
+        return True
+
+    def _record_failure(
+        self,
+        job: ChapterRunJob,
+        *,
+        status: str,
+        error_code: str,
+        error_text: str,
+        details: dict[str, Any] | None,
+    ) -> None:
         job.error_code = error_code
         job.error_text = error_text
         error_details = dict(details or {})
@@ -688,24 +680,16 @@ class SceneRunJobService:
         reason: str | None = None,
     ) -> ChapterRunJob:
         now = utcnow()
-        changed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status == "cancel_requested",
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(
-                status="cancelled",
-                finished_at=now,
-                error_code=RUN_JOB_CANCELLED,
-                error_text="scene run cancelled by author",
-            )
-            .execution_options(synchronize_session=False)
-        )
-        if changed.rowcount != 1:
+        if not owner.update_owned(
+            self.session,
+            statuses=("cancel_requested",),
+            values={
+                "status": "cancelled",
+                "finished_at": now,
+                "error_code": RUN_JOB_CANCELLED,
+                "error_text": "scene run cancelled by author",
+            },
+        ):
             self.session.rollback()
             job = self.get_job(owner.job_id)
             self.session.refresh(job)
@@ -750,26 +734,11 @@ class SceneRunJobService:
         return job
 
     def _transition_owned_job(self, owner: SceneRunJobLease, *, status: str) -> None:
-        changed = self.session.execute(
-            update(ChapterRunJob)
-            .where(
-                ChapterRunJob.job_id == owner.job_id,
-                ChapterRunJob.job_type == JOB_TYPE_SCENE_FULL,
-                ChapterRunJob.status == "running",
-                ChapterRunJob.worker_id == owner.worker_id,
-                ChapterRunJob.attempt_no == owner.attempt_no,
-            )
-            .values(status=status, finished_at=utcnow())
-            .execution_options(synchronize_session=False)
-        )
-        if changed.rowcount != 1:
+        if not owner.update_owned(
+            self.session, statuses=("running",), values={"status": status, "finished_at": utcnow()}
+        ):
             self.session.rollback()
-            raise DomainError(
-                "RUN_OWNER_LEASE_LOST",
-                "scene run job owner was replaced before terminal update",
-                status_code=409,
-                details={"job_id": owner.job_id, "attempt_no": owner.attempt_no},
-            )
+            raise owner.lost("scene run job owner was replaced before terminal update")
         self.session.flush()
 
     def _clear_active_job(self, job: ChapterRunJob) -> None:
@@ -868,20 +837,8 @@ def _preflight_next_action(run_preflight: dict[str, Any]) -> str:
 
 
 def _begin_immediate(session: Session) -> None:
-    if session.get_bind().dialect.name == "sqlite":
-        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-
-
-def remember_committed_cancellation(job_id: str) -> None:
-    """Optional same-process hint; durable job status remains authoritative."""
-
-    with _CANCELLED_JOB_REGISTRY_LOCK:
-        _CANCELLED_JOB_REGISTRY.add(job_id)
-
-
-def is_cancellation_cached(job_id: str) -> bool:
-    with _CANCELLED_JOB_REGISTRY_LOCK:
-        return job_id in _CANCELLED_JOB_REGISTRY
+    # 本模块经这个名字调用（测试会替换它模拟 DATABASE_BUSY）
+    begin_immediate(session)
 
 
 def recover_expired_cancel_requested_jobs(
@@ -922,17 +879,13 @@ def recover_expired_cancel_requested_jobs(
         if row is None:
             session.rollback()
             continue
-        try:
-            expiry = datetime.fromisoformat(str(row.lease_expires_at)) if row.lease_expires_at else None
-        except ValueError:
-            expiry = None
-        if expiry is not None and expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=UTC)
+        # 没有租约 / 租约格式坏掉的取消请求不在这里收尾
+        expiry = parse_iso(row.lease_expires_at)
         if expiry is None or expiry > now:
             session.rollback()
             continue
         old_attempt = int(row.attempt_no or 0)
-        recovery_expiry = (now + timedelta(seconds=owner_lease_ttl_seconds())).isoformat()
+        recovery_expiry = lease_expiry(owner_lease_ttl_seconds(), now=now)
         claimed = session.execute(
             update(ChapterRunJob)
             .where(
@@ -1014,7 +967,6 @@ def recover_expired_cancel_requested_jobs(
         )
         service._clear_active_job(job)
         session.commit()
-        remember_committed_cancellation(job_id)
         recovered.append(
             {
                 "job_id": job_id,
@@ -1027,8 +979,22 @@ def recover_expired_cancel_requested_jobs(
 
 
 def start_scene_run_job_worker(job_id: str) -> None:
-    thread = threading.Thread(target=_run_scene_job_worker, args=(job_id,), daemon=True)
-    thread.start()
+    """把任务交给有界的守护车道（一次最多 ``SCENE_RUN_LANE_WORKERS`` 条管线，B03-13）。
+
+    本进程里已经排着或在跑的任务不重复派发；车道已关（进程在退出）时任务留在队列里，下次启动的恢复接着派发。
+    """
+    if not mark_dispatched(job_id):
+        return
+    lane = daemon_lane(SCENE_RUN_LANE, max_workers=SCENE_RUN_LANE_WORKERS)
+    if not lane.submit(_run_dispatched_scene_job, job_id):
+        unmark_dispatched(job_id)
+
+
+def _run_dispatched_scene_job(job_id: str) -> None:
+    try:
+        _run_scene_job_worker(job_id)
+    finally:
+        unmark_dispatched(job_id)
 
 
 def _run_scene_job_worker(job_id: str) -> None:
@@ -1042,20 +1008,24 @@ def _run_scene_job_worker(job_id: str) -> None:
         owner = service.claim_running(
             job_id,
             worker_id=f"scene-job-thread:{uuid4().hex}",
-            current_step="neutral_running",
+            current_step=SCENE_STEP_CLAIMED,
             lease_seconds=owner_lease_ttl_seconds(),
         )
+        # 进程退出（lifespan 结束）时这份租约就地到期，重启后的恢复立刻接着跑（B03-01）
+        hold_lease(owner)
         service.claim_scene_active_job(owner, scene_id)
+        # B03-02：认领先落库，再做预算续跑的交接——交接失败回滚时不会把认领一起撤掉，失败记得上。
+        session.commit()
         budget_resume_parent = str(
             (job.payload_json or {}).get("budget_resume_parent_execution_id") or ""
         )
-        if budget_resume_parent:
+        if budget_resume_parent and _budget_handoff_pending(session, scene_id, job_id):
             SceneRunCheckpointService(session).acquire_budget_resume(
                 scene_id,
                 scene_job_execution_id(job_id),
                 expected_parent_execution_id=budget_resume_parent,
             )
-        session.commit()
+            session.commit()
         result = Orchestrator(session).run_scene(
             scene_id,
             author_note=str((job.payload_json or {}).get("author_note") or "") or None,
@@ -1069,7 +1039,6 @@ def _run_scene_job_worker(job_id: str) -> None:
             job = service.get_job(job_id)
             service.mark_cancelled(owner)
             session.commit()
-            remember_committed_cancellation(job_id)
             return
         state = session.get(SceneRunState, scene_id)
         scene_status = result.get("scene_status") if isinstance(result, dict) else state.scene_status if state else ""
@@ -1103,7 +1072,20 @@ def _run_scene_job_worker(job_id: str) -> None:
             owner=owner,
         )
     finally:
+        drop_lease(owner)
         session.close()
+
+
+def _budget_handoff_pending(session: Session, scene_id: str, job_id: str) -> bool:
+    """预算续跑的检查点交接还没做（B03-02）。
+
+    这一任务的执行已经是场景的活动执行 = 上一次认领时交接完了、随后进程退出：不再交接（父执行早已
+    不是失败态，再交接只会被拒），``run_scene`` 按自己的执行 id 从检查点续跑。
+    """
+    current = session.scalar(
+        select(SceneRunState.active_execution_id).where(SceneRunState.scene_id == scene_id)
+    )
+    return current != scene_job_execution_id(job_id)
 
 
 def _mark_worker_failure(
@@ -1113,6 +1095,11 @@ def _mark_worker_failure(
     details: dict[str, Any] | None = None,
     owner: SceneRunJobLease | None = None,
 ) -> None:
+    """工人线程的失败收尾；绝不把异常抛出线程（B03-02）。
+
+    丢了租约（fence 拒绝）时：任务已有活着的新主人就不碰；没有活着的主人（认领被回滚、或主人也死了）
+    就按任务 id 记失败，免得任务永远停在 queued / running、这一场一直 409。
+    """
     if owner is None:
         return
     session = SessionLocal()
@@ -1122,9 +1109,7 @@ def _mark_worker_failure(
         session.refresh(job)
         if job.status == "cancel_requested":
             service.mark_cancelled(owner)
-            cancelled = True
         else:
-            cancelled = False
             service.mark_failed(
                 job,
                 error_code=error_code,
@@ -1134,10 +1119,38 @@ def _mark_worker_failure(
                 status="blocked" if _is_budget_rejection(error_code) else "failed",
             )
         session.commit()
-        if cancelled:
-            remember_committed_cancellation(job_id)
+    except DomainError as exc:
+        session.rollback()
+        if exc.code != "RUN_OWNER_LEASE_LOST":
+            _LOGGER.exception("scene run job %s could not record its failure %s", job_id, error_code)
+            return
+        _fail_unowned_job(job_id, error_code, error_text, details)
+    except Exception:  # noqa: BLE001 — 工人线程边界：收尾失败只记日志
+        session.rollback()
+        _LOGGER.exception("scene run job %s could not record its failure %s", job_id, error_code)
     finally:
         session.close()
+
+
+def _fail_unowned_job(
+    job_id: str,
+    error_code: str,
+    error_text: str,
+    details: dict[str, Any] | None,
+) -> None:
+    try:
+        with SessionLocal() as session:
+            failed = SceneRunJobService(session).fail_unowned(
+                job_id, error_code=error_code, error_text=error_text, details=details
+            )
+            session.commit()
+    except Exception:  # noqa: BLE001 — 工人线程边界
+        _LOGGER.exception("scene run job %s lost its owner and could not be marked failed", job_id)
+        return
+    if failed:
+        _LOGGER.warning("scene run job %s had no live owner; marked failed (%s)", job_id, error_code)
+    else:
+        _LOGGER.info("scene run job %s is owned by another worker; its failure %s is not recorded", job_id, error_code)
 
 
 def _mark_worker_cancellation(
@@ -1155,7 +1168,9 @@ def _mark_worker_cancellation(
         if job.status == "cancel_requested":
             service.mark_cancelled(owner)
             session.commit()
-            remember_committed_cancellation(job_id)
+    except Exception:  # noqa: BLE001 — 工人线程边界：取消由新主人或恢复清扫收尾
+        session.rollback()
+        _LOGGER.exception("scene run job %s could not confirm its cancellation", job_id)
     finally:
         session.close()
 

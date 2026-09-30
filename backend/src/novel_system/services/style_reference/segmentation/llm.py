@@ -8,10 +8,10 @@
 - **锚定集**在全书上分层抽样(``select_anchor_positions``):按位置等分成 ``ANCHOR_SIZE`` 层,
   每层按书的种子确定性地挑一段,跳过章题、书前的书名页 / 简介块、副文本与场分隔行——不再是「前 200 段」;
 - **按字数自适应分批**(``plan_batches``):一批 ≤ ``BATCH_MAX_CHARS`` 字且 ≤ ``BATCH_MAX_PARAGRAPHS`` 段;
-- **一批一次记账调用**(``classify_batch``):每段带批外的前 / 后一段作只读上下文;
-- **严格解析**(``parse_batch_output``):按 ``paragraph_index`` 对齐,``paragraph_type`` 按
-  ``schemas.ParagraphType`` 校验;缺段、多出、重复、非法类型一律 ``ClassificationBatchMismatch``
-  (作业整批重试),绝不按位置对齐、绝不补「叙述 0.3」。
+- **一批一次记账调用**(``classify_batch_partial``):每段带批外的前 / 后一段作只读上下文;
+- **逐条核对**(``parse_batch_items``):按 ``paragraph_index`` 对齐,``paragraph_type`` 按
+  ``schemas.ParagraphType`` 校验;合格的条目照收,缺段、多出、重复、非法类型记进问题清单(作业只重发还没分出来
+  的段),绝不按位置对齐、绝不补「叙述 0.3」。
 
 ``positions`` 指段落在按 ``paragraph_index`` 升序排好的列表里的位置(0..n-1);发给模型、从模型
 收回的是真实的 ``paragraph_index``(老书刷新过可能不连续)。
@@ -23,25 +23,21 @@ import logging
 import random
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.services.llm_accounting import (
-    LLMAccountingError,
-    LLMCallContext,
-    execute_accounted_call,
-    is_llm_control_plane_failure,
+from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
+from novel_system.services.llm_client import build_llm_request
+from novel_system.services.style_reference.llm_nodes import (
+    PROBLEM_ROUTE,
+    NodeConfigUnavailable,
+    NodeRuntime,
+    accounted_call,
+    load_node_runtimes,
 )
-from novel_system.services.llm_client import (
-    build_llm_request,
-    load_model_routing_config,
-    resolve_node_route,
-)
-from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.schemas import ParagraphType
-from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
+from novel_system.services.style_reference.book_text import is_title_paragraph
 from novel_system.services.style_reference.text_utils import (
     compact_ws,
     is_paratext_paragraph,
@@ -90,75 +86,31 @@ class SegmentationLLMError(Exception):
         self.details = dict(details or {})
 
 
-class ClassificationBatchMismatch(SegmentationLLMError):
-    """模型的输出与这一批对不上(缺段 / 多出 / 重复 / 非法类型 / 缺字段):整批重试。"""
-
-    def __init__(self, problems: Sequence[str], *, expected: int, received: int) -> None:
-        shown = list(problems)[:8]
-        super().__init__(
-            "STYLE_REFERENCE_CLASSIFY_OUTPUT_MISMATCH",
-            f"classification output does not match the batch ({len(problems)} problem(s)): "
-            + "; ".join(shown),
-            details={
-                "problems": shown,
-                "problem_count": len(problems),
-                "expected": expected,
-                "received": received,
-            },
-        )
-        self.problems = list(problems)
-
-
-@dataclass(frozen=True)
-class NodeRuntime:
-    """一个分类节点在这个作业里的路由与模板(作业开始时载一次)。"""
-
-    node_id: str
-    route: Any
-    template: Any
-
-    @property
-    def prompt_version(self) -> str:
-        return str(getattr(self.template, "version", "") or "")
-
-    @property
-    def route_key(self) -> tuple[str, str]:
-        """(provider_id 或 provider, model):两个节点的这一对相同 = 同一个模型。"""
-        provider = getattr(self.route, "provider_id", None) or getattr(self.route, "provider", None) or ""
-        return (str(provider), str(getattr(self.route, "model", "") or ""))
-
-
 def load_classification_runtimes(
     node_ids: Sequence[str] = CLASSIFY_NODE_IDS,
 ) -> dict[str, NodeRuntime]:
-    """载入分类节点的路由(DB node_routing 优先、yaml 兜底)与提示词模板——每个作业一次。"""
+    """载入分类节点的路由(DB node_routing 优先、yaml 兜底)与提示词模板——每个作业一次;按节点顺序报第一个问题。"""
     try:
-        routing = load_model_routing_config()
-        templates = load_prompt_templates()
-    except Exception as exc:  # pylint: disable=broad-except
+        load = load_node_runtimes(node_ids)
+    except NodeConfigUnavailable as exc:
         raise SegmentationLLMError(
             "STYLE_REFERENCE_CLASSIFY_CONFIG_LOAD_FAILED",
-            f"failed to load model routing or prompt templates: {exc}",
-        ) from exc
-    runtimes: dict[str, NodeRuntime] = {}
-    for node_id in node_ids:
-        try:
-            route = resolve_node_route(routing, node_id)
-        except KeyError:
+            f"failed to load model routing or prompt templates: {exc.cause}",
+        ) from exc.cause
+    if load.problems:
+        node_id, problem = load.problems[0]
+        if problem == PROBLEM_ROUTE:
             raise SegmentationLLMError(
                 "STYLE_REFERENCE_CLASSIFY_ROUTE_MISSING",
                 f"task routing not configured for node {node_id!r}",
                 details={"node_id": node_id},
-            ) from None
-        template = templates.get(node_id)
-        if template is None:
-            raise SegmentationLLMError(
-                "STYLE_REFERENCE_CLASSIFY_PROMPT_MISSING",
-                f"prompt template not configured for node {node_id!r}",
-                details={"node_id": node_id},
             )
-        runtimes[node_id] = NodeRuntime(node_id=node_id, route=route, template=template)
-    return runtimes
+        raise SegmentationLLMError(
+            "STYLE_REFERENCE_CLASSIFY_PROMPT_MISSING",
+            f"prompt template not configured for node {node_id!r}",
+            details={"node_id": node_id},
+        )
+    return dict(load.runtimes)
 
 
 def same_model(first: NodeRuntime, second: NodeRuntime) -> bool:
@@ -346,53 +298,25 @@ def _call_batch(
 ) -> Any:
     items = batch_items(positions, texts, indexes)
     request = build_batch_request(runtime, items)
-    try:
-        response = execute_accounted_call(
-            session,
-            llm_client,
-            request,
-            LLMCallContext(
-                scope_type="style_reference_book",
-                scope_id=scope_id,
-                node_id=runtime.node_id,
-                step=step,
-            ),
-            llm_call_id=f"llm_style_segment_{uuid.uuid4().hex}",
-        )
-    except Exception as exc:  # pylint: disable=broad-except
-        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-            raise
-        raise SegmentationLLMError(
+    response = accounted_call(
+        llm_client,
+        request,
+        context=LLMCallContext(
+            scope_type="style_reference_book",
+            scope_id=scope_id,
+            node_id=runtime.node_id,
+            step=step,
+        ),
+        llm_call_id=f"llm_style_segment_{uuid.uuid4().hex}",
+        execute=execute_accounted_call,
+        wrap_error=lambda exc: SegmentationLLMError(
             "STYLE_REFERENCE_CLASSIFY_LLM_CALL_FAILED",
             f"accounted LLM execution failed for node {runtime.node_id!r}: {exc}",
             details={"node_id": runtime.node_id, "error_type": type(exc).__name__},
-        ) from exc
-    return getattr(response, "structured_output", None)
-
-
-def classify_batch(
-    runtime: NodeRuntime,
-    positions: Sequence[int],
-    texts: Sequence[str],
-    indexes: Sequence[int],
-    llm_client: Any,
-    *,
-    session: Session,
-    scope_id: str,
-    step: str,
-) -> dict[int, tuple[str, float]]:
-    """一次记账 LLM 调用分类一批段落,返回 ``{paragraph_index: (type, confidence)}``(与本批一一对应)。
-
-    ``session`` 只给记账用(``execute_accounted_call`` 会自己提交):并行的批次各用各的会话。
-    记账 / 控制面失败原样抛出(不重试、不降级);其余调用失败是 ``SegmentationLLMError``,
-    输出对不上是 ``ClassificationBatchMismatch``——两者由作业整批重试。
-    """
-    if not positions:
-        return {}
-    structured = _call_batch(
-        runtime, positions, texts, indexes, llm_client, session=session, scope_id=scope_id, step=step
+        ),
+        session=session,
     )
-    return parse_batch_output(structured, [int(indexes[pos]) for pos in positions])
+    return getattr(response, "structured_output", None)
 
 
 def classify_batch_partial(
@@ -406,17 +330,20 @@ def classify_batch_partial(
     scope_id: str,
     step: str,
 ) -> tuple[dict[int, tuple[str, float]], list[str]]:
-    """同 :func:`classify_batch`,但输出按条收:返回(自身合格的每一条,问题清单)。
+    """一次记账 LLM 调用分类一批段落,输出按条收:返回(自身合格的每一条 ``{paragraph_index: (type,
+    confidence)}``,问题清单)。
 
     分类作业用它:一批 100 段里模型漏了一段 / 给了一个非法类型,合格的 99 段照收,只把缺的段再发一次
-    (整批重发同样的 100 段,模型常常在同一处再漏)。调用失败仍抛 ``SegmentationLLMError``。
+    (整批重发同样的 100 段,模型常常在同一处再漏)。``session`` 只给记账用(``execute_accounted_call`` 会自己
+    提交):并行的批次各用各的会话。记账 / 控制面失败原样抛出(不重试、不降级);其余调用失败是
+    ``SegmentationLLMError``,由作业重试。
     """
     if not positions:
         return {}, []
     structured = _call_batch(
         runtime, positions, texts, indexes, llm_client, session=session, scope_id=scope_id, step=step
     )
-    results, problems, _received = _parse_batch_items(structured, [int(indexes[pos]) for pos in positions])
+    results, problems, _received = parse_batch_items(structured, [int(indexes[pos]) for pos in positions])
     return results, problems
 
 
@@ -432,7 +359,7 @@ def _as_index(value: Any) -> int | None:
     return None
 
 
-def _parse_batch_items(
+def parse_batch_items(
     structured: Any,
     expected_indexes: Sequence[int],
 ) -> tuple[dict[int, tuple[str, float]], list[str], int]:
@@ -476,21 +403,6 @@ def _parse_batch_items(
         preview = ", ".join(str(index) for index in missing[:6])
         problems.append(f"{len(missing)} paragraph(s) missing (e.g. {preview})")
     return results, problems, len(classifications)
-
-
-def parse_batch_output(
-    structured: Any,
-    expected_indexes: Sequence[int],
-) -> dict[int, tuple[str, float]]:
-    """严格解析一批的输出:按 ``paragraph_index`` 对齐,类型必须是 8 类之一,每段恰好一次。
-
-    置信度标签缺失 / 不认识时记 0.5(不为它重试);其余任何不一致都抛
-    ``ClassificationBatchMismatch``——调用方整批重试,绝不按位置对齐或补默认类型。
-    """
-    results, problems, received = _parse_batch_items(structured, expected_indexes)
-    if problems:
-        raise ClassificationBatchMismatch(problems, expected=len(list(expected_indexes)), received=received)
-    return results
 
 
 # ---------------------------------------------------------------- calibration
@@ -542,7 +454,6 @@ __all__ = [
     "BATCH_MAX_PARAGRAPHS",
     "CLASSIFY_NODE_IDS",
     "CONTEXT_MAX_CHARS",
-    "ClassificationBatchMismatch",
     "NODE_ANCHOR",
     "NODE_BULK",
     "NodeRuntime",
@@ -553,12 +464,11 @@ __all__ = [
     "batch_items",
     "build_batch_request",
     "build_calibration",
-    "classify_batch",
     "classify_batch_partial",
     "confidence_level",
     "estimated_message_chars",
     "load_classification_runtimes",
-    "parse_batch_output",
+    "parse_batch_items",
     "plan_batches",
     "same_model",
     "select_anchor_positions",

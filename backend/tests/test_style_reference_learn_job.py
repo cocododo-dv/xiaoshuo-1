@@ -45,7 +45,7 @@ from novel_system.db.models import (
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
-from novel_system.services.style_reference import learn_job, learn_tags
+from novel_system.services.style_reference import learn_finalize, learn_job, learn_run, learn_tags
 from novel_system.services.style_reference.card import card_from_profile_json
 from novel_system.services.style_reference.card_states import set_card_line_state
 from novel_system.services.style_reference.jobs import (
@@ -76,6 +76,14 @@ ORG = "雾港同盟"
 PROTECTED = ("韩小暖", "程铁", "苏半夏", "铁灰城", ORG)
 KINDS = {"铁灰城": "place", ORG: "organization"}
 RIGHTS = {"rights_declaration": {"declared": True, "send_rights": True, "analysis_rights": True}}
+
+
+@pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
 
 
 def learn_rows(chapters: int = 6, per_chapter: int = 40, seed: str = "learn") -> list[dict]:
@@ -121,13 +129,13 @@ def seed_book(session, book_id: str = "learn_book", *, rows: list[dict] | None =
 @pytest.fixture(autouse=True)
 def _fast_learning(monkeypatch):
     """退避不等待、轮询快;每个用例重新登记处理器(作业框架的测试会临时换掉处理器)。"""
-    monkeypatch.setattr(learn_job, "CALL_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
-    monkeypatch.setattr(learn_job, "WAIT_POLL_SECONDS", 0.05)
-    register_job_handler(JOB_KIND_LEARN, learn_job.run_learn_job)
+    monkeypatch.setattr(learn_run, "CALL_RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(learn_run, "WAIT_POLL_SECONDS", 0.05)
+    register_job_handler(JOB_KIND_LEARN, learn_run.run_learn_job)
 
 
 def _use(monkeypatch, fake: FakeLearnLLM) -> FakeLearnLLM:
-    monkeypatch.setattr(learn_job, "resolve_learn_client", lambda: (fake, True))
+    monkeypatch.setattr(learn_run, "resolve_learn_client", lambda: (fake, True))
     return fake
 
 
@@ -577,7 +585,7 @@ def test_every_window_is_tagged_in_parallel_batches_and_gists_are_masked(session
     assert job.state == "succeeded"
     windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == "learn_book")).all()
     assert fake.count(NODE_TAGS) == len(windows) and len(windows) >= 4
-    assert fake.max_inflight[NODE_TAGS] <= learn_job.PARALLEL_CALLS
+    assert fake.max_inflight[NODE_TAGS] <= learn_run.PARALLEL_CALLS
     for window in windows:
         tags = window.tags_json
         assert set(tags) == {"situations", "moods", "dimensions", "gist"}  # v2 形状：没有 devices
@@ -709,12 +717,12 @@ def test_resume_after_a_crash_in_each_phase_repeats_no_finished_llm_work(session
     seed_book(session)
     crashed = {"done": False}
     if crash_at in ("windows", "select", "finalize"):
-        target = {
-            "windows": "ensure_window_index",
-            "select": "select_extraction_windows",
-            "finalize": "replace_protected_terms",
+        module, target = {
+            "windows": (learn_run, "ensure_window_index"),
+            "select": (learn_run, "select_extraction_windows"),
+            "finalize": (learn_finalize, "replace_protected_terms"),
         }[crash_at]
-        original = getattr(learn_job, target)
+        original = getattr(module, target)
 
         def crashing(*args, **kwargs):
             if not crashed["done"]:
@@ -722,7 +730,7 @@ def test_resume_after_a_crash_in_each_phase_repeats_no_finished_llm_work(session
                 raise SimulatedCrash(target)
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(learn_job, target, crashing)
+        monkeypatch.setattr(module, target, crashing)
         fake = _use(monkeypatch, _fake())
     else:
         node = {
@@ -821,7 +829,7 @@ def test_deleting_the_book_mid_job_stops_the_worker_without_writes(session, monk
 
 def test_job_without_llm_fails_with_llm_required(session, monkeypatch) -> None:
     seed_book(session)
-    monkeypatch.setattr(learn_job, "resolve_learn_client", lambda: (None, False))
+    monkeypatch.setattr(learn_run, "resolve_learn_client", lambda: (None, False))
     job_id = _start("learn_book")
     run_job_inline(job_id)
     job = _job(job_id)
@@ -979,7 +987,7 @@ def test_a_structure_card_that_cannot_be_computed_only_leaves_that_key_empty(ses
     def broken(*_args, **_kwargs):
         raise ValueError("no chapters")
 
-    monkeypatch.setattr(learn_job, "compute_structure_card", broken)
+    monkeypatch.setattr(learn_run, "compute_structure_card", broken)
     fake, job = _learn(monkeypatch, session)
     assert job.state == "succeeded", job.error_json
     pj = _profile(job.result_json["profile_id"]).profile_json
@@ -1062,12 +1070,20 @@ def test_learn_routes_create_dispatch_cancel_and_report(client, session, monkeyp
     assert entry["kind"] == "learn" and entry["kind_label"] == "学习文风" and entry["title"] == "雨夜集"
     assert entry["phases_done"] == list(learn_job.PHASE_ORDER)
 
-    # 找发现与证据(矩阵读的就是这个)
-    runs = client.get(f"{PREFIX}/books/learn_book/runs").json()["data"]["runs"]
-    assert runs[0]["dispatch_state"] == "learn_job"
-    findings = client.get(f"{PREFIX}/runs/{runs[0]['run_id']}/findings?include=evidence").json()["data"]["findings"]
-    assert findings and all(len(f["evidence"]) >= 2 for f in findings)
-    assert "base_confidence" not in findings[0] and "user_vote" not in findings[0]
+    # 学习作业留下的血缘：run 行标着 learn_job，每条发现至少两条证据（文风画像页的依据读的就是这些）
+    session.expire_all()
+    run = session.get(StyleReferenceRun, detail["learn"]["result"]["run_id"])
+    assert run is not None and run.dispatch_state == "learn_job"
+    findings = session.scalars(select(StyleReferenceFinding).where(StyleReferenceFinding.run_id == run.run_id)).all()
+    evidence_counts = {
+        finding.finding_id: len(
+            session.scalars(
+                select(StyleReferenceEvidence.evidence_id).where(StyleReferenceEvidence.finding_id == finding.finding_id)
+            ).all()
+        )
+        for finding in findings
+    }
+    assert findings and all(count >= 2 for count in evidence_counts.values())
 
     # 取消:没有活动作业 → 409
     cancel = client.post(f"{PREFIX}/books/learn_book/learn/cancel", json={}, headers={"X-Idempotency-Key": "cancel-1"})
@@ -1232,6 +1248,37 @@ def test_a_book_too_small_for_windows_fails_without_resume_and_force_still_creat
     assert forced_job.state == "queued" and forced_job.params_json["force"] is True and forced_job.params_json["skipped_layers"] == []
 
 
+def test_a_non_retryable_failure_offers_no_resume_in_the_activity_and_refuses_resume(session, monkeypatch) -> None:
+    """活动面板与续跑请求用书载荷同一条规则（B10-01）：正文太少这类失败不给「继续学习」，续跑请求 409
+    ``STYLE_REFERENCE_LEARN_NOTHING_TO_RESUME``（``reason: not_retryable``），作业不被放回队列；可续跑的失败照旧。"""
+    from novel_system.services.style_reference.activity import list_activity
+
+    seed_book(session, rows=learn_rows(chapters=1, per_chapter=3))
+    _use(monkeypatch, _fake())
+    job_id = _start("learn_book")
+    run_job_inline(job_id)
+    assert _job(job_id).state == "failed"
+    [entry] = [item for item in list_activity(session) if item["job_id"] == job_id]
+    assert entry["status"] == "failed" and entry["resumable"] is False
+    with SessionLocal() as db:
+        with pytest.raises(DomainError) as excinfo:
+            learn_job.start_learn_job(db, "learn_book", resume=True)
+        db.rollback()
+    assert excinfo.value.code == learn_job.LEARN_NOTHING_TO_RESUME_CODE
+    details = excinfo.value.details
+    assert details["reason"] == "not_retryable" and details["reason_code"] == "input_too_small"
+    assert details["job_id"] == job_id and details["author_action"]["action"] == "learn_style"
+    assert _job(job_id).state == "failed"
+
+    # 可续跑的失败：活动条目给「继续学习」
+    service = StyleJobService(session)
+    soft = service.create(JOB_KIND_LEARN, book_id="learn_book", allow_parallel=True)
+    service.fail(service.claim(soft.job_id), code="STYLE_REFERENCE_LEARN_FAILED", message="x", retryable=True)
+    session.commit()
+    [soft_entry] = [item for item in list_activity(session) if item["job_id"] == soft.job_id]
+    assert soft_entry["resumable"] is True
+
+
 def test_relearning_picks_the_archived_profile_that_still_has_an_active_binding_and_revives_it(session, monkeypatch) -> None:
     """迁移 0092 把旧版画像归档、绑定保留:学习文风就地更新那份画像并复活为 active,绑定不动;没有绑定的归档画像不选。"""
     _fake1, first = _learn(monkeypatch, session)
@@ -1278,3 +1325,41 @@ def test_relearning_picks_the_archived_profile_that_still_has_an_active_binding_
     assert third.state == "succeeded" and third.result_json["profile_created"] is True
     assert third.result_json["profile_id"] != profile_id
     assert _profile(profile_id).status == "archived"
+
+
+def test_a_learn_run_reads_the_whole_book_text_once(session, monkeypatch) -> None:
+    """声音签名（书上还没有现成的）、结构卡、专名候选、定稿的原文重合过滤都要全书正文：一次学习只整本读一遍段落表、
+    章题 / 副文本只判一遍（原来读三四遍、每遍再判一次，真实书上每遍约 1 s）。"""
+    from sqlalchemy import event
+
+    from novel_system.db.session import engine
+
+    loads: list[int] = []
+    real_rows = learn_run._LearnRun._paragraph_rows
+
+    def counting_rows(self):  # noqa: ANN001
+        if self._paragraph_rows_cache is None:
+            loads.append(1)
+        return real_rows(self)
+
+    monkeypatch.setattr(learn_run._LearnRun, "_paragraph_rows", counting_rows)
+    text_only_scans: list[str] = []
+
+    def spy(_conn, _cursor, statement, _params, _context, _executemany) -> None:
+        compact = " ".join(str(statement).split())
+        # 旧 _body_texts 的形状：只取正文、整本按序号读
+        if compact.startswith("SELECT style_reference_paragraphs.text FROM style_reference_paragraphs WHERE"):
+            text_only_scans.append(compact)
+
+    seed_book(session)
+    fake = _use(monkeypatch, _fake())
+    job_id = _start("learn_book")
+    event.listen(engine(), "before_cursor_execute", spy)
+    try:
+        run_job_inline(job_id)
+    finally:
+        event.remove(engine(), "before_cursor_execute", spy)
+    job = _job(job_id)
+    assert job.state == "succeeded", job.error_json
+    assert fake.calls
+    assert loads == [1] and text_only_scans == []

@@ -46,6 +46,14 @@ SCENE_ID = "CH_RESUME_SC01"
 
 
 @pytest.fixture(autouse=True)
+def _style_workers_installed() -> None:
+    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
+    from novel_system.services.style_reference.workers import install_workers
+
+    install_workers()
+
+
+@pytest.fixture(autouse=True)
 def _online(monkeypatch):
     install_online_pipeline(monkeypatch)
     register_job_handler(JOB_KIND_CHECK, check_job.run_check_job)
@@ -444,7 +452,7 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
     fake = _JudgeLLM()
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (fake, True))
     dispatched: list[str] = []
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", dispatched.append)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", dispatched.append)
     text = "他把灯芯拨小了些，屋里的影子便大了一圈。门外的雨还没停。" * 30
 
     response = _post_check(client, {"text": text, "profile_id": profile_id}, "fid-check-text")
@@ -474,8 +482,7 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
     assert status.status_code == 200
     payload = status.json()["data"]
     assert payload["job"]["status"] == "succeeded" and payload["reading"]["judge"]["overall"] == 7.2
-    single = client.get(f"/api/v2/style-reference/readings/{payload['reading']['reading_id']}")
-    assert single.status_code == 200 and single.json()["data"]["reading"]["source"] == "manual_check"
+    assert payload["reading"]["reading_id"] and payload["reading"]["source"] == "manual_check"
 
 
 def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) -> None:
@@ -498,7 +505,7 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
     session.commit()
     fake = _JudgeLLM()
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (fake, True))
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", lambda _job_id: None)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", lambda _job_id: None)
 
     response = _post_check(client, {"scene_id": scene.scene_id}, "fid-check-scene")
     assert response.status_code == 200, response.text
@@ -540,7 +547,7 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
 
 def test_check_job_fails_loudly_when_the_judge_fails(client, session, monkeypatch) -> None:
     _book, profile_id = _check_profile(session)
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", lambda _job_id: None)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", lambda _job_id: None)
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_JudgeLLM(fail=True), True))
     text = "他把灯芯拨小了些，屋里的影子便大了一圈。" * 30
     failing = _post_check(client, {"text": text, "profile_id": profile_id}, "fid-check-fail")
@@ -572,7 +579,7 @@ def test_check_job_keeps_control_plane_failures_distinct(client, session, monkey
     """控制面失败（记账 / 用量不变式）原样上抛：作业按它自己的错误码失败，不包成「评审失败」、不降级成只有读数的检查
     （取代旧回测工人的同名边界测试）。"""
     _book, profile_id = _check_profile(session)
-    monkeypatch.setattr("novel_system.api.routes.style_fidelity.dispatch_job", lambda _job_id: None)
+    monkeypatch.setattr("novel_system.api.routes.style_reference.dispatch_job", lambda _job_id: None)
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_JudgeLLM(), True))
     seen: list[BaseException] = []
 
@@ -617,7 +624,6 @@ def test_judge_output_is_rescaled_and_drops_excluded_dimensions() -> None:
 def test_fidelity_endpoints_404_for_unknown_targets(client) -> None:
     assert client.get("/api/v1/scenes/NOPE/style-fidelity").status_code == 404
     assert client.get("/api/v1/projects/NOPE/style-fidelity").status_code == 404
-    assert client.get("/api/v2/style-reference/readings/NOPE").status_code == 404
     assert client.get("/api/v2/style-reference/checks/NOPE").status_code == 404
 
 

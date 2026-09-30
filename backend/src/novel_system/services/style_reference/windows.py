@@ -50,7 +50,7 @@ from novel_system.services.style_reference.paragraph_root import (
     patch_book_stats,
     stored_paragraph_root,
 )
-from novel_system.services.style_reference.structure import non_body_kind, split_book_chapters
+from novel_system.services.style_reference.book_text import non_body_kind, split_book_chapters
 from novel_system.services.style_reference.tags import normalize_window_tags
 
 logger = logging.getLogger(__name__)
@@ -258,14 +258,6 @@ def _body_texts(rows: Iterable[Mapping[str, Any]]) -> list[str]:
     return texts
 
 
-def window_text(session: Session, window: StyleReferenceWindow | Mapping[str, Any]) -> str:
-    """一窗的正文（段落以 ``\\n`` 相连，跳过章题 / 场分隔 / 脚注 / 落款）——``features_json`` 就是在这段文字上测的。"""
-    book_id = _attr(window, "book_id")
-    start = int(_attr(window, "start_index") or 0)
-    end = int(_attr(window, "end_index") or start)
-    return "\n".join(_body_texts(_paragraph_rows(session, str(book_id), start, end)))
-
-
 # 批量取窗口正文时,相邻窗口之间隔着不到这么多段就并成一次查询(学习作业取全书 → 一次;起草选 12 窗 → 各查各的)
 _MERGE_GAP_PARAGRAPHS = 200
 
@@ -296,21 +288,6 @@ def window_texts(session: Session, windows: Sequence[StyleReferenceWindow]) -> d
     return result
 
 
-def window_ref(window: StyleReferenceWindow) -> dict[str, Any]:
-    """选窗 / 审计用的轻量引用（不带正文）。"""
-    return {
-        "window_no": int(window.window_no),
-        "start": int(window.start_index),
-        "end": int(window.end_index),
-        "chapter": int(window.chapter_no or 0),
-        "position": str(window.position or ""),
-        "chars": int(window.chars or 0),
-        "paragraphs": int(window.paragraph_count or 0),
-        "dialogue_share": float(window.dialogue_share or 0.0),
-        "typicality": float(window.typicality or 0.0),
-    }
-
-
 def _attr(item: Any, name: str) -> Any:
     if isinstance(item, Mapping):
         return item.get(name)
@@ -328,6 +305,24 @@ def _type_mix(ptypes: Iterable[str]) -> dict[str, float]:
     if total <= 0:
         return {}
     return {ptype: round(count / total, 4) for ptype, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))}
+
+
+def dominant_type(type_mix: Any) -> str:
+    """一窗占比最大的段落类型（并列取键名靠前的，结果稳定）；没有类型分布时给空串。
+
+    选窗冻结的 ``WindowRef.paragraph_type`` 与本场预览的窗口类型都用它，同一窗在两处叫法一样。"""
+    if not isinstance(type_mix, Mapping):
+        return ""
+    best = ""
+    best_share = 0.0
+    for key in sorted(str(k) for k in type_mix):
+        try:
+            share = float(type_mix[key] or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if share > best_share:
+            best, best_share = key, share
+    return best
 
 
 def window_typicality(features_list: Sequence[Mapping[str, Any]]) -> list[float]:
@@ -520,6 +515,7 @@ def set_window_tags(
 
 
 __all__ = [
+    "dominant_type",
     "DEFAULT_MIN_WINDOW_CHARS",
     "DEFAULT_WINDOW_MAX_CHARS",
     "DEFAULT_WINDOW_PARAGRAPHS",
@@ -537,8 +533,6 @@ __all__ = [
     "load_windows",
     "marker_is_current",
     "set_window_tags",
-    "window_ref",
-    "window_text",
     "window_texts",
     "window_position",
     "window_typicality",

@@ -6,12 +6,15 @@ SupplementEvidenceOutput / SynthesizedProfile / ProfileSubDimensionSummary）；
 ``learn_extract`` / ``learn_card`` 里。2026-09-24（清理 S1 / S4）：``RunStatus`` / ``RunPhase`` 无读者删掉，
 ``InjectionStrategy`` 只剩 ``MIXED``、``TaskType`` 只剩 ``SCENE_GENERATION``（实际写 / 读的唯一值），预览契约
 去掉 v2 字段（``strategy`` / ``intensity`` / ``sub_dimensions`` / ``include_*`` / ``metric_*`` / ``forbidden_*``）。
+2026-09-30（B10-22）：本场预览不再回 ``fragments`` / ``prefix`` / ``user_tail`` / ``stats`` / ``window_refs``（界面一个
+都不读，样例原文因此传了两遍），塑形用的 ``SystemPromptFragments`` / ``InjectionPreviewStats`` /
+``InjectionPreviewResponse`` 随之删掉；预览载荷的形状见 ``scene_preview``。
 """
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -135,8 +138,6 @@ class PlagiarismReport(BaseModel):
     threshold_chars: int = 12
 
 
-
-
 # ---------------------------------------------------------------------------
 # PR-8 契约:injection 接入(系统提示拼接片段)
 # ---------------------------------------------------------------------------
@@ -159,22 +160,6 @@ FEW_SHOT_CLOSING_MANDATE = (
     "不用样例里的；不整句照搬样例（连续 12 字以上与样例相同即视为照搬）。"
     + FEW_SHOT_CLOSING_MANDATE_FINAL
 )
-
-
-class SystemPromptFragments(BaseModel):
-    """本场预览(``POST /profiles/{id}/injection-preview``)返回的分块文本。
-
-    起草 / 评审节点的提示由 ``inject.render.render_style`` 直接拼(system 前缀 + user 尾块),不经过这个模型;
-    这里只是预览接口的响应形状:``positive_block`` = 文风卡,``voice_block`` = 声音习惯,``few_shot_block`` =
-    样例窗(起草时在 user 消息末尾),``anti_plagiarism_block`` = 红线(永不截断)。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    positive_block: str = ""
-    voice_block: str = ""
-    few_shot_block: str = ""
-    anti_plagiarism_block: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -202,38 +187,3 @@ class InjectionPreviewRequest(BaseModel):
     project_id: str | None = Field(default=None, max_length=128)
 
 
-class InjectionPreviewStats(BaseModel):
-    """本场预览的读数(``inject.render.render_stats`` 给出,与起草同一次渲染)。
-
-    行数 = 各块中以 `- ` 起头的条目行(`positive_lines` 文风卡的正向句,`avoid_lines`「作者不这么写」);
-    `few_shot_windows` 是这一场拿到的样例窗数,`few_shot_chars` 是这些窗的原文总字数;`total_prefix_chars` 是
-    system 前缀与 user 尾块的总字数;`card_chars` 是文风卡块的字数;`few_shot_k` 是窗数上限。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    positive_lines: int = 0
-    avoid_lines: int = 0
-    voice_lines: int = 0
-    few_shot_windows: int = 0
-    few_shot_chars: int = 0
-    total_prefix_chars: int = 0
-    card_chars: int = 0
-    few_shot_k: int = 0
-
-
-class InjectionPreviewResponse(BaseModel):
-    """preview 端点统一返回结构。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    fragments: SystemPromptFragments
-    prefix: str
-    stats: InjectionPreviewStats | None = None
-    # 2026-09-14 保真修补(WP4.1):本次渲染实际选中的样例窗口(起止段 / 章 / 位置 / 字数 / 选窗配额),
-    # 按原书顺序;不含原文(原文在 fragments.few_shot_block)。
-    window_refs: list[dict[str, Any]] = Field(default_factory=list)
-    # 2026-09-23 风格参考 v3:与起草提示同序——prefix 是 system 前缀,样例与收口在 user 尾块
-    user_tail: str = ""
-    reference_mode: str | None = None
-    sample_windows: int | None = None

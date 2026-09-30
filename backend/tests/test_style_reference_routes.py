@@ -9,7 +9,6 @@ import io
 import json
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
@@ -39,8 +38,7 @@ from tests.style_reference_route_helpers import (  # noqa: E402
 )
 
 
-def test_legacy_reference_books_routes_are_never_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_LEGACY_REFERENCE_BOOKS", "true")
+def test_legacy_reference_books_routes_are_never_exposed() -> None:
     with TestClient(create_app()) as client:
         paths = {getattr(route, "path", "") for route in client.app.routes}
 
@@ -386,42 +384,21 @@ def test_reclassify_executes_and_purges_derived_data(
 # ---------------------------------------------------------------------------
 
 
-def test_run_detail_endpoint_is_gone(client: TestClient) -> None:
-    """``GET /runs/{id}`` 没有消费方(矩阵读发现走 ``/runs/{id}/findings``,文风画像页走 ``/profiles/{id}``):删除。"""
+def test_lineage_and_debug_read_endpoints_are_gone(client: TestClient) -> None:
+    """没有界面调用的只读端点都删了（2026-09-30，#24a）：run 与发现只是文风卡行的血缘，依据由 ``GET /profiles/{id}``
+    给出；画像摘要在书库载荷里；叠层视图、单条读数、旧任务默认策略表同样没有消费方。"""
     book_id = _import_book(client)
     run_id, _, _ = _seed_full_chain(book_id)
-    assert client.get(f"{PREFIX}/runs/{run_id}").status_code in (404, 405)
-
-
-def test_list_run_findings(client: TestClient) -> None:
-    book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
-    resp = client.get(f"{PREFIX}/runs/{run_id}/findings")
-    assert resp.status_code == 200
-    findings = resp.json()["data"]["findings"]
-    assert len(findings) == 1
-    # PR-23 — 不带 include 时响应里没有 evidence 键(零回归)
-    assert "evidence" not in findings[0]
-
-
-def test_list_run_findings_include_evidence(client: TestClient) -> None:
-    """PR-23 — ?include=evidence:每条 finding 带 ≥2 evidence 且含 quote_text。"""
-    book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
-    resp = client.get(f"{PREFIX}/runs/{run_id}/findings?include=evidence")
-    assert resp.status_code == 200
-    findings = resp.json()["data"]["findings"]
-    assert len(findings) == 1
-    evidence = findings[0]["evidence"]
-    assert len(evidence) >= 2
-    assert all(e["quote_text"] for e in evidence)
-    assert {e["anchor_kind"] for e in evidence} == {"paragraph_quote", "counter_example"}
-    synthetic = next(e for e in evidence if e["anchor_kind"] == "counter_example")
-    assert "is_synthetic" not in synthetic  # v3:学习作业只产出逐字原文引文,is_synthetic 不再输出
-    assert synthetic["paragraph_id"] is None and synthetic["quote_id"]
-    real = next(e for e in evidence if e["anchor_kind"] == "paragraph_quote")
-    assert real["paragraph_id"]
-    assert real["span"] == [0, 10]
+    for path in (
+        f"runs/{run_id}",
+        f"books/{book_id}/runs",
+        f"runs/{run_id}/findings",
+        "profiles",
+        "injection/layers",
+        "injection/task-defaults",
+        "readings/sr_reading_x",
+    ):
+        assert client.get(f"{PREFIX}/{path}").status_code in (404, 405), path
 
 
 # ---------------------------------------------------------------------------
@@ -439,16 +416,16 @@ def _seed_project(project_id: str) -> str:
     return project_id
 
 
-def test_list_profiles(client: TestClient) -> None:
+def test_book_payload_carries_the_profile_summary(client: TestClient) -> None:
     book_id = _import_book(client)
     _, _, profile_id = _seed_full_chain(book_id)
-    resp = client.get(f"{PREFIX}/profiles")
+    resp = client.get(f"{PREFIX}/books/{book_id}")
     assert resp.status_code == 200
-    profiles = resp.json()["data"]["profiles"]
-    assert [p["profile_id"] for p in profiles] == [profile_id]
+    book = resp.json()["data"]["book"]
+    assert book["profile_count"] == 1
     # 摘要不带 profile_json(台账 U10);没有 v3 版本标记的旧画像不是「要重新学」,是「没学过」(2026-09-24)
-    summary = profiles[0]
-    assert "profile_json" not in summary
+    summary = book["profile"]
+    assert summary["profile_id"] == profile_id and "profile_json" not in summary
     assert summary["needs_relearn"] is False and summary["relearn_reason"] is None and summary["profile_version"] is None
     assert summary["card_lines"] == 0 and summary["book_id"] == book_id
 

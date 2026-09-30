@@ -114,6 +114,8 @@ def window_meta(row: Any) -> WindowMeta:
 
 
 def _quantile(values: Sequence[float], ratio: float) -> float:
+    # 与 value_coercion.quantile 同为线性插值，但插值写法不同（a + (b − a)·t）：重复值上两者可差最后一位，
+    # 分层的门槛因此会动——学习样本的挑法不跟着换算式，留这一份。
     ordered = sorted(values)
     if not ordered:
         return 0.0

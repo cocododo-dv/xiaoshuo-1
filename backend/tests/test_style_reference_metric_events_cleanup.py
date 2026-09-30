@@ -101,9 +101,11 @@ def test_cleanup_custom_days_threshold():
 
 @pytest.fixture
 def _maintenance_registry(monkeypatch):
-    """每个用例从干净的登记簿开始(cleanup 模块导入时登记的那项照样在),最后恢复。"""
+    """每个用例从干净的登记簿开始(install_workers() 登记的那项照样在),最后恢复。"""
     from novel_system.services.style_reference import jobs as jobs_module
+    from novel_system.services.style_reference.workers import install_workers
 
+    install_workers()
     saved = dict(jobs_module._MAINTENANCE)
     saved_last = dict(jobs_module._MAINTENANCE_LAST_RUN)
     jobs_module._MAINTENANCE_LAST_RUN.clear()
@@ -176,5 +178,9 @@ def test_a_failing_maintenance_task_is_logged_and_does_not_stop_the_sweeper(_mai
     monkeypatch.setattr(cleanup, "cleanup_metric_events", lambda session, **_k: good.append(1) or {"deleted_count": 0})
     assert jobs_module.run_due_maintenance(now=12 * 3600.0) == ["other_task"]  # 还不到 24 小时:只有另一项到期
     assert good == []
-    assert jobs_module.run_due_maintenance(now=24 * 3600.0 + 1) == [cleanup.METRIC_EVENTS_MAINTENANCE_TASK, "other_task"]
+    assert jobs_module.run_due_maintenance(now=24 * 3600.0 + 1) == [
+        cleanup.METRIC_EVENTS_MAINTENANCE_TASK,
+        cleanup.JOB_RETENTION_MAINTENANCE_TASK,  # 作业表保留期同样每 24 小时一次
+        "other_task",
+    ]
     assert good == [1]

@@ -27,7 +27,7 @@ from novel_system.services.style_reference.card import (
     LINE_STATE_PINNED,
     line_id_for,
     normalize_card,
-    render_card_block,
+    plan_card_block,
 )
 
 
@@ -106,7 +106,7 @@ def test_normalize_card_fills_all_16_dims_labels_and_stable_line_ids() -> None:
 
 def test_render_orders_temperament_emphasis_and_respects_states() -> None:
     card = normalize_card(_card())
-    text = render_card_block(card)
+    text = plan_card_block(card).text
     assert text.startswith("[文风卡]")
     lines = text.splitlines()
     assert lines[1].startswith("气质（必须）：危急关头用自嘲和吐槽")
@@ -115,26 +115,26 @@ def test_render_orders_temperament_emphasis_and_respects_states() -> None:
     assert "一段里常有两三个" not in text
     assert "[作者不这么写]" in text and "不用让天气替人伤心的拟人" in text
     # 重点维排在最前、多一条；不学的维整维消失
-    emphasized = render_card_block(
+    emphasized = plan_card_block(
         card,
         dimension_states={"theme.values": "emphasize", "language.rhetoric": "exclude"},
-    )
+    ).text
     assert "【重点】价值取向" in emphasized.splitlines()[2]
     assert "修辞手法" not in emphasized
     # ✗ 的句不再用；✓ 的句永远带上（哪怕超出每维条数）
     rhetoric = card.entry("language.rhetoric")
-    excluded = render_card_block(card, line_states={rhetoric.lines[0].line_id: LINE_STATE_EXCLUDED})
+    excluded = plan_card_block(card, line_states={rhetoric.lines[0].line_id: LINE_STATE_EXCLUDED}).text
     assert "紧张处拿日常小物件" not in excluded
-    pinned = render_card_block(card, line_states={rhetoric.lines[2].line_id: LINE_STATE_PINNED})
+    pinned = plan_card_block(card, line_states={rhetoric.lines[2].line_id: LINE_STATE_PINNED}).text
     assert "一段里常有两三个" in pinned
 
 
 def test_render_budget_cuts_whole_lines_and_drops_empty_section_titles() -> None:
     card = normalize_card(_card())
-    tiny = render_card_block(card, budget_chars=120, recent_gaps=["句末语气词太少"])
+    tiny = plan_card_block(card, budget_chars=120, recent_gaps=["句末语气词太少"]).text
     assert all(not line.endswith("，") for line in tiny.splitlines())
     assert "[作者不这么写]" not in tiny or tiny.splitlines()[-1] != "[作者不这么写]"
-    assert render_card_block(None) == ""
+    assert plan_card_block(None).text == ""
 
 
 def _contract(**overrides) -> dict:

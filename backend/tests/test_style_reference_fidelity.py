@@ -313,10 +313,10 @@ def test_reference_distribution_for_book_is_cached_per_root(session) -> None:
     assert dist.source["book_id"] == book_id
     assert F.reference_distribution_for_book(session, book_id) is dist
     # 作者自己的一窗读下来在正常范围里
-    from novel_system.services.style_reference.windows import load_windows, window_text
+    from novel_system.services.style_reference.windows import load_windows, window_texts
 
     windows = load_windows(session, book_id)
-    reading = F.read_fidelity(window_text(session, windows[0]), dist)
+    reading = F.read_fidelity(window_texts(session, windows[:1])[windows[0].window_no], dist)
     assert reading.percentile <= 100.0 and reading.window_count == dist.window_count
     # 段落表变了(根哈希被 pop):重建索引,分布换新
     book = session.get(StyleReferenceBook, book_id)

@@ -1,4 +1,4 @@
-"""绑定:把画像直接用于作品(或某一场 / 某个角色)、改配置、解除;一部作品现在用的是哪一份;叠层只读视图。
+"""绑定:把画像直接用于作品(或某一场 / 某个角色)、改配置、解除;一部作品现在用的是哪一份。
 
 - ``POST /profiles/{id}/apply``:``{scope, scope_ref_id, config}``——直接写绑定(台账 U1:不再经待办;U9:不再有
   合成后绑到「当时打开的作品」上的全局卡)。同一画像 + 同一目标 → 更新配置;**一个目标只有一条生效的绑定**:
@@ -6,13 +6,13 @@
 - ``PATCH /bindings/{id}``:``{config}``,``dimension_states`` 按维合并(文风画像页一次改一维,N2);
 - ``DELETE /bindings/{id}``:解除;
 - ``GET /projects/{project_id}/style-binding``:这部作品现在实际生效的绑定 + 画像摘要 + v3 配置 + 现解析的
-  风格策略审计(用于作品页与起草台读);
-- ``GET /injection/layers``:只读叠层视图(命中了哪几层、哪一层生效)。
+  风格策略审计(用于作品页与起草台读)。
 
 配置一律是 v3 四键(``binding_config``):参考方式 ``reference_mode``、样例窗数 ``sample_windows``(0–16)、
 维度状态 ``dimension_states``、起草方式 ``draft_mode``;绑定行的旧 ``strategy`` 列恒写 ``mixed``。
 删掉的:``GET /bindings/{id}/injection-preview``(预览一律走 ``POST /profiles/{id}/injection-preview``)、
-``GET /injection/task-defaults``(旧任务默认策略表,U16)。
+``GET /injection/task-defaults``(旧任务默认策略表,U16)、``GET /injection/layers``(只读叠层视图,没有界面调用,
+2026-09-30)。
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ from novel_system.services.style_reference.binding_config import (
     MAX_SAMPLE_WINDOWS,
     MIN_SAMPLE_WINDOWS,
 )
-from novel_system.services.style_reference.inject.bindings import describe_binding_layers
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 router = APIRouter(tags=ROUTE_TAGS)
@@ -205,27 +204,3 @@ def get_project_style_binding(
     if not project_id or len(project_id) > 128:
         raise DomainError("STYLE_REFERENCE_PROJECT_NOT_FOUND", "project not found", status_code=404)
     return ok(project_style_binding(session, project_id), req_id=request_id_of(request))
-
-
-@router.get(f"{PATH_PREFIX}/injection/layers")
-def get_injection_layers(
-    request: Request,
-    project_id: str | None = None,
-    task_type: str = "scene_generation",
-    scene_id: str | None = None,
-    character_ids: str | None = None,
-    session: Session = Depends(get_session),
-):
-    """只读叠层视图:命中了哪几层(scene > 角色 > project > global)、哪一层生效(v3 只有最具体的一层生效)。
-
-    character_ids 逗号分隔(onstage 多角色)。无命中层时 layers=[]、merged=null。只查列、不渲染(U10)。
-    """
-    chars = [c.strip() for c in (character_ids or "").split(",") if c.strip()] or None
-    data = describe_binding_layers(
-        session,
-        project_id,
-        task_type,
-        character_ids=chars,
-        scene_id=scene_id,
-    )
-    return ok(data, req_id=request_id_of(request))

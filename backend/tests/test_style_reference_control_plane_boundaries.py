@@ -35,7 +35,7 @@ def test_segmentation_accounted_execution_preserves_control_plane_exception(
     monkeypatch.setattr(segmentation_llm, "execute_accounted_call", raise_error)
 
     with pytest.raises(LLMAccountingError) as exc_info:
-        segmentation_llm.classify_batch(
+        segmentation_llm.classify_batch_partial(
             _anchor_runtime(),
             [0],
             ["text"],
@@ -83,7 +83,7 @@ def test_segmentation_never_uses_heuristic_for_control_plane_failure(
     monkeypatch.setattr(segmentation, "classify_heuristic", forbidden_heuristic)
 
     with pytest.raises(type(error)) as exc_info:
-        segmentation_llm.classify_batch(
+        segmentation_llm.classify_batch_partial(
             _anchor_runtime(),
             [0],
             ["text"],
@@ -140,7 +140,7 @@ def test_segmentation_delivers_reasoning_inflated_usage_when_no_fence_is_armed(s
 
     client = ThinkingRelayClient()
     runtime = segmentation_llm.load_classification_runtimes()[segmentation_llm.NODE_BULK]
-    result = segmentation_llm.classify_batch(
+    result, problems = segmentation_llm.classify_batch_partial(
         runtime,
         [0, 1],
         ["「你来了。」", "他没有回答，只是把门关上。"],
@@ -151,7 +151,7 @@ def test_segmentation_delivers_reasoning_inflated_usage_when_no_fence_is_armed(s
         step="paragraph_classification:rest:0:2",
     )
 
-    assert result == {0: ("dialogue", 0.9), 1: ("narration", 0.6)}
+    assert result == {0: ("dialogue", 0.9), 1: ("narration", 0.6)} and problems == []
     # 2026-09-23 v3:分类节点默认关推理、输出预算按 ≤100 段一批给到 8192
     assert client.requests[0].max_output_tokens == 8192
     assert client.requests[0].reasoning_level == "off"
