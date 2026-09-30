@@ -33,6 +33,7 @@ from novel_system.services.scene_generation import (
     STYLE_NOTICE_PATCH_REVERTED,
     STYLE_PATCH_KEEP_STEP,
     StyleGenerationResult,
+    fidelity_probe,
     style_notice,
 )
 from novel_system.services.scene_run.branch_control import is_derivable_control, soft_qc0_control
@@ -530,14 +531,13 @@ class SoftQcCheckpointMixin:
         thresholds = fidelity_thresholds()
         judge_before = self._report_judge(qc0.qc_report_id)
         judge_after = self._report_judge(qc1.qc_report_id)
-        try:
-            # 读数可能要先建这本书的窗口索引、写库：放在自己的保存点里，失败只回滚它
-            with self.session.begin_nested():
-                reading_before = style_readings.reading_for_text(self.session, policy, before.content)
-                reading_after = style_readings.reading_for_text(self.session, policy, after.content)
-        except Exception:  # noqa: BLE001 — 读数是观察：读不出只看评审分
-            _LOGGER.warning("patch fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
-            reading_before = reading_after = None
+        # 读数是观察（B02-05：与生成侧同一个探针，各在自己的保存点里读，失败只回滚保存点）：读不出只看评审分
+        reading_before, _ = fidelity_probe.observe(
+            self.session, policy, before.content, ref=scene.scene_id, what="patch-before"
+        )
+        reading_after, _ = fidelity_probe.observe(
+            self.session, policy, after.content, ref=scene.scene_id, what="patch-after"
+        )
         comparable = (
             reading_before is not None
             and reading_after is not None

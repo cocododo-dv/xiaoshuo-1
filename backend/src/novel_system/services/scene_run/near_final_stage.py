@@ -22,7 +22,7 @@ from novel_system.db.models import (
     SceneRunState,
     WriterEvaluation,
 )
-from novel_system.services.scene_generation import StyleGenerationResult, assess_rewrite_regressions
+from novel_system.services.scene_generation import StyleGenerationResult, assess_rewrite_regressions, fidelity_probe
 from novel_system.services.scene_run.branch_control import is_derivable_control, near_final_eval0_control
 from novel_system.services.scene_run.constants import NEAR_FINAL_REWRITE_GATE_STAGE
 from novel_system.services.scene_run.near_final_gate import (
@@ -34,8 +34,6 @@ from novel_system.services.scene_run.results import near_evaluation_payload, nea
 from novel_system.services.scene_run.snapshots import revision_candidate_snapshot, writer_evaluation_snapshot
 from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
 from novel_system.services.style_policy import style_policy_for_bundle
-from novel_system.services.style_reference import readings as style_readings
-from novel_system.services.style_reference.style_step import fidelity_thresholds
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,24 +123,23 @@ class NearFinalCheckpointMixin:
         policy = style_policy_for_bundle(bundle)
         if not policy.bound or not policy.style_first:
             return None
-        thresholds = fidelity_thresholds()
-        try:
-            # 读数可能要先建这本书的窗口索引、写库：放在自己的保存点里，失败只回滚它
-            with self.session.begin_nested():
-                before = style_readings.reading_for_text(self.session, policy, source_generation.content)
-                after = style_readings.reading_for_text(self.session, policy, rewrite_generation.content)
-        except Exception:  # noqa: BLE001 — 读数是观察：读不出就不拿它拒稿
-            _LOGGER.warning("near-final rewrite fidelity reading failed for scene %s", scene.scene_id, exc_info=True)
+        # 两稿各读一次（在保存点里读，失败只回滚保存点）——与去模板改写的「越改越远」同一个探针（B02-05）
+        drift = fidelity_probe.rewrite_drift(
+            self.session,
+            policy_or_bundle=policy,
+            source_content=source_generation.content,
+            rewritten_content=rewrite_generation.content,
+        )
+        if not drift.get("comparable"):
             return None
-        if before is None or after is None or not before.reliable or not after.reliable:
-            return None
-        tolerance = float(thresholds.patch_max_distance_increase)
+        before, after = drift["source"], drift["rewritten"]
+        tolerance = float(drift["max_distance_increase"])
         return {
-            "moved_away": bool(after.distance > before.distance + tolerance),
-            "source_distance": round(float(before.distance), 4),
-            "rewrite_distance": round(float(after.distance), 4),
-            "source_percentile": round(float(before.percentile), 1) if before.percentile is not None else None,
-            "rewrite_percentile": round(float(after.percentile), 1) if after.percentile is not None else None,
+            "moved_away": bool(after["distance"] > before["distance"] + tolerance),
+            "source_distance": round(before["distance"], 4),
+            "rewrite_distance": round(after["distance"], 4),
+            "source_percentile": round(before["percentile"], 1),
+            "rewrite_percentile": round(after["percentile"], 1),
             "tolerance": tolerance,
         }
 
