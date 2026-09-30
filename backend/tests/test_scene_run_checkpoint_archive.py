@@ -26,6 +26,8 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.aggregator import Aggregator
+from novel_system.services.archiver import Archiver
+from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
@@ -1033,3 +1035,84 @@ def test_chapter_last_sub10_crash_reuses_evaluation_parent_and_budget(session) -
         parent.budget_charged_tokens,
         parent.total_tokens,
     ) == counters
+
+
+# ---------------------------------------------------------------------------------------------- 章汇总的输入（R13）
+
+
+def _archived_sibling(session, scene_id: str, *, scene_seq: int, text: str) -> None:
+    """同一章里先归档好的另一场（不走流水线：只落终稿、归档）。"""
+    session.add(
+        SceneCard(
+            scene_id=scene_id,
+            chapter_id="CH_RESUME",
+            project_id="P_RESUME",
+            scene_seq=scene_seq,
+            scene_goal="sibling",
+            is_chapter_last=0,
+        )
+    )
+    final_id = f"final_scene_{scene_id}_v1"
+    session.add(SceneRunState(scene_id=scene_id, scene_status="ready", current_final_scene_row_id=final_id))
+    session.add(
+        FinalScene(
+            row_id=final_id,
+            scene_id=scene_id,
+            chapter_id="CH_RESUME",
+            content=text,
+            status="draft",
+            source_bundle_id=f"bundle_{scene_id}",
+            source_bundle_hash=f"hash_{scene_id}",
+        )
+    )
+    session.flush()
+    Archiver(session).archive_final_scene(scene_id, final_id, carry_notes_json=[], author_confirmed_final=True)
+    session.commit()
+
+
+def _stop_after_sub9(session, execution_id: str) -> dict:
+    """章末那一场跑到归档第 10 步（章级准终稿评审）前停下；返回检查点里的章汇总产品。"""
+    first = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
+        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+    )
+    first._run_archive_chapter_evaluation = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("stop after sub9")
+    )
+    with pytest.raises(RuntimeError, match="stop after sub9"):
+        first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    assert state.run_checkpoint_json["sub_index"] == 9
+    return state.run_checkpoint_json["artifact_refs"]["archive_chapter_product"]
+
+
+def _resume(session, execution_id: str) -> dict:
+    return Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
+        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+    ).run_scene("CH_RESUME_SC01", execution_id=execution_id)
+
+
+def test_chapter_last_archive_leaves_a_trashed_sibling_out_of_the_aggregate_and_resumes(session) -> None:
+    """R13：回收站里的场不在这一章里。以前它的记忆算成「位置孤儿」，章末那一场的章汇总从此拼不出来；现在汇总照常
+    重建、只是没有它，输入清单与汇总一致，续跑时复验通过。"""
+    _seed_resume_scene(session)
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    scene.scene_seq = 2
+    session.commit()
+    _archived_sibling(session, "CH_RESUME_SC00", scene_seq=1, text="回收站里那一场的正文。")
+    AuthorLifecycleService(session).trash_scenes(["CH_RESUME_SC00"], "author")
+    session.commit()
+    execution_id = "idempotency:chapter-last-trashed-sibling"
+
+    product = _stop_after_sub9(session, execution_id)
+
+    assert product["outcome"] == "aggregated"
+    assert [item["scene_id"] for item in product["inputs"]] == ["CH_RESUME_SC01"]
+    memory = session.get(ChapterMemory, product["chapter_memory"]["row_id"])
+    final = session.get(FinalScene, session.get(SceneRunState, "CH_RESUME_SC01").current_final_scene_row_id)
+    assert memory.content == final.content
+    assert _resume(session, execution_id)["scene_status"] == "archived"

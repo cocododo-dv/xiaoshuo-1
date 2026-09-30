@@ -1140,16 +1140,9 @@ class ArchiveCheckpointMixin:
         return product
 
     def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
-        memories = list(
-            self.session.scalars(
-                select(SceneMemory)
-                .where(
-                    SceneMemory.chapter_id == chapter_id,
-                    SceneMemory.active_flag == 1,
-                )
-                .order_by(SceneMemory.row_id.asc())
-            ).all()
-        )
+        # 输入清单 = 章汇总真正拼进去的那些记忆（row_id 序）：回收站里的场的记忆不算进这一章（R13），
+        # 清单要与汇总一致，续跑复验才对得上
+        memories = self.aggregator.derive_final_aggregate(chapter_id).inputs
         return [
             {
                 "row_id": memory.row_id,

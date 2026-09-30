@@ -233,6 +233,10 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
         "novel_system.db.models",
         "novel_system.services.catalog_ordering",
     },
+    # 2026-10-01 A1（R13）：章汇总的派生只读场景记忆、场景卡与章状态行。回收站 / 搬章 / 晋升这些生命周期服务调它、
+    # 读它的派生，它不回头引它们（以前的「刷新式维护」要从 trash / restore / rehome 调它，引回来就闭环）
+    "novel_system.services.aggregator": {"novel_system.db.models", "novel_system.services.chapter_state"},
+    "novel_system.services.chapter_state": {"novel_system.db.models", "novel_system.services.scene_lookup"},
     # 2026-09-30 P03：雪花构思的纯函数叶子（三种草稿合并、场景简报、步骤目录）
     "novel_system.services.snowflake_draft_merge": {"novel_system.services.hash_engine"},
     "novel_system.services.snowflake_scene_brief": {"novel_system.services.value_coercion"},
