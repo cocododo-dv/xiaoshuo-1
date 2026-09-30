@@ -13,6 +13,8 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.literary_quality import (
+    AUTOMATED_EVIDENCE_SIGNAL,
+    QUALITY_DIMENSIONS,
     adversarial_rank_score,
     analyze_literary_quality,
 )
@@ -172,7 +174,7 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_final_aggregat
     assert memory_items[0]["text_layer"] == "chapter_memory_final"
 
 
-def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() -> None:
+def test_literary_quality_detects_template_reuse() -> None:
     text = (
         "她低头看着钥匙，沉默了片刻。\n"
         "他低头看着录音，沉默了片刻。\n"
@@ -187,8 +189,10 @@ def test_literary_quality_detects_template_reuse_and_protects_valid_ambiguity() 
     assert signals["image_field_reuse"]["risk"] is True
     assert signals["syntax_monotony"]["risk"] is True
     assert signals["false_clarity"]["risk"] is True
-    assert signals["valid_ambiguity"]["risk"] is False
-    assert signals["valid_ambiguity"]["score"] == 1.0
+    # 批准#13c（重评 R7）：永远打满分、从不报问题的「有效留白」维度删了
+    assert "valid_ambiguity" not in signals
+    assert set(signals) - {AUTOMATED_EVIDENCE_SIGNAL} == set(QUALITY_DIMENSIONS)
+    assert "valid_ambiguity" not in QUALITY_DIMENSIONS
     finding_dimensions = {finding["dimension"] for finding in findings}
     assert {
         "template_action_reuse",
@@ -304,7 +308,7 @@ def test_literary_quality_chapter_set_review_scores_cross_chapter_arc_and_safety
         "/api/v1/literary-quality/chapter-set-review",
         json={
             "chapter_ids": ["LQSET01", "LQSET02", "LQSET03"],
-            "protected_terms": ["龙族", "路明非", "卡塞尔"],
+            "protected_terms": ["灰港学院", "欧文·灰港", "镜湖档案馆"],
         },
     )
 
@@ -322,6 +326,68 @@ def test_literary_quality_chapter_set_review_scores_cross_chapter_arc_and_safety
     assert payload["recommended_next_action"]["action"] in {"open_deepdesk_patch", "none"}
 
 
+def test_chapter_set_review_matches_protected_term_variants_like_the_copy_gate(client, session) -> None:
+    """批准#12（B04-15）：章组复审的受保护专名与抄袭门同一套匹配——插了空格 / 标点的写法也认得出。"""
+    final_row_id = _seed_quality_scene(session, chapter_id="LQSET_SAFE", scene_id="LQSET_SAFE_SC01")
+    final = session.get(FinalScene, final_row_id)
+    final.content = "林昭在灰 港-学院门口停下。欧文把旧信递给她，雨城的钟响了三下。"
+    session.commit()
+
+    response = client.post(
+        "/api/v1/literary-quality/chapter-set-review",
+        json={"chapter_ids": ["LQSET_SAFE"], "protected_terms": ["灰港学院", "欧文", "镜湖档案馆"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    scene_findings = [row for row in payload["reference_safety_findings"] if row["object_type"] == "scene"]
+    assert [row["term"] for row in scene_findings] == ["灰港学院", "欧文"]
+    assert "灰 港-学院" in scene_findings[0]["evidence_excerpt"]
+    assert payload["scores"]["reference_safety"] == 0.0
+
+
+def test_chapter_set_protected_term_scan_normalizes_each_text_once(monkeypatch) -> None:
+    """章组复审的受保护专名：每段文字只规范化一次、所有词一起找——以前逐词各找一遍，规范化的开销乘上词数，
+    十章配二十个词要十几秒。报出来的照旧是每段文字、每个传入的词各一条（按传入的词序，重复的词照报），
+    取最早的一处；字面命中按词取摘录，变体命中按命中的位置取。"""
+    from novel_system.services.literary_quality import chapter_set
+
+    calls: list[str] = []
+    real = chapter_set.find_protected_term_spans
+
+    def counting(text, terms):  # noqa: ANN001, ANN202
+        calls.append(text)
+        return real(text, terms)
+
+    monkeypatch.setattr(chapter_set, "find_protected_term_spans", counting)
+    rows = [
+        {"object_type": "scene", "object_id": "S1", "chapter_id": "C1", "scene_id": "S1", "source_ref": "r1",
+         "content": "林昭在灰 港-学院门口停下。欧文把旧信递给她，欧文没有走。"},
+        {"object_type": "scene", "object_id": "S2", "chapter_id": "C1", "scene_id": "S2", "source_ref": "r2",
+         "content": "雨城的钟响了三下。灰港学院的灯还亮着。"},
+        {"object_type": "chapter", "object_id": "C1", "chapter_id": "C1", "scene_id": None, "source_ref": "r3",
+         "content": "案卷里没有这些名字。"},
+    ]
+    terms = ["欧文", "灰港学院", "镜湖档案馆", "欧文", " 灰港学院 "]
+
+    findings = chapter_set._reference_safety_findings(rows, terms)
+
+    assert calls == [row["content"] for row in rows]  # 逐词各找时是 3 × 5 = 15 次
+    assert [(row["object_id"], row["term"]) for row in findings] == [
+        ("S1", "欧文"), ("S1", "灰港学院"), ("S1", "欧文"), ("S1", " 灰港学院 "),
+        ("S2", "灰港学院"), ("S2", " 灰港学院 "),
+    ]
+    by_key = {(row["object_id"], row["term"]): row for row in findings}
+    assert "灰 港-学院" in by_key[("S1", "灰港学院")]["evidence_excerpt"]
+    assert by_key[("S2", "灰港学院")]["evidence_excerpt"].startswith("雨城的钟响了三下")
+    assert by_key[("S1", "欧文")]["source_ref"] == "r1"
+
+    calls.clear()
+    assert chapter_set._reference_safety_findings(rows, []) == []
+    assert chapter_set._reference_safety_findings(rows, ["", "  "]) == []
+    assert calls == []  # 没有要查的词就不规范化
+
+
 def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(client, session) -> None:
     final_row_id = _seed_quality_scene(session, chapter_id="LQSET_LAYER", scene_id="LQSET_LAYER_SC01")
     scene_draft = AuthorDraft(
@@ -329,7 +395,7 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
         object_type="scene",
         object_id="LQSET_LAYER_SC01",
         source_text_ref=f"final_scene:{final_row_id}",
-        content="作者稿里误写了龙族；角色只能选择保护证人，代价是公开证据被延迟。",
+        content="作者稿里误写了灰港学院；角色只能选择保护证人，代价是公开证据被延迟。",
         revision_no=1,
         status="current",
     )
@@ -341,7 +407,7 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
         json={
             "chapter_ids": ["LQSET_LAYER"],
             "text_layer": "author_draft_preferred",
-            "protected_terms": ["龙族"],
+            "protected_terms": ["灰港学院"],
         },
     )
 
@@ -350,8 +416,41 @@ def test_literary_quality_chapter_set_review_uses_requested_scene_text_layer(cli
     assert payload["summary"]["scene_count"] == 1
     assert payload["scenes"][0]["text_layer"] == "author_draft"
     assert payload["scenes"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
-    assert payload["reference_safety_findings"][0]["term"] == "龙族"
+    assert payload["reference_safety_findings"][0]["term"] == "灰港学院"
     assert payload["reference_safety_findings"][0]["source_ref"] == f"author_draft:{scene_draft.draft_id}"
+
+
+def test_chapter_set_review_reads_the_reference_calibration_like_the_overview(session) -> None:
+    """批准#13a（B04-13）：章组复审里的场与巡检、写作台深改面板用同一份参考书校准——参考作者常态的维度降为提示，
+    不会在章组复审里又冒成要改的问题（以前章组复审分析各场时没把场交给校准解析器）。"""
+    from novel_system.services.literary_quality import LiteraryQualityService, RuleCalibration
+
+    final_row_id = _seed_quality_scene(session, chapter_id="LQCAL", scene_id="LQCAL_SC01")
+    _signals, raw_findings = analyze_literary_quality(session.get(FinalScene, final_row_id).content)
+    habit = next(finding["dimension"] for finding in raw_findings if finding["severity"] != "info")
+    calibration = RuleCalibration(
+        source="reference",
+        dimension_stats={habit: {"fired": 40, "n": 48, "share": 0.833, "lower_bound": 0.75, "level": "habit"}},
+        windows=48,
+    )
+    resolved: list[str] = []
+
+    def resolver(scene):
+        resolved.append(scene.scene_id)
+        return calibration
+
+    service = LiteraryQualityService(session, rule_calibration_resolver=resolver)
+    overview_scene = next(
+        item for item in service.overview(chapter_id="LQCAL")["items"] if item["object_type"] == "scene"
+    )
+    review_scene = service.chapter_set_review({"chapter_ids": ["LQCAL"]})["scenes"][0]
+
+    assert resolved == ["LQCAL_SC01", "LQCAL_SC01"]
+    assert review_scene["findings"] == overview_scene["findings"]
+    assert review_scene["rule_calibration"] == overview_scene["rule_calibration"]
+    assert review_scene["rule_calibration"] is not None
+    calibrated = [finding for finding in review_scene["findings"] if finding["dimension"] == habit]
+    assert calibrated and all(finding["severity"] == "info" for finding in calibrated)
 
 
 def test_literary_quality_chapter_set_review_reports_missing_payoff_chapter_ids(client, session) -> None:
@@ -450,6 +549,25 @@ def test_action_keyword_bundle_is_insufficient_evidence_not_literary_perfection(
 def test_literary_quality_dimension_weights_sum_to_one() -> None:
     from novel_system.services.literary_quality import DIMENSION_WEIGHTS
     assert abs(sum(DIMENSION_WEIGHTS.values()) - 1.0) < 1e-9
+    assert set(DIMENSION_WEIGHTS) == set(QUALITY_DIMENSIONS)
+
+
+def test_weighted_score_is_the_one_formula_for_every_caller() -> None:
+    """B04-16：条目分、成稿门的总分与人物场景核心、对抗排名分都走 ``scoring.weighted_score``（维度组各选各的）。"""
+    from novel_system.services.literary_quality import DIMENSION_WEIGHTS, weighted_score
+
+    signals, _ = analyze_literary_quality("她低头看着钥匙，沉默了片刻。他低头看着录音，沉默了片刻。她知道真相必须公开。")
+    risky = [dimension for dimension in QUALITY_DIMENSIONS if signals[dimension]["risk"]]
+    assert risky
+    assert weighted_score(signals, QUALITY_DIMENSIONS) == round(
+        sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS), 4
+    )
+    # 成稿门：参考作者常态的维度按已满足计——全都放过就是满分
+    assert weighted_score(signals, QUALITY_DIMENSIONS, forced_ok=risky) == 1.0
+    # 归一：除以这组维度的权重和；没有信号的维度按满分算；权重和为 0 时给 empty
+    core = ("no_choice_scene", "choice_pressure")
+    assert weighted_score({}, core, normalize=True) == 1.0
+    assert weighted_score(signals, core, {"no_choice_scene": 0.0}, normalize=True, empty=0.42) == 0.42
 
 
 def test_self_repetition_dimension_defaults_to_no_risk() -> None:
@@ -475,15 +593,6 @@ def test_self_repetition_detects_high_confidence_mechanical_loop() -> None:
 
     assert signals["self_repetition"]["risk"] is True
     assert any(item["dimension"] == "self_repetition" for item in findings)
-
-
-def test_external_signals_override_defaults() -> None:
-    signals, _ = analyze_literary_quality(
-        "She opened the door.",
-        external_signals={"self_repetition": {"risk": True, "score": 0.3, "evidence": "repeated phrase"}},
-    )
-    assert signals["self_repetition"]["risk"] is True
-    assert signals["self_repetition"]["score"] == 0.3
 
 
 def _seed_cross_scene_template_reuse(session) -> None:
@@ -534,6 +643,13 @@ def _seed_cross_scene_template_reuse(session) -> None:
     session.commit()
 
 
+def test_valid_ambiguity_is_no_longer_a_risk_filter(client) -> None:
+    """批准#13c（重评 R7）：删掉的「有效留白」不再是可选的风险维度——旧标签页还带着它时拿到标准的 400。"""
+    response = client.get("/api/v1/literary-quality/overview", params={"risk_type": "valid_ambiguity"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "LITERARY_QUALITY_RISK_TYPE_INVALID"
+
+
 def test_literary_quality_overview_exposes_filters_clusters_fingerprints_and_reuse(client, session) -> None:
     _seed_cross_scene_template_reuse(session)
 
@@ -562,10 +678,47 @@ def test_literary_quality_overview_exposes_filters_clusters_fingerprints_and_reu
     assert all(item["recommended_next_action"]["action"] == "open_deepdesk_patch" for item in payload["items"])
     assert payload["risk_clusters"][0]["dimension"] == "template_action_reuse"
     assert payload["risk_clusters"][0]["count"] >= 2
-    assert any(row["object_id"].startswith("LQ300_SC") for row in payload["fingerprints"])
-    assert "action_templates" in payload["fingerprints"][0]["fingerprint"]
+    # 指纹只在各条目里（顶层那份一模一样的列表没人读，已删，B04-14）
+    assert "fingerprints" not in payload
+    assert any(item["object_id"].startswith("LQ300_SC") for item in payload["items"])
+    assert all("action_templates" in item["fingerprint"] for item in payload["items"])
     assert any(row["cluster_type"] == "action_template" for row in payload["cross_scene_reuse"])
     assert payload["recommended_next_action"]["action"] == "open_deepdesk_patch"
+    # 规则维度与中文名由服务端给（筛选项用，B04-31）
+    assert [row["dimension"] for row in payload["dimensions"]] == list(QUALITY_DIMENSIONS)
+    assert {row["dimension"]: row["label"] for row in payload["dimensions"]}["template_action_reuse"] == "模板动作复用"
+
+
+def test_overview_reads_the_texts_in_a_fixed_number_of_queries(session) -> None:
+    """B04-14：巡检一次看全书，查询数不随章 / 场的多少增长（以前逐章逐场各查两三次作者稿、终稿、章节汇总）。"""
+    from sqlalchemy import event
+
+    from novel_system.services.literary_quality import LiteraryQualityService
+
+    engine = session.get_bind()
+    statements: list[str] = []
+
+    def count(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    def overview_statements(text_layer: str) -> int:
+        session.expire_all()
+        statements.clear()
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            payload = LiteraryQualityService(session).overview(text_layer=text_layer)
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        assert payload["items"]
+        return len(statements)
+
+    for index in range(2):
+        _seed_quality_scene(session, chapter_id=f"LQN{index}", scene_id=f"LQN{index}_SC01")
+    few = {layer: overview_statements(layer) for layer in ("author_draft_preferred", "runtime", "chapter_assembled")}
+    for index in range(2, 8):
+        _seed_quality_scene(session, chapter_id=f"LQN{index}", scene_id=f"LQN{index}_SC01")
+    many = {layer: overview_statements(layer) for layer in ("author_draft_preferred", "runtime", "chapter_assembled")}
+    assert many == few
 
 
 def test_literary_quality_analyze_text_returns_quality_spine_without_database_mutation(client, session) -> None:

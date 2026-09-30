@@ -5,33 +5,33 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneBundle, SceneCard, SceneRunState
-from novel_system.services.character_continuity import (
-    detect_character_pronoun_drift,
-    detect_mechanical_required_beat_listing,
-)
 from novel_system.services.content_safety import ContentSafetyService
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_text, verify_bundle_snapshot_hash
 from novel_system.services.literary_quality import (
-    DIMENSION_WEIGHTS,
     QUALITY_DIMENSIONS,
     analyze_literary_quality,
-    get_dimension_weights,
-    rule_signal_id,
+    ignored_dimensions_from_findings,
 )
+from novel_system.services.literary_quality.scoring import weighted_score
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
-from novel_system.services.qc_constraints import contains_forbidden_term, source_field_satisfied
+from novel_system.services.qc_constraints import contains_forbidden_term, required_groups_missing
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     copy_block_author_action,
+    copy_gate_policies,
     protected_term_warning,
     unavailable_warning,
 )
-from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.style_policy import StylePolicy, style_policy_for_scene, style_policy_live
+from novel_system.services.quality_checks.continuity import (
+    CONTINUITY_UNAVAILABLE_KEY,
+    deterministic_continuity_issues,
+)
+from novel_system.services.style_policy import StylePolicy, style_policy_for_scene
 
 
-FINAL_TEXT_GATE_SCHEMA_VERSION = 3
+# 4：结果不再带同值的别名 literary / blockers / blocking_codes / promotion_blocking_codes（B04-24，没人读）
+FINAL_TEXT_GATE_SCHEMA_VERSION = 4
 CHARACTER_SCENE_CORE_MIN = 0.80
 ENDING_DRIVE_MIN = 0.78
 CHOICE_PRESSURE_MIN = 0.78
@@ -99,7 +99,6 @@ class FinalTextGateService:
         continuity = self._continuity(
             scene,
             actual_content,
-            bundle,
             allow_author_waiver=allow_author_waiver,
         )
         literary = self._literary(scene, actual_content, policy)
@@ -148,22 +147,17 @@ class FinalTextGateService:
                 "literary_warnings_unresolved": literary_warnings_unresolved,
                 "author_confirmed_final": bool(author_confirmed_final),
             },
-            # Backward-compatible alias retained for existing archive callers.
+            # 旧名，存下来的结果与读它们的归档摘要 / 成稿中心仍认它（新结果照旧给）
             "archivable": safe_to_archive,
             "auto_promotable": not promotion_blockers,
-            # ``blockers`` remains a convenient alias for promotion callers.
-            "blockers": promotion_blockers,
             "archive_blockers": archive_blockers,
             "promotion_blockers": promotion_blockers,
-            "blocking_codes": archive_blockers,
-            "promotion_blocking_codes": promotion_blockers,
             "warning_codes": warning_codes,
             "warnings": warnings,
             "source_safety": source_safety,
             "bundle_integrity": bundle_integrity,
             "content_safety": content_safety,
             "continuity": continuity,
-            "literary": literary,
             "literary_quality": literary,
         }
 
@@ -262,16 +256,14 @@ class FinalTextGateService:
         的禁用词表。命中只记哈希与位置，拦下时带 ``author_action`` 说清是第几字到第几字。
         """
         try:
-            extra: list[StylePolicy] = []
-            if scene is not None and policy.mode != "live":
-                live = style_policy_live(self.session, scene, freeze_contract=False)
-                if live.bound or live.mode == "degraded":
-                    extra.append(live)
+            # 这一场的策略（已解析好的那一份）+ 当前的活动绑定：与采纳 / 提升各条路径同一个组合规则（B04-26）
+            policies = copy_gate_policies(self.session, scope=scene, policy=policy)
+            own = any(item is policy for item in policies)
             check = check_reference_copy(
                 self.session,
                 content,
-                policy=policy if (policy.bound or policy.mode == "degraded") else None,
-                extra_policies=extra,
+                policy=policy if own else None,
+                extra_policies=[item for item in policies if item is not policy],
             )
         except Exception as exc:  # noqa: BLE001 - a safety assertion must fail closed
             return (
@@ -302,13 +294,12 @@ class FinalTextGateService:
         self,
         scene: SceneCard | None,
         content: str,
-        bundle: SceneBundle | None,
         *,
         allow_author_waiver: bool,
     ) -> dict[str, Any]:
         if scene is None:
             warning = {
-                "issue_key": "continuity_validation_unavailable",
+                "issue_key": CONTINUITY_UNAVAILABLE_KEY,
                 "quality_level": "Q2",
                 "blocking": False,
                 "message": "Scene card is unavailable; archive continuity checks were skipped.",
@@ -321,16 +312,19 @@ class FinalTextGateService:
             }
 
         issues: list[dict[str, Any]] = []
-        if isinstance(scene.must_include_text, str) and scene.must_include_text.strip():
-            if not source_field_satisfied(scene.must_include_text, content):
-                issues.append(
-                    {
-                        "issue_key": "missing_required_text",
-                        "message": "Final text does not satisfy scene-card required text.",
-                        "source": "deterministic",
-                        "authority_ref": f"scene_card:{scene.scene_id}.must_include_text",
-                    }
-                )
+        # 必写内容按组查（批准#11）：整组没写就是已证实的 Q1，证据是漏掉的那几组
+        missing_groups = required_groups_missing(scene.must_include_text, content)
+        if missing_groups:
+            issues.append(
+                {
+                    "issue_key": "missing_required_text",
+                    "message": "Final text does not satisfy scene-card required text.",
+                    "source": "deterministic",
+                    "authority_ref": f"scene_card:{scene.scene_id}.must_include_text",
+                    "evidence_spans": [{"text": group[:120]} for group in missing_groups[:5]],
+                    "details": {"missing_groups": missing_groups},
+                }
+            )
         if contains_forbidden_term(scene.forbidden_text, content):
             issues.append(
                 {
@@ -341,61 +335,16 @@ class FinalTextGateService:
                 }
             )
 
-        snapshot = bundle.frozen_snapshot_json if bundle is not None else {}
-        inline_digests = snapshot.get("inline_digests") if isinstance(snapshot, dict) else {}
-        character_contract = (
-            inline_digests.get("character_contract") if isinstance(inline_digests, dict) else None
-        )
-        for issue in detect_character_pronoun_drift(content, character_contract):
-            issues.append({**issue, "source": "deterministic"})
-        listing = detect_mechanical_required_beat_listing(
-            content=content,
-            must_include_text=scene.must_include_text,
-        )
-        if listing is not None:
-            issues.append({**listing, "source": "deterministic"})
-
+        # 节拍清单 + 事件账本的硬事实：与硬 / 软质检同一份检查（quality_checks.continuity）
+        check = deterministic_continuity_issues(self.session, scene, content)
+        issues.extend(check.issues)
         event_warning: dict[str, Any] | None = None
-        try:
-            from novel_system.services.narrative_event_log import NarrativeEventLog
-
-            project_id = require_scene_project_id(self.session, scene)
-            report = NarrativeEventLog(self.session).check_consistency(
-                content,
-                project_id,
-                scene.scene_id,
-                character_ids=scene.onstage_chars_json or [],
-            )
-            for violation in report.violations:
-                source = getattr(violation, "source", "keyword")
-                issues.append(
-                    {
-                        "issue_key": (
-                            "event_log_consistency_violation"
-                            if source == "keyword"
-                            else "event_log_consistency_llm_flag"
-                        ),
-                        "message": (
-                            f"Event log contradiction: {violation.entity_id}.{violation.fact_key} "
-                            f"expected '{violation.expected}' but text suggests '{violation.actual}'"
-                        ),
-                        "source": "deterministic" if source == "keyword" else "llm_advisory",
-                        "details": {
-                            "entity_id": violation.entity_id,
-                            "fact_key": violation.fact_key,
-                            "expected": violation.expected,
-                            "actual": violation.actual,
-                            "evidence": violation.evidence,
-                            "source": source,
-                        },
-                    }
-                )
-        except Exception as exc:  # noqa: BLE001 - no deterministic evidence means no Q1 claim
+        if check.unavailable_error is not None:  # 没有确定性证据就不下 Q1 结论
             event_warning = {
-                "issue_key": "continuity_validation_unavailable",
+                "issue_key": CONTINUITY_UNAVAILABLE_KEY,
                 "quality_level": "Q2",
                 "blocking": False,
-                "message": f"Narrative continuity validation unavailable ({type(exc).__name__}).",
+                "message": f"Narrative continuity validation unavailable ({check.unavailable_error}).",
             }
 
         classified = classify_issues(issues, scene=scene, content=content)
@@ -442,7 +391,7 @@ class FinalTextGateService:
 
 
     def _rule_calibration(self, policy: StylePolicy) -> Any:
-        """绑定的参考书对 21 维规则的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
+        """绑定的参考书对规则维度的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
         if not policy.bound:
             return None
         try:
@@ -455,7 +404,7 @@ class FinalTextGateService:
     def _literary(
         self, scene: SceneCard | None, content: str, policy: StylePolicy | None = None
     ) -> dict[str, Any]:
-        """21 维文学规则的分数、Q3 警告与三道自动晋升阈值。风格参考 v3 V11——一条让位规则：
+        """文学规则维度的分数、Q3 警告与三道自动晋升阈值。风格参考 v3 V11——一条让位规则：
 
         * 没有绑定：房风规则照旧（阈值施加，风险维度挂 Q3 警告）；
         * 有绑定且参考书校准可用：按校准判——这位作者常用的词不算毛病，常态（habit）维度不挂警告、在阈值里
@@ -471,31 +420,20 @@ class FinalTextGateService:
                 content, calibration=calibration if calibrated else None
             )
             habitual = set(calibration.habitual_dimensions) if calibrated else set()
-            weights = get_dimension_weights(scene.project_id if scene is not None else None, self.session)
-            if not weights:
-                weights = dict(DIMENSION_WEIGHTS)
 
             def effective(dimension: str) -> float:
                 if dimension in habitual:
                     return 1.0
                 return float(signals[dimension].get("score", 1.0))
 
-            overall_score = round(
-                sum(effective(dimension) * float(weights.get(dimension, 0.0)) for dimension in QUALITY_DIMENSIONS),
-                4,
-            )
-            core_weight = sum(float(weights.get(dimension, 0.0)) for dimension in _CHARACTER_SCENE_CORE_DIMENSIONS)
-            character_scene_core = (
-                round(
-                    sum(
-                        effective(dimension) * float(weights.get(dimension, 0.0))
-                        for dimension in _CHARACTER_SCENE_CORE_DIMENSIONS
-                    )
-                    / core_weight,
-                    4,
-                )
-                if core_weight > 0
-                else overall_score
+            # 参考作者常态的维度按已满足计（分数照实记在 signals 里）
+            overall_score = weighted_score(signals, QUALITY_DIMENSIONS, forced_ok=habitual)
+            character_scene_core = weighted_score(
+                signals,
+                _CHARACTER_SCENE_CORE_DIMENSIONS,
+                forced_ok=habitual,
+                normalize=True,
+                empty=overall_score,
             )
             scores = {
                 "character_scene_core": character_scene_core,
@@ -516,25 +454,20 @@ class FinalTextGateService:
                     promotion_blockers.append("literary:ending_drive")
                 if scores["choice_pressure"] < CHOICE_PRESSURE_MIN:
                     promotion_blockers.append("literary:choice_pressure")
+            # 只看规则维度：``automated_evidence_sufficiency`` 是只作诊断的伪信号（文字够不够下判断），
+            # 不是正文的毛病——短稿以前因此多挂一条英文警告、还翻起 literary_warnings_unresolved（B04-17）
             risky_dimensions = [
-                dimension for dimension, signal in signals.items() if bool(signal.get("risk"))
+                dimension
+                for dimension, signal in signals.items()
+                if dimension in QUALITY_DIMENSIONS and bool(signal.get("risk"))
             ]
             # 2026-09-22 场景诊断统一:作者在写作台深改面板里忽略过的发现不再回到成稿中心当警告。
             # 忽略清单记的是发现的 signal_id;整个维度的发现都被忽略了,这个维度才算作者拍过板。
             # 风格参考 v3:signal_id 从这一次（校准后）的发现里算，与深改面板看到的是同一批。
-            ignored_keys = {
-                str(key)
-                for key in ((getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [])
-                if str(key)
-            }
-            ids_by_dimension: dict[str, list[str]] = {}
-            for finding in findings:
-                ids_by_dimension.setdefault(str(finding.get("dimension") or ""), []).append(rule_signal_id(finding))
-            ignored_dimensions = {
-                dimension
-                for dimension, ids in ids_by_dimension.items()
-                if dimension and ids and ignored_keys and all(signal_id in ignored_keys for signal_id in ids)
-            }
+            ignored_dimensions = ignored_dimensions_from_findings(
+                findings,
+                (getattr(scene, "deep_review_ignored_keys_json", None) or []) if scene is not None else [],
+            )
             warn_dimensions = [
                 dimension
                 for dimension in risky_dimensions

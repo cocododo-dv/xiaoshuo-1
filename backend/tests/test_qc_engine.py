@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -715,56 +716,13 @@ def test_run_scene_soft_qc_patch_repeat_waives_with_carry_note(session) -> None:
     ]
 
 
-def test_run_scene_blocks_hard_qc_when_character_pronoun_drifts(session) -> None:
-    _seed_scene(session)
-    scene = session.get(SceneCard, "CH100_SC01")
-    scene.pov_character_id = "LIN_CEN"
-    scene.onstage_chars_json = ["LIN_CEN"]
-    scene.must_include_text = ""
-    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
-    voice.voice_profile_id = "VOICE_LIN_CEN"
-    voice.character_id = "LIN_CEN"
-    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
-    session.commit()
-
-    orchestrator = _make_orchestrator(
-        session,
-        hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
-        scene_client=FakeFixedSceneClient(
-            [
-                {
-                    "scene_text": "林岑把盐钟残片放在灯下。他确认刻痕被人改过，声音仍然很稳。",
-                    "continuity_notes": ["provider missed pronoun contract"],
-                }
-            ]
-        ),
-    )
-
-    result = orchestrator.run_scene("CH100_SC01")
-    session.commit()
-
-    state = session.get(SceneRunState, "CH100_SC01")
-    report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
-
-    assert result["scene_status"] == "hard_qc_partial_rewrite_required"
-    assert result["hard_qc"]["branch"] == "rewrite_partial"
-    assert state.current_final_scene_row_id is None
-    assert report.resolution_code == "hard_fail_partial"
-    assert report.next_action == "partial_rewrite"
-    assert report.issues_json[0]["issue_key"] == "character_pronoun_drift"
-    assert "林岑" in report.rewrite_brief_json[0]["instruction"]
-
-
-def test_run_scene_ignores_unsubstantiated_unknown_pronoun_hard_qc(session) -> None:
+def test_run_scene_drops_llm_pronoun_findings_from_hard_qc(session) -> None:
+    """质检模型的代词意见一律不收（LLM_PRONOUN_ISSUE_KEYS）：只剩它撑着的非 pass 结论改判 pass。"""
     _seed_scene(session)
     scene = session.get(SceneCard, "CH100_SC01")
     scene.pov_character_id = "LIN_CEN"
     scene.onstage_chars_json = ["LIN_CEN", "许望", "幸存者阿砚"]
     scene.must_include_text = ""
-    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
-    voice.voice_profile_id = "VOICE_LIN_CEN"
-    voice.character_id = "LIN_CEN"
-    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
     neutral_text = (
         "林岑把残片插入档案柜。许望站在她身后，记录潮声倒退的三秒。"
         "她按下播放键，听见幸存者阿砚的呼吸，然后把证据拆成两份。"
@@ -809,74 +767,180 @@ def test_run_scene_ignores_unsubstantiated_unknown_pronoun_hard_qc(session) -> N
     assert hard_report.issues_json == []
 
 
-def _seed_pronoun_drift_setup(session) -> None:
-    """Wave 2：软 QC 阻断需要确定性 Q1 证据——用「代词契约 她 / 文本 他」的
-    确定性漂移贯穿 style 与 patch 稿（neutral 用 她，硬 QC 不拦）。"""
-    scene = session.get(SceneCard, "CH100_SC01")
-    scene.pov_character_id = "LIN_CEN"
-    scene.onstage_chars_json = ["LIN_CEN"]
-    scene.must_include_text = ""
-    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
-    voice.voice_profile_id = "VOICE_LIN_CEN"
-    voice.character_id = "LIN_CEN"
-    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
-    session.commit()
+class _QcPayloadRunner:
+    """假 LLMNodeRunner：原样交回一份质检回答（不经记账）。"""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[dict] = []
+
+    def run(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            llm_call_id=f"llm_call_soft_{len(self.calls)}",
+            response=SimpleNamespace(structured_output=dict(self.payload)),
+        )
 
 
-# 前缀保持 "Provider-generated "：near-final 的占位稿判定跳过内容 gate，
-# 阻断证据只来自确定性代词漂移本身。
-_DRIFT_SCENE_PAYLOADS = [
-    {"scene_text": "Provider-generated 林岑站在灯下，她把盐钟残片放好。", "continuity_notes": []},
-    {"scene_text": "Provider-generated 林岑站在灯下。他把刻痕对准光。", "style_notes": []},
-    {"scene_text": "Provider-generated 林岑收起残片。他仍不说话。", "style_notes": []},
-]
-
-
-def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None:
-    """Wave 2 语义：重复补丁后仍存在 verified Q1（确定性代词漂移）→ 阻断不豁免。"""
+def test_soft_qc_does_not_waive_a_repeat_patch_that_still_has_a_verified_issue(session) -> None:
+    """Wave 2 语义：一次受控补丁之后软质检仍要补丁，而且问题是已证实的 Q1（正文里真有场景卡的禁用词）→ 阻断转人工，
+    不豁免。（这条以前用确定性代词漂移造 Q1；那个检测器随声线卡删了，重评 R8。）"""
     _seed_scene(session)
-    _seed_pronoun_drift_setup(session)
-    orchestrator = _make_orchestrator(
-        session,
-        hard_qc_payload=_base_qc_payload(resolution_code="hard_pass", next_action="pass"),
-        soft_qc_payloads=[
-            _base_soft_qc_payload(
-                resolution_code="soft_patch",
-                next_action="patch",
-                issues=[{"issue_key": "cadence_flat", "message": "The opening needs more immediacy."}],
-                rewrite_brief=["Tighten the first paragraph."],
-            ),
-            _base_soft_qc_payload(
-                resolution_code="soft_patch",
-                next_action="patch",
-                issues=[{"issue_key": "cadence_flat", "message": "The rhythm is still too even."}],
-                rewrite_brief=["修正节奏，必要时重复角色姓名。"],
-            ),
-        ],
-        scene_client=FakeFixedSceneClient(list(_DRIFT_SCENE_PAYLOADS)),
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.forbidden_text = "青花瓷"
+    content = "林岑把青花瓷残片放在灯下。她没有回头。"
+    session.add(
+        SceneDraft(
+            row_id="draft_patch_CH100_SC01",
+            scene_id="CH100_SC01",
+            chapter_id="CH100",
+            stage="style_draft",
+            content=content,
+            source_bundle_id="bundle_CH100_SC01",
+            source_bundle_hash="bundle_hash_CH100_SC01",
+        )
     )
-
-    result = orchestrator.run_scene("CH100_SC01")
+    state = session.get(SceneRunState, "CH100_SC01")
+    state.soft_patch_count = 1  # 已经补过一次
+    state.active_execution_id = "exec-soft-repeat"
+    state.run_execution_status = "active"
+    session.commit()
+    runner = _QcPayloadRunner(
+        _base_soft_qc_payload(
+            resolution_code="soft_patch",
+            next_action="patch",
+            issues=[{"issue_key": "forbidden_text", "message": "正文仍用了场景卡禁用的青花瓷。"}],
+            rewrite_brief=["把青花瓷换掉。"],
+        )
+    )
+    token = begin_llm_execution("exec-soft-repeat")
+    try:
+        decision = SoftQcEngine(session, llm_runner=runner).evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            source_draft_row_id="draft_patch_CH100_SC01",
+            source_draft_content=content,
+            execution_step_key="soft_qc:1",
+        )
+    finally:
+        end_llm_execution(token)
     session.commit()
 
     state = session.get(SceneRunState, "CH100_SC01")
-    events = session.execute(select(HumanReviewEvent)).scalars().all()
-    qc_report = session.get(QcReport, result["soft_qc"]["qc_report_id"])
-
-    assert result["scene_status"] == "human_review_required"
-    assert result["soft_qc"]["branch"] == "human_review_required"
-    assert result["soft_qc"]["stop_reason"] == "blocking_soft_qc_issue"
-    assert QC_REPORT_ID_RE.match(result["soft_qc"]["qc_report_id"])
-    assert state.current_final_scene_row_id is None
-    assert state.current_qc_report_id == result["soft_qc"]["qc_report_id"]
-    assert len(events) == 1
-    assert qc_report is not None
+    qc_report = session.get(QcReport, decision.qc_report_id)
+    assert decision.branch == "human_review_required"
+    assert decision.stop_reason == "blocking_soft_qc_issue"
+    assert QC_REPORT_ID_RE.match(decision.qc_report_id)
+    assert state.scene_status == "human_review_required"
+    assert state.current_qc_report_id == decision.qc_report_id
+    assert len(session.execute(select(HumanReviewEvent)).scalars().all()) == 1
     assert qc_report.resolution_code == "soft_block_human"
     assert qc_report.next_action == "human_review_required"
-    drift_issue = next(issue for issue in qc_report.issues_json if issue["issue_key"] == "character_pronoun_drift")
-    assert drift_issue["quality_level"] == "Q1"
-    assert drift_issue["blocking"] is True
-    assert drift_issue["verified_by"]
+    issue = next(item for item in qc_report.issues_json if item["issue_key"] == "forbidden_text")
+    assert issue["quality_level"] == "Q1"
+    assert issue["blocking"] is True
+    assert issue["verified_by"] == "scene_card_forbidden_term"
+
+
+def test_hard_qc_keeps_a_missing_required_group_claim(session) -> None:
+    """批准#11（B04-04）：模型说「必写的第二组没写」，而正文确实只写了第一组——这不是「被场景卡否定」的误报，
+    照常作为已证实的 Q1 退回改写（整段口径下它会被当成误报删掉）。"""
+    _seed_scene(session)
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.must_include_text = "主角交出钥匙，门外传来警笛"
+    state = session.get(SceneRunState, "CH100_SC01")
+    state.active_execution_id = "exec-hard-groups"
+    state.run_execution_status = "active"
+    session.commit()
+    content = "他犹豫很久，最后主角交出钥匙。夜很静。"
+    runner = _QcPayloadRunner(
+        _base_qc_payload(
+            resolution_code="hard_fail_partial",
+            next_action="partial_rewrite",
+            issues=[{"issue_key": "missing_required_text", "message": "场景卡要求门外传来警笛，正文没有。"}],
+        )
+    )
+    token = begin_llm_execution("exec-hard-groups")
+    try:
+        decision = HardQcEngine(session, llm_runner=runner).evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            neutral_draft_row_id="draft_neutral_CH100_SC01",
+            neutral_content=content,
+            execution_step_key="hard_qc:0",
+        )
+    finally:
+        end_llm_execution(token)
+    session.commit()
+
+    report = session.get(QcReport, decision.qc_report_id)
+    assert decision.branch == "rewrite_partial"
+    assert report.resolution_code == "hard_fail_partial"
+    issue = report.issues_json[0]
+    assert issue["issue_key"] == "missing_required_text"
+    assert issue["quality_level"] == "Q1"
+    assert issue["evidence_spans"] == [{"text": "门外传来警笛"}]
+
+
+def test_soft_qc_patch_brief_carries_the_reviewers_located_style_deviations(session) -> None:
+    """批准#13b（B04-20）：评审按维给的定位改法（style_deviations 的 patch_brief）写进修补简报——补丁读的是
+    instruction 条目，以前这些改法校验完就丢了，补丁只拿到笼统的「这一维不像」。"""
+    _seed_scene(session)
+    content = "林岑像一只受惊的鸟，把旧信塞回案卷。她没有回头。"
+    state = session.get(SceneRunState, "CH100_SC01")
+    state.active_execution_id = "exec-soft-deviation"
+    state.run_execution_status = "active"
+    session.commit()
+    payload = _base_soft_qc_payload(
+        resolution_code="soft_patch",
+        next_action="patch",
+        issues=[{"issue_key": "style_reference.language.rhetoric", "message": "比喻太书面。"}],
+        rewrite_brief=["language.rhetoric：比喻换成样例那种日常器物。"],
+        style_deviations=[
+            {
+                "dimension": "language.rhetoric",
+                "severity": "medium",
+                "patch_brief": "第一句的比喻换成样例那种日常器物的比喻，别用鸟。",
+                "evidence": "像一只受惊的鸟",
+            },
+            {"dimension": "language.rhetoric", "severity": "low", "patch_brief": ""},
+        ],
+    )
+    token = begin_llm_execution("exec-soft-deviation")
+    try:
+        decision = SoftQcEngine(session, llm_runner=_QcPayloadRunner(payload)).evaluate(
+            scene_id="CH100_SC01",
+            bundle={
+                "bundle_id": "bundle_CH100_SC01",
+                "bundle_snapshot_hash": "bundle_hash_CH100_SC01",
+                "snapshot": {"scene_id": "CH100_SC01", "chapter_id": "CH100", "inline_digests": {"scene_card": "Goal"}},
+            },
+            source_draft_row_id="draft_style_CH100_SC01",
+            source_draft_content=content,
+            execution_step_key="soft_qc:0",
+        )
+    finally:
+        end_llm_execution(token)
+    session.commit()
+
+    report = session.get(QcReport, decision.qc_report_id)
+    assert decision.branch == "patch"
+    instructions = [entry["instruction"] for entry in report.rewrite_brief_json if entry.get("instruction")]
+    assert instructions == [
+        "language.rhetoric：比喻换成样例那种日常器物。",
+        "language.rhetoric：第一句的比喻换成样例那种日常器物的比喻，别用鸟。（原稿：「像一只受惊的鸟」）",
+    ]
+    deviation = report.rewrite_brief_json[1]
+    assert deviation["kind"] == "style_deviation"
+    assert deviation["dimension"] == "language.rhetoric" and deviation["severity"] == "medium"
 
 
 def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(

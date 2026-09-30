@@ -1,34 +1,26 @@
-"""Cross-scene self-repetition detection.
+"""Cross-scene repetition guidance for drafting — prompt guidance only, never a gate.
 
-Reuses the Rabin-Karp n-gram engine from plagiarism.py to detect
-when a new scene reuses phrases from recent scenes in the same novel.
+Feeds the bundle's literary freshness budget (``bundle_freshness``): n-grams that recur across the recent
+scenes of a chapter, semantic repetition against the recent corpus (metaphors, scene openers, action habits,
+four-character emotional idioms — blueprint §9), and the whole-book list of expressions already used. Nothing
+here blocks or scores a draft; the in-passage ``self_repetition`` dimension is a rule of ``literary_quality``.
 
-Blueprint §9 extension: semantic-level repetition detection for
-metaphor reuse, scene opener patterns, action habits, and
-four-character emotional expressions.
+The corpus is the scenes' current final text (the run state's ``current_final_scene_row_id``), read in one
+query per list of scenes.
 """
 from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, FinalScene, SceneCard, SceneRunState, StoryProject
-from novel_system.services.style_reference.validation.plagiarism import (
-    check_plagiarism,
-    normalize_text_for_matching,
-)
-
-
-@dataclass(slots=True)
-class SelfRepetitionHit:
-    matched_text: str
-    position: int
-    matched_length: int
-    source_scene_id: str
+from novel_system.db.models import ChapterGoal, FinalScene, SceneCard, SceneRunState
+from novel_system.services.narrative_position import NarrativePositionService
+from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
 
 
 @dataclass(slots=True)
@@ -39,71 +31,22 @@ class SemanticRepetitionHit:
     source_scene_id: str
 
 
-@dataclass(slots=True)
-class SelfRepetitionReport:
-    passed: bool
-    hits: list[SelfRepetitionHit] = field(default_factory=list)
-    semantic_hits: list[SemanticRepetitionHit] = field(default_factory=list)
-    corpus_scene_count: int = 0
-    score: float = 1.0
+def _final_texts(session: Session, scene_ids: Iterable[str]) -> dict[str, str]:
+    """场景 → 运行状态指着的那份终稿的正文（一次查询；没有指针、或正文为空的场景不在结果里）。"""
+    ids = [scene_id for scene_id in dict.fromkeys(scene_ids) if scene_id]
+    if not ids:
+        return {}
+    rows = session.execute(
+        select(SceneRunState.scene_id, FinalScene.content)
+        .join(FinalScene, FinalScene.row_id == SceneRunState.current_final_scene_row_id)
+        .where(SceneRunState.scene_id.in_(ids))
+    ).all()
+    return {scene_id: content for scene_id, content in rows if content}
 
 
 class SelfRepetitionDetector:
     def __init__(self, session: Session) -> None:
         self.session = session
-
-    def check(
-        self,
-        new_text: str,
-        scene_id: str,
-        chapter_id: str,
-        *,
-        lookback_scenes: int = 10,
-        ngram_size: int = 8,
-        threshold_chars: int = 12,
-    ) -> SelfRepetitionReport:
-        if not new_text or not new_text.strip():
-            return SelfRepetitionReport(passed=True)
-
-        corpus_texts, source_scene_ids = self._load_corpus(
-            scene_id, chapter_id, lookback_scenes=lookback_scenes,
-        )
-        if not corpus_texts:
-            return SelfRepetitionReport(passed=True)
-
-        report = check_plagiarism(
-            new_text,
-            corpus_texts,
-            ngram_size=ngram_size,
-            threshold_chars=threshold_chars,
-        )
-
-        hits: list[SelfRepetitionHit] = []
-        for plag_hit in report.hits:
-            source_sid = self._find_source_scene(
-                plag_hit.matched_text, corpus_texts, source_scene_ids,
-            )
-            hits.append(SelfRepetitionHit(
-                matched_text=plag_hit.matched_text,
-                position=plag_hit.position,
-                matched_length=plag_hit.matched_length,
-                source_scene_id=source_sid,
-            ))
-
-        semantic_hits = check_semantic_repetition(
-            new_text, corpus_texts, source_scene_ids,
-        )
-
-        all_hit_count = len(hits) + len(semantic_hits)
-        score = max(0.0, round(1.0 - 0.15 * len(hits) - 0.10 * len(semantic_hits), 4))
-
-        return SelfRepetitionReport(
-            passed=all_hit_count == 0,
-            hits=hits,
-            semantic_hits=semantic_hits,
-            corpus_scene_count=len(corpus_texts),
-            score=score,
-        )
 
     def top_repeated_ngrams(
         self,
@@ -136,15 +79,17 @@ class SelfRepetitionDetector:
         repeated.sort(key=lambda pair: pair[1], reverse=True)
         return [ng for ng, _ in repeated[:top_n]]
 
-    def _load_corpus(
+    def recent_corpus(
         self,
         current_scene_id: str,
         chapter_id: str,
         *,
         lookback_scenes: int,
     ) -> tuple[list[str], list[str]]:
-        scene_cards = list(self.session.execute(
-            select(SceneCard)
+        """(终稿正文, 场景号)：本章其余各场（场序倒序）最多 ``lookback_scenes`` 场，不够时补上一章的末几场；
+        没有终稿的场景占名额但不进语料。"""
+        scene_ids = list(self.session.execute(
+            select(SceneCard.scene_id)
             .where(
                 SceneCard.chapter_id == chapter_id,
                 SceneCard.trashed_flag == 0,
@@ -154,70 +99,67 @@ class SelfRepetitionDetector:
             .limit(lookback_scenes)
         ).scalars().all())
 
-        prev_chapters = list(self.session.execute(
-            select(ChapterGoal.chapter_id)
-            .where(
-                ChapterGoal.trashed_flag == 0,
-                ChapterGoal.chapter_id < chapter_id,
-            )
-            .order_by(ChapterGoal.chapter_id.desc())
-            .limit(1)
-        ).scalars().all())
-        for prev_ch_id in prev_chapters:
-            remaining = lookback_scenes - len(scene_cards)
-            if remaining <= 0:
-                break
-            prev_scenes = list(self.session.execute(
-                select(SceneCard)
+        remaining = lookback_scenes - len(scene_ids)
+        previous_chapter_id = self._previous_chapter_id(chapter_id) if remaining > 0 else None
+        if previous_chapter_id:
+            scene_ids.extend(self.session.execute(
+                select(SceneCard.scene_id)
                 .where(
-                    SceneCard.chapter_id == prev_ch_id,
+                    SceneCard.chapter_id == previous_chapter_id,
                     SceneCard.trashed_flag == 0,
                 )
                 .order_by(SceneCard.scene_seq.desc())
                 .limit(remaining)
             ).scalars().all())
-            scene_cards.extend(prev_scenes)
 
-        texts: list[str] = []
-        scene_ids: list[str] = []
-        for sc in scene_cards:
-            state = self.session.get(SceneRunState, sc.scene_id)
-            if state is None or not state.current_final_scene_row_id:
-                continue
-            final = self.session.get(FinalScene, state.current_final_scene_row_id)
-            if final is None or not final.content:
-                continue
-            texts.append(final.content)
-            scene_ids.append(sc.scene_id)
+        finals = _final_texts(self.session, scene_ids)
+        corpus = [(finals[scene_id], scene_id) for scene_id in scene_ids if scene_id in finals]
+        return [text for text, _ in corpus], [scene_id for _, scene_id in corpus]
 
-        return texts, scene_ids
+    # 兼容：bundle 的新鲜度预算（bundle_freshness）还按这个旧的私有名调用；它改用 recent_corpus 之后删掉。
+    _load_corpus = recent_corpus
+
+    def _previous_chapter_id(self, chapter_id: str) -> str | None:
+        """同一部作品里排在 ``chapter_id`` 前面的那一章（目录次序：display_order，缺序的排后，同序按 chapter_id）。
+
+        以前按 chapter_id 的字典序在**所有**作品里找「比它小的那个」——阶段 Y 之后章号是钉住的流水号、不是书里的
+        次序，一部作品的第一章还会拿到别的作品的章，把那本书的终稿混进复读检查的语料（B04-10）。"""
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if chapter is None:
+            return None
+        missing = NarrativePositionService.chapter_missing_expr()
+        order = NarrativePositionService.chapter_order_expr()
+        own_missing = 1 if chapter.display_order is None else 0
+        own_order = int(chapter.display_order or 0)
+        same_project = (
+            ChapterGoal.project_id.is_(None)
+            if chapter.project_id is None
+            else ChapterGoal.project_id == chapter.project_id
+        )
+        return self.session.execute(
+            select(ChapterGoal.chapter_id)
+            .where(
+                same_project,
+                ChapterGoal.trashed_flag == 0,
+                or_(
+                    missing < own_missing,
+                    and_(missing == own_missing, order < own_order),
+                    and_(missing == own_missing, order == own_order, ChapterGoal.chapter_id < chapter.chapter_id),
+                ),
+            )
+            .order_by(missing.desc(), order.desc(), ChapterGoal.chapter_id.desc())
+            .limit(1)
+        ).scalars().first()
 
     def _recent_scene_texts(self, chapter_id: str, lookback: int) -> list[str]:
-        scene_cards = self.session.execute(
-            select(SceneCard)
+        scene_ids = self.session.execute(
+            select(SceneCard.scene_id)
             .where(SceneCard.chapter_id == chapter_id, SceneCard.trashed_flag == 0)
             .order_by(SceneCard.scene_seq.desc())
             .limit(lookback)
         ).scalars().all()
-        texts: list[str] = []
-        for sc in scene_cards:
-            state = self.session.get(SceneRunState, sc.scene_id)
-            if state and state.current_final_scene_row_id:
-                final = self.session.get(FinalScene, state.current_final_scene_row_id)
-                if final and final.content:
-                    texts.append(final.content)
-        return texts
-
-    @staticmethod
-    def _find_source_scene(
-        matched_text: str,
-        corpus_texts: list[str],
-        source_scene_ids: list[str],
-    ) -> str:
-        for text, sid in zip(corpus_texts, source_scene_ids):
-            if matched_text in text:
-                return sid
-        return source_scene_ids[0] if source_scene_ids else "unknown"
+        finals = _final_texts(self.session, scene_ids)
+        return [finals[scene_id] for scene_id in scene_ids if scene_id in finals]
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +359,6 @@ def _detect_emotional_expression_reuse(
 # ---------------------------------------------------------------------------
 
 LIFETIME_TOP_LIMIT = 20
-CROSS_PROJECT_TOP_LIMIT = 15
-DEFAULT_CROSS_PROJECT_PENALTY = 0.5
-DEFAULT_MAX_SIBLING_PROJECTS = 5
 
 
 @dataclass
@@ -445,31 +384,15 @@ def extract_scene_expressions(scene_id: str, text: str) -> SceneExpressionSnapsh
 
 
 class LifetimeExpressionRegistry:
-    """Accumulates expression usage across ALL finalized scenes of a project.
-
-    Hydrates lazily from FinalScene rows on first query per project.
-    Call record_scene_expressions() after scene finalization for incremental update.
-    """
+    """Expressions already used across ALL finalized scenes of a project, read fresh on every call
+    (one query for the scene ids, one for their current final texts)."""
 
     def __init__(self, session: Session) -> None:
         self.session = session
-        self._cache: dict[str, list[SceneExpressionSnapshot]] = {}
-
-    def record_scene_expressions(
-        self, scene_id: str, text: str, project_id: str | None = None,
-    ) -> SceneExpressionSnapshot:
-        snapshot = extract_scene_expressions(scene_id, text)
-        pid = project_id or self._resolve_project_id(scene_id)
-        if pid:
-            snapshots = self._cache.setdefault(pid, [])
-            self._cache[pid] = [s for s in snapshots if s.scene_id != scene_id]
-            self._cache[pid].append(snapshot)
-        return snapshot
 
     def get_lifetime_avoidance_guidance(self, project_id: str) -> str:
         """Format top-20 most frequently used patterns as avoidance guidance."""
-        self._ensure_hydrated(project_id)
-        acc = self._aggregate(project_id)
+        acc = self._aggregate(self._snapshots(project_id))
         if not any(acc.values()):
             return ""
         parts: list[str] = ["【全书已用表达禁用清单 -- 请勿在新场景中重复使用】"]
@@ -486,41 +409,17 @@ class LifetimeExpressionRegistry:
                     parts.append(f"  - {expr} (x{count})")
         return "\n".join(parts)
 
-    def format_lifetime_banned_expressions(self, project_id: str) -> list[str]:
-        """Flat list sorted by frequency, capped at LIFETIME_TOP_LIMIT."""
-        self._ensure_hydrated(project_id)
-        acc = self._aggregate(project_id)
-        merged: Counter[str] = Counter()
-        for key in ("metaphors", "openers", "action_habits", "emotional_idioms"):
-            merged.update(acc.get(key, Counter()))
-        return [expr for expr, _ in merged.most_common(LIFETIME_TOP_LIMIT)]
-
-    def invalidate(self, project_id: str) -> None:
-        self._cache.pop(project_id, None)
-
-    def _resolve_project_id(self, scene_id: str) -> str | None:
-        card = self.session.get(SceneCard, scene_id)
-        return card.project_id if card else None
-
-    def _ensure_hydrated(self, project_id: str) -> None:
-        if project_id in self._cache:
-            return
-        snapshots: list[SceneExpressionSnapshot] = []
+    def _snapshots(self, project_id: str) -> list[SceneExpressionSnapshot]:
         scene_ids = self.session.execute(
             select(SceneCard.scene_id).where(
                 SceneCard.project_id == project_id, SceneCard.trashed_flag == 0,
             )
         ).scalars().all()
-        for sid in scene_ids:
-            state = self.session.get(SceneRunState, sid)
-            if state and state.current_final_scene_row_id:
-                final = self.session.get(FinalScene, state.current_final_scene_row_id)
-                if final and final.content:
-                    snapshots.append(extract_scene_expressions(sid, final.content))
-        self._cache[project_id] = snapshots
+        finals = _final_texts(self.session, scene_ids)
+        return [extract_scene_expressions(scene_id, finals[scene_id]) for scene_id in scene_ids if scene_id in finals]
 
-    def _aggregate(self, project_id: str) -> dict[str, Counter]:
-        snapshots = self._cache.get(project_id, [])
+    @staticmethod
+    def _aggregate(snapshots: list[SceneExpressionSnapshot]) -> dict[str, Counter]:
         result: dict[str, Counter] = {
             "metaphors": Counter(), "openers": Counter(),
             "action_habits": Counter(), "emotional_idioms": Counter(),
@@ -535,245 +434,3 @@ class LifetimeExpressionRegistry:
             for i in snap.emotional_idioms:
                 result["emotional_idioms"][i] += 1
         return result
-
-    # ------------------------------------------------------------------
-    # Cross-project (series-level) repetition detection
-    # ------------------------------------------------------------------
-
-    def cross_project_banned_expressions(
-        self,
-        project_id: str,
-        *,
-        max_sibling_projects: int = DEFAULT_MAX_SIBLING_PROJECTS,
-    ) -> CrossProjectExpressionBudget:
-        """Collect banned expressions from sibling projects.
-
-        Since StoryProject has no explicit author/group field, all
-        non-trashed projects other than *project_id* are treated as
-        siblings (the single-author assumption: one DB instance serves
-        one author, so every project is part of the same creative
-        corpus).
-
-        Results are capped to *max_sibling_projects* most-recently-
-        updated projects to keep hydration cost bounded.
-
-        Returns a :class:`CrossProjectExpressionBudget` that the caller
-        can merge with the per-project budget at a reduced penalty
-        weight (series-level repetition is less severe than within-book
-        repetition).
-        """
-        sibling_ids = self._find_sibling_project_ids(
-            project_id, max_sibling_projects=max_sibling_projects,
-        )
-        if not sibling_ids:
-            return CrossProjectExpressionBudget(
-                project_id=project_id,
-                sibling_project_ids=[],
-                expressions_by_category={
-                    "metaphors": Counter(),
-                    "openers": Counter(),
-                    "action_habits": Counter(),
-                    "emotional_idioms": Counter(),
-                },
-                flat_expressions=[],
-            )
-
-        merged: dict[str, Counter] = {
-            "metaphors": Counter(),
-            "openers": Counter(),
-            "action_habits": Counter(),
-            "emotional_idioms": Counter(),
-        }
-        for sid in sibling_ids:
-            self._ensure_hydrated(sid)
-            acc = self._aggregate(sid)
-            for key in merged:
-                merged[key].update(acc.get(key, Counter()))
-
-        all_counts: Counter = Counter()
-        for key in ("metaphors", "openers", "action_habits", "emotional_idioms"):
-            all_counts.update(merged[key])
-        flat = [expr for expr, _ in all_counts.most_common(CROSS_PROJECT_TOP_LIMIT)]
-
-        return CrossProjectExpressionBudget(
-            project_id=project_id,
-            sibling_project_ids=sibling_ids,
-            expressions_by_category=merged,
-            flat_expressions=flat,
-        )
-
-    def get_cross_project_avoidance_guidance(
-        self,
-        project_id: str,
-        *,
-        max_sibling_projects: int = DEFAULT_MAX_SIBLING_PROJECTS,
-    ) -> str:
-        """Format cross-project banned expressions as avoidance guidance.
-
-        Returns an empty string when there are no sibling projects or no
-        overlapping expressions, so callers can simply test truthiness.
-        """
-        budget = self.cross_project_banned_expressions(
-            project_id, max_sibling_projects=max_sibling_projects,
-        )
-        if not budget.flat_expressions:
-            return ""
-
-        parts: list[str] = [
-            "【跨作品系列级表达禁用清单 -- 在其他作品中已反复出现，请寻找替代】",
-            f"(来源：{len(budget.sibling_project_ids)} 部关联作品)",
-        ]
-        for label, key in [
-            ("其他作品已用的比喻/意象", "metaphors"),
-            ("其他作品已用的场景开头方式", "openers"),
-            ("其他作品已用的角色动作口癖", "action_habits"),
-            ("其他作品已用的情绪惯用语", "emotional_idioms"),
-        ]:
-            counter = budget.expressions_by_category.get(key, Counter())
-            if counter:
-                top = counter.most_common(CROSS_PROJECT_TOP_LIMIT)
-                parts.append(f"{label}：")
-                for expr, count in top:
-                    parts.append(f"  - {expr} (x{count})")
-        return "\n".join(parts)
-
-    def _find_sibling_project_ids(
-        self,
-        project_id: str,
-        *,
-        max_sibling_projects: int,
-    ) -> list[str]:
-        """Return IDs of the most-recently-updated sibling projects.
-
-        All non-trashed projects other than *project_id* qualify;
-        ordered by ``updated_at`` descending so the most active
-        projects take priority when the cap is applied.
-        """
-        rows = self.session.execute(
-            select(StoryProject.project_id)
-            .where(
-                StoryProject.project_id != project_id,
-                StoryProject.trashed_flag == 0,
-            )
-            .order_by(StoryProject.updated_at.desc())
-            .limit(max_sibling_projects)
-        ).scalars().all()
-        return list(rows)
-
-
-# ---------------------------------------------------------------------------
-# Cross-project expression budget — data container
-# ---------------------------------------------------------------------------
-
-@dataclass
-class CrossProjectExpressionBudget:
-    """Aggregated expression usage from sibling projects.
-
-    Returned by
-    :meth:`LifetimeExpressionRegistry.cross_project_banned_expressions`.
-    The caller decides how to weight these entries relative to the
-    within-book budget (see :func:`merge_freshness_budgets`).
-    """
-    project_id: str
-    sibling_project_ids: list[str]
-    expressions_by_category: dict[str, Counter] = field(default_factory=dict)
-    flat_expressions: list[str] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Budget merging — combine per-project + cross-project banned expressions
-# ---------------------------------------------------------------------------
-
-@dataclass
-class MergedFreshnessBudget:
-    """Combined per-project and cross-project freshness budget.
-
-    *project_expressions* are the within-book banned expressions
-    (full penalty).  *cross_project_expressions* come from sibling
-    projects (reduced penalty via *cross_project_penalty*).
-    *combined_expressions* is the deduplicated, penalty-weighted
-    union sorted by effective weight descending.
-    """
-    project_expressions: list[str]
-    cross_project_expressions: list[str]
-    cross_project_penalty: float
-    combined_expressions: list[tuple[str, float]] = field(default_factory=list)
-
-
-def merge_freshness_budgets(
-    project_budget: list[str],
-    cross_project_budget: CrossProjectExpressionBudget,
-    *,
-    cross_project_penalty: float = DEFAULT_CROSS_PROJECT_PENALTY,
-) -> MergedFreshnessBudget:
-    """Merge per-project and cross-project banned expressions.
-
-    Within-book expressions carry a weight of ``1.0``; cross-project
-    expressions carry *cross_project_penalty* (default ``0.5``,
-    reflecting the lesser severity of series-level repetition).
-
-    If an expression appears in BOTH the current project and sibling
-    projects, it keeps the higher (``1.0``) weight, avoiding double
-    counting.
-
-    The *combined_expressions* list is sorted by effective weight
-    descending, then alphabetically, and is suitable for prompt
-    injection as a prioritized avoidance list.
-
-    Parameters
-    ----------
-    project_budget:
-        Flat list of banned expressions from the current project
-        (e.g. from ``format_lifetime_banned_expressions``).
-    cross_project_budget:
-        :class:`CrossProjectExpressionBudget` from
-        ``cross_project_banned_expressions``.
-    cross_project_penalty:
-        Weight multiplier for cross-project expressions (0.0-1.0).
-    """
-    weights: dict[str, float] = {}
-
-    for expr in project_budget:
-        weights[expr] = 1.0
-
-    for expr in cross_project_budget.flat_expressions:
-        if expr not in weights:
-            weights[expr] = cross_project_penalty
-
-    combined = sorted(
-        weights.items(),
-        key=lambda pair: (-pair[1], pair[0]),
-    )
-
-    return MergedFreshnessBudget(
-        project_expressions=project_budget,
-        cross_project_expressions=cross_project_budget.flat_expressions,
-        cross_project_penalty=cross_project_penalty,
-        combined_expressions=combined,
-    )
-
-
-def format_merged_freshness_guidance(merged: MergedFreshnessBudget) -> str:
-    """Format a :class:`MergedFreshnessBudget` as prompt-injectable guidance.
-
-    High-weight (within-book) expressions are listed under a strict
-    "do not use" heading; lower-weight (cross-project) expressions
-    appear under a softer "try to avoid" heading.
-    """
-    if not merged.combined_expressions:
-        return ""
-
-    strict = [expr for expr, w in merged.combined_expressions if w >= 1.0]
-    soft = [expr for expr, w in merged.combined_expressions if w < 1.0]
-
-    parts: list[str] = []
-    if strict:
-        parts.append("【本书已用表达 -- 禁止重复】")
-        for expr in strict:
-            parts.append(f"  - {expr}")
-    if soft:
-        parts.append("【系列其他作品已用表达 -- 尽量避免】")
-        for expr in soft:
-            parts.append(f"  - {expr}")
-
-    return "\n".join(parts)

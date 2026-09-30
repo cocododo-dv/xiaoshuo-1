@@ -81,7 +81,7 @@ def test_llm_wordlist_blocking_keys_downgrade_without_deterministic_evidence() -
         assert issue["blocking"] is False, key
 
 
-def test_llm_source_leak_claim_downgrades_when_scan_is_clean() -> None:
+def test_llm_source_leak_claim_is_a_warning_when_scan_is_clean() -> None:
     issue = classify_issue(
         {"issue_key": "source_leak_risk", "message": "可能泄漏"},
         scene=_scene(),
@@ -89,45 +89,34 @@ def test_llm_source_leak_claim_downgrades_when_scan_is_clean() -> None:
     )
     assert issue["quality_level"] == "Q2"
     assert issue["blocking"] is False
-    assert issue["downgraded_from"] == "Q0"
-    assert issue["downgrade_reason"] == "no_deterministic_verification"
 
 
-def test_llm_pronoun_drift_claim_downgrades_without_deterministic_detector() -> None:
+def test_llm_pronoun_drift_claim_never_blocks() -> None:
+    """代词漂移没有确定性检测器（它只认声线卡里的代词，随声线卡删了，R8）：模型的这条意见只是 Q2 警告。"""
     issue = classify_issue(
         {"issue_key": "character_pronoun_drift", "message": "代词漂移", "source": "llm_advisory"},
         scene=_scene(),
         content="正文",
     )
     assert issue["quality_level"] == "Q2"
-    assert issue["downgraded_from"] == "Q1"
+    assert issue["blocking"] is False
+    assert issue["verified_by"] is None
 
 
 # ---------- 确定性复核通过 → Q0/Q1 + verified_by ----------
 
-def test_source_leak_verified_by_deterministic_scan_blocks(monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
+def test_protected_term_in_the_text_never_blocks(monkeypatch) -> None:
+    """批准#12（B04-15）：受保护专名处处只提醒——正文里真有一个全局受保护专名，模型的 source_leak_risk 也只是 Q2
+    警告；与参考书连续 12 字相同（抄袭门）才是唯一能拦下正文的一条。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["灰港学院"]')
     issue = classify_issue(
         {"issue_key": "source_leak_risk", "message": "命中保护词"},
         scene=_scene(),
-        content="他想起路明非说过的话。",
+        content="他想起在灰港学院听过的话。",
     )
-    assert issue["quality_level"] == "Q0"
-    assert issue["blocking"] is True
-    assert issue["verified_by"] == "source_safety_scan"
-    assert issue["authority_ref"]
-
-
-def test_deterministic_pronoun_drift_is_verified_q1() -> None:
-    issue = classify_issue(
-        {"issue_key": "character_pronoun_drift", "message": "代词漂移", "source": "deterministic"},
-        scene=_scene(),
-        content="正文",
-    )
-    assert issue["quality_level"] == "Q1"
-    assert issue["blocking"] is True
-    assert issue["verified_by"]
-    assert issue["source"] == "deterministic"
+    assert issue["quality_level"] == "Q2"
+    assert issue["blocking"] is False
+    assert issue["verified_by"] is None
 
 
 def test_missing_required_text_verified_only_when_truly_missing() -> None:
@@ -150,6 +139,20 @@ def test_missing_required_text_verified_only_when_truly_missing() -> None:
     assert satisfied["downgraded_from"] == "Q1"
 
 
+def test_missing_required_group_is_verified_even_when_another_group_is_present() -> None:
+    """批准#11：必写内容按组复核——写了第一组、漏了第二组，模型说「缺了警笛」就是已证实的 Q1，证据指出漏的那一组。"""
+    scene = _scene(must_include_text="主角交出钥匙，门外传来警笛")
+    issue = classify_issue(
+        {"issue_key": "missing_required_text", "message": "缺少：门外传来警笛"},
+        scene=scene,
+        content="他犹豫很久，最后主角交出钥匙。夜很静。",
+    )
+    assert issue["quality_level"] == "Q1"
+    assert issue["blocking"] is True
+    assert issue["verified_by"] == "scene_card_required_text"
+    assert issue["evidence_spans"] == [{"text": "门外传来警笛"}]
+
+
 def test_forbidden_text_verified_only_when_term_present() -> None:
     scene = _scene(forbidden_text="青花瓷")
     hit = classify_issue(
@@ -167,6 +170,19 @@ def test_forbidden_text_verified_only_when_term_present() -> None:
     )
     assert clean["quality_level"] == "Q2"
     assert clean["downgraded_from"] == "Q1"
+
+
+def test_forbidden_term_evidence_names_the_alternative_that_matched() -> None:
+    """B04-19：``A|B`` 的禁用词按命中的那个写法作证据——整条 ``黑伞|雨伞`` 不在正文里，证据以前是空的。"""
+    scene = _scene(forbidden_text="黑伞|雨伞、钥匙")
+    issue = classify_issue(
+        {"issue_key": "forbidden_text", "message": "出现禁用词"},
+        scene=scene,
+        content="她撑开雨伞走了。",
+    )
+    assert issue["quality_level"] == "Q1"
+    assert issue["verified_by"] == "scene_card_forbidden_term"
+    assert issue["evidence_spans"] == [{"text": "雨伞"}]
 
 
 def test_the_legacy_reference_policy_sentence_never_verifies_a_forbidden_text_issue() -> None:
@@ -254,7 +270,12 @@ def test_helpers_split_blocking_and_warning_sets() -> None:
     scene = _scene()
     classified = classify_issues(
         [
-            {"issue_key": "character_pronoun_drift", "message": "drift", "source": "deterministic"},
+            {
+                "issue_key": "event_log_consistency_violation",
+                "message": "drift",
+                "source": "deterministic",
+                "details": {"entity_id": "CHAR_A", "fact_key": "location"},
+            },
             {"issue_key": "scene_conflict_missing", "message": "conflict"},
             {"issue_key": "style_compliance", "message": "style"},
         ],
@@ -262,4 +283,4 @@ def test_helpers_split_blocking_and_warning_sets() -> None:
         content="正文",
     )
     assert has_blocking(classified) is True
-    assert [i["issue_key"] for i in blocking_issues(classified)] == ["character_pronoun_drift"]
+    assert [i["issue_key"] for i in blocking_issues(classified)] == ["event_log_consistency_violation"]

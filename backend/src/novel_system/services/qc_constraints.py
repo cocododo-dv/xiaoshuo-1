@@ -63,14 +63,23 @@ def named_scene_card_sources(
     return sources
 
 
-def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
+def forbidden_hits(forbidden_text: Any, content: str) -> list[str]:
+    """``forbidden_text`` 里在 ``content`` 中按字面出现的禁用写法（按词表顺序、去重）。
+
+    ``A|B`` 报的是真正出现的那个写法（``雨伞``），不是整条 ``黑伞|雨伞``——证据要能在正文里找到。
+    防抄袭政策句不是禁用词表（见 :func:`forbidden_terms`）。"""
     if not isinstance(forbidden_text, str) or not forbidden_text.strip():
-        return False
-    return any(
-        alternative in content
-        for term in forbidden_terms(forbidden_text)
-        for alternative in (constraint_alternatives(term) or [term])
-    )
+        return []
+    hits: list[str] = []
+    for term in forbidden_terms(forbidden_text):
+        for alternative in constraint_alternatives(term) or [term]:
+            if alternative in content and alternative not in hits:
+                hits.append(alternative)
+    return hits
+
+
+def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
+    return bool(forbidden_hits(forbidden_text, content))
 
 
 def significant_fragments(text: str) -> list[str]:
@@ -100,6 +109,20 @@ def source_field_satisfied(source_text: str, content: str) -> bool:
         if len(matched) >= min(2, len(fragments)):
             return True
     return False
+
+
+def required_groups_missing(must_include_text: Any, content: str) -> list[str]:
+    """``must_include_text`` 里在 ``content`` 中没有落实的组（按 :func:`constraint_terms` 分组，组内 ``A|B``
+    任一即可、容忍改写——同 :func:`source_field_satisfied`）。
+
+    起草、硬质检、分类器复核与成稿门都按组查（批准#11）：整段只要沾上两个三字片段就算满足的旧口径，会放过一整组
+    没写的正文（「主角交出钥匙，门外传来警笛」只写了前一半也算满足）。一整段分不出 ≥2 字的组时按整段查。"""
+    if not isinstance(must_include_text, str) or not must_include_text.strip():
+        return []
+    groups = constraint_terms(must_include_text)
+    if not groups:
+        return [] if source_field_satisfied(must_include_text, content) else [must_include_text.strip()]
+    return [group for group in groups if not source_field_satisfied(group, content)]
 
 
 def issue_mentions_source(issue_blob: str, source_text: str) -> bool:

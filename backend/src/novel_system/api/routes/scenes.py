@@ -63,7 +63,7 @@ from novel_system.services.scene_run_jobs import (
     start_scene_run_job_worker,
 )
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
-from novel_system.services.text_validation import clean_backfill_markers, validate_user_text_payload
+from novel_system.services.text_input import clean_backfill_markers, validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 from novel_system.services.writer_review import WriterReviewService
 

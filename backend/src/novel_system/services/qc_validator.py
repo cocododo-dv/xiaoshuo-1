@@ -70,7 +70,7 @@ def _normalize_local_model_payload(qc_type: str, payload: dict) -> dict:
         normalized["style_deviations"] = [_normalize_style_deviation(item) for item in style_deviations]
     _derive_pass_flag(qc_type, normalized)
     if qc_type == "soft_qc":
-        _normalize_style_scores_alias(normalized)
+        apply_style_scores_alias(normalized)
         _normalize_soft_waive_note(normalized)
     _drop_unknown_contract_keys(qc_type, normalized)
     return normalized
@@ -131,7 +131,11 @@ def _normalize_issue_pair(key: object, value: object) -> object:
     }
 
 
-def _normalize_style_scores_alias(payload: dict) -> None:
+def apply_style_scores_alias(payload: dict) -> None:
+    """旧的 ``style_scores`` 别名（本地模型给的 ``{维: 分}``）→ ``style_dimensions`` / ``style_score``（就地改）。
+
+    软 QC 的节点出口先调它、再按模板声明的刻度换算分数（``qc_engine._normalize_soft_qc_scores``）；这里的校验
+    只收 0–1——别名要是等到校验时才摊开，0–10 的分数已经错过了换算。"""
     raw_scores = payload.pop("style_scores", None)
     if not isinstance(raw_scores, dict):
         return

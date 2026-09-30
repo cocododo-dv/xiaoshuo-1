@@ -52,6 +52,7 @@ from novel_system.services.source_safety import (
     find_protected_term_spans,
     normalize_for_term_match,
 )
+from novel_system.services.style_reference.paragraph_root import COUNT_KEY, ROOT_KEY
 from novel_system.services.style_reference.validation.plagiarism import (
     normalize_text_for_matching,
     normalize_with_offsets,
@@ -198,12 +199,26 @@ class _BookCopyIndex:
 
 
 def _book_fingerprint(session: Session, book_id: str) -> tuple[Any, ...] | None:
-    """段落表的廉价指纹：统计里记着的根哈希（有就用）+ 段数 / 总字数 / 最新段落时间 + 书的校验和与建书时间
-    （同一个书号删了重导入也认得出来）。"""
-    book = session.get(StyleReferenceBook, book_id)
-    if book is None:
+    """段落表的廉价指纹（索引缓存与结果缓存的键），加上书的校验和与建书时间（同一个书号删了重导入也认得出来）。
+
+    书的统计里存着段落根哈希时就用它：改段落文本或行的写入者负责把它 pop 掉（契约 §3.1；导入之后只有校对工具
+    会动段落行），段落表一变它就没了或换了——用不着每次检查都把全书段落数一遍、加一遍长度（2.6 万段一次十几毫秒，
+    一场运行要查十来次，B04-25）。没存根哈希时照旧按段数 / 总字数 / 最新段落时间认。两条路都现读库：会话在提交时
+    不过期对象，身份映射里的书可能是别的连接改之前的样子。"""
+    row = session.execute(
+        select(
+            func.json_extract(StyleReferenceBook.stats_json, f"$.{ROOT_KEY}"),
+            func.json_extract(StyleReferenceBook.stats_json, f"$.{COUNT_KEY}"),
+            StyleReferenceBook.text_checksum,
+            StyleReferenceBook.created_at,
+        ).where(StyleReferenceBook.book_id == book_id)
+    ).one_or_none()
+    if row is None:
         return None
-    stats = book.stats_json if isinstance(book.stats_json, dict) else {}
+    root, stored_count, checksum, created_at = row
+    identity = (str(checksum or ""), str(created_at or ""))
+    if isinstance(root, str) and root:
+        return ("root", root, str(stored_count if stored_count is not None else ""), *identity)
     count, total, latest = session.execute(
         select(
             func.count(StyleReferenceParagraph.paragraph_id),
@@ -211,14 +226,7 @@ def _book_fingerprint(session: Session, book_id: str) -> tuple[Any, ...] | None:
             func.max(StyleReferenceParagraph.created_at),
         ).where(StyleReferenceParagraph.book_id == book_id)
     ).one()
-    return (
-        str(stats.get("paragraph_root_sha256") or ""),
-        int(count or 0),
-        int(total or 0),
-        str(latest or ""),
-        str(book.text_checksum or ""),
-        str(book.created_at or ""),
-    )
+    return ("scan", int(count or 0), int(total or 0), str(latest or ""), *identity)
 
 
 def _book_index(session: Session, book_id: str, fingerprint: tuple[Any, ...]) -> _BookCopyIndex:
@@ -487,21 +495,26 @@ def copy_gate_policies(
     *,
     scope: Any = None,
     bundle_snapshot: Mapping[str, Any] | None = None,
+    policy: Any = None,
 ) -> list[Any]:
     """抄袭门要比对的绑定：bundle 冻结的那份（绑定时）+ 作用域当前的活动绑定（轻量现解析，不冻结契约）。
 
     两边都查：采纳作者稿、成稿中心提升等路径上，正文可能在冻结之后才粘进参考原文，冻结时没绑定或换了书，
     今天绑着的书照样要拦。哪一边解析降级（契约损坏、现解析失败）就把那份降级策略也带上——
     :func:`check_reference_copy` 据此把结果标成 ``unavailable``（那一边没有查成），而不是悄悄少查一边。
+
+    ``policy``：调用方已经解析好的这一场的策略（成稿门一次评估只解析一份，文学规则与抄袭门看的是同一份）——给了
+    就用它代替从 ``bundle_snapshot`` 解析的那份；它本身已是现解析时不再补一份现解析。
     """
-    from novel_system.services.style_policy import style_policy_for_bundle, style_policy_live
+    from novel_system.services.style_policy import MODE_LIVE, style_policy_for_bundle, style_policy_live
 
     policies: list[Any] = []
-    if isinstance(bundle_snapshot, Mapping):
-        frozen = style_policy_for_bundle(bundle_snapshot)
-        if frozen.bound or _policy_unavailable_reason(frozen) is not None:
-            policies.append(frozen)
-    if scope is not None:
+    primary = policy
+    if primary is None and isinstance(bundle_snapshot, Mapping):
+        primary = style_policy_for_bundle(bundle_snapshot)
+    if primary is not None and (primary.bound or _policy_unavailable_reason(primary) is not None):
+        policies.append(primary)
+    if scope is not None and getattr(primary, "mode", None) != MODE_LIVE:
         live = style_policy_live(session, scope, freeze_contract=False)
         if live.bound or _policy_unavailable_reason(live) is not None:
             policies.append(live)

@@ -26,6 +26,7 @@ from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     check_reference_copy_for_scope,
     copy_block_author_action,
+    copy_gate_policies,
 )
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
@@ -150,6 +151,64 @@ def test_index_is_built_once_per_book_and_results_are_cached(session, monkeypatc
     assert builds == [refs["book_id"], refs["book_id"]]
 
 
+def test_a_stored_paragraph_root_spares_the_whole_book_scan(session) -> None:
+    """B04-25：书的统计里存着段落根哈希时，指纹就用它——不再每次检查都把全书段落数一遍、加一遍长度（2.6 万段
+    一次十几毫秒，一场运行要查十来次）。改段落的写入者负责把根哈希 pop 掉（契约 §3.1）：pop 之后下一次检查照旧
+    按段落表认出新添的段落。根哈希每次现读库，会话里旧的书对象骗不了它。"""
+    from sqlalchemy import event, func, update
+
+    from novel_system.db.models import StyleReferenceBook
+    from novel_system.services.style_reference.paragraph_root import (
+        COUNT_KEY,
+        ROOT_KEY,
+        compute_paragraph_root_fast,
+        patch_book_stats,
+    )
+
+    scene = _seed_scene(session)
+    refs = _bind(session)
+    root, count = compute_paragraph_root_fast(session, refs["book_id"])
+    patch_book_stats(session, refs["book_id"], {ROOT_KEY: root, COUNT_KEY: count})
+    session.commit()
+    policy = style_policy_live(session, scene, freeze_contract=False)
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, *_args):
+        statements.append(statement.lower())
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        clean = check_reference_copy(session, "一段干净的正文，说的是另一件事。", policy=policy)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert clean.blocked is False
+    assert not any("sum(length(" in statement for statement in statements), "存着根哈希时不再扫全书段落"
+
+    # 守 §3.1 的写入者：添一段，同时把根哈希 pop 掉（另一个连接改的也一样——根哈希现读库）
+    session.add(
+        StyleReferenceParagraph(
+            paragraph_id="sr_par_copy_gate_rooted_late",
+            book_id=refs["book_id"],
+            paragraph_index=99,
+            paragraph_type="narration",
+            start_offset=0,
+            end_offset=10,
+            text="后来添进来的一段参考原文，足够长也足够特别。",
+            char_count=22,
+        )
+    )
+    session.execute(
+        update(StyleReferenceBook)
+        .where(StyleReferenceBook.book_id == refs["book_id"])
+        .values(stats_json=func.json_remove(StyleReferenceBook.stats_json, f"$.{ROOT_KEY}", f"$.{COUNT_KEY}"))
+        .execution_options(synchronize_session=False)
+    )
+    session.commit()
+    late = check_reference_copy(session, "他说：后来添进来的一段参考原文，足够长。", policy=policy)
+    assert late.blocked is True
+
+
 def test_protected_names_come_from_generation_banned_terms_and_environment(session, monkeypatch) -> None:
     """受保护专名（画像现行的生成期禁用词 + 环境变量全局词）只报、从不拦（H1）；检查记录不写词本身。"""
     scene = _seed_scene(session)
@@ -236,6 +295,23 @@ def test_unbound_and_empty_text_pass(session) -> None:
     _bind(session)
     policy = style_policy_live(session, scene, freeze_contract=False)
     assert check_reference_copy(session, "   ", policy=policy).blocked is False
+
+
+def test_copy_gate_policies_take_the_callers_resolved_policy(session) -> None:
+    """B04-26：成稿门把已经解析好的这一场的策略交给 ``copy_gate_policies``（文学规则与抄袭门看同一份）——它就是
+    第一份；它本身已是现解析时不再补一份现解析；冻结了「无绑定」时照旧补上当前的活动绑定。"""
+    scene = _seed_scene(session)
+    _bind(session)
+    live = style_policy_live(session, scene, freeze_contract=False)
+    assert live.bound and live.mode == "live"
+    assert copy_gate_policies(session, scope=scene, policy=live) == [live]
+    frozen = StylePolicy(bound=True, mode="frozen", profile_id="sr_profile_frozen", book_id="sr_book_frozen")
+    policies = copy_gate_policies(session, scope=scene, policy=frozen)
+    assert policies[0] is frozen
+    assert [item.mode for item in policies] == ["frozen", "live"]
+    assert [item.mode for item in copy_gate_policies(session, scope=scene, policy=StylePolicy(mode="absent"))] == ["live"]
+    degraded = StylePolicy(mode="degraded", error_code="runtime_contract_invalid")
+    assert copy_gate_policies(session, scope=None, policy=degraded) == [degraded]
 
 
 def test_scope_helper_checks_the_live_binding_even_when_the_bundle_froze_none(session) -> None:

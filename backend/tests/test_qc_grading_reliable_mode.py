@@ -314,41 +314,6 @@ def test_verified_missing_required_text_still_blocks_and_keeps_draft(
     assert issue["verified_by"] == "scene_card_required_text"
 
 
-def test_deterministic_pronoun_drift_still_blocks(session) -> None:
-    _seed_scene(session, must_include="")
-    scene = session.get(SceneCard, SCENE_ID)
-    scene.pov_character_id = "LIN_CEN"
-    scene.onstage_chars_json = ["LIN_CEN"]
-    voice = session.get(VoiceProfile, "voice_profile_VOICE_CHAR_A_v1")
-    voice.voice_profile_id = "VOICE_LIN_CEN"
-    voice.character_id = "LIN_CEN"
-    voice.content = "角色名：林岑\n代词：她\n角色职责：档案修复师"
-    session.commit()
-
-    class DriftSceneClient(FakeSceneClient):
-        def generate(self, request: LLMRequest) -> LLMResponse:
-            self.requests.append(request)
-            payload = {"scene_text": "林岑把盐钟残片放在灯下。他确认刻痕被人改过，声音仍然很稳。", "continuity_notes": []}
-            return _response(payload, request_id=f"resp_scene_{len(self.requests):03d}", model="fake-scene-model")
-
-    orchestrator = Orchestrator(
-        session,
-        scene_generation_service=SceneGenerationService(session, llm_client=DriftSceneClient()),
-        hard_qc_engine=HardQcEngine(session, llm_client=FakeQcClient(_hard_pass())),
-        soft_qc_engine=SoftQcEngine(session, llm_client=FakeSequenceQcClient([_soft_pass()])),
-    )
-
-    result = orchestrator.run_scene(SCENE_ID)
-    session.commit()
-
-    assert result["scene_status"] == "hard_qc_partial_rewrite_required"
-    report = session.execute(select(QcReport).where(QcReport.qc_type == "hard_qc")).scalars().one()
-    issue = report.issues_json[0]
-    assert issue["issue_key"] == "character_pronoun_drift"
-    assert issue["quality_level"] == "Q1"
-    assert issue["verified_by"]
-
-
 # ---------- QC 执行失败不撤销正文（§5.4/§7.7） ----------
 
 def test_hard_qc_execution_failure_degrades_to_continue(session) -> None:

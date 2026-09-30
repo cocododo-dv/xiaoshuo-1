@@ -804,6 +804,69 @@ def test_archiver_keeps_literary_findings_advisory(client, session):
     assert attempt.details_json["final_text_gate"]["content_hash"] == gate["content_hash"]
 
 
+def test_final_gate_does_not_warn_about_the_diagnostic_evidence_signal(session):
+    """B04-17：「文字够不够下判断」是只作诊断的伪信号，不是正文的毛病——短稿不再多挂一条
+    ``literary:automated_evidence_sufficiency`` 警告（英文原话、深改面板里也忽略不掉）。"""
+    from novel_system.services.final_text_gate import FinalTextGateService
+
+    gate = FinalTextGateService(session).evaluate(scene_id="scene_short_text", content="她推开门，选择离开。")
+
+    literary = gate["literary_quality"]
+    assert literary["signals"]["automated_evidence_sufficiency"]["risk"] is True  # 诊断照记
+    assert "automated_evidence_sufficiency" not in literary["risky_dimensions"]
+    assert "literary:automated_evidence_sufficiency" not in [item["issue_key"] for item in gate["warnings"]]
+    assert "literary:automated_evidence_sufficiency" not in gate["warning_codes"]
+
+
+def test_final_gate_result_carries_each_value_once(session):
+    """B04-24：成稿门的结果不再把同一个值换个名字再存一遍（literary / blockers / blocking_codes /
+    promotion_blocking_codes 没人读，存进归档记录与操作日志时白白翻倍）；读者认的旧名 archivable 照旧给。"""
+    from novel_system.services.final_text_gate import FINAL_TEXT_GATE_SCHEMA_VERSION, FinalTextGateService
+
+    gate = FinalTextGateService(session).evaluate(scene_id="scene_short_text", content="她推开门，选择离开。")
+
+    assert not {"literary", "blockers", "blocking_codes", "promotion_blocking_codes"} & set(gate)
+    assert gate["archivable"] is gate["safe_to_archive"]
+    assert gate["literary_quality"]["available"] is True
+    assert {"archive_blockers", "promotion_blockers", "auto_promotable"} <= set(gate)
+    assert gate["schema_version"] == FINAL_TEXT_GATE_SCHEMA_VERSION == 4
+
+
+def test_final_gate_checks_required_text_group_by_group(session):
+    """批准#11（B04-04）：必写内容整组没写，成稿门就是已证实的 Q1——以前只要沾上两个三字片段就算整段满足。"""
+    from novel_system.db.models import ChapterGoal, SceneCard, StoryProject
+    from novel_system.services.final_text_gate import FinalTextGateService
+
+    session.add(StoryProject(project_id="REQ_P1", title="必写", outline_text=""))
+    session.add(ChapterGoal(chapter_id="REQ_CH1", project_id="REQ_P1", chapter_goal="交出钥匙", planned_scene_count=1))
+    session.flush()
+    session.add(
+        SceneCard(
+            scene_id="REQ_SC1",
+            chapter_id="REQ_CH1",
+            project_id="REQ_P1",
+            scene_seq=1,
+            scene_goal="交出钥匙",
+            must_include_text="主角交出钥匙，门外传来警笛",
+            beats_json=[],
+            onstage_chars_json=[],
+        )
+    )
+    session.commit()
+    gate = FinalTextGateService(session)
+
+    partial = gate.evaluate(scene_id="REQ_SC1", content="他犹豫很久，最后主角交出钥匙。夜很静。", allow_author_waiver=False)
+    assert "continuity:missing_required_text" in partial["archive_blockers"]
+    issue = next(item for item in partial["continuity"]["issues"] if item["issue_key"] == "missing_required_text")
+    assert issue["quality_level"] == "Q1"
+    assert issue["evidence_spans"] == [{"text": "门外传来警笛"}]
+
+    complete = gate.evaluate(
+        scene_id="REQ_SC1", content="他犹豫很久，最后主角交出钥匙。门外传来警笛。", allow_author_waiver=False
+    )
+    assert "continuity:missing_required_text" not in complete["archive_blockers"]
+
+
 def test_archiver_blocks_persisted_content_hash_mismatch_before_side_effects(client, session):
     _create_chapter(client, "chapter_archive_gate_hash")
     _create_scene(

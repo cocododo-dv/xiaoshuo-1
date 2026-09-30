@@ -669,7 +669,7 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         ("services/scene_generation/style_first.py", "", "run_targeted_revision"),
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
         # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
-        ("services/qc_engine.py", "", "_qc_run_node_with_degradation"),
+        ("services/qc_engine/degradation.py", "", "_qc_run_node_with_degradation"),
     }
     calls: list[tuple[str, str, str, bool]] = []
 
