@@ -38,15 +38,12 @@ def _normalize_deep_review_output(payload: dict[str, Any]) -> dict[str, Any]:
     overall_score = _optional_score(payload.get("overall_score"))
     revision_brief = _normalize_revision_brief(payload.get("revision_brief"), findings)
     normalized_lenses = _normalize_lens_evaluations(payload.get("lens_evaluations"), findings)
-    requires_human_review = bool(payload.get("requires_human_review"))
-    if any(finding.get("severity") == "blocking" for finding in findings):
-        requires_human_review = True
+    # 模型回的 requires_human_review 不再落库：深评后面没有人工复核的流程（审计 B05-17），列留着、取默认值
     return {
         "overall_score": overall_score,
         "scores": scores,
         "findings": findings,
         "revision_brief": revision_brief,
-        "requires_human_review": requires_human_review,
         "lens_evaluations": normalized_lenses,
     }
 

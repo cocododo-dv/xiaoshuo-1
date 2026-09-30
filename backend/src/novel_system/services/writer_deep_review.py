@@ -450,7 +450,6 @@ class WriterDeepReviewService(PassagePatchMixin):
                 "question": question or "",
                 "excerpt": excerpt or "",
             },
-            requires_human_review=0,
             status="completed",
         )
         self.session.add(row)
@@ -576,7 +575,6 @@ class WriterDeepReviewService(PassagePatchMixin):
             findings_json=normalized["findings"],
             revision_brief_json=normalized["revision_brief"],
             contract_field_refs_json=dict(meta) if meta else None,
-            requires_human_review=1 if normalized["requires_human_review"] else 0,
             status="completed",
         )
         self.session.add(parent)
@@ -602,7 +600,6 @@ class WriterDeepReviewService(PassagePatchMixin):
                 scores_json=scores,
                 findings_json=findings,
                 revision_brief_json=_normalize_revision_brief(payload.get("revision_brief"), findings),
-                requires_human_review=1 if any(item.get("severity") == "blocking" for item in findings) else 0,
                 status="completed",
             )
             self.session.add(row)
