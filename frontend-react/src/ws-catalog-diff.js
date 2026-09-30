@@ -11,10 +11,23 @@ import { catChapterPatch, catSceneCreateBody, catScenePatch } from "./ws-catalog
      catWrite(workId, run)        = catLoader.write：写入期间回来的读取不写缓存，写完重读
      catRecover(error)            写失败的提示
      catPlanTitleHooks            章名写穿到章计划后要 await 的登记（雪花缓存接章表）
-   返回 { dispatchDiff, backendChapterId, backendSceneId }。
+   返回 { dispatchDiff, backendChapterId, backendSceneId, reconcileCreates }。
    ========================================================== */
 export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, catApiBase, catWrite, catRecover, catPlanTitleHooks }) {
   const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
+  /* 创建中的 Promise 登记在 catPendingCreates 里，建完就摘掉。摘的那条链只管摘，吞掉它自己的拒绝：失败照旧交给
+     等这个 Promise 的调用方（写入收尾时提示并以服务端为准重拉），不再多出一条没人接的拒绝（复核 I3：
+     建章 / 建场失败时浏览器报 unhandled rejection）。 */
+  const trackCreate = (key, p) => {
+    catPendingCreates[key] = p;
+    p.finally(() => { delete catPendingCreates[key]; }).catch(() => {});
+    return p;
+  };
+  /* 新建一场没拿到回包（后端建好了、回包在路上丢了：后端重启、连接断开）：乐观缓存里那一场一直是临时 sid、没有后端 id，
+     正文 store 找不到它建好之后的样子，作者的头几句就留在临时 sid 下。这里记下这一场建之前那一章已有哪些场，
+     写入收尾重读目录时（reconcileCreates）那一章恰好多出一场、又正好在它乐观时的位置上，就是它——记成它的别名
+     （复核 W1-R7B-1）。认不准（没有多出来、多出不止一场、位置对不上）就不记，宁可不认也不认错。 */
+  let unconfirmedCreates = [];
 
   /* 后端 id 解析（含等待乐观创建完成）。
      插在中间的新章用的是临时 id（ch-new-*）；前一次写入收尾时目录已经重拉，缓存里就只剩后端给的位置式 slug 了——
@@ -45,12 +58,8 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
 
   function catCreateChapterViaApi(workId, nc) {
     const p = (async () => {
-      /* 只上行这一章真有的字段：后端把收到的每个章级叙事字段原样存下来，
-         送一个默认的张力 / 线索 / 「待定」占位，就等于替作者编了一条张力曲线（章节编排曾因此画回假弧线） */
-      const narrative = {
-        tension: nc.tension, pov: nc.pov, time_label: nc.time, place: nc.place,
-        entry: nc.entry, exit: nc.exit, align: nc.align, promise: nc.promise, threads: nc.threads,
-      };
+      /* 只上行这一章真有的字段。章级的张力 / 线索 / 视角 / 时间 / 地点 / 入口出口 / 衔接没有任何地方能填，
+         后端也不再收（批准 #17a，重评 R10）；章承诺 promise 是戏剧卡 promise 的镜像，照旧（有才上行） */
       const body = {
         title: nc.title,
         state: nc.state === "active" ? "writing" : nc.state,
@@ -60,7 +69,7 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
         drama: nc.drama || {},
         with_scene: false,
       };
-      Object.entries(narrative).forEach(([key, value]) => { if (value !== undefined) body[key] = value; });
+      if (nc.promise !== undefined) body.promise = nc.promise;
       const result = await apiPost(`${catApiBase(workId)}/chapters`, body);
       const created = result && result.chapter;
       if (!created) return;
@@ -77,23 +86,49 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
         if (mineScene && sres && sres.scene) mineScene.backendId = sres.scene.scene_id;
       }
     })();
-    catPendingCreates[nc.id] = p;
-    p.finally(() => { delete catPendingCreates[nc.id]; });
-    return p;
+    return trackCreate(nc.id, p);
   }
 
   function catCreateSceneViaApi(workId, chId, s, at) {
     const p = (async () => {
       const chapterId = await catBackendChapterId(chId);
       if (!chapterId) return;
-      const res = await apiPost(`${catApiBase(workId)}/chapters/${chapterId}/scenes`, catSceneCreateBody(s, at));
-      const chapter = catLoad(workId).find(x => x.id === chId);
-      const mine = chapter && (chapter.scenes || []).find(x => x.sid === s.sid);
-      if (mine && res && res.scene) mine.backendId = res.scene.scene_id;
+      const sceneMine = () => {
+        const chapter = catLoad(workId).find(x => x.id === chId);
+        return chapter && (chapter.scenes || []).find(x => x.sid === s.sid);
+      };
+      const before = new Set();
+      const known = catLoad(workId).find(x => x.id === chId);
+      ((known && known.scenes) || []).forEach((x) => { if (x.backendId) before.add(x.backendId); });
+      let res = null;
+      try {
+        res = await apiPost(`${catApiBase(workId)}/chapters/${chapterId}/scenes`, catSceneCreateBody(s, at));
+      } finally {
+        const mine = sceneMine();
+        if (mine && res && res.scene) mine.backendId = res.scene.scene_id;
+        else unconfirmedCreates.push({ workId, sid: s.sid, chapterId, at, before });
+      }
     })();
-    catPendingCreates[s.sid] = p;
-    p.finally(() => { delete catPendingCreates[s.sid]; });
-    return p;
+    return trackCreate(s.sid, p);
+  }
+
+  /* 目录重读之后（ws-catalog.jsx 的装载收尾）：没拿到回包的新建场认不认得出来——认得出来的给 [临时 sid, 现在的 sid]。
+     每条只认这一次重读：这一次没多出来就是没建成。 */
+  function reconcileCreates(workId, chapters) {
+    const mine = unconfirmedCreates.filter((c) => c.workId === workId);
+    if (!mine.length) return [];
+    unconfirmedCreates = unconfirmedCreates.filter((c) => c.workId !== workId);
+    const aliases = [];
+    mine.forEach((c) => {
+      const chapter = (chapters || []).find((x) => x.backendId === c.chapterId);
+      if (!chapter) return;
+      const scenes = chapter.scenes || [];
+      const added = scenes.filter((x) => x.backendId && !c.before.has(x.backendId));
+      if (added.length === 1 && scenes.indexOf(added[0]) === c.at && added[0].sid && added[0].sid !== c.sid) {
+        aliases.push([c.sid, added[0].sid]);
+      }
+    });
+    return aliases;
   }
 
   /* 批量软删：后端逐条判定，把过不去的项放进 blocked 而不是抛错
@@ -229,5 +264,5 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
     return true;
   }
 
-  return { dispatchDiff: catDispatchDiff, backendChapterId: catBackendChapterId, backendSceneId: catBackendSceneId };
+  return { dispatchDiff: catDispatchDiff, backendChapterId: catBackendChapterId, backendSceneId: catBackendSceneId, reconcileCreates };
 }

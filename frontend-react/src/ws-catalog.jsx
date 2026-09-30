@@ -1,5 +1,5 @@
 import { WsWorks } from "./ws-works.jsx";
-import { apiGet, apiPost } from "./lib/client.js";
+import { apiGet } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 import { createKeyedLoader } from "./lib/store-kit.js";
 import { catFromApiChapter, catNormalizeAct } from "./ws-catalog-adapt.js";
@@ -21,7 +21,6 @@ import { readyWorkId } from "./lib/ready-work.js";
    （这里照旧转出 WsTrashStore）。
    ========================================================== */
 
-const CAT_LS = "arr.chapters.v2";            // v2：目录收敛后的新键；旧键由旧版编排台自动写入的陈旧种子，不再读取
 /* 能发请求的当前作品（加载占位 / 空书架 / 新建作品还没拿到正式 id 时是 null） */
 const catActiveId = () => readyWorkId(WsWorks);
 
@@ -115,10 +114,8 @@ function catApplyRollupStats(rollup) {
      goal/obstacle/turn 槽位，附 kindFields 标签元数据。
    · set() 写穿点改为 diff 拆解：字段变化→PATCH，新增→POST，删除→v1 trash，
      排序→v1 scene-order（复用既有逻辑，不另起排序端点）。
-   · 一次性迁移：旧 localStorage 目录编辑（arr.chapters.v2::<id>）在后端目录
-     为空时经 POST catalog/import 上行，打 ws_catalog_migrated_v1::<id> 标记。 */
-
-const CAT_MIGRATED_LS = "ws_catalog_migrated_v1";
+   · 6 月原型时期的旧本机目录（arr.chapters.v2::<id>）不再上行（批准 #25，重评 R16）：那一次性迁移和它
+     调用的 POST catalog/import 都已删除，浏览器里的旧键原样留着、不再读。 */
 
 /* ---- 缓存与装载 ---- */
 const CAT_EMPTY = Object.freeze([]);
@@ -224,23 +221,18 @@ function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
 /* 读取器（lib/store-kit）：按作品合并在飞请求；本机写入进行中或写入之前发出的读取回来时不写缓存——
    否则写后补读会并进写入之前那一次，回来的是写入前的服务端状态，刚改的标题在屏上退回去（审计 F01-05）。 */
 const catLoader = createKeyedLoader({
-  async fetch(workId, options) {
-    // 旧本机目录的一次性上行只在启动 / 换作品那次装载里试（显式 { migrate: true }）；写后补读、重试都不试
-    const migrate = !!(options && options.migrate);
-    let data = await apiGet(catApiBase(workId));
-    let chapters = (data && data.chapters) || [];
-    if (migrate && !chapters.length) {
-      const imported = await catMigrateLegacy(workId);
-      if (imported) {
-        data = await apiGet(catApiBase(workId));
-        chapters = (data && data.chapters) || [];
-      }
-    }
-    return chapters.map(catFromApiChapter);
+  async fetch(workId) {
+    const data = await apiGet(catApiBase(workId));
+    return ((data && data.chapters) || []).map(catFromApiChapter);
   },
   apply(workId, mapped) {
+    // 2026-09-19 的场景编号迁移（位置式 sid → 稳定的 scene_id）照计划再留一轮（重评 R16）
     catMigrateSidKeys(workId, mapped);
     catTrackAliases(workId, catCache[workId], mapped);
+    // 新建一场的回包丢了（建好了、回包没回来）：这一次重读里认出它，临时 sid 记成它的别名（复核 W1-R7B-1）
+    catWriter.reconcileCreates(workId, mapped).forEach(([from, to]) => {
+      (catAliasMap[workId] || (catAliasMap[workId] = {}))[from] = to;
+    });
     catCache[workId] = mapped;
     catReadyMap[workId] = true;
     delete catErrorMap[workId];
@@ -256,11 +248,11 @@ const catLoader = createKeyedLoader({
 });
 
 /* 装载（在飞就复用）。新作品开始装载时立即通知订阅者清掉上一部作品的场景选择，避免跨作品串稿。 */
-function catFetch(workId, options) {
+function catFetch(workId) {
   if (!isRealWorkId(workId)) return Promise.resolve(false);
   const fresh = !catLoader.inflight(workId);
   if (fresh) delete catErrorMap[workId];
-  const run = catLoader.load(workId, options);
+  const run = catLoader.load(workId);
   if (fresh) catNotify();
   return run;
 }
@@ -269,25 +261,6 @@ function catFetch(workId, options) {
 function catRefetch(workId) {
   if (!isRealWorkId(workId)) return Promise.resolve(false);
   return catLoader.invalidate(workId);
-}
-
-/* 旧 localStorage 目录编辑 → 一次性上行（仅后端目录为空时；import 端点 loopback 免 token） */
-async function catMigrateLegacy(workId) {
-  try {
-    if (localStorage.getItem(CAT_MIGRATED_LS + "::" + workId)) return false;
-    const raw = localStorage.getItem(CAT_LS + "::" + workId);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (!Array.isArray(parsed) || !parsed.length) {
-      localStorage.setItem(CAT_MIGRATED_LS + "::" + workId, new Date().toISOString());
-      return false;
-    }
-    await apiPost(catApiBase(workId) + "/import", { chapters: parsed });
-    localStorage.setItem(CAT_MIGRATED_LS + "::" + workId, new Date().toISOString());
-    return true;
-  } catch (e) {
-    console.warn("[WsCatalog] 旧目录迁移失败（保留旧键，下次再试）:", e);
-    return false;
-  }
 }
 
 /* 写失败统一提示；以服务端为准的重拉由 catLoader.write 收尾时统一做 */
@@ -512,10 +485,10 @@ function useCatalogChapters() {
    模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例挂在 window 上的监听器（在文件末尾登记）。 */
 retireModuleListeners("ws-catalog");
 /* 统计由目录装载成功时推一次（catLoader.apply）；启动 / 换作品时不再在目录还空着的时候先推一次 */
-try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
+try { catFetch(catActiveId()); } catch (e) {}
 const catOnWorkChanged = () => {
   clearTimeout(catTotalsTimer); catTotalsTimer = null;
-  try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
+  try { catFetch(catActiveId()); } catch (e) {}
 };
 window.addEventListener("ws:work-changed", catOnWorkChanged);
 
