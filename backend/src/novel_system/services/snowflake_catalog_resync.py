@@ -21,6 +21,7 @@ from novel_system.db.models import (
     SceneRunState,
     SnowflakeScenePlan,
 )
+from novel_system.services.catalog_ordering import PARK_GAP
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import trash_emptied_snowflake_chapters
 from novel_system.services.scene_rehome import rehome_scenes
@@ -344,12 +345,14 @@ class SnowflakeCatalogResyncMixin:
         if cards:
             # 停靠位要高过这些章里**所有**卡的序号——包括回收站里的：这次回流可能正要把其中一张取回来
             # （改回「略过」/「待删」的裁定），它带着自己的旧序号变回活跃，不能和停靠位撞上。
+            # 所以上限按库里查（catalog_ordering.park 只看交给它的行），间距用同一个 PARK_GAP（B08-15），
+            # 与 catalog_trash_cascade 的取回同一个做法。
             highest = self.session.execute(
                 select(func.max(SceneCard.scene_seq)).where(
                     SceneCard.project_id == project_id, SceneCard.chapter_id.in_(sorted(chapter_ids))
                 )
             ).scalar()
-            park_base = int(highest or 0) + 1_000_000
+            park_base = int(highest or 0) + PARK_GAP
             for offset, card in enumerate(cards):
                 card.scene_seq = park_base + offset
             self.session.flush()
