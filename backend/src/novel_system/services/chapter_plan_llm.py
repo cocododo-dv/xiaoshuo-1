@@ -33,6 +33,7 @@ from novel_system.services.catalog import (
     scene_kind,
     scene_title,
 )
+from novel_system.services.catalog_labels import DRAMA_SLOT_LABELS, SCENE_SLOT_LABELS, scene_display_title
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.chapter_architecture import (
     ARCHITECTURE_FIELDS,  # noqa: F401 — 旧名：从本模块 import 的调用方
@@ -52,7 +53,7 @@ from novel_system.services.llm_client import LLMConfigurationError
 from novel_system.services.llm_service_base import RuntimeLLMAccess
 from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.scene_design_ownership import plan_owned_scene_ids
-from novel_system.services.scene_lookup import require_project_chapter
+from novel_system.services.scene_lookup import require_project, require_project_chapter
 from novel_system.services.scene_planning_staleness import design_changed_since
 from novel_system.services.structured_llm_call import run_structured_call
 
@@ -314,12 +315,17 @@ class ChapterPlanService(RuntimeLLMAccess):
     # ---------- gaps（待补清单：不是 AI） ----------
 
     def gaps(self, project_id: str, chapter_id: str) -> dict[str, Any]:
-        """这一章的戏剧卡与各场三拍 / 视角还空着哪些——按空槽算出来的清单，不调模型、不冒充 AI 结果。"""
+        """这一章的戏剧卡与各场三拍 / 视角还空着哪些——按空槽算出来的清单，不调模型、不冒充 AI 结果。
+
+        ``items`` 是结构化的一份（中文字段名、第几场，不带内部 id，前端照它渲染）；``gaps`` 是旧的一行一条的写法
+        （英文槽名 + 场景 id），前端换到 ``items`` 之前照旧给。"""
         chapter = require_project_chapter(self.session, project_id, chapter_id)
         scenes = self._catalog.scene_rows(chapter_id)
+        owned = self._plan_owned_scene_ids(project_id, scenes)
         return {
             "source": "rules",
-            "gaps": empty_slot_gaps(scenes, chapter, plan_owned_scene_ids=self._plan_owned_scene_ids(project_id, scenes)),
+            "gaps": empty_slot_gaps(scenes, chapter, plan_owned_scene_ids=owned),
+            "items": empty_slot_gap_items(scenes, chapter, plan_owned_scene_ids=owned),
         }
 
     # ---------- apply（原子回写） ----------
@@ -394,11 +400,13 @@ class ChapterPlanService(RuntimeLLMAccess):
                     row.hook = item["hook"]
             appended += 1
         self.session.flush()
-        tree = self._catalog.catalog(project_id)
-        chapter_payload = next(
-            (item for item in tree["chapters"] if item["chapter_id"] == chapter_id),
-            None,
-        )
+        # 只回这一章：按章序找出它是第几章（章号 / slug 与整本目录里的一样），只为它查表（B07-19：以前为了这一章
+        # 把整本目录重建一遍）
+        chapter_payload = None
+        for index, row in enumerate(self._catalog.chapter_rows(project_id)):
+            if row.chapter_id == chapter_id:
+                chapter_payload = self._catalog.chapter_payload(require_project(self.session, project_id), row, index)
+                break
         return {
             "applied": {
                 "drama": len(drama_updates),
@@ -633,6 +641,52 @@ def sanitize_plan_patch(
     return clean_patch, dropped
 
 
+def empty_slot_gap_items(
+    scenes: list[SceneCard], chapter: ChapterGoal | None = None, *, plan_owned_scene_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """待补清单的结构化写法（与 :func:`empty_slot_gaps` 同一份判定）：每条 ``{scope, scene_id, scene_label, fields,
+    fill_in}``——``fields`` 是 ``[{key, label}]``（中文字段名与前端章节规划同一套叫法），``scene_label`` 是
+    「第 N 场 · 题名」（章内第几场），``fill_in`` 说去哪里补：构思侧拥有设计的场是 ``snowflake_step_10``，其余为空。"""
+    owned = plan_owned_scene_ids or set()
+    items: list[dict[str, Any]] = []
+    if chapter is not None:
+        drama = dict(dict(chapter.narrative_json or {}).get("drama") or {})
+        missing_drama = [key for key in _PATCH_DRAMA_FIELDS if _is_empty_slot(drama.get(key))]
+        if missing_drama:
+            items.append(
+                {
+                    "scope": "chapter",
+                    "scene_id": None,
+                    "scene_label": "章节戏剧卡",
+                    "fields": [{"key": key, "label": DRAMA_SLOT_LABELS.get(key, key)} for key in missing_drama],
+                    "fill_in": None,
+                }
+            )
+    for position, scene in enumerate(scenes, start=1):
+        missing = _missing_scene_slots(scene)
+        if missing:
+            items.append(
+                {
+                    "scope": "scene",
+                    "scene_id": scene.scene_id,
+                    "scene_label": f"第 {position} 场 · {scene_display_title(scene)}",
+                    "fields": [{"key": key, "label": SCENE_SLOT_LABELS.get(key, key)} for key in missing],
+                    "fill_in": "snowflake_step_10" if scene.scene_id in owned else None,
+                }
+            )
+    return items
+
+
+def _missing_scene_slots(scene: SceneCard) -> list[str]:
+    """一场还空着的三拍槽（按主动 / 反应）与视角。"""
+    brief = dict(scene.writer_brief_json or {})
+    keys = SCENE_BRIEF_GCS if scene_kind(scene) == "proactive" else SCENE_BRIEF_RDD
+    missing = [key for key in keys if _is_empty_slot(brief.get(key))]
+    if not scene.pov_character_id:
+        missing.append("pov")
+    return missing
+
+
 def empty_slot_gaps(
     scenes: list[SceneCard], chapter: ChapterGoal | None = None, *, plan_owned_scene_ids: set[str] | None = None
 ) -> list[str]:
@@ -645,12 +699,7 @@ def empty_slot_gaps(
         if missing_drama:
             gaps.append(f"章节戏剧卡：待补 {', '.join(missing_drama)}")
     for scene in scenes:
-        kind = scene_kind(scene)
-        brief = dict(scene.writer_brief_json or {})
-        keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
-        missing = [key for key in keys if _is_empty_slot(brief.get(key))]
-        if not scene.pov_character_id:
-            missing.append("pov")
+        missing = _missing_scene_slots(scene)
         if missing:
             where = "——在构思第 10 步补" if scene.scene_id in owned else ""
             gaps.append(f"{scene_title(scene)}（{scene.scene_id}）：待补 {', '.join(missing)}{where}")

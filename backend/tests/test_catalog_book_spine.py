@@ -490,6 +490,12 @@ def test_the_chapter_planning_ai_does_not_fill_the_design_of_a_snowflake_scene(c
     ).scalars())
     gaps = _empty_slot_gaps(cards, plan_owned_scene_ids={scene_id})
     assert any(scene_id in line and "在构思第 10 步补" in line for line in gaps)
+    # 结构化的一份（S1 21）说得一样：这一场去构思第 10 步补
+    from novel_system.services.chapter_plan_llm import empty_slot_gap_items
+
+    owned_item = next(item for item in empty_slot_gap_items(cards, plan_owned_scene_ids={scene_id}) if item["scene_id"] == scene_id)
+    assert owned_item["fill_in"] == "snowflake_step_10"
+    assert {"key": "setback", "label": "挫败"} in owned_item["fields"]
     # 不带归属集合的调用（旧调用方 / 手建作品）行为不变
     clean, _dropped = sanitize_plan_patch(cards, body["patch"])
     assert clean["scenes"] == [{"scene_id": scene_id, "set": {"setback": "AI 想替构思补上的挫折", "hook": "AI 想补的钩子"}}]
