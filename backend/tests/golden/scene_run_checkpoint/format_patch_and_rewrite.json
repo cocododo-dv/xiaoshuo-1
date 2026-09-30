@@ -367,21 +367,15 @@
     "source_review_id": null
    },
    "archive_vector_product": {
-    "backend": "memory",
     "chapter_id": "CH_RESUME",
-    "collection_name": "scenes_P_RESUME",
-    "error_code": null,
     "execution_id": "idempotency:checkpoint-format",
     "input_hash": "<hex#18>",
     "kind": "vector_index",
-    "outcome": "non_persistent",
+    "outcome": "retired",
+    "reason": "vector_index_retired",
     "scene_id": "CH_RESUME_SC01",
     "schema_version": 1,
-    "step_key": "archive:vector_index:0",
-    "text_hash": "<hex#18>",
-    "validation_scope": "process_local",
-    "vector_id": "CH_RESUME_SC01",
-    "write_status": "indexed"
+    "step_key": "archive:vector_index:0"
    },
    "archive_volume_product": {
     "chapter_id": "CH_RESUME",

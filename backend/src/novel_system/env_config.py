@@ -125,7 +125,6 @@ def warn_retired_env_vars() -> list[str]:
 @dataclass(slots=True)
 class Settings:
     database_url: str
-    vector_backend: str
     sqlite_foreign_keys_enabled: bool = True
     idempotency_ttl_seconds: int = 90
     llm_provider: str = "openai_compatible"
@@ -207,7 +206,6 @@ def load_env_settings() -> Settings:
     database_runtime = load_database_runtime()
     database_url = database_runtime.database_url
     sqlite_foreign_keys_enabled = database_runtime.sqlite_foreign_keys_enabled
-    vector_backend = os.environ.get("NOVEL_SYSTEM_VECTOR_BACKEND", "memory")
     llm_provider = os.environ.get("NOVEL_SYSTEM_LLM_PROVIDER", "openai_compatible")
     llm_base_url = os.environ.get("NOVEL_SYSTEM_LLM_BASE_URL", "https://api.openai.com/v1")
     llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
@@ -258,7 +256,6 @@ def load_env_settings() -> Settings:
     reservation_recovery_ttl_seconds()
     return Settings(
         database_url=database_url,
-        vector_backend=vector_backend,
         sqlite_foreign_keys_enabled=sqlite_foreign_keys_enabled,
         llm_provider=llm_provider,
         llm_base_url=llm_base_url,

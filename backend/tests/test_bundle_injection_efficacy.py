@@ -17,7 +17,6 @@ from novel_system.db.models import (
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.narrative_event_log import NarrativeEventLog
-from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.prompt_builder import PromptBuilder
 
 
@@ -194,40 +193,6 @@ def test_narrative_state_digest_uses_scene_project_id(session):
     digest = BundleBuilder(session)._narrative_state_digest(scene)
     assert digest is not None, "有事件时权威状态注入不应为空"
     assert "左臂骨折" in digest
-
-
-def test_scene_vector_indexing_persists_via_factory(session, monkeypatch):
-    """P-7：归档场景索引必须写进 get_vector_store() 工厂实例（进程级可见），
-    而不是函数返回即销毁的裸 InMemoryVectorStore。"""
-    from novel_system.services.vector_store import get_vector_store
-
-    scene = _seed_catalog_style_scene(session, project_id="projp7")
-    result = Orchestrator._index_scene_to_vector_store(scene, "一段正文内容用于索引")
-
-    store = get_vector_store()
-    collection = f"scenes_{scene.project_id}"
-    assert store.collection_exists(collection), "索引后集合应在工厂单例中可见"
-    ids = {doc["id"] for doc in store.load_collection(collection)}
-    assert scene.scene_id in ids
-    assert result["outcome"] == "non_persistent"
-    assert result["write_status"] in {"indexed", "already_present"}
-    assert result["backend"] == "memory"
-    assert result["validation_scope"] == "process_local"
-
-
-def test_scene_vector_indexing_rejects_stale_same_id_without_overwrite(session):
-    from novel_system.services.vector_store import get_vector_store
-
-    scene = _seed_catalog_style_scene(session, project_id="projp7_stale")
-    store = get_vector_store()
-    collection = f"scenes_{scene.project_id}"
-    store.write_collection(collection, [{"id": scene.scene_id, "text": "stale"}])
-
-    result = Orchestrator._index_scene_to_vector_store(scene, "current")
-
-    assert result["outcome"] == "failed"
-    assert result["error_code"] == "VECTOR_INDEX_STALE_CONTENT"
-    assert store.load_collection(collection) == [{"id": scene.scene_id, "text": "stale"}]
 
 
 # ---------------------------------------------------------------------------

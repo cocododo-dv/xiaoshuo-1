@@ -2347,6 +2347,11 @@ class Orchestrator:
             outcomes=outcomes,
         )
 
+    def _run_archive_vector_index(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
+        return self._archive_checkpoint()._run_archive_vector_index(scene, final_scene)
+
     def _validate_archive_vector_product(
         self,
         scene: SceneCard,
@@ -7270,18 +7275,6 @@ class Orchestrator:
             content,
             final_scene_row_id=final_scene_row_id,
             return_event_ids=return_event_ids,
-        )
-
-
-    @staticmethod
-    def _index_scene_to_vector_store(
-        scene: SceneCard,
-        content: str,
-        *,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        return SceneArchiveEffects._index_scene_to_vector_store(
-            scene, content, project_id=project_id
         )
 
     def _record_archive_fidelity_reading(self, scene: SceneCard) -> dict[str, Any]:

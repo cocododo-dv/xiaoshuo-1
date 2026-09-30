@@ -340,23 +340,7 @@ class SceneArchiveCheckpoint:
             through=6,
         )
         if progress < 7:
-            vector_result = self._orch._index_scene_to_vector_store(
-                scene,
-                final_scene.content,
-                project_id=self._orch._resolve_scene_project_id(scene, contract),
-            )
-            vector_product = self._orch._archive_product(
-                scene=scene,
-                kind="vector_index",
-                outcome=vector_result["outcome"],
-                step_key="archive:vector_index:0",
-                input_hash=self._orch._text_hash(final_scene.content),
-                **{
-                    key: value
-                    for key, value in vector_result.items()
-                    if key != "outcome"
-                },
-            )
+            vector_product = self._orch._run_archive_vector_index(scene, final_scene)
             self._orch._validate_archive_vector_product(
                 scene,
                 final_scene,
@@ -1245,6 +1229,25 @@ class SceneArchiveCheckpoint:
             )
         return product
 
+    def _run_archive_vector_index(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
+        """归档第 7 步：向量索引已退役（[批准#1]，重评 R1）——起草提示里的「相似场景」段已删，这份索引没人读。
+        槽位（sub_index 7、步位键、哈希键、清单条目）留着，记一份 ``retired`` 空产品，旧检查点照样续跑。"""
+        return self._retired_vector_product(scene, final_scene)
+
+    def _retired_vector_product(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
+        return self._orch._archive_product(
+            scene=scene,
+            kind="vector_index",
+            outcome="retired",
+            step_key="archive:vector_index:0",
+            input_hash=self._orch._text_hash(final_scene.content),
+            reason="vector_index_retired",
+        )
+
     def _validate_archive_vector_product(
         self,
         scene: SceneCard,
@@ -1259,8 +1262,25 @@ class SceneArchiveCheckpoint:
             product=product,
             kind="vector_index",
             step_key="archive:vector_index:0",
-            outcomes={"indexed", "already_present", "non_persistent", "failed"},
+            outcomes={"retired", "indexed", "already_present", "non_persistent", "failed"},
         )
+        if require_checkpoint_hash and self._orch._json_hash(
+            product
+        ) != self._orch._checkpoint_hash("archive_vector_product"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive vector product identity/hash is invalid",
+                status_code=409,
+            )
+        if product["outcome"] == "retired":
+            if product != self._retired_vector_product(scene, final_scene):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "archive vector product identity/hash is invalid",
+                    status_code=409,
+                )
+            return product
+        # 第 7 步退役之前写下的检查点：只核对产品自身的结构与它记的正文哈希，不再去碰向量库（向量库已删）。
         if (
             product.get("input_hash") != self._orch._text_hash(final_scene.content)
             or product.get("vector_id") != scene.scene_id
@@ -1279,11 +1299,6 @@ class SceneArchiveCheckpoint:
             or (
                 product.get("backend") != "memory"
                 and product.get("outcome") == "non_persistent"
-            )
-            or (
-                require_checkpoint_hash
-                and self._orch._json_hash(product)
-                != self._orch._checkpoint_hash("archive_vector_product")
             )
         ):
             raise DomainError(
@@ -1312,28 +1327,6 @@ class SceneArchiveCheckpoint:
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
                     "persistent vector product outcome does not match its write evidence",
-                    status_code=409,
-                )
-            from novel_system.services.vector_store import get_vector_store
-
-            store = get_vector_store(backend=product["backend"])
-            collection_exists = store.collection_exists(product["collection_name"])
-            if not collection_exists and product["validation_scope"] == "process_local":
-                return product
-            rows = (
-                store.load_collection(product["collection_name"])
-                if collection_exists
-                else []
-            )
-            matches = [row for row in rows if row.get("id") == scene.scene_id]
-            if (
-                len(matches) != 1
-                or self._orch._text_hash(str(matches[0].get("text") or ""))
-                != product["text_hash"]
-            ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "archive vector product no longer matches the external index",
                     status_code=409,
                 )
         elif (

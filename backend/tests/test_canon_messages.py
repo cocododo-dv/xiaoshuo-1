@@ -15,7 +15,6 @@ AUTHOR_FACING_MODULES = sorted(
         SERVICES / "canon_continuity.py",
         *(SERVICES / "canon").glob("*.py"),
         *(SERVICES / "narrative").glob("*.py"),
-        SERVICES / "vector_store.py",
     ]
 )
 _CJK = re.compile(r"[一-鿿]")
