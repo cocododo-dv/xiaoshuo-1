@@ -79,9 +79,11 @@ await check("决策卡选项 → rename effect 落库", async () => {
 });
 
 await check("badge = priority 1 的 open 数（处理后减少）", async () => {
-  const badge = await api("/api/v1/review-items/badge?project_id=work-a");
+  // 角标接口已删（批准 #24a，重评 R15a）：priority 1 的 open 数直接从统一列表数，与界面的 store 对账
+  const open = (await api("/api/v1/review-items?project_id=work-a&state=open")).items;
+  const fromApi = open.filter(i => i.priority === 1).length;
   const fromStore = await page.evaluate(() => window.rvOpenItems().filter(i => i.priority === 1).length);
-  if (badge.count !== fromStore) throw new Error(`badge ${badge.count} != store ${fromStore}`);
+  if (fromApi !== fromStore) throw new Error(`api ${fromApi} != store ${fromStore}`);
 });
 
 await check("派生卡：不可划掉 / snooze 按指纹 / 修好自动消失", async () => {
