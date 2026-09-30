@@ -97,6 +97,7 @@ from novel_system.services.scene_run_checkpoint import (
     SceneRunCheckpointService,
     checkpoint_corrupt,
 )
+from novel_system.services.scene_run.archive import ArchiveCheckpointMixin
 from novel_system.services.scene_run.kernel import RunCheckpointKernelMixin
 from novel_system.services.scene_run.constants import (
     NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON,
@@ -126,7 +127,6 @@ from novel_system.services.scene_run.snapshots import (
     soft_decision_snapshot,
     writer_evaluation_snapshot,
 )
-from novel_system.services.scene_archive_checkpoint import SceneArchiveCheckpoint
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
 from novel_system.settings import get_settings
 
@@ -150,7 +150,7 @@ __all__ = [
 ]
 
 
-class Orchestrator(RunCheckpointKernelMixin):
+class Orchestrator(ArchiveCheckpointMixin, RunCheckpointKernelMixin):
     def __init__(
         self,
         session: Session,
@@ -1116,38 +1116,6 @@ class Orchestrator(RunCheckpointKernelMixin):
             run_policy=run_policy,
         )
 
-    def _archive_checkpoint(self) -> SceneArchiveCheckpoint:
-        """Build the archive-checkpoint worker for the CURRENT run.
-
-        Constructed at call time — never cached — and every cross-call inside
-        the cluster dispatches back through ``self`` so instance-level
-        overrides (a test seam) keep intercepting sibling stage methods.
-        """
-        return SceneArchiveCheckpoint(self.session, host=self)
-
-    def _archive_near_final_checkpoint(
-        self,
-        *,
-        scene: SceneCard,
-        state: SceneRunState,
-        contract,
-        bundle: dict[str, Any],
-        hard_qc_payload: dict[str, Any],
-        planning,
-        candidate_summaries: list[dict[str, Any]] | None,
-        run_policy: str,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._archive_near_final_checkpoint(
-            scene=scene,
-            state=state,
-            contract=contract,
-            bundle=bundle,
-            hard_qc_payload=hard_qc_payload,
-            planning=planning,
-            candidate_summaries=candidate_summaries,
-            run_policy=run_policy,
-        )
-
     def _validate_budget_checkpoint(self, state: SceneRunState) -> None:
         try:
             state = scene_budget.ensure_scene_budget_initialized(self.session, state.scene_id)
@@ -1863,230 +1831,6 @@ class Orchestrator(RunCheckpointKernelMixin):
                     int(state.total_attempt_count or 0) + restored_business_attempts
                 )
         self.session.flush()
-
-    def _near_final_checkpoint_progress(self) -> int:
-        return self._archive_checkpoint()._near_final_checkpoint_progress()
-
-    def _archive_product(
-        self,
-        *,
-        scene: SceneCard,
-        kind: str,
-        outcome: str,
-        step_key: str,
-        input_hash: str,
-        **details: Any,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._archive_product(
-            scene=scene,
-            kind=kind,
-            outcome=outcome,
-            step_key=step_key,
-            input_hash=input_hash,
-            **details,
-        )
-
-    def _validate_archive_core_checkpoint(
-        self,
-        *,
-        scene: SceneCard,
-        final_scene: FinalScene,
-        carry_notes: list[dict[str, Any]],
-        allow_terminal: bool = False,
-        product: dict[str, Any] | None = None,
-        require_checkpoint_hash: bool = True,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_archive_core_checkpoint(
-            scene=scene,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            allow_terminal=allow_terminal,
-            product=product,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _narrative_event_snapshots(self, event_ids: list[str]) -> list[dict[str, Any]]:
-        return self._archive_checkpoint()._narrative_event_snapshots(event_ids)
-
-    def _validate_archive_rule_events_checkpoint(
-        self,
-        scene: SceneCard,
-        *,
-        product: dict[str, Any] | None = None,
-        event_ids: list[str] | None = None,
-        events: list[dict[str, Any]] | None = None,
-        require_checkpoint_hash: bool = True,
-    ) -> None:
-        self._archive_checkpoint()._validate_archive_rule_events_checkpoint(
-            scene,
-            product=product,
-            event_ids=event_ids,
-            events=events,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _validate_archive_prose_checkpoint(
-        self,
-        scene: SceneCard,
-        contract,
-        *,
-        product: dict[str, Any] | None = None,
-        event_ids: list[str] | None = None,
-        events: list[dict[str, Any]] | None = None,
-        require_checkpoint_hash: bool = True,
-    ) -> None:
-        self._archive_checkpoint()._validate_archive_prose_checkpoint(
-            scene,
-            contract,
-            product=product,
-            event_ids=event_ids,
-            events=events,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _recover_archive_prose_rejection(self) -> ProseExtractionResult | None:
-        return self._archive_checkpoint()._recover_archive_prose_rejection()
-
-    def _archive_checkpoint_ref(self, key: str) -> Any:
-        return self._archive_checkpoint()._archive_checkpoint_ref(key)
-
-    def _validate_common_archive_product(
-        self,
-        *,
-        scene: SceneCard,
-        product: Any,
-        kind: str,
-        step_key: str,
-        outcomes: set[str],
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_common_archive_product(
-            scene=scene,
-            product=product,
-            kind=kind,
-            step_key=step_key,
-            outcomes=outcomes,
-        )
-
-    def _run_archive_vector_index(
-        self, scene: SceneCard, final_scene: FinalScene
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._run_archive_vector_index(scene, final_scene)
-
-    def _validate_archive_vector_product(
-        self,
-        scene: SceneCard,
-        final_scene: FinalScene,
-        product: dict[str, Any] | None = None,
-        *,
-        require_checkpoint_hash: bool = True,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_archive_vector_product(
-            scene,
-            final_scene,
-            product,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
-        return self._archive_checkpoint()._scene_memory_inputs(chapter_id)
-
-    def _run_archive_chapter_aggregate(
-        self, scene: SceneCard, final_scene: FinalScene
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._run_archive_chapter_aggregate(
-            scene, final_scene
-        )
-
-    def _validate_archive_chapter_product(
-        self,
-        scene: SceneCard,
-        product: dict[str, Any] | None = None,
-        *,
-        require_checkpoint_hash: bool = True,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_archive_chapter_product(
-            scene,
-            product,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _volume_input_memories(self, scene: SceneCard) -> list[dict[str, str]]:
-        return self._archive_checkpoint()._volume_input_memories(scene)
-
-    def _run_archive_volume_aggregate(
-        self, scene: SceneCard, final_scene: FinalScene
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._run_archive_volume_aggregate(
-            scene, final_scene
-        )
-
-    def _validate_archive_volume_product(
-        self,
-        scene: SceneCard,
-        product: dict[str, Any] | None = None,
-        *,
-        require_checkpoint_hash: bool = True,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_archive_volume_product(
-            scene,
-            product,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _run_archive_chapter_evaluation(
-        self, scene: SceneCard, final_scene: FinalScene
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._run_archive_chapter_evaluation(
-            scene, final_scene
-        )
-
-    def _validate_archive_chapter_evaluation_product(
-        self,
-        scene: SceneCard,
-        product: dict[str, Any] | None = None,
-        *,
-        require_checkpoint_hash: bool = True,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_archive_chapter_evaluation_product(
-            scene,
-            product,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _validate_archive_drift_product(
-        self,
-        scene: SceneCard,
-        product: dict[str, Any] | None = None,
-        *,
-        require_checkpoint_hash: bool = True,
-    ) -> dict[str, Any]:
-        return self._archive_checkpoint()._validate_archive_drift_product(
-            scene,
-            product,
-            require_checkpoint_hash=require_checkpoint_hash,
-        )
-
-    def _archive_manifest(self) -> list[dict[str, Any]]:
-        return self._archive_checkpoint()._archive_manifest()
-
-    def _validate_archive_prefix(
-        self,
-        *,
-        scene: SceneCard,
-        contract,
-        final_scene: FinalScene,
-        carry_notes: list[dict[str, Any]],
-        through: int,
-        allow_terminal: bool = False,
-    ) -> None:
-        self._archive_checkpoint()._validate_archive_prefix(
-            scene=scene,
-            contract=contract,
-            final_scene=final_scene,
-            carry_notes=carry_notes,
-            through=through,
-            allow_terminal=allow_terminal,
-        )
 
     def _near_final_rewrite_guard(
         self,

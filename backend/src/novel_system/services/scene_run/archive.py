@@ -1,24 +1,11 @@
-"""Near-final archive checkpoint stage cluster extracted from the scene orchestrator.
+"""归档尾段：``near_final_ready`` 的子游标 4..11 与最后的 ``archived`` 节点。
 
-This module owns the ``near_final_ready`` sub-checkpoints 4..11 and the final
-``archived`` node: the ``_archive_near_final_checkpoint`` driver plus its
-product builders, per-stage validators, recovery helpers, and the ordered
-archive manifest.  Every method here is a verbatim move from ``Orchestrator`` —
-checkpoint node keys, step keys, sub_index values, artifact_refs/hashes keys,
-and all RUN_CHECKPOINT_CORRUPT validation semantics are byte-for-byte
-unchanged (this wave is a pure move; no table-driving of the stage blocks).
+``Orchestrator`` 直接继承 ``ArchiveCheckpointMixin``：驱动（``_archive_near_final_checkpoint``）、各步的产品、
+续跑时的逐步复验与恢复、归档清单。检查点节点键、步骤键、子游标、``artifact_refs`` / ``artifact_hashes`` 键与
+``RUN_CHECKPOINT_CORRUPT`` 的校验语义一字不变。
 
-Dispatch contract: every cross-call — cluster-internal siblings, the checkpoint
-kernel (``_save_run_checkpoint`` / ``_checkpoint_hash`` / ...), the archive
-effect recorders, near-final loaders, and result projection helpers — routes
-through ``self._orch`` (the hosting ``Orchestrator``, which keeps a one-line
-delegate for each moved method).  This preserves the long-standing test seam
-where suites override individual cluster methods as instance attributes on the
-orchestrator and expect the driver and validators to observe the override, and
-keeps the kernel's per-run execution ownership fields authoritative.
-
-Hosts must construct a fresh ``SceneArchiveCheckpoint`` per call rather than
-caching one across runs.
+方法之间一律 ``self.X`` 互调：测试在编排器实例上覆盖某一步（``_run_archive_chapter_evaluation``、
+``_archive_product``、``_archive_manifest`` …）或类上打桩，驱动与复验照样看得到。
 """
 
 from __future__ import annotations
@@ -27,7 +14,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AttemptTracker,
@@ -51,11 +37,7 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
-from novel_system.services.scene_run.results import (
-    apply_finality,
-    merged_warnings,
-    qc_decision_payload,
-)
+from novel_system.services.scene_run.results import apply_finality, merged_warnings, qc_decision_payload
 from novel_system.services.scene_run.snapshots import (
     archive_attempt_snapshot,
     archive_final_scene_snapshot,
@@ -73,14 +55,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class SceneArchiveCheckpoint:
-    def __init__(self, session: Session, host) -> None:
-        self.session = session
-        # All cross-calls route through the hosting Orchestrator so
-        # instance-level overrides (a test seam) keep intercepting sibling
-        # calls and the checkpoint kernel fields stay authoritative.
-        self._orch = host
-
+class ArchiveCheckpointMixin:
     def _archive_near_final_checkpoint(
         self,
         *,
@@ -94,12 +69,12 @@ class SceneArchiveCheckpoint:
         run_policy: str,
     ) -> dict[str, Any]:
         scene_id = scene.scene_id
-        selected_style = self._orch._load_selected_style_checkpoint(scene_id)
-        soft_qc, soft_generation = self._orch._load_soft_qc_checkpoint(
+        selected_style = self._load_selected_style_checkpoint(scene_id)
+        soft_qc, soft_generation = self._load_soft_qc_checkpoint(
             scene_id,
             selected_style_generation=selected_style,
         )
-        final_scene, near_final_payload = self._orch._load_near_final_checkpoint(
+        final_scene, near_final_payload = self._load_near_final_checkpoint(
             scene=scene,
             bundle=bundle,
             source_generation=soft_generation,
@@ -107,26 +82,26 @@ class SceneArchiveCheckpoint:
         state_payload = state.run_checkpoint_json or {}
         refs = state_payload.get("artifact_refs") or {}
         carry_notes = list(refs.get("carry_notes") or [])
-        if self._orch._json_hash(carry_notes) != self._orch._checkpoint_hash("carry_notes"):
+        if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
             raise checkpoint_corrupt("near-final carry notes hash mismatch")
-        progress = self._orch._near_final_checkpoint_progress()
+        progress = self._near_final_checkpoint_progress()
         if progress < 4:
-            archive_result = self._orch.archiver.archive_final_scene(
+            archive_result = self.archiver.archive_final_scene(
                 scene_id,
                 final_scene.row_id,
                 qc_report_id=soft_qc.qc_report_id,
                 carry_notes_json=carry_notes,
-                execution_id=self._orch._execution_id,
+                execution_id=self._execution_id,
                 finalize_scene_status=False,
                 # 检查点在 progress < 11 时自己在 archive:style_drift:0 槽位里记读数
                 record_fidelity_reading=False,
             )
-            archive_core_product = self._orch._archive_product(
+            archive_core_product = self._archive_product(
                 scene=scene,
                 kind="core_archive",
                 outcome="completed",
                 step_key="archive:core:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 final_scene_row_id=final_scene.row_id,
                 scene_memory_row_id=archive_result["scene_memory_row_id"],
                 chapter_rolling_note_row_id=archive_result[
@@ -150,14 +125,14 @@ class SceneArchiveCheckpoint:
                     )
                 ),
             )
-            self._orch._validate_archive_core_checkpoint(
+            self._validate_archive_core_checkpoint(
                 scene=scene,
                 final_scene=final_scene,
                 carry_notes=carry_notes,
                 product=archive_core_product,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=4,
                 artifact_refs={
@@ -177,30 +152,30 @@ class SceneArchiveCheckpoint:
                     ],
                 },
                 artifact_hashes={
-                    "archive_core": self._orch._json_hash(archive_core_product),
-                    "archive_final_scene_snapshot": self._orch._json_hash(
+                    "archive_core": self._json_hash(archive_core_product),
+                    "archive_final_scene_snapshot": self._json_hash(
                         archive_core_product["final_scene_snapshot"]
                     ),
-                    "archive_scene_memory_snapshot": self._orch._json_hash(
+                    "archive_scene_memory_snapshot": self._json_hash(
                         archive_core_product["scene_memory_snapshot"]
                     ),
-                    "archive_rolling_note_snapshot": self._orch._json_hash(
+                    "archive_rolling_note_snapshot": self._json_hash(
                         archive_core_product["rolling_note_snapshot"]
                     ),
-                    "archive_attempt_snapshot": self._orch._json_hash(
+                    "archive_attempt_snapshot": self._json_hash(
                         archive_core_product["archive_attempt_snapshot"]
                     ),
                 },
             )
             progress = 4
-        archive_result = self._orch._validate_archive_core_checkpoint(
+        archive_result = self._validate_archive_core_checkpoint(
             scene=scene,
             final_scene=final_scene,
             carry_notes=carry_notes,
         )
         if progress < 5:
             rule_event_ids = (
-                self._orch._record_narrative_events(
+                self._record_narrative_events(
                     scene,
                     contract,
                     final_scene.content,
@@ -214,29 +189,29 @@ class SceneArchiveCheckpoint:
                 event = self.session.get(NarrativeEvent, event_id)
                 event.payload_json = {
                     **dict(event.payload_json or {}),
-                    "archive_execution_id": self._orch._execution_id,
+                    "archive_execution_id": self._execution_id,
                     "archive_step_key": "archive:rule_events:0",
                     "archive_ordinal": ordinal,
                 }
             self.session.flush()
-            rule_events = self._orch._narrative_event_snapshots(rule_event_ids)
-            rule_product = self._orch._archive_product(
+            rule_events = self._narrative_event_snapshots(rule_event_ids)
+            rule_product = self._archive_product(
                 scene=scene,
                 kind="rule_events",
                 outcome="recorded",
                 step_key="archive:rule_events:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 event_ids=rule_event_ids,
                 events=rule_events,
             )
-            self._orch._validate_archive_rule_events_checkpoint(
+            self._validate_archive_rule_events_checkpoint(
                 scene,
                 product=rule_product,
                 event_ids=rule_event_ids,
                 events=rule_events,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=5,
                 artifact_refs={
@@ -245,13 +220,13 @@ class SceneArchiveCheckpoint:
                     "archive_rule_product": rule_product,
                 },
                 artifact_hashes={
-                    "archive_rule_events": self._orch._json_hash(rule_events),
-                    "archive_rule_product": self._orch._json_hash(rule_product),
+                    "archive_rule_events": self._json_hash(rule_events),
+                    "archive_rule_product": self._json_hash(rule_product),
                 },
             )
             progress = 5
-        self._orch._validate_archive_rule_events_checkpoint(scene)
-        self._orch._validate_archive_prefix(
+        self._validate_archive_rule_events_checkpoint(scene)
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -261,13 +236,13 @@ class SceneArchiveCheckpoint:
         if progress < 6:
             from novel_system.services.narrative_event_log import NarrativeEventLog
 
-            self._orch._reconcile_execution_step("archive:prose_event_extract:0")
-            recovered_prose = self._orch._recover_archive_prose_rejection()
+            self._reconcile_execution_step("archive:prose_event_extract:0")
+            recovered_prose = self._recover_archive_prose_rejection()
             if recovered_prose is None:
-                prose_result, prose_event_ids = self._orch._record_prose_events(
+                prose_result, prose_event_ids = self._record_prose_events(
                     NarrativeEventLog(self.session),
                     scene,
-                    self._orch._archive_event_base(scene, contract),
+                    self._archive_event_base(scene, contract),
                     final_scene.content,
                     final_scene_row_id=final_scene.row_id,
                     return_event_ids=True,
@@ -275,14 +250,14 @@ class SceneArchiveCheckpoint:
             else:
                 prose_result, prose_event_ids = recovered_prose, []
             self.session.flush()
-            prose_events = self._orch._narrative_event_snapshots(prose_event_ids)
+            prose_events = self._narrative_event_snapshots(prose_event_ids)
             extraction_snapshot = prose_result.product_snapshot()
-            prose_product = self._orch._archive_product(
+            prose_product = self._archive_product(
                 scene=scene,
                 kind="prose_extraction",
                 outcome=extraction_snapshot["outcome"],
                 step_key="archive:prose_event_extract:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 extraction=extraction_snapshot,
                 event_ids=prose_event_ids,
                 events=prose_events,
@@ -297,11 +272,11 @@ class SceneArchiveCheckpoint:
                 prose_parent.response_payload_summary = sanitize_audit_summary(
                     {
                         **dict(prose_parent.response_payload_summary or {}),
-                        "archive_prose_product_hash": self._orch._json_hash(prose_product),
+                        "archive_prose_product_hash": self._json_hash(prose_product),
                     }
                 )
             self.session.flush()
-            self._orch._validate_archive_prose_checkpoint(
+            self._validate_archive_prose_checkpoint(
                 scene,
                 contract,
                 product=prose_product,
@@ -309,7 +284,7 @@ class SceneArchiveCheckpoint:
                 events=prose_events,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=6,
                 artifact_refs={
@@ -318,12 +293,12 @@ class SceneArchiveCheckpoint:
                     "archive_prose_events": prose_events,
                 },
                 artifact_hashes={
-                    "archive_prose_product": self._orch._json_hash(prose_product),
-                    "archive_prose_events": self._orch._json_hash(prose_events),
+                    "archive_prose_product": self._json_hash(prose_product),
+                    "archive_prose_events": self._json_hash(prose_events),
                 },
             )
             progress = 6
-        self._orch._validate_archive_prose_checkpoint(scene, contract)
+        self._validate_archive_prose_checkpoint(scene, contract)
         # Checkpointed extractor output is only a candidate product.  Stage it into
         # the accepted-canon review ledger; pending rows are invisible to replay.
         prose_checkpoint = dict(
@@ -342,7 +317,7 @@ class SceneArchiveCheckpoint:
             reason=extraction_checkpoint.get("reason"),
             error_code=extraction_checkpoint.get("error_code"),
         )
-        self._orch._validate_archive_prefix(
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -350,24 +325,24 @@ class SceneArchiveCheckpoint:
             through=6,
         )
         if progress < 7:
-            vector_product = self._orch._run_archive_vector_index(scene, final_scene)
-            self._orch._validate_archive_vector_product(
+            vector_product = self._run_archive_vector_index(scene, final_scene)
+            self._validate_archive_vector_product(
                 scene,
                 final_scene,
                 vector_product,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=7,
                 artifact_refs={"archive_vector_product": vector_product},
                 artifact_hashes={
-                    "archive_vector_product": self._orch._json_hash(vector_product)
+                    "archive_vector_product": self._json_hash(vector_product)
                 },
             )
             progress = 7
-        self._orch._validate_archive_vector_product(scene, final_scene)
-        self._orch._validate_archive_prefix(
+        self._validate_archive_vector_product(scene, final_scene)
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -376,23 +351,23 @@ class SceneArchiveCheckpoint:
         )
 
         if progress < 8:
-            chapter_product = self._orch._run_archive_chapter_aggregate(scene, final_scene)
-            self._orch._validate_archive_chapter_product(
+            chapter_product = self._run_archive_chapter_aggregate(scene, final_scene)
+            self._validate_archive_chapter_product(
                 scene,
                 chapter_product,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=8,
                 artifact_refs={"archive_chapter_product": chapter_product},
                 artifact_hashes={
-                    "archive_chapter_product": self._orch._json_hash(chapter_product)
+                    "archive_chapter_product": self._json_hash(chapter_product)
                 },
             )
             progress = 8
-        self._orch._validate_archive_chapter_product(scene)
-        self._orch._validate_archive_prefix(
+        self._validate_archive_chapter_product(scene)
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -401,23 +376,23 @@ class SceneArchiveCheckpoint:
         )
 
         if progress < 9:
-            volume_product = self._orch._run_archive_volume_aggregate(scene, final_scene)
-            self._orch._validate_archive_volume_product(
+            volume_product = self._run_archive_volume_aggregate(scene, final_scene)
+            self._validate_archive_volume_product(
                 scene,
                 volume_product,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=9,
                 artifact_refs={"archive_volume_product": volume_product},
                 artifact_hashes={
-                    "archive_volume_product": self._orch._json_hash(volume_product)
+                    "archive_volume_product": self._json_hash(volume_product)
                 },
             )
             progress = 9
-        self._orch._validate_archive_volume_product(scene)
-        self._orch._validate_archive_prefix(
+        self._validate_archive_volume_product(scene)
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -427,32 +402,32 @@ class SceneArchiveCheckpoint:
 
         chapter_near_final = None
         if progress < 10:
-            chapter_evaluation_product = self._orch._run_archive_chapter_evaluation(
+            chapter_evaluation_product = self._run_archive_chapter_evaluation(
                 scene,
                 final_scene,
             )
-            self._orch._validate_archive_chapter_evaluation_product(
+            self._validate_archive_chapter_evaluation_product(
                 scene,
                 chapter_evaluation_product,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=10,
                 artifact_refs={
                     "archive_chapter_evaluation_product": chapter_evaluation_product,
                 },
                 artifact_hashes={
-                    "archive_chapter_evaluation_product": self._orch._json_hash(
+                    "archive_chapter_evaluation_product": self._json_hash(
                         chapter_evaluation_product
                     ),
                 },
             )
             progress = 10
-        chapter_evaluation_product = self._orch._validate_archive_chapter_evaluation_product(
+        chapter_evaluation_product = self._validate_archive_chapter_evaluation_product(
             scene
         )
-        self._orch._validate_archive_prefix(
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -466,36 +441,36 @@ class SceneArchiveCheckpoint:
             drift_result = (
                 # 风格参考 v3：漂移驾驶已删；这个槽位（kind / step_key / 哈希键保持原名，已持久化的
                 # 检查点照常续跑）记归档终稿的「像不像」读数。
-                self._orch._record_archive_fidelity_reading(scene)
+                self._record_archive_fidelity_reading(scene)
             )
-            drift_product = self._orch._archive_product(
+            drift_product = self._archive_product(
                 scene=scene,
                 kind="style_drift",
                 outcome=drift_result["outcome"],
                 step_key="archive:style_drift:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 **{
                     key: value
                     for key, value in drift_result.items()
                     if key != "outcome"
                 },
             )
-            self._orch._validate_archive_drift_product(
+            self._validate_archive_drift_product(
                 scene,
                 drift_product,
                 require_checkpoint_hash=False,
             )
-            self._orch._save_run_checkpoint(
+            self._save_run_checkpoint(
                 "near_final_ready",
                 sub_index=11,
                 artifact_refs={"archive_drift_product": drift_product},
                 artifact_hashes={
-                    "archive_drift_product": self._orch._json_hash(drift_product)
+                    "archive_drift_product": self._json_hash(drift_product)
                 },
             )
             progress = 11
-        self._orch._validate_archive_drift_product(scene)
-        self._orch._validate_archive_prefix(
+        self._validate_archive_drift_product(scene)
+        self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
@@ -503,9 +478,9 @@ class SceneArchiveCheckpoint:
             through=11,
         )
 
-        manifest = self._orch._archive_manifest()
+        manifest = self._archive_manifest()
         state.scene_status = "archived"
-        self._orch._save_run_checkpoint(
+        self._save_run_checkpoint(
             "archived",
             artifact_refs={
                 "final_scene_row_id": final_scene.row_id,
@@ -513,13 +488,13 @@ class SceneArchiveCheckpoint:
                 "archive_manifest": manifest,
             },
             artifact_hashes={
-                "final_scene": self._orch._text_hash(final_scene.content),
-                "archive_manifest": self._orch._json_hash(manifest),
+                "final_scene": self._text_hash(final_scene.content),
+                "archive_manifest": self._json_hash(manifest),
             },
         )
 
-        near_final_warnings = self._orch._near_final_warning_findings(near_final_payload)
-        result = self._orch._with_author_projection(
+        near_final_warnings = self._near_final_warning_findings(near_final_payload)
+        result = self._with_author_projection(
             scene_id,
             state,
             {
@@ -562,9 +537,9 @@ class SceneArchiveCheckpoint:
         return result
 
     def _near_final_checkpoint_progress(self) -> int:
-        if self._orch._execution_id is None or self._orch._checkpoint_service is None:
+        if self._execution_id is None or self._checkpoint_service is None:
             return -1
-        return self._orch._sub_checkpoint_progress(
+        return self._sub_checkpoint_progress(
             "near_final_ready",
             last_sub_index=11,
             legacy_complete=lambda refs: bool(refs.get("final_scene_row_id")),
@@ -586,7 +561,7 @@ class SceneArchiveCheckpoint:
             "schema_version": 1,
             "kind": kind,
             "outcome": outcome,
-            "execution_id": self._orch._execution_id,
+            "execution_id": self._execution_id,
             "scene_id": scene.scene_id,
             "chapter_id": scene.chapter_id,
             "step_key": step_key,
@@ -604,7 +579,7 @@ class SceneArchiveCheckpoint:
         product: dict[str, Any] | None = None,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
-        payload = self._orch._active_checkpoint_state().run_checkpoint_json or {}
+        payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         product = product or refs.get("archive_core")
         if (
@@ -631,15 +606,15 @@ class SceneArchiveCheckpoint:
             or product.get("schema_version") != 1
             or product.get("kind") != "core_archive"
             or product.get("outcome") != "completed"
-            or product.get("execution_id") != self._orch._execution_id
+            or product.get("execution_id") != self._execution_id
             or product.get("scene_id") != scene.scene_id
             or product.get("chapter_id") != scene.chapter_id
             or product.get("step_key") != "archive:core:0"
-            or product.get("input_hash") != self._orch._text_hash(final_scene.content)
+            or product.get("input_hash") != self._text_hash(final_scene.content)
             or product.get("final_scene_row_id") != final_scene.row_id
             or (
                 require_checkpoint_hash
-                and self._orch._json_hash(product) != self._orch._checkpoint_hash("archive_core")
+                and self._json_hash(product) != self._checkpoint_hash("archive_core")
             )
         ):
             raise checkpoint_corrupt("archive core checkpoint product schema/owner/hash is invalid")
@@ -649,7 +624,7 @@ class SceneArchiveCheckpoint:
             product["chapter_rolling_note_row_id"],
         )
         attempt = self.session.get(AttemptTracker, product["archive_attempt_id"])
-        state = self._orch._active_checkpoint_state()
+        state = self._active_checkpoint_state()
         snapshot_refs = {
             "final_scene_snapshot": refs.get("archive_final_scene_snapshot"),
             "scene_memory_snapshot": refs.get("archive_scene_memory_snapshot"),
@@ -658,8 +633,8 @@ class SceneArchiveCheckpoint:
         }
         if require_checkpoint_hash and any(
             snapshot_refs[key] != product.get(key)
-            or self._orch._json_hash(snapshot_refs[key])
-            != self._orch._checkpoint_hash(
+            or self._json_hash(snapshot_refs[key])
+            != self._checkpoint_hash(
                 {
                     "final_scene_snapshot": "archive_final_scene_snapshot",
                     "scene_memory_snapshot": "archive_scene_memory_snapshot",
@@ -671,7 +646,7 @@ class SceneArchiveCheckpoint:
         ):
             raise checkpoint_corrupt("archive core independent snapshot hashes are invalid")
         if memory is None or rolling is None or attempt is None:
-            self._orch._raise_checkpoint_output_missing(
+            self._raise_checkpoint_output_missing(
                 row_id=(
                     product["scene_memory_row_id"]
                     if memory is None
@@ -717,7 +692,7 @@ class SceneArchiveCheckpoint:
             or attempt.source_bundle_id != final_scene.source_bundle_id
             or (attempt.details_json or {}).get("final_scene_row_id")
             != final_scene.row_id
-            or (attempt.details_json or {}).get("execution_id") != self._orch._execution_id
+            or (attempt.details_json or {}).get("execution_id") != self._execution_id
         ):
             raise checkpoint_corrupt("archive core checkpoint product graph is inconsistent")
         return {
@@ -732,7 +707,7 @@ class SceneArchiveCheckpoint:
         for event_id in event_ids:
             event = self.session.get(NarrativeEvent, event_id)
             if event is None:
-                self._orch._raise_checkpoint_output_missing(row_id=event_id)
+                self._raise_checkpoint_output_missing(row_id=event_id)
             snapshots.append(narrative_event_snapshot(event))
         return snapshots
 
@@ -745,7 +720,7 @@ class SceneArchiveCheckpoint:
         events: list[dict[str, Any]] | None = None,
         require_checkpoint_hash: bool = True,
     ) -> None:
-        refs = (self._orch._active_checkpoint_state().run_checkpoint_json or {}).get(
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
             "artifact_refs",
             {},
         )
@@ -756,12 +731,12 @@ class SceneArchiveCheckpoint:
         product = product if product is not None else refs.get("archive_rule_product")
         final_scene = self.session.get(FinalScene, refs.get("final_scene_row_id"))
         expected_product = (
-            self._orch._archive_product(
+            self._archive_product(
                 scene=scene,
                 kind="rule_events",
                 outcome="recorded",
                 step_key="archive:rule_events:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 event_ids=event_ids,
                 events=events,
             )
@@ -779,24 +754,24 @@ class SceneArchiveCheckpoint:
             or product != expected_product
             or (
                 require_checkpoint_hash
-                and self._orch._json_hash(events)
-                != self._orch._checkpoint_hash("archive_rule_events")
+                and self._json_hash(events)
+                != self._checkpoint_hash("archive_rule_events")
             )
             or (
                 require_checkpoint_hash
-                and self._orch._json_hash(product)
-                != self._orch._checkpoint_hash("archive_rule_product")
+                and self._json_hash(product)
+                != self._checkpoint_hash("archive_rule_product")
             )
         ):
             raise checkpoint_corrupt("archive rule-event checkpoint schema/owner/hash is invalid")
-        actual = self._orch._narrative_event_snapshots(event_ids)
+        actual = self._narrative_event_snapshots(event_ids)
         if actual != events or any(
             event.get("scene_id") != scene.scene_id
             or event.get("chapter_id") != scene.chapter_id
             or event.get("confidence") != "high"
             or (event.get("payload_json") or {}).get("source") == "prose"
             or (event.get("payload_json") or {}).get("archive_execution_id")
-            != self._orch._execution_id
+            != self._execution_id
             or (event.get("payload_json") or {}).get("archive_step_key")
             != "archive:rule_events:0"
             or (event.get("payload_json") or {}).get("archive_ordinal") != ordinal
@@ -814,7 +789,7 @@ class SceneArchiveCheckpoint:
         events: list[dict[str, Any]] | None = None,
         require_checkpoint_hash: bool = True,
     ) -> None:
-        refs = (self._orch._active_checkpoint_state().run_checkpoint_json or {}).get(
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
             "artifact_refs",
             {},
         )
@@ -830,12 +805,12 @@ class SceneArchiveCheckpoint:
             or not isinstance(product, dict)
             or not isinstance(extraction, dict)
             or product
-            != self._orch._archive_product(
+            != self._archive_product(
                 scene=scene,
                 kind="prose_extraction",
                 outcome=extraction.get("outcome"),
                 step_key="archive:prose_event_extract:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 extraction=extraction,
                 event_ids=event_ids,
                 events=events,
@@ -848,13 +823,13 @@ class SceneArchiveCheckpoint:
             or not isinstance(events, list)
             or (
                 require_checkpoint_hash
-                and self._orch._json_hash(product)
-                != self._orch._checkpoint_hash("archive_prose_product")
+                and self._json_hash(product)
+                != self._checkpoint_hash("archive_prose_product")
             )
             or (
                 require_checkpoint_hash
-                and self._orch._json_hash(events)
-                != self._orch._checkpoint_hash("archive_prose_events")
+                and self._json_hash(events)
+                != self._checkpoint_hash("archive_prose_events")
             )
         ):
             raise checkpoint_corrupt("archive prose-extraction checkpoint schema/owner/hash is invalid")
@@ -883,7 +858,7 @@ class SceneArchiveCheckpoint:
                 "completed_empty",
                 "completed_events",
             }
-            or not self._orch._checkpoint_execution_owner_matches(
+            or not self._checkpoint_execution_owner_matches(
                 extraction.get("execution_id"), extraction.get("run_job_id")
             )
             or extraction.get("execution_step_key") != "archive:prose_event_extract:0"
@@ -897,7 +872,7 @@ class SceneArchiveCheckpoint:
             ledger = (
                 self.session.execute(
                     select(LlmCall).where(
-                        LlmCall.execution_id == self._orch._execution_id,
+                        LlmCall.execution_id == self._execution_id,
                         LlmCall.execution_step_key == "archive:prose_event_extract:0",
                     )
                 )
@@ -910,7 +885,7 @@ class SceneArchiveCheckpoint:
             if not isinstance(call_id, str) or not call_id:
                 raise checkpoint_corrupt("archive prose called product has no parent id")
             parent = self.session.get(LlmCall, call_id)
-            base = self._orch._archive_event_base(scene, contract)
+            base = self._archive_event_base(scene, contract)
             context = LLMCallContext(
                 scope_type="scene",
                 scope_id=scene.scene_id,
@@ -919,9 +894,9 @@ class SceneArchiveCheckpoint:
                 scene_id=scene.scene_id,
                 node_id="extraction",
                 step="archive:prose_event_extract:0",
-                execution_id=self._orch._execution_id,
+                execution_id=self._execution_id,
                 execution_step_key="archive:prose_event_extract:0",
-                run_job_id=self._orch._run_job_id,
+                run_job_id=self._run_job_id,
                 provider_execution_mode="online",
             )
             expected_outcome = {
@@ -953,7 +928,7 @@ class SceneArchiveCheckpoint:
                 parent.response_payload_summary, dict
             ) or parent.response_payload_summary.get(
                 "archive_prose_product_hash"
-            ) != self._orch._json_hash(
+            ) != self._json_hash(
                 product
             ):
                 raise checkpoint_corrupt("archive prose product hash is detached from its parent")
@@ -966,7 +941,7 @@ class SceneArchiveCheckpoint:
                     "prose_extraction_parsed_hash"
                 ) != prose_extraction_parsed_hash(extraction.get("events") or []):
                     raise checkpoint_corrupt("archive prose parsed output hash is detached from its parent")
-        actual = self._orch._narrative_event_snapshots(event_ids)
+        actual = self._narrative_event_snapshots(event_ids)
         extracted_events = extraction.get("events") or []
         if (
             actual != events
@@ -977,7 +952,7 @@ class SceneArchiveCheckpoint:
                 or event.get("confidence") != "extracted"
                 or (event.get("payload_json") or {}).get("source") != "prose"
                 or (event.get("payload_json") or {}).get("archive_execution_id")
-                != self._orch._execution_id
+                != self._execution_id
                 or (event.get("payload_json") or {}).get("archive_step_key")
                 != "archive:prose_event_extract:0"
                 or (event.get("payload_json") or {}).get("archive_ordinal") != ordinal
@@ -1007,8 +982,8 @@ class SceneArchiveCheckpoint:
             self.session.scalars(
                 select(LlmCall)
                 .where(
-                    LlmCall.scene_id == self._orch._active_checkpoint_state().scene_id,
-                    LlmCall.execution_id == self._orch._execution_id,
+                    LlmCall.scene_id == self._active_checkpoint_state().scene_id,
+                    LlmCall.execution_id == self._execution_id,
                     LlmCall.execution_step_key == "archive:prose_event_extract:0",
                 )
                 .order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
@@ -1033,16 +1008,16 @@ class SceneArchiveCheckpoint:
         return ProseExtractionResult(
             outcome="rejected_before_dispatch",
             llm_call_id=parent.llm_call_id,
-            execution_id=self._orch._execution_id,
+            execution_id=self._execution_id,
             execution_step_key="archive:prose_event_extract:0",
-            run_job_id=self._orch._run_job_id,
+            run_job_id=self._run_job_id,
             reason="pre_dispatch_rejection",
             error_code=parent.error_code,
         )
 
     def _archive_checkpoint_ref(self, key: str) -> Any:
         return (
-            (self._orch._active_checkpoint_state().run_checkpoint_json or {}).get(
+            (self._active_checkpoint_state().run_checkpoint_json or {}).get(
                 "artifact_refs", {}
             )
         ).get(key)
@@ -1061,7 +1036,7 @@ class SceneArchiveCheckpoint:
             or product.get("schema_version") != 1
             or product.get("kind") != kind
             or product.get("outcome") not in outcomes
-            or product.get("execution_id") != self._orch._execution_id
+            or product.get("execution_id") != self._execution_id
             or product.get("scene_id") != scene.scene_id
             or product.get("chapter_id") != scene.chapter_id
             or product.get("step_key") != step_key
@@ -1081,12 +1056,12 @@ class SceneArchiveCheckpoint:
     def _retired_vector_product(
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
-        return self._orch._archive_product(
+        return self._archive_product(
             scene=scene,
             kind="vector_index",
             outcome="retired",
             step_key="archive:vector_index:0",
-            input_hash=self._orch._text_hash(final_scene.content),
+            input_hash=self._text_hash(final_scene.content),
             reason="vector_index_retired",
         )
 
@@ -1098,17 +1073,17 @@ class SceneArchiveCheckpoint:
         *,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
-        product = product or self._orch._archive_checkpoint_ref("archive_vector_product")
-        product = self._orch._validate_common_archive_product(
+        product = product or self._archive_checkpoint_ref("archive_vector_product")
+        product = self._validate_common_archive_product(
             scene=scene,
             product=product,
             kind="vector_index",
             step_key="archive:vector_index:0",
             outcomes={"retired", "indexed", "already_present", "non_persistent", "failed"},
         )
-        if require_checkpoint_hash and self._orch._json_hash(
+        if require_checkpoint_hash and self._json_hash(
             product
-        ) != self._orch._checkpoint_hash("archive_vector_product"):
+        ) != self._checkpoint_hash("archive_vector_product"):
             raise checkpoint_corrupt("archive vector product identity/hash is invalid")
         if product["outcome"] == "retired":
             if product != self._retired_vector_product(scene, final_scene):
@@ -1116,10 +1091,10 @@ class SceneArchiveCheckpoint:
             return product
         # 第 7 步退役之前写下的检查点：只核对产品自身的结构与它记的正文哈希，不再去碰向量库（向量库已删）。
         if (
-            product.get("input_hash") != self._orch._text_hash(final_scene.content)
+            product.get("input_hash") != self._text_hash(final_scene.content)
             or product.get("vector_id") != scene.scene_id
             or product.get("text_hash")
-            != self._orch._text_hash((final_scene.content or "")[:600])
+            != self._text_hash((final_scene.content or "")[:600])
             or not isinstance(product.get("collection_name"), str)
             or product.get("backend") not in {"memory", "chroma"}
             or product.get("validation_scope")
@@ -1176,7 +1151,7 @@ class SceneArchiveCheckpoint:
                 "row_id": memory.row_id,
                 "scene_id": memory.scene_id,
                 "chapter_id": memory.chapter_id,
-                "content_hash": self._orch._text_hash(memory.content),
+                "content_hash": self._text_hash(memory.content),
             }
             for memory in memories
         ]
@@ -1185,19 +1160,19 @@ class SceneArchiveCheckpoint:
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
         if scene.is_chapter_last != 1:
-            return self._orch._archive_product(
+            return self._archive_product(
                 scene=scene,
                 kind="chapter_aggregate",
                 outcome="not_applicable",
                 step_key="archive:chapter_aggregate:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 reason="not_chapter_last",
                 inputs=[],
                 result=None,
                 chapter_memory=None,
             )
-        inputs = self._orch._scene_memory_inputs(scene.chapter_id)
-        result = self._orch.aggregator.run_final_aggregate(scene.chapter_id)
+        inputs = self._scene_memory_inputs(scene.chapter_id)
+        result = self.aggregator.run_final_aggregate(scene.chapter_id)
         self.session.flush()
         row_id = (
             result.get("chapter_memory_row_id") if isinstance(result, dict) else None
@@ -1205,12 +1180,12 @@ class SceneArchiveCheckpoint:
         memory = (
             self.session.get(ChapterMemory, row_id) if isinstance(row_id, str) else None
         )
-        return self._orch._archive_product(
+        return self._archive_product(
             scene=scene,
             kind="chapter_aggregate",
             outcome=("aggregated" if memory is not None else "no_op"),
             step_key="archive:chapter_aggregate:0",
-            input_hash=self._orch._json_hash(inputs),
+            input_hash=self._json_hash(inputs),
             reason=(
                 (result or {}).get("reason")
                 if isinstance(result, dict)
@@ -1230,29 +1205,29 @@ class SceneArchiveCheckpoint:
         *,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
-        product = product or self._orch._archive_checkpoint_ref("archive_chapter_product")
-        product = self._orch._validate_common_archive_product(
+        product = product or self._archive_checkpoint_ref("archive_chapter_product")
+        product = self._validate_common_archive_product(
             scene=scene,
             product=product,
             kind="chapter_aggregate",
             step_key="archive:chapter_aggregate:0",
             outcomes={"not_applicable", "aggregated", "no_op"},
         )
-        if require_checkpoint_hash and self._orch._json_hash(
+        if require_checkpoint_hash and self._json_hash(
             product
-        ) != self._orch._checkpoint_hash("archive_chapter_product"):
+        ) != self._checkpoint_hash("archive_chapter_product"):
             raise checkpoint_corrupt("chapter aggregate product hash mismatch")
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
-                self._orch._archive_checkpoint_ref("final_scene_row_id"),
+                self._archive_checkpoint_ref("final_scene_row_id"),
             )
             if (
                 product.get("outcome") != "not_applicable"
                 or product.get("reason") != "not_chapter_last"
                 or product.get("inputs") != []
                 or final_scene is None
-                or product.get("input_hash") != self._orch._text_hash(final_scene.content)
+                or product.get("input_hash") != self._text_hash(final_scene.content)
                 or product.get("result") is not None
                 or product.get("chapter_memory") is not None
             ):
@@ -1262,7 +1237,7 @@ class SceneArchiveCheckpoint:
         if (
             not isinstance(inputs, list)
             or inputs != sorted(inputs, key=lambda item: item.get("row_id", ""))
-            or product.get("input_hash") != self._orch._json_hash(inputs)
+            or product.get("input_hash") != self._json_hash(inputs)
         ):
             raise checkpoint_corrupt("chapter aggregate input manifest is invalid")
         for item in inputs:
@@ -1270,19 +1245,19 @@ class SceneArchiveCheckpoint:
                 SceneMemory, item.get("row_id") if isinstance(item, dict) else None
             )
             if memory is None:
-                self._orch._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
+                self._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
             if (
                 memory.scene_id != item.get("scene_id")
                 or memory.chapter_id != scene.chapter_id
                 or item.get("chapter_id") != scene.chapter_id
-                or self._orch._text_hash(memory.content) != item.get("content_hash")
+                or self._text_hash(memory.content) != item.get("content_hash")
             ):
                 raise checkpoint_corrupt("chapter aggregate input memory changed")
         snapshot = product.get("chapter_memory")
         if product.get("outcome") == "aggregated":
             memory = self.session.get(ChapterMemory, (snapshot or {}).get("row_id"))
             if memory is None:
-                self._orch._raise_checkpoint_output_missing(
+                self._raise_checkpoint_output_missing(
                     row_id=(snapshot or {}).get("row_id")
                 )
             actual = chapter_memory_snapshot(memory)
@@ -1344,7 +1319,7 @@ class SceneArchiveCheckpoint:
             {
                 "row_id": row.row_id,
                 "chapter_id": row.chapter_id,
-                "content_hash": self._orch._text_hash(row.content),
+                "content_hash": self._text_hash(row.content),
             }
             for row in rows
         ]
@@ -1353,20 +1328,20 @@ class SceneArchiveCheckpoint:
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
         if scene.is_chapter_last != 1:
-            return self._orch._archive_product(
+            return self._archive_product(
                 scene=scene,
                 kind="volume_aggregate",
                 outcome="not_applicable",
                 step_key="archive:volume_aggregate:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 reason="not_chapter_last",
                 inputs=[],
                 result=None,
                 volume_summary=None,
             )
-        inputs = self._orch._volume_input_memories(scene)
+        inputs = self._volume_input_memories(scene)
         try:
-            result = self._orch.aggregator.maybe_aggregate_volume(scene.chapter_id)
+            result = self.aggregator.maybe_aggregate_volume(scene.chapter_id)
             row_id = (
                 result.get("volume_summary_row_id")
                 if isinstance(result, dict)
@@ -1391,12 +1366,12 @@ class SceneArchiveCheckpoint:
                 "degraded",
                 exc.__class__.__name__,
             )
-        return self._orch._archive_product(
+        return self._archive_product(
             scene=scene,
             kind="volume_aggregate",
             outcome=outcome,
             step_key="archive:volume_aggregate:0",
-            input_hash=self._orch._json_hash(inputs),
+            input_hash=self._json_hash(inputs),
             reason=(
                 (result or {}).get("reason")
                 if isinstance(result, dict)
@@ -1415,22 +1390,22 @@ class SceneArchiveCheckpoint:
         *,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
-        product = product or self._orch._archive_checkpoint_ref("archive_volume_product")
-        product = self._orch._validate_common_archive_product(
+        product = product or self._archive_checkpoint_ref("archive_volume_product")
+        product = self._validate_common_archive_product(
             scene=scene,
             product=product,
             kind="volume_aggregate",
             step_key="archive:volume_aggregate:0",
             outcomes={"not_applicable", "aggregated", "no_op", "degraded"},
         )
-        if require_checkpoint_hash and self._orch._json_hash(
+        if require_checkpoint_hash and self._json_hash(
             product
-        ) != self._orch._checkpoint_hash("archive_volume_product"):
+        ) != self._checkpoint_hash("archive_volume_product"):
             raise checkpoint_corrupt("volume aggregate product hash mismatch")
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
-                self._orch._archive_checkpoint_ref("final_scene_row_id"),
+                self._archive_checkpoint_ref("final_scene_row_id"),
             )
             if (
                 product.get("outcome") != "not_applicable"
@@ -1440,14 +1415,14 @@ class SceneArchiveCheckpoint:
                 raise checkpoint_corrupt("non-final scene volume product is invalid")
             if (
                 final_scene is None
-                or product.get("input_hash") != self._orch._text_hash(final_scene.content)
+                or product.get("input_hash") != self._text_hash(final_scene.content)
                 or product.get("result") is not None
                 or product.get("volume_summary") is not None
             ):
                 raise checkpoint_corrupt("non-final scene volume no-op payload is invalid")
             return product
         inputs = product.get("inputs")
-        if not isinstance(inputs, list) or product.get("input_hash") != self._orch._json_hash(
+        if not isinstance(inputs, list) or product.get("input_hash") != self._json_hash(
             inputs
         ):
             raise checkpoint_corrupt("volume aggregate input manifest is invalid")
@@ -1456,8 +1431,8 @@ class SceneArchiveCheckpoint:
                 ChapterMemory, item.get("row_id") if isinstance(item, dict) else None
             )
             if row is None:
-                self._orch._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
-            if row.chapter_id != item.get("chapter_id") or self._orch._text_hash(
+                self._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
+            if row.chapter_id != item.get("chapter_id") or self._text_hash(
                 row.content
             ) != item.get("content_hash"):
                 raise checkpoint_corrupt("volume aggregate input changed")
@@ -1465,7 +1440,7 @@ class SceneArchiveCheckpoint:
         if product.get("outcome") == "aggregated":
             row = self.session.get(VolumeSummary, (snapshot or {}).get("row_id"))
             if row is None:
-                self._orch._raise_checkpoint_output_missing(
+                self._raise_checkpoint_output_missing(
                     row_id=(snapshot or {}).get("row_id")
                 )
             actual = volume_snapshot(row)
@@ -1496,37 +1471,37 @@ class SceneArchiveCheckpoint:
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
         if scene.is_chapter_last != 1:
-            return self._orch._archive_product(
+            return self._archive_product(
                 scene=scene,
                 kind="chapter_near_final",
                 outcome="not_applicable",
                 step_key="archive:chapter_near_final:0",
-                input_hash=self._orch._text_hash(final_scene.content),
+                input_hash=self._text_hash(final_scene.content),
                 reason="not_chapter_last",
                 evaluation=None,
                 evaluator_llm_call_id=None,
             )
-        self._orch._reconcile_execution_step(
+        self._reconcile_execution_step(
             "archive:chapter_near_final:0",
             chapter_scope=True,
         )
-        evaluation_result = self._orch.near_final_service.evaluate_chapter(
+        evaluation_result = self.near_final_service.evaluate_chapter(
             scene.chapter_id,
             execution_step_key="archive:chapter_near_final:0",
         )
         evaluation_id = evaluation_result.get("evaluation_id")
         row = self.session.get(WriterEvaluation, evaluation_id)
         if row is None:
-            self._orch._raise_checkpoint_output_missing(row_id=evaluation_id)
+            self._raise_checkpoint_output_missing(row_id=evaluation_id)
         snapshot = archive_writer_evaluation_snapshot(row)
-        product = self._orch._archive_product(
+        product = self._archive_product(
             scene=scene,
             kind="chapter_near_final",
             outcome="evaluated",
             step_key="archive:chapter_near_final:0",
-            input_hash=self._orch._json_hash(
+            input_hash=self._json_hash(
                 {
-                    "chapter_product_hash": self._orch._checkpoint_hash(
+                    "chapter_product_hash": self._checkpoint_hash(
                         "archive_chapter_product"
                     ),
                     "source_text_ref": row.source_text_ref,
@@ -1539,11 +1514,11 @@ class SceneArchiveCheckpoint:
         )
         parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
         if parent is None:
-            self._orch._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
+            self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
         parent.response_payload_summary = sanitize_audit_summary(
             {
                 **dict(parent.response_payload_summary or {}),
-                "archive_chapter_near_final_product_hash": self._orch._json_hash(product),
+                "archive_chapter_near_final_product_hash": self._json_hash(product),
             }
         )
         self.session.flush()
@@ -1556,24 +1531,24 @@ class SceneArchiveCheckpoint:
         *,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
-        product = product or self._orch._archive_checkpoint_ref(
+        product = product or self._archive_checkpoint_ref(
             "archive_chapter_evaluation_product"
         )
-        product = self._orch._validate_common_archive_product(
+        product = self._validate_common_archive_product(
             scene=scene,
             product=product,
             kind="chapter_near_final",
             step_key="archive:chapter_near_final:0",
             outcomes={"not_applicable", "evaluated"},
         )
-        if require_checkpoint_hash and self._orch._json_hash(
+        if require_checkpoint_hash and self._json_hash(
             product
-        ) != self._orch._checkpoint_hash("archive_chapter_evaluation_product"):
+        ) != self._checkpoint_hash("archive_chapter_evaluation_product"):
             raise checkpoint_corrupt("chapter evaluation product hash mismatch")
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
-                self._orch._archive_checkpoint_ref("final_scene_row_id"),
+                self._archive_checkpoint_ref("final_scene_row_id"),
             )
             if (
                 product.get("outcome") != "not_applicable"
@@ -1581,7 +1556,7 @@ class SceneArchiveCheckpoint:
                 or product.get("evaluation") is not None
                 or product.get("evaluator_llm_call_id") is not None
                 or final_scene is None
-                or product.get("input_hash") != self._orch._text_hash(final_scene.content)
+                or product.get("input_hash") != self._text_hash(final_scene.content)
             ):
                 raise checkpoint_corrupt("non-final scene chapter evaluation is invalid")
             return product
@@ -1593,7 +1568,7 @@ class SceneArchiveCheckpoint:
             )
         row = self.session.get(WriterEvaluation, (snapshot or {}).get("evaluation_id"))
         if row is None:
-            self._orch._raise_checkpoint_output_missing(
+            self._raise_checkpoint_output_missing(
                 row_id=(snapshot or {}).get("evaluation_id")
             )
         if (
@@ -1607,9 +1582,9 @@ class SceneArchiveCheckpoint:
             != row.evaluation_id
         ):
             raise checkpoint_corrupt("chapter evaluation row is detached or changed")
-        expected_input_hash = self._orch._json_hash(
+        expected_input_hash = self._json_hash(
             {
-                "chapter_product_hash": self._orch._checkpoint_hash(
+                "chapter_product_hash": self._checkpoint_hash(
                     "archive_chapter_product"
                 ),
                 "source_text_ref": row.source_text_ref,
@@ -1619,7 +1594,7 @@ class SceneArchiveCheckpoint:
             raise checkpoint_corrupt("chapter evaluation input hash mismatch")
         parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
         if parent is None:
-            self._orch._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
+            self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
         execution_mode = (
             (parent.request_payload_summary or {}).get(ACCOUNTING_EXECUTION_MODE_KEY)
             if isinstance(parent.request_payload_summary, dict)
@@ -1655,9 +1630,9 @@ class SceneArchiveCheckpoint:
             scene_id=None,
             node_id="chapter_near_final_review",
             step="chapter_near_final_review",
-            execution_id=self._orch._execution_id,
+            execution_id=self._execution_id,
             execution_step_key="archive:chapter_near_final:0",
-            run_job_id=self._orch._run_job_id,
+            run_job_id=self._run_job_id,
             provider_execution_mode=execution_mode,
         )
         try:
@@ -1674,7 +1649,7 @@ class SceneArchiveCheckpoint:
             raise checkpoint_corrupt("chapter evaluation parent ledger is invalid") from exc
         if (parent.response_payload_summary or {}).get(
             "archive_chapter_near_final_product_hash"
-        ) != self._orch._json_hash(product):
+        ) != self._json_hash(product):
             raise checkpoint_corrupt("chapter evaluation hash is detached from parent")
         return product
 
@@ -1685,8 +1660,8 @@ class SceneArchiveCheckpoint:
         *,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
-        product = product or self._orch._archive_checkpoint_ref("archive_drift_product")
-        product = self._orch._validate_common_archive_product(
+        product = product or self._archive_checkpoint_ref("archive_drift_product")
+        product = self._validate_common_archive_product(
             scene=scene,
             product=product,
             kind="style_drift",
@@ -1699,9 +1674,9 @@ class SceneArchiveCheckpoint:
                 "degraded",
             },
         )
-        if require_checkpoint_hash and self._orch._json_hash(
+        if require_checkpoint_hash and self._json_hash(
             product
-        ) != self._orch._checkpoint_hash("archive_drift_product"):
+        ) != self._checkpoint_hash("archive_drift_product"):
             raise checkpoint_corrupt("style drift product hash mismatch")
         # 风格参考 v3：这个槽位记归档读数（漂移驾驶已删）；旧检查点里的 observed / no_op 产品照常通过。
         if product.get("outcome") == "degraded" and not isinstance(
@@ -1725,7 +1700,7 @@ class SceneArchiveCheckpoint:
             (10, "chapter_near_final", "archive_chapter_evaluation_product"),
             (11, "style_drift", "archive_drift_product"),
         ]
-        hashes = (self._orch._active_checkpoint_state().run_checkpoint_json or {}).get(
+        hashes = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
             "artifact_hashes", {}
         )
         manifest = [
@@ -1752,23 +1727,23 @@ class SceneArchiveCheckpoint:
         allow_terminal: bool = False,
     ) -> None:
         if through >= 4:
-            self._orch._validate_archive_core_checkpoint(
+            self._validate_archive_core_checkpoint(
                 scene=scene,
                 final_scene=final_scene,
                 carry_notes=carry_notes,
                 allow_terminal=allow_terminal,
             )
         if through >= 5:
-            self._orch._validate_archive_rule_events_checkpoint(scene)
+            self._validate_archive_rule_events_checkpoint(scene)
         if through >= 6:
-            self._orch._validate_archive_prose_checkpoint(scene, contract)
+            self._validate_archive_prose_checkpoint(scene, contract)
         if through >= 7:
-            self._orch._validate_archive_vector_product(scene, final_scene)
+            self._validate_archive_vector_product(scene, final_scene)
         if through >= 8:
-            self._orch._validate_archive_chapter_product(scene)
+            self._validate_archive_chapter_product(scene)
         if through >= 9:
-            self._orch._validate_archive_volume_product(scene)
+            self._validate_archive_volume_product(scene)
         if through >= 10:
-            self._orch._validate_archive_chapter_evaluation_product(scene)
+            self._validate_archive_chapter_evaluation_product(scene)
         if through >= 11:
-            self._orch._validate_archive_drift_product(scene)
+            self._validate_archive_drift_product(scene)
