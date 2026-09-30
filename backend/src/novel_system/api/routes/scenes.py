@@ -427,13 +427,14 @@ def _assert_scene_seq_available(
 
 
 def _parse_run_policy(payload: dict | None) -> str:
+    # 「auto」从没有调用方传过、编排器也只按 reliable 处理，已不再收（B01-09）
     run_policy = (
         str((payload or {}).get("run_policy") or "reliable").strip() or "reliable"
     )
-    if run_policy not in {"reliable", "strict", "auto"}:
+    if run_policy not in {"reliable", "strict"}:
         raise DomainError(
             "INVALID_RUN_POLICY",
-            "run_policy must be one of reliable|strict|auto",
+            "run_policy must be one of reliable|strict",
             status_code=422,
             details={"run_policy": run_policy},
         )
@@ -463,7 +464,7 @@ def run_scene(
     _reject_manual_checkpoint_controls(body)
     # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
     author_note = normalize_author_note(body.get("author_note"))
-    # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
+    # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict；列属 Wave 3）
     run_policy = _parse_run_policy(body)
     return idempotent_response(
         request,

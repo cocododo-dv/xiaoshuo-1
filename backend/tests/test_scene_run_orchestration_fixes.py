@@ -1,6 +1,7 @@
 """场景编排器的几处行为修正（P01c）：每条都先写成红的，再改代码。
 
-- 终选门只按抄袭门淘汰候选，受保护专名从不淘汰（[批准#12]，B04-15）。
+- 终选门只按抄袭门淘汰候选，受保护专名从不淘汰（[批准#12]，B04-15）；
+- ``run_policy="auto"`` 不再接收（B01-09）。
 """
 
 from __future__ import annotations
@@ -38,3 +39,17 @@ def test_blind_selection_gate_never_drops_a_candidate_for_a_protected_term(sessi
     )
 
     assert offered == ["named", "other"]
+
+
+def test_run_policy_auto_is_rejected(client, session) -> None:
+    """``auto`` 从没有调用方传过、编排器只按 reliable 处理：和别的未知值一样 422。"""
+    _seed_resume_scene(session)
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/run/full",
+        json={"run_policy": "auto"},
+        headers={"X-Idempotency-Key": "p01c-run-policy-auto"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_RUN_POLICY"

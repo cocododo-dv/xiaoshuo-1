@@ -468,8 +468,7 @@ class Orchestrator:
     ) -> dict:
         # Wave 2/3（治理 §5.4/§5.5）：run_policy 现已落列（Wave 3 迁移 0062）。
         # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
-        # quality_warning，由作者经 adopt-current 显式接受；auto 保留（按
-        # criticality 决策），当前按 reliable 处理。Q0/Q1 阻断与模式无关。
+        # quality_warning，由作者经 adopt-current 显式接受。Q0/Q1 阻断与模式无关。
         scene = get_scene_or_404(self.session, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
