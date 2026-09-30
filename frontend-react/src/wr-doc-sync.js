@@ -2516,9 +2516,4 @@ const WrDocs = {
   },
 };
 
-/* 版本列表 / 某一版正文要 draftId 时复用同一条 ensure（wr-doc-versions.js） */
-function ensureDraft(sid) {
-  return ensureDraftMeta(meta(sid));
-}
-
-export { WrDocs, ensureDraft, refusalReason };
+export { WrDocs, refusalReason };
