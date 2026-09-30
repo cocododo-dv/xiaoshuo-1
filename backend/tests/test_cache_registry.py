@@ -15,6 +15,7 @@ from novel_system.cache_registry import register_cache_reset, registered_cache_n
 
 # 已知的进程级缓存：模块 → 它在定义处登记的名字。新加一处按库内容缓存的地方，就在这里加一行。
 KNOWN_CACHES = {
+    "novel_system.api.readiness": ("api.readiness.verified_structure",),
     "novel_system.services.llm_client": ("llm_client.connectivity_caps",),
     "novel_system.services.pricing": ("pricing.price_book",),
     "novel_system.services.reference_copy_gate": ("reference_copy_gate",),
@@ -54,10 +55,12 @@ def test_registry_replaces_by_name_and_resets_everything(monkeypatch) -> None:
 
 
 def _fill_every_known_cache() -> None:
+    from novel_system.api import readiness
     from novel_system.services import pricing, reference_copy_gate, scene_diagnosis, scene_run_jobs, style_policy
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
 
+    readiness._VERIFIED_STRUCTURE["probe"] = "probe"
     pricing.load_price_book()
     reference_copy_gate._RESULT_CACHE[("probe",)] = object()
     scene_diagnosis._FINDINGS_CACHE[("probe",)] = {"findings": [], "waived": []}
@@ -78,10 +81,12 @@ def test_caches_filled_by_one_test_part_1_fill() -> None:
 
 
 def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
+    from novel_system.api import readiness
     from novel_system.services import pricing, reference_copy_gate, scene_diagnosis, scene_run_jobs, style_policy
     from novel_system.services.style_reference import config_loader, fidelity, measure, planning_context, runtime_contract
     from novel_system.services.style_reference.inject import render
 
+    assert not readiness._VERIFIED_STRUCTURE
     assert pricing._CACHE is None
     assert not reference_copy_gate._RESULT_CACHE and not reference_copy_gate._INDEX_CACHE
     assert not scene_diagnosis._FINDINGS_CACHE and not scene_diagnosis._REFERENCE_CRAFT_CACHE
