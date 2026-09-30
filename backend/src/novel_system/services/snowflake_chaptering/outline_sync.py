@@ -3,6 +3,9 @@
 身份锚是 ``row_uid``，规则与场景计划一致：改标题、改幕、重排都不重建行，已经分好的场景归属
 （``SnowflakeScenePlan.chapter_plan_id``）不会因为一次改标题就断掉；删掉的章软删，分在里面的场退回「未分章」。
 写行走 ``snowflake_chapter_table`` 里与分章面板同一个 upsert（B07-05）。
+
+2026-09-30（R11，批准 #18a）起 07 的章表是分章结果的只读镜像：前端不再上行章表，07 保存不带章表时
+``update_step`` 沿用存着的那一份、不走这里；07 重新生成时有章表行就保留现表。走到这里的只剩 API 调用方显式给的章表。
 """
 
 from __future__ import annotations

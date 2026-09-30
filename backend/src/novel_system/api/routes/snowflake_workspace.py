@@ -3,6 +3,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
+from novel_system.api.chapter_plan_requests import (
+    ChapterPlanPreviewRequest,
+    ChapterPlanProposeRequest,
+    ChapterPlanSaveRequest,
+    ChapterPlanSuggestRequest,
+    ChapterTitlesRequest,
+)
 from novel_system.api.deps import actor_ref_of, get_session, request_id_of
 from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.project_requests import ProjectCreateRequest
@@ -304,11 +311,12 @@ def materialize_workspace_outline(
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview")
 def preview_chapter_plan(
     project_id: str,
-    payload: BoundedJsonObject | None,
     request: Request,
+    payload: ChapterPlanPreviewRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    """分章预览：**分章方案**只读推演，不落库。策略 spine_anchor / even / keep_current。
+    """分章预览：**分章方案**只读推演，不落库。策略 auto（面板打开时用：服务端按现状挑）/ from_scenes（按场景提议）/
+    spine_anchor / even / keep_current。
 
     「不落库」指的是这次推演算出来的归属——作者没在面板上确认之前，一场都不会按它改。
 
@@ -317,7 +325,7 @@ def preview_chapter_plan(
     或场景行自带的 chapter_id —— 那是系统已经知道的事，不是待决策项），所以要 commit。
     历史项目第一次打开面板时，因此会看到归属从「未分章」变成实际章数，这是补录不是决策。
     """
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     return optional_idempotent_response(
         request,
         session,
@@ -331,8 +339,8 @@ def preview_chapter_plan(
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/propose")
 def propose_chapter_plan(
     project_id: str,
-    payload: BoundedJsonObject | None,
     request: Request,
+    payload: ChapterPlanProposeRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """阶段 K：按场景列表提议并落一版章表（Ingermanson：章是列完场之后的包装决定）。
@@ -340,7 +348,7 @@ def propose_chapter_plan(
     载荷：``target_chapter_count``（缺省用作品设置）、``scenes_per_chapter``（缺省 3）、``replace``
     （已有章表时必须为 true）。回包是 keep_current 策略的分章预览，外加 created_chapter_count。
     """
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     return idempotent_response(
         request,
         session,
@@ -348,7 +356,7 @@ def propose_chapter_plan(
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/propose",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeChapteringService(session).propose_from_scenes(
-            project_id, body, actor_ref=request.state.operator_ref
+            project_id, body, actor_ref=actor_ref_of(request)
         ),
     )
 
@@ -356,8 +364,8 @@ def propose_chapter_plan(
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest")
 def suggest_chapter_plan(
     project_id: str,
-    payload: BoundedJsonObject | None,
     request: Request,
+    payload: ChapterPlanSuggestRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """让 LLM 给一份分章建议（只读，不落库）。
@@ -365,7 +373,7 @@ def suggest_chapter_plan(
     fail-closed：LLM 没配好就 409 + author_action。作者点的是「让 AI 建议」，拿一份
     规则算出来的东西冒充建议是撒谎 —— 规则分章本来就以 spine_anchor 策略摆在面板上。
     """
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     return optional_idempotent_response(
         request,
         session,
@@ -379,8 +387,8 @@ def suggest_chapter_plan(
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/titles")
 def suggest_chapter_titles(
     project_id: str,
-    payload: BoundedJsonObject | None,
     request: Request,
+    payload: ChapterTitlesRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """AI 起章名（阶段 W，只读，不落库）：给系统起的占位章名（空 / 「第 N 章」）各起一个名字、写一句章摘要。
@@ -389,7 +397,7 @@ def suggest_chapter_titles(
     不带就按已保存的分章。``rename_all=true`` 连作者起过名字的章也重起。
     fail-closed：LLM 没配好 409 + author_action；模型没给出可用章名 502 ``SNOWFLAKE_CHAPTER_TITLES_EMPTY``。
     """
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     return optional_idempotent_response(
         request,
         session,
@@ -403,27 +411,20 @@ def suggest_chapter_titles(
 @router.patch("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan")
 def save_chapter_plan(
     project_id: str,
-    payload: BoundedJsonObject | None,
     request: Request,
+    payload: ChapterPlanSaveRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
-
-    def save() -> dict:
-        saved = SnowflakeChapteringService(session).save(
-            project_id,
-            body,
-            actor_ref=actor_ref_of(request),
-        )
-        return {**saved, "workspace": SnowflakeWorkspaceService(session).mutation_workspace(project_id)}
-
+    """分章面板「只保存章表」：整张章表落库、不物化（确认写入被前面的步骤挡住时也能改章名 / 章摘要 / 章界）。"""
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,
         method="PATCH",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan",
         payload={"project_id": project_id, "body": body},
-        action=save,
+        action=lambda: SnowflakeWorkspaceService(session).save_chapter_plan(project_id, body, actor_ref=actor_ref),
     )
 
 
@@ -444,23 +445,16 @@ def resolve_orphaned_scene(
     """
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     action = str(body.get("action") or "").strip()
-
-    def resolve() -> dict:
-        resolved = SnowflakeChapteringService(session).resolve_orphan(
-            project_id,
-            scene_plan_id,
-            action=action,
-            actor_ref=actor_ref_of(request),
-        )
-        return {**resolved, "workspace": SnowflakeWorkspaceService(session).mutation_workspace(project_id)}
-
+    actor_ref = actor_ref_of(request)
     return optional_idempotent_response(
         request,
         session,
         method="POST",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/orphaned-scenes/{scene_plan_id}/resolve",
         payload={"project_id": project_id, "scene_plan_id": scene_plan_id, "action": action},
-        action=resolve,
+        action=lambda: SnowflakeWorkspaceService(session).resolve_orphaned_scene(
+            project_id, scene_plan_id, action=action, actor_ref=actor_ref
+        ),
     )
 
 

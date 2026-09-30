@@ -21,7 +21,7 @@ from novel_system.db.models import (
 )
 from tests.test_catalog_book_spine import _catalog, _materialized, _preview
 from tests.test_snowflake_chaptering import _patch
-from tests.test_snowflake_chaptering_story_order import _confirm
+from tests.test_snowflake_chaptering_story_order import _confirm, _payload
 
 
 def _rename(client, project_id: str, chapter_id: str, title: str, key: str):
@@ -211,6 +211,39 @@ def test_a_chapter_renamed_in_step_07_is_renamed_in_the_catalog_and_on_the_scene
             select(SnowflakeScenePlan).where(SnowflakeScenePlan.chapter_plan_id == row.chapter_plan_id)
         ).scalars()
     } == {"雨城的清晨"}
+
+
+def test_saving_only_the_chapter_table_renames_the_chapter_everywhere_like_step_07_did(client, session) -> None:
+    """R11（批准 #18a）：07 的章表改成只读镜像之后，分章面板的「只保存章表」（PATCH …/chapter-plan，不物化）是
+    「确认写入」被挡住时改章名 / 章摘要的门——存下来的章名当场跟到目录（目录里还是上次播下去的名字时）、09 的章头
+    与 07 的镜像，和以前在 07 里改章名一样；目录里的场景卡不动（没有物化）。"""
+    project_id = _materialized(client, "z-save-only")
+    target = _catalog(client, project_id)[1]
+    cards_before = {chapter["chapter_id"]: [scene["scene_id"] for scene in chapter["scenes"]] for chapter in _catalog(client, project_id)}
+    panel = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview", json={"strategy": "keep_current"}
+    ).json()["data"]
+    payload = _payload(panel)
+    for chapter in payload["chapters"]:
+        if chapter["row_uid"] == target["structure"]["row_uid"]:
+            chapter["title"] = "码头对质"
+            chapter["summary"] = "她当着众人对出名册"
+
+    saved = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan", json=payload)
+    assert saved.status_code == 200, saved.text
+
+    after = _catalog(client, project_id)
+    assert {chapter["chapter_id"]: chapter["title"] for chapter in after}[target["chapter_id"]] == "码头对质"
+    assert {chapter["chapter_id"]: [scene["scene_id"] for scene in chapter["scenes"]] for chapter in after} == cards_before
+    row = _plan_row(session, project_id, target["chapter_id"])
+    assert (row.title, row.summary) == ("码头对质", "她当着众人对出名册")
+    assert {
+        plan.chapter_title
+        for plan in session.execute(
+            select(SnowflakeScenePlan).where(SnowflakeScenePlan.chapter_plan_id == row.chapter_plan_id)
+        ).scalars()
+    } == {"码头对质"}
+    assert "码头对质" in [item["title"] for item in _long_synopsis_draft(session, project_id)["chapters"]]
 
 
 # ------------------------------------------------------------------ 3. 章的先后与幕只有一处可改

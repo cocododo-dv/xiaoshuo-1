@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -361,21 +362,16 @@ def soft_delete_unlisted_chapters(
 
 
 # ------------------------------------------------------------------ 07 草稿里的镜像
+#
+# 2026-09-30（R11，批准 #18a）起 07 的章表是分章结果的**只读镜像**：分章面板（与章节编排改名）是唯一改章的地方，
+# 07 只显示。前端不再上行章表；07 保存不带章表时沿用存着的那一份（``carry_stored_chapters``），07 重新生成时只要
+# 有章表行就保留现表、不收模型的章（``keep_live_chapter_table``）。API 调用方显式给的章表照旧同步成行。
 
 
-def mirror_chapters_into_long_synopsis(session: Session, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
-    """把章表写回 07 最新草稿的 ``chapters``（带 row_uid），前端 07 表格与章表行才是同一份。
-
-    草稿里的 ``fe_scaffold.chapters`` 是前端写穿缓存，水合时**优先于**规范字段——只改 ``chapters``
-    的话，新浏览器看到的仍是旧章表（真实故障里是两行「（待补）」），下一次 07 上行还会把它们
-    当成作者的章表同步回来、把刚确认的分章冲掉。两处一起写。
-    """
-    run = latest_step_run(session, project_id, "long_synopsis")
-    if run is None:
-        return
+def chapter_table_rows(chapters: Iterable[SnowflakeChapterPlan]) -> list[dict[str, Any]]:
+    """章表行 → 07 草稿里 ``chapters`` 的形状（按章序）。"""
     ordered = sorted(chapters, key=lambda row: (int(row.chapter_seq or 0), row.row_uid))
-    draft = dict(run.draft_json or {})
-    draft["chapters"] = [
+    return [
         {
             "row_uid": row.row_uid,
             "chapter_seq": row.chapter_seq,
@@ -387,22 +383,46 @@ def mirror_chapters_into_long_synopsis(session: Session, project_id: str, chapte
         }
         for row in ordered
     ]
+
+
+def mirror_chapters_into_long_synopsis(session: Session, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
+    """把章表写回 07 最新草稿的 ``chapters``（带 row_uid），07 显示的与章表行才是同一份。
+
+    草稿里的 ``fe_scaffold.chapters`` 曾是前端的第二份章表（水合时还优先于规范字段——新浏览器看到的是旧章表，下一次
+    07 上行又把它当作者的章表同步回来，把刚确认的分章冲掉）。R11 起前端从规范的 ``chapters`` 读章表、不再上行它，
+    这里也不再维护那一份：还留着的旧副本去掉，免得哪个没刷新的页面把它当章表读。
+    """
+    run = latest_step_run(session, project_id, "long_synopsis")
+    if run is None:
+        return
+    draft = dict(run.draft_json or {})
+    draft["chapters"] = chapter_table_rows(chapters)
     scaffold = draft.get("fe_scaffold")
-    if isinstance(scaffold, dict):
-        draft["fe_scaffold"] = {
-            **scaffold,
-            "chapters": [
-                {
-                    "row_uid": row.row_uid,
-                    "id": f"{index:02d}",
-                    "act": min(max(int(row.act or 1), 1), 3),
-                    "title": row.title or "",
-                    "summary": row.summary or "",
-                    "spine": row.spine or "",
-                    "goal": row.chapter_goal or "",
-                }
-                for index, row in enumerate(ordered, start=1)
-            ],
-        }
+    if isinstance(scaffold, dict) and "chapters" in scaffold:
+        draft["fe_scaffold"] = {key: value for key, value in scaffold.items() if key != "chapters"}
     run.draft_json = draft
     flag_modified(run, "draft_json")
+
+
+def carry_stored_chapters(draft: dict[str, Any], sent_draft: Any, stored_run: Any) -> bool:
+    """07 保存没带章表（前端不再上行它；空表也算没带）：把存着的那一份原样放回 ``draft``，返回 True。
+
+    必须在「这一版和已确认的是不是同一个故事」的比较之前做：``merge_step_draft`` 从步骤默认值起，缺席的章表会变成
+    空表，已确认的 07 就被当成改过、打回待审。沿用时调用方也不去同步章表行——章表没动。显式带了章表（API 调用方）
+    返回 False，照旧同步。
+    """
+    sent = sent_draft.get("chapters") if isinstance(sent_draft, dict) else None
+    if isinstance(sent, list) and any(isinstance(item, dict) for item in sent):
+        return False
+    stored = (getattr(stored_run, "draft_json", None) or {}).get("chapters") if stored_run is not None else None
+    draft["chapters"] = deepcopy(stored) if isinstance(stored, list) else []
+    return True
+
+
+def keep_live_chapter_table(session: Session, project_id: str, draft: dict[str, Any]) -> bool:
+    """07 重新生成：已经有章表行就保留现表（模型给的章表不收——拆章 / 并章 / 改章名都在分章面板），返回 True。"""
+    live = live_chapter_plans(session, project_id)
+    if not live:
+        return False
+    draft["chapters"] = chapter_table_rows(live)
+    return True

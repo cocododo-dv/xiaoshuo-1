@@ -31,6 +31,7 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryProject,
 )
+from novel_system.services.chapter_title_sync import follow_plan_titles
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload
 from novel_system.services.snowflake_approval import SnowflakeApprovalMixin
@@ -204,6 +205,25 @@ class SnowflakeWorkspaceService(
     def _protagonist_hint(self, project_id: str) -> dict[str, str] | None:
         """全书主角（04 显式指定的优先，否则定位为主角的第一人；见 ``snowflake_chaptering.outline_plan``）。"""
         return protagonist_hint(self.session, project_id)
+
+    # ------------------------------------------------ 分章面板不物化的两个写入口（B06-18：路由只转一手）
+
+    def save_chapter_plan(
+        self, project_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator"
+    ) -> dict[str, Any]:
+        """分章面板「只保存章表」（``PATCH …/chapter-plan``，不物化）：前面有步骤待确认、「确认写入」点不动时，
+        作者照样能改章名 / 章摘要 / 章界并存下来（R11：07 的章表改成只读镜像之后，这是改章表的门）。
+        章名当场跟到 09 的章头与目录（目录里还是上次播下去的名字时——与 07 改章名同一条规矩）。"""
+        saved = self._chaptering.save(project_id, payload, actor_ref=actor_ref)
+        follow_plan_titles(self.session, project_id)
+        return {**saved, "workspace": self.mutation_workspace(project_id)}
+
+    def resolve_orphaned_scene(
+        self, project_id: str, scene_plan_id: str, *, action: str, actor_ref: str = "operator"
+    ) -> dict[str, Any]:
+        """处置一个孤儿场（discard / keep，见 ``snowflake_chaptering.orphans``），回包带刷新后的工作台。"""
+        resolved = self._chaptering.resolve_orphan(project_id, scene_plan_id, action=action, actor_ref=actor_ref)
+        return {**resolved, "workspace": self.mutation_workspace(project_id)}
 
     def approve_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
