@@ -13,7 +13,8 @@ vi.mock("./lib/client.js", () => ({
 
 const trash = vi.hoisted(() => ({ items: [], load: { status: "ready", message: "" } }));
 
-vi.mock("./ws-catalog.jsx", () => ({
+// 视图只 import 回收站 store（ws-trash-store.js），桩就给它
+vi.mock("./ws-trash-store.js", () => ({
   WsTrashStore: {
     subscribe: () => () => {},
     list: () => trash.items,
@@ -23,8 +24,7 @@ vi.mock("./ws-catalog.jsx", () => ({
     clear: vi.fn(() => Promise.resolve(true)),
     refresh: vi.fn(() => Promise.resolve()),
   },
-  WsCatalog: { get: () => [], subscribe: () => () => {} },
-  useCatalogChapters: () => [],
+  onTrashRestored: () => () => {},
 }));
 
 const NOW = Date.now();
@@ -41,13 +41,13 @@ function sampleItems() {
 
 async function mountTrash() {
   const { WsTrash } = await import("./ws-trash.jsx");
-  const catalog = await import("./ws-catalog.jsx");
+  const trashStore = await import("./ws-trash-store.js");
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   await act(async () => root.render(<WsTrash go={vi.fn()} />));
   return {
-    host, store: catalog.WsTrashStore,
+    host, store: trashStore.WsTrashStore,
     unmount: async () => { await act(async () => root.unmount()); host.remove(); },
   };
 }

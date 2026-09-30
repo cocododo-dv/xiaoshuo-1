@@ -2,14 +2,14 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { agoLabel } from "./lib/format.js";
 import { useStoreTick } from "./lib/store-utils.js";
-import { WsTrashStore } from "./ws-catalog.jsx";
+import { WsTrashStore } from "./ws-trash-store.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { EmptyState, Notice, PageHeader, Spinner, Tag } from "./ws-ui.jsx";
 
 /* ==========================================================
    回收站（WsTrashStore，按作品隔离）。
    以前挂在 ws-library.jsx 里：打开回收站要先下载整个资料库分块（图谱布局、档案数据层，
-   后者一 import 就去拉 /library）。现在独立成路由模块，只依赖目录 store。
+   后者一 import 就去拉 /library）。现在独立成路由模块，只依赖回收站 store（ws-trash-store.js）。
    场景的所在章也在回收站里时，场景行挂在那一章下面：恢复那一章会把它们一起带回，
    单独恢复这场会被后端拒绝，所以按钮禁用并写明原因。样式在 ws-library.css 的回收站一节。
    ========================================================== */
