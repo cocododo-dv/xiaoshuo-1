@@ -675,7 +675,7 @@ def test_deep_review_prompt_carries_the_style_prefix_with_capped_windows(session
     assert system.startswith("[STYLE_REFERENCE]") and system.endswith(template.system_prompt)
     assert "[风格样例]" in system
     assert 1 <= len(_few_shot_entries(_few_shot_block(system))) <= PLAN_K
-    assert result["latest_evaluation"]["findings"][0]["dimension"] == "repetitive_expression"
+    assert [item["dimension"] for item in result["findings"] if item["source"] == "ai"] == ["repetitive_expression"]
 
     # 章级深评：project + global 作用域
     client = _ScriptedClient([_deep_review_payload()])

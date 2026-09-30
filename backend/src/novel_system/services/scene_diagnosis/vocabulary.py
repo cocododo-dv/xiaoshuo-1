@@ -54,13 +54,6 @@ CRAFT_LABELS: dict[str, str] = {
     "long_paragraph": "段落偏长",
     "same_opening": "句首重复",
 }
-SCENE_FORMS: tuple[str, ...] = (
-    "plot_scene",
-    "atmosphere_scene",
-    "relationship_scene",
-    "revelation_scene",
-    "transition_scene",
-)
 PATCH_CATEGORIES: tuple[str, ...] = (
     "dialogue_rewrite",
     "action_replace",

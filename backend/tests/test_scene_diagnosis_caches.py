@@ -363,7 +363,7 @@ def test_diagnosis_queries_do_not_grow_with_the_scene_count(client, session) -> 
     few_scene, scene_payload = statements_for(f"/api/v1/scenes/{CHAPTER_ID}_SC01/deep-review")
     assert summary["scenes"][f"{CHAPTER_ID}_SC01"]["open"] >= 3
     assert scene_payload["review"]["status"] == "current" and scene_payload["ai"]["lenses"] == [{"lens": "story", "label": "故事", "overall_score": None}]
-    assert len(scene_payload["passage_reviews"]) == 1
+    assert any((item.get("origin") or {}).get("kind") in {"scene", "passage"} for item in scene_payload["findings"] if item["source"] == "ai")
 
     for index in range(2, 8):
         _seed_reviewed_scene(session, f"{CHAPTER_ID}_SC{index + 1:02d}", index + 1)

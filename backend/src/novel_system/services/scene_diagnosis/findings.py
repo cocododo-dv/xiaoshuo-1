@@ -138,7 +138,6 @@ def rule_findings(
         findings.append(
             {
                 "signal_id": unified["signal_id"],
-                "quality_signal_id": unified["signal_id"],
                 "source": "rules",
                 "dimension": unified["dimension"],
                 "label": unified["label"],
@@ -278,7 +277,6 @@ def _craft_finding(
 ) -> dict[str, Any]:
     return {
         "signal_id": signal_id,
-        "quality_signal_id": signal_id,
         "source": "craft",
         "dimension": kind,
         "label": CRAFT_LABELS[kind],
@@ -362,7 +360,6 @@ def evaluation_findings(
         findings.append(
             {
                 "signal_id": signal_id,
-                "quality_signal_id": signal_id,
                 "source": source,
                 "dimension": dimension,
                 "label": label_for.get(dimension) or dimension_label(dimension) or AI_DIMENSION_LABELS.get(dimension) or REVIEW_DIMENSION_LABELS.get(dimension) or SOURCE_LABELS.get(source, dimension),

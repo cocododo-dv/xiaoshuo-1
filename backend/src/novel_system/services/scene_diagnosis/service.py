@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, PassagePatchCandidate, SceneCard, WriterEvaluation
+from novel_system.db.models import ChapterGoal, SceneCard, WriterEvaluation
 from novel_system.services.literary_quality import DEFAULT_RULE_CALIBRATION, RuleCalibration
 from novel_system.services.literary_quality.calibration_source import (
     BoundProfile,
@@ -27,11 +27,7 @@ from novel_system.services.scene_diagnosis.findings import (
     finding_counts,
     finding_sort_key,
 )
-from novel_system.services.scene_diagnosis.serialize import (
-    serialize_evaluation,
-    serialize_passage_review,
-    serialize_patch_candidate,
-)
+from novel_system.services.scene_diagnosis.serialize import serialize_passage_review
 from novel_system.services.scene_diagnosis.text import DiagnosisText
 from novel_system.services.scene_diagnosis.vocabulary import (
     AI_DIMENSION_LABELS,
@@ -47,7 +43,6 @@ from novel_system.services.style_policy import StylePolicy, style_policy_live
 
 _LOGGER = logging.getLogger(__name__)
 STYLE_TASK_TYPE = "scene_generation"
-PATCH_CANDIDATE_LIMIT = 20
 
 
 class SceneDiagnosisService:
@@ -92,15 +87,6 @@ class SceneDiagnosisService:
             )
             .order_by(WriterEvaluation.created_at.desc(), WriterEvaluation.evaluation_id.desc())
         ).scalars().first()
-
-    def lens_rows(self, parent_id: str) -> list[WriterEvaluation]:
-        return list(
-            self.session.execute(
-                select(WriterEvaluation)
-                .where(WriterEvaluation.parent_evaluation_id == parent_id)
-                .order_by(WriterEvaluation.lens.asc(), WriterEvaluation.evaluation_id.asc())
-            ).scalars().all()
-        )
 
     def passage_rows(self, scene_id: str) -> list[WriterEvaluation]:
         """这一场还有效的局部深评（同一段再看一次时旧的退位，见 writer_deep_review.run_passage_review）。"""
@@ -165,16 +151,6 @@ class SceneDiagnosisService:
             if text.layer == "author_draft" and text.updated_at and row.created_at and str(text.updated_at) > str(row.created_at):
                 return "stale"
         return "current"
-
-    def _scene_view_chapter_status(self, row: WriterEvaluation | None, scene: SceneCard, text: DiagnosisText) -> str:
-        """写作台里这一场看到的通读新旧：只问「通读看的是不是这一场现在的字」（别的场改没改、多没多，那是成稿中心的事）。"""
-
-        if row is None:
-            return "not_run"
-        changes = self.chapter_review_changes(row, [scene.scene_id], [text])
-        if changes is not None:
-            return "stale" if scene.scene_id in changes["changed_scene_ids"] else "current"
-        return self._chapter_evaluation_status(row, [text])
 
     @staticmethod
     def chapter_review_changes(
@@ -300,7 +276,6 @@ class SceneDiagnosisService:
         scene: SceneCard,
         *,
         chapter_row: WriterEvaluation | None = None,
-        with_patches: bool = True,
         text: DiagnosisText | None = None,
         context: DiagnosisContext | None = None,
     ) -> dict[str, Any]:
@@ -338,10 +313,8 @@ class SceneDiagnosisService:
                 )
 
         opinions: dict[str, dict[str, Any]] = {}
-        passage_reviews: list[dict[str, Any]] = []
         for row in passage_rows:
             entry = serialize_passage_review(row, self._evaluation_status(row, text, context))
-            passage_reviews.append(entry)
             for about_id in entry["about_signal_ids"]:
                 opinions[str(about_id)] = entry
 
@@ -357,8 +330,6 @@ class SceneDiagnosisService:
         deduped.sort(key=finding_sort_key)
 
         ai_lenses = context.lens_rows(ai_row.evaluation_id) if ai_row is not None else []
-        latest_evaluation = serialize_evaluation(ai_row)
-        chapter_status = self._scene_view_chapter_status(chapter_row, scene, text)
 
         return {
             "scene_id": scene.scene_id,
@@ -372,7 +343,6 @@ class SceneDiagnosisService:
                 "chars": text.chars,
             },
             "style_bound": style_bound,
-            "house_taste_deferred": house_taste,
             # 这一稿里按参考作者的密度放过的词表词（词、次数、作者每万字次数、一场的量里的期望、这个次数的概率）
             "craft_calibration": {**calibration.as_dict(), "waived_in_scene": waived},
             "findings": deduped,
@@ -390,13 +360,6 @@ class SceneDiagnosisService:
                 "created_at": ai_row.created_at if ai_row is not None else None,
                 "source_text_ref": ai_row.source_text_ref if ai_row is not None else None,
             },
-            "passage_reviews": passage_reviews,
-            "chapter_review": {
-                "status": chapter_status,
-                "evaluation_id": chapter_row.evaluation_id if chapter_row is not None else None,
-                "created_at": chapter_row.created_at if chapter_row is not None else None,
-                "findings_here": sum(1 for item in deduped if (item.get("origin") or {}).get("kind") == "chapter"),
-            },
             "review": {
                 "status": self._evaluation_status(review_row, text, context),
                 "evaluation_id": review_row.evaluation_id if review_row is not None else None,
@@ -411,16 +374,6 @@ class SceneDiagnosisService:
                 "decision_log": list(scene.deep_review_decision_log_json or []),
                 "ignored_issue_keys": sorted(ignored),
             },
-            "patch_candidates": self._patch_candidates("scene", scene.scene_id) if with_patches else [],
-            # 旧契约的键（写作台以外的调用方 / 测试仍读它们）
-            "status": "reviewed" if ai_row is not None else "not_run",
-            "object_type": "scene",
-            "object_id": scene.scene_id,
-            "rubric_id": LITERARY_REVISION_RUBRIC_ID,
-            "latest_evaluation": latest_evaluation,
-            "latest_score": latest_evaluation["overall_score"] if latest_evaluation else None,
-            "requires_human_review": bool(latest_evaluation["requires_human_review"]) if latest_evaluation else False,
-            "lens_evaluations": [item for item in (serialize_evaluation(row) for row in ai_lenses) if item],
         }
 
     def payload(self, scene_id: str) -> dict[str, Any]:
@@ -432,7 +385,6 @@ class SceneDiagnosisService:
         （以前先单独诊断一遍、算计数时又在整章里诊断一遍）。"""
 
         diagnosis, rollup = self._diagnosis_and_rollup(scene)
-        diagnosis["patch_candidates"] = self._patch_candidates("scene", scene.scene_id)
         diagnosis["diagnosis_rollup"] = rollup
         return diagnosis
 
@@ -443,7 +395,7 @@ class SceneDiagnosisService:
             diagnosis = block["diagnoses"].get(scene.scene_id)
             if diagnosis is not None:
                 return diagnosis, _rollup_from_block(block)
-        diagnosis = self.diagnose_scene(scene, with_patches=False)
+        diagnosis = self.diagnose_scene(scene)
         if chapter is not None:
             return diagnosis, _rollup_from_block(block)
         return diagnosis, {
@@ -452,15 +404,6 @@ class SceneDiagnosisService:
             "chapters": {},
             "scenes": {scene.scene_id: _scene_counts_entry(scene.chapter_id, diagnosis)},
         }
-
-    def _patch_candidates(self, object_type: str, object_id: str) -> list[dict[str, Any]]:
-        rows = self.session.execute(
-            select(PassagePatchCandidate)
-            .where(PassagePatchCandidate.object_type == object_type, PassagePatchCandidate.object_id == object_id)
-            .order_by(PassagePatchCandidate.created_at.desc(), PassagePatchCandidate.patch_id.desc())
-            .limit(PATCH_CANDIDATE_LIMIT)
-        ).scalars().all()
-        return [serialize_patch_candidate(row) for row in rows]
 
     # -- 一章的诊断（成稿中心「AI 通读本章」）-------------------------------
 
@@ -486,7 +429,7 @@ class SceneDiagnosisService:
         for scene in scenes:
             text = context.text(scene)
             texts.append(text)
-            diagnosis = self.diagnose_scene(scene, chapter_row=chapter_row, with_patches=False, text=text, context=context)
+            diagnosis = self.diagnose_scene(scene, chapter_row=chapter_row, text=text, context=context)
             diagnoses[scene.scene_id] = diagnosis
             from_chapter = [item for item in diagnosis["findings"] if (item.get("origin") or {}).get("kind") == "chapter"]
             located_ids.update(item["signal_id"] for item in from_chapter)
@@ -567,11 +510,8 @@ class SceneDiagnosisService:
     def chapter_payload(self, chapter_id: str) -> dict[str, Any]:
         chapter = require_chapter(self.session, chapter_id)
         block = self._chapter_block(chapter)
-        chapter_row = block["row"]
         chapter_findings = block["chapter_findings"]
         scene_entries = block["scene_entries"]
-        latest_evaluation = serialize_evaluation(chapter_row)
-        lens_rows = self.lens_rows(chapter_row.evaluation_id) if chapter_row is not None else []
         return {
             "chapter_id": chapter.chapter_id,
             "project_id": chapter.project_id,
@@ -586,16 +526,6 @@ class SceneDiagnosisService:
                 "blocking": block["counts"]["blocking"],
             },
             "diagnosis_rollup": _rollup_from_block(block),
-            "patch_candidates": self._patch_candidates("chapter", chapter.chapter_id),
-            # 旧契约的键
-            "status": "reviewed" if chapter_row is not None else "not_run",
-            "object_type": "chapter",
-            "object_id": chapter.chapter_id,
-            "rubric_id": LITERARY_REVISION_RUBRIC_ID,
-            "latest_evaluation": latest_evaluation,
-            "latest_score": latest_evaluation["overall_score"] if latest_evaluation else None,
-            "requires_human_review": bool(latest_evaluation["requires_human_review"]) if latest_evaluation else False,
-            "lens_evaluations": [item for item in (serialize_evaluation(row) for row in lens_rows) if item],
         }
 
     # -- 一本书的计数（主页 / 成稿中心 / 起草台的角标）-----------------------

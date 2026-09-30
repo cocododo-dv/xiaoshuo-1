@@ -33,7 +33,7 @@
 
 包的分工（依赖只朝下）：``vocabulary``（口径、来源、维度中文名）← ``text``（诊断看的正文、定位、局部深评的
 范围）← ``calibration``（节奏检查的参考书读数；规则维度那一半在 ``literary_quality.calibration_source``）←
-``findings``（各来源 → 统一发现、计数、进程缓存）← ``serialize``（评审行 / 改写候选的序列化）← ``service``
+``findings``（各来源 → 统一发现、计数、进程缓存）← ``serialize``（改写候选 / 局部深评的序列化）← ``service``
 （``SceneDiagnosisService``：读库、拼载荷、计数）。只依赖 ``literary_quality``、``manuscript_html``、两个纯函数的
 段型判断、模型与风格绑定解析；``writer_deep_review`` / ``api.routes`` 从这里取载荷。调用方从这个包取的名字在这里
 原样再导出。
@@ -70,13 +70,10 @@ from novel_system.services.scene_diagnosis.findings import (
     rule_findings,
 )
 from novel_system.services.scene_diagnosis.serialize import (
-    scene_form_from_findings,
-    serialize_evaluation,
     serialize_passage_review,
     serialize_patch_candidate,
 )
 from novel_system.services.scene_diagnosis.service import (
-    PATCH_CANDIDATE_LIMIT,
     STYLE_TASK_TYPE,
     SceneDiagnosisService,
     summarize_counts,
@@ -103,7 +100,6 @@ from novel_system.services.scene_diagnosis.vocabulary import (
     PASSAGE_VERDICTS,
     PATCH_CATEGORIES,
     REVIEW_DIMENSION_LABELS,
-    SCENE_FORMS,
     SEVERITIES,
     SOURCE_LABELS,
     candidate_category_for_dimension,
@@ -127,7 +123,6 @@ __all__ = [
     "PASSAGE_SCENE_FULL_CHARS",
     "PASSAGE_VERDICTS",
     "PASSAGE_VERDICT_LABELS",
-    "PATCH_CANDIDATE_LIMIT",
     "PATCH_CATEGORIES",
     "REVIEW_DIMENSION_LABELS",
     "RULE_CALIBRATION_MAX_ENDINGS",
@@ -135,7 +130,6 @@ __all__ = [
     "RULE_CALIBRATION_MIN_ENDINGS",
     "RULE_CALIBRATION_MIN_WINDOWS",
     "RULE_CALIBRATION_WINDOW_CHARS",
-    "SCENE_FORMS",
     "SEVERITIES",
     "SOURCE_LABELS",
     "STYLE_TASK_TYPE",
@@ -160,8 +154,6 @@ __all__ = [
     "passage_scope",
     "rule_calibration_from_reference",
     "rule_findings",
-    "scene_form_from_findings",
-    "serialize_evaluation",
     "serialize_passage_review",
     "serialize_patch_candidate",
     "summarize_counts",

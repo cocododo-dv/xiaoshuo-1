@@ -1,52 +1,11 @@
-"""评审行 / 改写候选 / 局部深评的序列化（writer_deep_review 与诊断载荷共用这一份）。"""
+"""改写候选与局部深评的序列化（writer_deep_review 与诊断载荷共用这一份）。"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from novel_system.db.models import PassagePatchCandidate, WriterEvaluation
-from novel_system.services.scene_diagnosis.vocabulary import PASSAGE_VERDICT_LABELS, PASSAGE_VERDICTS, SCENE_FORMS
-
-
-def scene_form_from_findings(findings: list[dict[str, Any]], object_type: str | None = None) -> str | None:
-    if object_type != "scene":
-        return None
-    for finding in findings:
-        scene_form = str(finding.get("scene_form") or "")
-        if scene_form in SCENE_FORMS:
-            return scene_form
-    return "plot_scene"
-
-
-def serialize_evaluation(row: WriterEvaluation | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    return {
-        "evaluation_id": row.evaluation_id,
-        "object_type": row.object_type,
-        "object_id": row.object_id,
-        "chapter_id": row.chapter_id,
-        "scene_id": row.scene_id,
-        "rubric_id": row.rubric_id,
-        "source_text_ref": row.source_text_ref,
-        "source_bundle_id": row.source_bundle_id,
-        "evaluator_llm_call_id": row.evaluator_llm_call_id,
-        "lens": row.lens or "aggregate",
-        "parent_evaluation_id": row.parent_evaluation_id,
-        "evidence_spans": row.evidence_spans_json or [],
-        "overall_score": row.overall_score,
-        "scores": row.scores_json or {},
-        "findings": row.findings_json or [],
-        "failure_class": row.failure_class,
-        "auto_rewrite_eligible": bool(row.auto_rewrite_eligible) if row.auto_rewrite_eligible is not None else None,
-        "contract_field_refs": row.contract_field_refs_json or {},
-        "promotion_blockers": row.promotion_blockers_json or [],
-        "scene_form": scene_form_from_findings(row.findings_json or [], row.object_type),
-        "revision_brief": row.revision_brief_json or [],
-        "requires_human_review": bool(row.requires_human_review),
-        "status": row.status,
-        "created_at": row.created_at,
-    }
+from novel_system.services.scene_diagnosis.vocabulary import PASSAGE_VERDICT_LABELS, PASSAGE_VERDICTS
 
 
 def serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:

@@ -18,7 +18,6 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
-from novel_system.services.writer_deep_review import LITERARY_REVISION_RUBRIC_ID
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 from novel_system.services.writer_deep_review import _normalize_deep_review_output
 
@@ -187,10 +186,8 @@ def test_scene_deep_review_get_returns_the_unified_diagnosis_before_any_ai_run(c
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert payload["status"] == "not_run"
-    assert payload["latest_evaluation"] is None
-    assert payload["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
-    assert payload["ai"]["status"] == "not_run"
+    assert payload["ai"]["status"] == "not_run" and payload["ai"]["evaluation_id"] is None
+    assert not {"status", "latest_evaluation", "rubric_id", "lens_evaluations", "patch_candidates"} & set(payload), "旧契约的键已删"
     assert payload["text"]["layer"] == "runtime_final_scene"
     assert payload["findings"], "the rule dimensions already diagnose the final text"
     assert {item["source"] for item in payload["findings"]} <= {"rules", "craft"}
@@ -262,10 +259,11 @@ def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monke
     response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
 
     assert response.status_code == 200
-    evaluation = response.json()["data"]["latest_evaluation"]
-    assert evaluation["evaluator_llm_call_id"] == "llm_call_writer_deep_review_test"
-    assert evaluation["overall_score"] == 0.61
-    assert evaluation["findings"][0]["issue"] == "The choice is described rather than enacted."
+    ai = response.json()["data"]["ai"]
+    assert ai["llm_call_id"] == "llm_call_writer_deep_review_test"
+    assert ai["overall_score"] == 0.61
+    row = session.get(WriterEvaluation, ai["evaluation_id"])
+    assert row.findings_json[0]["issue"] == "The choice is described rather than enacted."
 
 
 def test_a_lens_the_model_scored_zero_keeps_its_zero(client: TestClient, session, monkeypatch) -> None:
@@ -323,8 +321,7 @@ def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(clien
     response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
 
     assert response.status_code == 200
-    evaluation = response.json()["data"]["latest_evaluation"]
-    assert evaluation["source_text_ref"] == f"author_draft:{draft['draft_id']}"
+    assert response.json()["data"]["ai"]["source_text_ref"] == f"author_draft:{draft['draft_id']}"
 
 
 def test_passage_patch_candidate_accepts_without_overwriting_final_and_learns_no_preference(client: TestClient, session) -> None:

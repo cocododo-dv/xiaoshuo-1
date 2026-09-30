@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
     ChapterGoal,
+    PassagePatchCandidate,
     SceneCard,
     SceneDraft,
     StoryProject,
@@ -150,7 +151,7 @@ def test_rule_findings_are_chinese_stable_and_pinned_to_paragraphs() -> None:
     paragraph = text.paragraphs[voice["evidence"]["paragraph_index"]]
     assert paragraph[voice["evidence"]["start"] : voice["evidence"]["end"]] == voice["evidence"]["excerpt"]
     assert voice["signal_id"].startswith("rules:model_voice:") and len(voice["signal_id"].split(":")[-1]) == 8
-    assert voice["quality_signal_id"] == voice["signal_id"]
+    assert "quality_signal_id" not in voice, "发现只有一个 id（前端改写请求自己把 signal_id 当 quality_signal_id 送）"
     assert voice["patch"]["candidate_category"] == "de_model_voice"
 
     # 有位置的发现都钉在段落上；整场缺席的（anchor=scene）没有位置，id 钉在 scene 上
@@ -379,7 +380,8 @@ def test_ai_deep_review_merges_into_the_diagnosis_and_goes_stale_when_the_text_c
     lenses = {item["lens"]: item for item in payload["ai"]["lenses"]}
     assert set(lenses) == {"story", "prose"}
     assert lenses["story"] == {"lens": "story", "label": "故事", "overall_score": 0.5}
-    assert payload["status"] == "reviewed" and payload["latest_evaluation"]["evaluator_llm_call_id"] == "llm_call_diag_deep_review"
+    assert payload["ai"]["llm_call_id"] == "llm_call_diag_deep_review"
+    assert not {"status", "latest_evaluation", "lens_evaluations", "patch_candidates", "passage_reviews", "chapter_review"} & set(payload), "旧契约的键已删（前端从不读）"
 
     pressure = _finding(payload, "ai", "choice_pressure")
     assert pressure["label"] == "抉择压力" and pressure["lens"] == "story"
@@ -585,9 +587,10 @@ def test_patch_candidate_from_a_finding_learns_by_dimension_and_carries_the_inst
     assert free["quality_signal_id"] is None
     assert "Author Instruction: 更凝练" in llm.requests[-1].messages[-1]["content"]
 
-    # 修补候选随诊断载荷返回（最近的在前）
-    after = SceneDiagnosisService(session).payload(SCENE_ID)
-    assert [row["patch_id"] for row in after["patch_candidates"]] == [free["patch_id"], candidate["patch_id"]]
+    # 两次改写都记成候选行（诊断载荷不再夹带候选清单：前端从不读它）
+    session.expire_all()
+    assert {row.patch_id for row in session.query(PassagePatchCandidate).filter_by(object_id=SCENE_ID)} == {free["patch_id"], candidate["patch_id"]}
+    assert "patch_candidates" not in SceneDiagnosisService(session).payload(SCENE_ID)
 
 
 def test_scene_without_text_diagnoses_nothing(client: TestClient, session) -> None:
@@ -799,12 +802,11 @@ def test_passage_review_verifies_one_finding_and_joins_the_diagnosis(client: Tes
     rhythm = _finding(payload, "ai", "information_rhythm")
     assert rhythm["origin"]["kind"] == "passage" and rhythm["origin"]["about_signal_id"] == voice["signal_id"]
     assert rhythm["evidence"]["paragraph_index"] == 1
-    assert len(payload["passage_reviews"]) == 1
 
     # 同一条再看一次：旧的退位，面板只留最新的意见
     again = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review/passage", json={"signal_id": voice["signal_id"]})
     assert again.status_code == 200
-    assert len(again.json()["data"]["passage_reviews"]) == 1
+    assert _finding(again.json()["data"], "rules", "model_voice")["opinion"]["evaluation_id"] == again.json()["data"]["passage_review"]["evaluation_id"]
     session.expire_all()
     rows = session.query(WriterEvaluation).filter_by(object_type="scene", object_id=SCENE_ID, rubric_id=LITERARY_REVISION_PASSAGE_RUBRIC_ID).all()
     assert sorted(row.status for row in rows) == ["completed", "superseded"]
@@ -920,17 +922,16 @@ def test_chapter_read_through_lands_findings_on_scenes_and_keeps_chapter_level_o
     assert chapter["chapter_findings"][0]["evidence"] is None and chapter["chapter_findings"][0]["stale"] is False
     assert chapter["summary"]["chapter_level"] == 1 and chapter["summary"]["blocking"] >= 1
     assert chapter["summary"]["scenes"] == 2
-    assert chapter["status"] == "reviewed" and chapter["latest_evaluation"]["evaluation_id"] == "chapter_eval_diag"
+    assert chapter["ai"]["evaluation_id"] == "chapter_eval_diag"
+    assert not {"status", "latest_evaluation", "lens_evaluations", "patch_candidates"} & set(chapter), "旧契约的键已删"
     assert chapter["ai"]["revision_brief"][0]["action"] == "让最后一场回答第一场的问题。"
 
     # 写作台里第二场的诊断也有这一条（origin 通读）；第一场没有
     scene2 = client.get(f"/api/v1/scenes/{SCENE2_ID}/deep-review").json()["data"]
     landed = _finding(scene2, "ai", "choice_pressure")
     assert landed["origin"]["kind"] == "chapter" and landed["origin"]["evaluation_id"] == "chapter_eval_diag"
-    assert scene2["chapter_review"] == {"status": "current", "evaluation_id": "chapter_eval_diag", "created_at": scene2["chapter_review"]["created_at"], "findings_here": 1}
     scene1 = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert not [item for item in scene1["findings"] if (item.get("origin") or {}).get("kind") == "chapter"]
-    assert scene1["chapter_review"]["findings_here"] == 0
 
     # 改了第二场的字：整章的通读就是改前的
     service = AuthorDraftService(session)

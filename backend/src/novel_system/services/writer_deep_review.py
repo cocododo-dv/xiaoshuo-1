@@ -43,11 +43,9 @@ from novel_system.services.scene_diagnosis import (
     LITERARY_REVISION_PASSAGE_RUBRIC_ID,
     LITERARY_REVISION_RUBRIC_ID,
     PATCH_CATEGORIES,
-    SCENE_FORMS,
     SceneDiagnosisService,
     locate_in_paragraphs,
     passage_scope,
-    serialize_evaluation as _serialize_evaluation,
     serialize_passage_review,
     serialize_patch_candidate as _serialize_patch_candidate,
 )
@@ -87,7 +85,7 @@ from novel_system.settings import get_settings
 
 
 _LOGGER = logging.getLogger(__name__)
-# LITERARY_REVISION_RUBRIC_ID / SCENE_FORMS / PATCH_CATEGORIES 定义在 scene_diagnosis，维度与镜头在
+# LITERARY_REVISION_RUBRIC_ID / PATCH_CATEGORIES 定义在 scene_diagnosis，维度与镜头在
 # writer_deep_review_output（这里再导出）；测试还从这里取 _normalize_deep_review_output / _normalize_patch_output /
 # _optional_score。
 __all__ = [
@@ -96,7 +94,6 @@ __all__ = [
     "LITERARY_REVISION_PASSAGE_RUBRIC_ID",
     "LITERARY_REVISION_DIMENSIONS",
     "DEEP_REVIEW_LENSES",
-    "SCENE_FORMS",
     "PATCH_CATEGORIES",
     "WriterDeepReviewService",
     "_normalize_deep_review_output",
@@ -309,7 +306,7 @@ class WriterDeepReviewService(PassagePatchMixin):
         about: dict[str, Any] | None = None
         focus: list[int] = []
         if signal_id:
-            diagnosis = diagnosis_service.diagnose_scene(scene, with_patches=False)
+            diagnosis = diagnosis_service.diagnose_scene(scene)
             about = next((item for item in diagnosis["findings"] if item["signal_id"] == signal_id), None)
             if about is None:
                 raise DomainError(
@@ -462,10 +459,6 @@ class WriterDeepReviewService(PassagePatchMixin):
         payload["passage_review"] = serialize_passage_review(row, "current")
         return payload
 
-
-    @staticmethod
-    def serialize_evaluation(row: WriterEvaluation | None) -> dict[str, Any] | None:
-        return _serialize_evaluation(row)
 
     @staticmethod
     def serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
