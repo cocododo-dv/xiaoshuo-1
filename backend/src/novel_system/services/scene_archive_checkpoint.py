@@ -52,6 +52,21 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER
+from novel_system.services.scene_run.results import (
+    apply_finality,
+    merged_warnings,
+    qc_decision_payload,
+)
+from novel_system.services.scene_run.snapshots import (
+    archive_attempt_snapshot,
+    archive_final_scene_snapshot,
+    archive_rolling_note_snapshot,
+    archive_scene_memory_snapshot,
+    archive_writer_evaluation_snapshot,
+    chapter_memory_snapshot,
+    narrative_event_snapshot,
+    volume_snapshot,
+)
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
@@ -123,17 +138,17 @@ class SceneArchiveCheckpoint:
                     "chapter_rolling_note_row_id"
                 ],
                 archive_attempt_id=archive_result["archive_attempt_id"],
-                final_scene_snapshot=self._orch._archive_final_scene_snapshot(final_scene),
-                scene_memory_snapshot=self._orch._archive_scene_memory_snapshot(
+                final_scene_snapshot=archive_final_scene_snapshot(final_scene),
+                scene_memory_snapshot=archive_scene_memory_snapshot(
                     self.session.get(SceneMemory, archive_result["scene_memory_row_id"])
                 ),
-                rolling_note_snapshot=self._orch._archive_rolling_note_snapshot(
+                rolling_note_snapshot=archive_rolling_note_snapshot(
                     self.session.get(
                         ChapterRollingNote,
                         archive_result["chapter_rolling_note_row_id"],
                     )
                 ),
-                archive_attempt_snapshot=self._orch._archive_attempt_snapshot(
+                archive_attempt_snapshot=archive_attempt_snapshot(
                     self.session.get(
                         AttemptTracker,
                         archive_result["archive_attempt_id"],
@@ -520,7 +535,7 @@ class SceneArchiveCheckpoint:
                 "current_qc_report_id": state.current_qc_report_id,
                 "current_human_review_event_id": state.current_human_review_event_id,
                 "hard_qc": hard_qc_payload,
-                "soft_qc": self._orch._soft_qc_result_payload(soft_qc),
+                "soft_qc": qc_decision_payload(soft_qc),
                 "planning": planning,
                 "near_final": near_final_payload,
                 "chapter_near_final": chapter_near_final,
@@ -528,7 +543,7 @@ class SceneArchiveCheckpoint:
                 "run_policy": run_policy,
             },
         )
-        result["quality_warnings"] = self._orch._merged_warnings(
+        result["quality_warnings"] = merged_warnings(
             result.get("quality_warnings"), near_final_warnings
         )
         archive_attempt = self.session.get(
@@ -539,7 +554,7 @@ class SceneArchiveCheckpoint:
             if archive_attempt is not None
             else {}
         )
-        self._orch._apply_finality(
+        apply_finality(
             result, gate_summary=gate_summary, warnings=near_final_warnings
         )
         if near_final_warnings and "author_review_optional_fix" not in (
@@ -605,63 +620,6 @@ class SceneArchiveCheckpoint:
             "step_key": step_key,
             "input_hash": input_hash,
             **details,
-        }
-
-    @staticmethod
-    def _archive_final_scene_snapshot(row: FinalScene) -> dict[str, Any]:
-        return {
-            "row_id": row.row_id,
-            "scene_id": row.scene_id,
-            "chapter_id": row.chapter_id,
-            "content": row.content,
-            "status": row.status,
-            "source_bundle_id": row.source_bundle_id,
-            "source_bundle_hash": row.source_bundle_hash,
-            "generation_llm_call_id": row.generation_llm_call_id,
-            "created_at": row.created_at,
-        }
-
-    @staticmethod
-    def _archive_scene_memory_snapshot(row: SceneMemory) -> dict[str, Any]:
-        return {
-            "row_id": row.row_id,
-            "scene_id": row.scene_id,
-            "chapter_id": row.chapter_id,
-            "content": row.content,
-            "carry_notes_json": list(row.carry_notes_json or []),
-            "source_bundle_id": row.source_bundle_id,
-            "final_scene_row_id": row.final_scene_row_id,
-            "source_review_id": row.source_review_id,
-            "active_flag": row.active_flag,
-            "runtime_eligible": row.runtime_eligible,
-            "runtime_eligibility_basis": row.runtime_eligibility_basis,
-            "effective_at": row.effective_at,
-            "created_at": row.created_at,
-        }
-
-    @staticmethod
-    def _archive_rolling_note_snapshot(row: ChapterRollingNote) -> dict[str, Any]:
-        return {
-            "row_id": row.row_id,
-            "scene_id": row.scene_id,
-            "chapter_id": row.chapter_id,
-            "source_scene_memory_row_id": row.source_scene_memory_row_id,
-            "note_text": row.note_text,
-            "revision_no": row.revision_no,
-            "updated_at": row.updated_at,
-        }
-
-    @staticmethod
-    def _archive_attempt_snapshot(row: AttemptTracker) -> dict[str, Any]:
-        return {
-            "attempt_id": row.attempt_id,
-            "scene_id": row.scene_id,
-            "chapter_id": row.chapter_id,
-            "step": row.step,
-            "status": row.status,
-            "source_bundle_id": row.source_bundle_id,
-            "details_json": dict(row.details_json or {}),
-            "created_at": row.created_at,
         }
 
     def _validate_archive_core_checkpoint(
@@ -762,13 +720,13 @@ class SceneArchiveCheckpoint:
             )
         if (
             product.get("final_scene_snapshot")
-            != self._orch._archive_final_scene_snapshot(final_scene)
+            != archive_final_scene_snapshot(final_scene)
             or product.get("scene_memory_snapshot")
-            != self._orch._archive_scene_memory_snapshot(memory)
+            != archive_scene_memory_snapshot(memory)
             or product.get("rolling_note_snapshot")
-            != self._orch._archive_rolling_note_snapshot(rolling)
+            != archive_rolling_note_snapshot(rolling)
             or product.get("archive_attempt_snapshot")
-            != self._orch._archive_attempt_snapshot(attempt)
+            != archive_attempt_snapshot(attempt)
             or final_scene.status != "archived"
             or (
                 state.scene_status != "archived"
@@ -809,35 +767,13 @@ class SceneArchiveCheckpoint:
             "scene_status": state.scene_status,
         }
 
-    @staticmethod
-    def _narrative_event_snapshot(event: NarrativeEvent) -> dict[str, Any]:
-        return {
-            "event_id": event.event_id,
-            "project_id": event.project_id,
-            "scene_id": event.scene_id,
-            "chapter_id": event.chapter_id,
-            "scene_seq": event.scene_seq,
-            "event_type": event.event_type,
-            "entity_type": event.entity_type,
-            "entity_id": event.entity_id,
-            "fact_key": event.fact_key,
-            "fact_value": event.fact_value,
-            "confidence": event.confidence,
-            "causal_predecessor_id": event.causal_predecessor_id,
-            "theme_tags": list(event.theme_tags or []),
-            "obligation_ids": list(event.obligation_ids or []),
-            "source_text_excerpt": event.source_text_excerpt,
-            "payload_json": dict(event.payload_json or {}),
-            "created_at": event.created_at,
-        }
-
     def _narrative_event_snapshots(self, event_ids: list[str]) -> list[dict[str, Any]]:
         snapshots: list[dict[str, Any]] = []
         for event_id in event_ids:
             event = self.session.get(NarrativeEvent, event_id)
             if event is None:
                 self._orch._raise_checkpoint_output_missing(row_id=event_id)
-            snapshots.append(self._orch._narrative_event_snapshot(event))
+            snapshots.append(narrative_event_snapshot(event))
         return snapshots
 
     def _validate_archive_rule_events_checkpoint(
@@ -1361,22 +1297,6 @@ class SceneArchiveCheckpoint:
             for memory in memories
         ]
 
-    @staticmethod
-    def _chapter_memory_snapshot(memory: ChapterMemory) -> dict[str, Any]:
-        return {
-            "row_id": memory.row_id,
-            "chapter_id": memory.chapter_id,
-            "aggregate_stage": memory.aggregate_stage,
-            "content": memory.content,
-            "memory_kind": memory.memory_kind,
-            "source_review_id": memory.source_review_id,
-            "active_flag": memory.active_flag,
-            "runtime_eligible": memory.runtime_eligible,
-            "runtime_eligibility_basis": memory.runtime_eligibility_basis,
-            "effective_at": memory.effective_at,
-            "created_at": memory.created_at,
-        }
-
     def _run_archive_chapter_aggregate(
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
@@ -1415,7 +1335,7 @@ class SceneArchiveCheckpoint:
             inputs=inputs,
             result=result,
             chapter_memory=(
-                self._orch._chapter_memory_snapshot(memory) if memory is not None else None
+                chapter_memory_snapshot(memory) if memory is not None else None
             ),
         )
 
@@ -1497,7 +1417,7 @@ class SceneArchiveCheckpoint:
                 self._orch._raise_checkpoint_output_missing(
                     row_id=(snapshot or {}).get("row_id")
                 )
-            actual = self._orch._chapter_memory_snapshot(memory)
+            actual = chapter_memory_snapshot(memory)
             for mutable_field in (
                 "active_flag",
                 "runtime_eligible",
@@ -1573,24 +1493,6 @@ class SceneArchiveCheckpoint:
             for row in rows
         ]
 
-    @staticmethod
-    def _volume_snapshot(row: VolumeSummary) -> dict[str, Any]:
-        return {
-            "row_id": row.row_id,
-            "project_id": row.project_id,
-            "volume_seq": row.volume_seq,
-            "chapter_id_start": row.chapter_id_start,
-            "chapter_id_end": row.chapter_id_end,
-            "chapter_count": row.chapter_count,
-            "atmosphere_summary": row.atmosphere_summary,
-            "factual_digest": row.factual_digest,
-            "active_flag": row.active_flag,
-            "runtime_eligible": row.runtime_eligible,
-            "runtime_eligibility_basis": row.runtime_eligibility_basis,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-        }
-
     def _run_archive_volume_aggregate(
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
@@ -1647,7 +1549,7 @@ class SceneArchiveCheckpoint:
             error_code=error_code,
             inputs=inputs,
             result=result,
-            volume_summary=(self._orch._volume_snapshot(row) if row is not None else None),
+            volume_summary=(volume_snapshot(row) if row is not None else None),
         )
 
     def _validate_archive_volume_product(
@@ -1730,7 +1632,7 @@ class SceneArchiveCheckpoint:
                 self._orch._raise_checkpoint_output_missing(
                     row_id=(snapshot or {}).get("row_id")
                 )
-            actual = self._orch._volume_snapshot(row)
+            actual = volume_snapshot(row)
             for mutable_field in (
                 "active_flag",
                 "runtime_eligible",
@@ -1770,35 +1672,6 @@ class SceneArchiveCheckpoint:
             )
         return product
 
-    @staticmethod
-    def _archive_writer_evaluation_snapshot(row: WriterEvaluation) -> dict[str, Any]:
-        return {
-            "evaluation_id": row.evaluation_id,
-            "object_type": row.object_type,
-            "object_id": row.object_id,
-            "chapter_id": row.chapter_id,
-            "scene_id": row.scene_id,
-            "rubric_id": row.rubric_id,
-            "source_text_ref": row.source_text_ref,
-            "source_bundle_id": row.source_bundle_id,
-            "evaluator_llm_call_id": row.evaluator_llm_call_id,
-            "lens": row.lens,
-            "parent_evaluation_id": row.parent_evaluation_id,
-            "evidence_spans_json": list(row.evidence_spans_json or []),
-            "source_blueprint_row_id": row.source_blueprint_row_id,
-            "failure_class": row.failure_class,
-            "auto_rewrite_eligible": row.auto_rewrite_eligible,
-            "contract_field_refs_json": dict(row.contract_field_refs_json or {}),
-            "promotion_blockers_json": list(row.promotion_blockers_json or []),
-            "overall_score": row.overall_score,
-            "scores_json": dict(row.scores_json or {}),
-            "findings_json": list(row.findings_json or []),
-            "revision_brief_json": list(row.revision_brief_json or []),
-            "requires_human_review": row.requires_human_review,
-            "status": row.status,
-            "created_at": row.created_at,
-        }
-
     def _run_archive_chapter_evaluation(
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
@@ -1825,7 +1698,7 @@ class SceneArchiveCheckpoint:
         row = self.session.get(WriterEvaluation, evaluation_id)
         if row is None:
             self._orch._raise_checkpoint_output_missing(row_id=evaluation_id)
-        snapshot = self._orch._archive_writer_evaluation_snapshot(row)
+        snapshot = archive_writer_evaluation_snapshot(row)
         product = self._orch._archive_product(
             scene=scene,
             kind="chapter_near_final",
@@ -1914,7 +1787,7 @@ class SceneArchiveCheckpoint:
                 row_id=(snapshot or {}).get("evaluation_id")
             )
         if (
-            self._orch._archive_writer_evaluation_snapshot(row) != snapshot
+            archive_writer_evaluation_snapshot(row) != snapshot
             or row.object_type != "chapter"
             or row.object_id != scene.chapter_id
             or row.chapter_id != scene.chapter_id

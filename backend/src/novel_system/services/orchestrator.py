@@ -10,155 +10,15 @@ from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-from novel_system.services.scene_lookup import get_scene_or_404
-
-_LOGGER = logging.getLogger(__name__)
-
-# 2026-09 风格模仿 v2（W5）：near_final_rewrite 带同一 [STYLE_REFERENCE] 前缀（含参考原文
-# 样例窗口）重写整场，输出直接成为终稿。它的 styled-draft gate 判定抄袭（Q0）时重写稿永远
-# 不能落成 FinalScene：回退到重写前、已过 soft_qc gate 的来源稿，skip_reason 记在
-# 检查点 / near_completion 里，警告随 near_final payload 走。
-NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON = "rewrite_rejected_style_plagiarism"
-NEAR_FINAL_REWRITE_GATE_STAGE = "near_final_rewrite"
-# 风格参考 v3 复核（A/B 实测：定稿改写把整场挤成一段、读数从 92.7 退到 98.3 百分位）：定稿改写稿进 eval1 之前
-# 再过两道确定性门——相对来源稿的基础安全回退（必写事实、禁用内容、文本完整性含整场挤成一段、长度），以及作者手笔
-# 直起时「离作者更远超过容差」。没过 = 与抄袭被拒同一条路径：终稿回到来源稿，eval0 的意见随稿留痕。
-NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON = "rewrite_rejected_base_safety"
-NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON = "rewrite_rejected_moved_away"
-_NEAR_FINAL_REJECTION_SKIP_REASONS = {
-    "style_plagiarism": NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON,
-    "base_safety": NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON,
-    "moved_away": NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON,
-}
-
-
-def _near_final_rejection_skip_reason(gate: Any) -> str:
-    """被拒的重写稿 → skip_reason（旧检查点里的抄袭拒绝没有 ``rejected_reason``，按抄袭读）。"""
-    reason = str((gate or {}).get("rejected_reason") or "style_plagiarism") if isinstance(gate, dict) else "style_plagiarism"
-    return _NEAR_FINAL_REJECTION_SKIP_REASONS.get(reason, NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON)
-# 风格参考 v3（P5b）：作者手笔直起时软补丁让稿子离作者更远 → 退回补丁前的稿子。软 QC 收尾记这个 skip_reason，
-# 收尾的决定由补丁前那一轮评审派生（branch=waive、stop_reason 如下），评审的改稿意见随稿留痕。
-STYLE_PATCH_REVERTED_SKIP_REASON = "style_patch_reverted"
-STYLE_PATCH_REVERTED_STOP_REASON = "style_patch_reverted"
-
-
-def _near_final_rewrite_gate_summary(
-    generation: StyleGenerationResult,
-) -> dict[str, Any] | None:
-    """把重写稿的 styled-draft gate 诊断压成可进检查点 / near_final payload 的小结。
-
-    无绑定（gate 没跑、``styled_draft_gate is None``）→ ``None``，payload 形状与旧数据一致。
-    """
-    gate = generation.styled_draft_gate
-    if not isinstance(gate, dict):
-        return None
-    verdict = str(gate.get("verdict") or "")
-    notice_codes = [
-        str(item.get("code"))
-        for item in (generation.notices or [])
-        if isinstance(item, dict) and item.get("code")
-    ]
-    return {
-        "stage": NEAR_FINAL_REWRITE_GATE_STAGE,
-        "verdict": verdict,
-        "rejected": verdict == "plagiarism",
-        "plagiarism_hit_count": gate.get("plagiarism_hit_count"),
-        "forbidden_hit_count": gate.get("forbidden_hit_count"),
-        "error": gate.get("error"),
-        "profile_id": gate.get("profile_id"),
-        "runtime_contract_hash": gate.get("runtime_contract_hash"),
-        "notice_codes": notice_codes,
-    }
-
-
-def _near_final_rewrite_gate_warnings(gate: Any) -> list[dict[str, Any]]:
-    """重写稿 gate 小结 → Q2 警告（严格模式停点；宽松模式随稿归档、醒目提示）。"""
-    if not isinstance(gate, dict):
-        return []
-    rejected_reason = str(gate.get("rejected_reason") or "")
-    if gate.get("rejected") and rejected_reason == "base_safety":
-        reasons = "、".join(str(item) for item in (gate.get("rejection") or {}).get("reasons") or []) or "未知"
-        return [
-            {
-                "issue_key": "near_final_rewrite_rejected_base_safety",
-                "quality_level": "Q2",
-                "message": (
-                    f"准终稿重写稿没过确定性安全门（{reasons}），已丢弃；终稿保留重写前的稿子，"
-                    "评审的改稿意见随稿留痕，可以按意见自己改。"
-                ),
-                "recommended_action": "author_review_optional_fix",
-                "verified_by": "near_final_rewrite_base_safety",
-            }
-        ]
-    if gate.get("rejected") and rejected_reason == "moved_away":
-        fidelity = gate.get("rejection") or {}
-        return [
-            {
-                "issue_key": "near_final_rewrite_rejected_moved_away",
-                "quality_level": "Q3",
-                "message": (
-                    "准终稿重写稿离参考作者更远（在作者自己的段落里的位次 "
-                    f"{fidelity.get('source_percentile')} → {fidelity.get('rewrite_percentile')}），已丢弃；"
-                    "终稿保留重写前更像作者的稿子，评审的改稿意见随稿留痕。"
-                ),
-                "recommended_action": "author_review_optional_fix",
-                "verified_by": "style_fidelity_reading",
-            }
-        ]
-    if gate.get("rejected"):
-        return [
-            {
-                "issue_key": "near_final_rewrite_rejected_style_plagiarism",
-                "quality_level": "Q2",
-                "message": (
-                    "准终稿重写稿与参考作品原文存在确定性 n-gram 重叠（抄袭红线），"
-                    "已被丢弃；终稿回退为重写前已过 gate 的风格稿。"
-                ),
-                "recommended_action": "author_review_optional_fix",
-                "verified_by": "style_plagiarism_ngram",
-            }
-        ]
-    forbidden = gate.get("forbidden_hit_count")
-    if isinstance(forbidden, int) and forbidden > 0:
-        return [
-            {
-                "issue_key": "near_final_rewrite_banned_term_replicated",
-                "quality_level": "Q2",
-                "message": (
-                    f"准终稿重写稿用了参考画像的生成禁用词 / 受保护专名（{forbidden} 个）；"
-                    "请人工复核：是参考书的专名就换成自己的，日常用词被误收的可以接受。"
-                ),
-                "recommended_action": "author_review_optional_fix",
-                "verified_by": None,
-            }
-        ]
-    if str(gate.get("verdict") or "") == "unavailable":
-        return [
-            {
-                "issue_key": "near_final_rewrite_style_gate_unavailable",
-                "quality_level": "Q2",
-                "message": (
-                    "准终稿重写稿的抄袭 / 冻结禁用词检查未能执行"
-                    f"（{gate.get('error') or 'unknown'}）；本稿未经参考来源安全核对，"
-                    "请人工复核。"
-                ),
-                "recommended_action": "author_review_optional_fix",
-                "verified_by": None,
-            }
-        ]
-    return []
 
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
-    ChapterMemory,
-    ChapterRollingNote,
     FinalScene,
     GenerationPlanningArtifact,
     HumanReviewEvent,
     LlmCall,
     LlmCallAttempt,
-    NarrativeEvent,
     QcReport,
     RevisionCandidate,
     SceneBlueprint,
@@ -167,7 +27,6 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
-    VolumeSummary,
     WriterEvaluation,
     utcnow,
 )
@@ -211,6 +70,7 @@ from novel_system.services.qc_engine import (
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.scene_lookup import get_scene_or_404
 from novel_system.services.scene_criticality import classify_scene_with_context
 from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference import readings as style_readings
@@ -238,12 +98,56 @@ from novel_system.services.scene_run_checkpoint import (
     RunCheckpointContext,
     SceneRunCheckpointService,
 )
+from novel_system.services.scene_run.constants import (
+    NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON,
+    NEAR_FINAL_REWRITE_GATE_STAGE,
+    NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON,
+    NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON,
+    STYLE_PATCH_REVERTED_SKIP_REASON,
+    STYLE_PATCH_REVERTED_STOP_REASON,
+)
+from novel_system.services.scene_run.near_final_gate import (
+    _near_final_rejection_skip_reason,
+    _near_final_rewrite_gate_summary,
+    _near_final_rewrite_gate_warnings,
+)
+from novel_system.services.scene_run.results import (
+    apply_finality,
+    merged_warnings,
+    near_evaluation_payload,
+    near_final_result_payload,
+    qc_decision_payload,
+    soft_risk_acceptance_event_id,
+)
+from novel_system.services.scene_run.snapshots import (
+    planning_provenance,
+    qc_report_snapshot,
+    revision_candidate_snapshot,
+    soft_decision_snapshot,
+    writer_evaluation_snapshot,
+)
 from novel_system.services.scene_archive_checkpoint import SceneArchiveCheckpoint
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
 from novel_system.settings import get_settings
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
+
+_LOGGER = logging.getLogger(__name__)
+
+# 测试与旧调用方从这里取的名字（家在 services.scene_run.*）
+__all__ = [
+    "NEAR_FINAL_REWRITE_BASE_SAFETY_SKIP_REASON",
+    "NEAR_FINAL_REWRITE_GATE_STAGE",
+    "NEAR_FINAL_REWRITE_MOVED_AWAY_SKIP_REASON",
+    "NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON",
+    "STYLE_PATCH_REVERTED_SKIP_REASON",
+    "STYLE_PATCH_REVERTED_STOP_REASON",
+    "Orchestrator",
+    "_near_final_rejection_skip_reason",
+    "_near_final_rewrite_gate_summary",
+    "_near_final_rewrite_gate_warnings",
+]
 
 
 class Orchestrator:
@@ -573,7 +477,7 @@ class Orchestrator:
                     artifact_hashes={
                         "planning_scene_blueprint": self._json_hash(blueprint_payload),
                         "planning_scene_blueprint_provenance": self._json_hash(
-                            self._planning_provenance(
+                            planning_provenance(
                                 blueprint_refs, "planning_scene_blueprint"
                             )
                         ),
@@ -634,7 +538,7 @@ class Orchestrator:
                     artifact_hashes={
                         prefix: self._json_hash(serialized),
                         f"{prefix}_provenance": self._json_hash(
-                            self._planning_provenance(artifact_refs, prefix)
+                            planning_provenance(artifact_refs, prefix)
                         ),
                     },
                     strategy="planning_in_progress",
@@ -736,7 +640,7 @@ class Orchestrator:
             )
             # 前六键与 _hard_qc_result_payload 同源；哈希按排好序的键算（_json_hash），键序不影响哈希。
             hard_decision = {
-                **self._hard_qc_result_payload(hard_qc),
+                **qc_decision_payload(hard_qc),
                 "should_continue": hard_qc.should_continue,
                 "llm_call_id": hard_qc.llm_call_id,
                 "execution_step_key": hard_qc.execution_step_key,
@@ -758,7 +662,7 @@ class Orchestrator:
                 artifact_hashes={
                     "hard_qc_decision": self._json_hash(hard_decision),
                     "hard_qc_report": self._json_hash(
-                        self._qc_report_snapshot(hard_report)
+                        qc_report_snapshot(hard_report)
                     ),
                 },
                 strategy=hard_qc.resolution_code,
@@ -776,7 +680,7 @@ class Orchestrator:
                     "current_bundle_hash": bundle["bundle_snapshot_hash"],
                     "current_qc_report_id": state.current_qc_report_id,
                     "current_human_review_event_id": state.current_human_review_event_id,
-                    "hard_qc": self._hard_qc_result_payload(hard_qc),
+                    "hard_qc": qc_decision_payload(hard_qc),
                 },
             )
 
@@ -953,7 +857,7 @@ class Orchestrator:
                 strategy="best_of_n" if n_candidates > 1 else "single",
             )
 
-        hard_qc_payload = self._hard_qc_result_payload(hard_qc)
+        hard_qc_payload = qc_decision_payload(hard_qc)
 
         # Wave 3（§5.5）：关键场景在候选生成后暂停编排——确定性坏稿淘汰 →
         # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
@@ -1076,7 +980,7 @@ class Orchestrator:
                     "current_qc_report_id": state.current_qc_report_id,
                     "current_human_review_event_id": state.current_human_review_event_id,
                     "hard_qc": hard_qc_payload,
-                    "soft_qc": self._soft_qc_result_payload(soft_qc),
+                    "soft_qc": qc_decision_payload(soft_qc),
                     "planning": planning,
                 },
             )
@@ -1093,7 +997,7 @@ class Orchestrator:
             source_generation=final_generation,
             optional_spend_allowed=_optional_spend_allowed,
         )
-        near_final_payload = self._near_final_result_payload(
+        near_final_payload = near_final_result_payload(
             near_final, rewrite_count=rewrite_count, rewrite_gate=rewrite_gate
         )
         # Wave 2（§5.4 / Wave 2 项 4）：near-final 是 LLM 提案层（Q2/Q3）——达自动
@@ -1125,16 +1029,16 @@ class Orchestrator:
                         "current_qc_report_id": state.current_qc_report_id,
                         "current_human_review_event_id": state.current_human_review_event_id,
                         "hard_qc": hard_qc_payload,
-                        "soft_qc": self._soft_qc_result_payload(soft_qc),
+                        "soft_qc": qc_decision_payload(soft_qc),
                         "planning": planning,
                         "near_final": near_final_payload,
                         "run_policy": run_policy,
                     },
                 )
-                result["quality_warnings"] = self._merged_warnings(
+                result["quality_warnings"] = merged_warnings(
                     result.get("quality_warnings"), near_final_warnings
                 )
-                self._apply_finality(
+                apply_finality(
                     result, gate_summary=strict_gate, warnings=strict_warnings
                 )
                 return result
@@ -1143,17 +1047,17 @@ class Orchestrator:
         # gate 取代（§5.5 顺序——终选在批判修订/硬检查之前，此处不再二次人工门）。
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
-        soft_risk_acceptance_event_id = self._soft_risk_acceptance_event_id(soft_qc)
+        soft_risk_event_id = soft_risk_acceptance_event_id(soft_qc)
         carry_notes_json = (
             self._carry_notes_from_report(soft_qc.qc_report_id)
             if soft_qc.branch == "waive"
             else []
         )
-        if soft_risk_acceptance_event_id:
+        if soft_risk_event_id:
             carry_notes_json.append(
                 {
                     "kind": "soft_risk_acceptance",
-                    "human_review_event_id": soft_risk_acceptance_event_id,
+                    "human_review_event_id": soft_risk_event_id,
                     "qc_report_id": soft_qc.qc_report_id,
                 }
             )
@@ -1196,10 +1100,8 @@ class Orchestrator:
             "source_qc_report_id": soft_qc.qc_report_id,
             "final_generation_llm_call_id": final_generation.llm_call_id,
         }
-        if soft_risk_acceptance_event_id:
-            finalize_details["soft_risk_acceptance_event_id"] = (
-                soft_risk_acceptance_event_id
-            )
+        if soft_risk_event_id:
+            finalize_details["soft_risk_acceptance_event_id"] = soft_risk_event_id
         self.session.add(
             AttemptTracker(
                 scene_id=scene_id,
@@ -1485,16 +1387,6 @@ class Orchestrator:
             f"{prefix}_reused": reused,
         }
 
-    @staticmethod
-    def _planning_provenance(refs: dict[str, Any], prefix: str) -> dict[str, Any]:
-        return {
-            "row_id": refs.get(f"{prefix}_row_id"),
-            "llm_call_id": refs.get(f"{prefix}_llm_call_id"),
-            "execution_step_key": refs.get(f"{prefix}_execution_step_key"),
-            "artifact_execution_id": refs.get(f"{prefix}_artifact_execution_id"),
-            "reused": refs.get(f"{prefix}_reused"),
-        }
-
     def _validate_planning_provenance(
         self,
         *,
@@ -1502,7 +1394,7 @@ class Orchestrator:
         prefix: str,
         llm_call_id: str | None,
     ) -> str | None:
-        provenance = self._planning_provenance(refs, prefix)
+        provenance = planning_provenance(refs, prefix)
         if self._json_hash(provenance) != self._checkpoint_hash(f"{prefix}_provenance"):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -2246,22 +2138,6 @@ class Orchestrator:
             **details,
         )
 
-    @staticmethod
-    def _archive_final_scene_snapshot(row: FinalScene) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._archive_final_scene_snapshot(row)
-
-    @staticmethod
-    def _archive_scene_memory_snapshot(row: SceneMemory) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._archive_scene_memory_snapshot(row)
-
-    @staticmethod
-    def _archive_rolling_note_snapshot(row: ChapterRollingNote) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._archive_rolling_note_snapshot(row)
-
-    @staticmethod
-    def _archive_attempt_snapshot(row: AttemptTracker) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._archive_attempt_snapshot(row)
-
     def _validate_archive_core_checkpoint(
         self,
         *,
@@ -2280,10 +2156,6 @@ class Orchestrator:
             product=product,
             require_checkpoint_hash=require_checkpoint_hash,
         )
-
-    @staticmethod
-    def _narrative_event_snapshot(event: NarrativeEvent) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._narrative_event_snapshot(event)
 
     def _narrative_event_snapshots(self, event_ids: list[str]) -> list[dict[str, Any]]:
         return self._archive_checkpoint()._narrative_event_snapshots(event_ids)
@@ -2370,10 +2242,6 @@ class Orchestrator:
     def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
         return self._archive_checkpoint()._scene_memory_inputs(chapter_id)
 
-    @staticmethod
-    def _chapter_memory_snapshot(memory: ChapterMemory) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._chapter_memory_snapshot(memory)
-
     def _run_archive_chapter_aggregate(
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
@@ -2397,10 +2265,6 @@ class Orchestrator:
     def _volume_input_memories(self, scene: SceneCard) -> list[dict[str, str]]:
         return self._archive_checkpoint()._volume_input_memories(scene)
 
-    @staticmethod
-    def _volume_snapshot(row: VolumeSummary) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._volume_snapshot(row)
-
     def _run_archive_volume_aggregate(
         self, scene: SceneCard, final_scene: FinalScene
     ) -> dict[str, Any]:
@@ -2420,10 +2284,6 @@ class Orchestrator:
             product,
             require_checkpoint_hash=require_checkpoint_hash,
         )
-
-    @staticmethod
-    def _archive_writer_evaluation_snapshot(row: WriterEvaluation) -> dict[str, Any]:
-        return SceneArchiveCheckpoint._archive_writer_evaluation_snapshot(row)
 
     def _run_archive_chapter_evaluation(
         self, scene: SceneCard, final_scene: FinalScene
@@ -2761,67 +2621,6 @@ class Orchestrator:
             )
         return eval0, source_generation, 0, control.get("skip_reason"), None
 
-    @staticmethod
-    def _near_evaluation_payload(result: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "near_final_status": result.get("near_final_status"),
-            "pass_flag": bool(result.get("pass_flag")),
-            "overall_score": result.get("overall_score"),
-            "scores": deepcopy(result.get("scores") or {}),
-            "failure_class": result.get("failure_class"),
-            "requires_human_review": bool(result.get("requires_human_review")),
-            "evaluation_id": result.get("evaluation_id"),
-            "revision_candidate_id": result.get("revision_candidate_id"),
-            "should_rewrite": bool(result.get("should_rewrite")),
-            "findings": deepcopy(result.get("findings") or []),
-            "revision_brief": deepcopy(result.get("revision_brief") or []),
-        }
-
-    @staticmethod
-    def _writer_evaluation_snapshot(evaluation: WriterEvaluation) -> dict[str, Any]:
-        return {
-            "object_type": evaluation.object_type,
-            "object_id": evaluation.object_id,
-            "chapter_id": evaluation.chapter_id,
-            "scene_id": evaluation.scene_id,
-            "rubric_id": evaluation.rubric_id,
-            "source_text_ref": evaluation.source_text_ref,
-            "source_bundle_id": evaluation.source_bundle_id,
-            "evaluator_llm_call_id": evaluation.evaluator_llm_call_id,
-            "lens": evaluation.lens,
-            "overall_score": evaluation.overall_score,
-            "scores": deepcopy(evaluation.scores_json or {}),
-            "findings": deepcopy(evaluation.findings_json or []),
-            "failure_class": evaluation.failure_class,
-            "auto_rewrite_eligible": evaluation.auto_rewrite_eligible,
-            "contract_field_refs": deepcopy(evaluation.contract_field_refs_json or {}),
-            "promotion_blockers": deepcopy(evaluation.promotion_blockers_json or []),
-            "revision_brief": deepcopy(evaluation.revision_brief_json or []),
-            "requires_human_review": evaluation.requires_human_review,
-            "status": evaluation.status,
-        }
-
-    @staticmethod
-    def _revision_candidate_snapshot(candidate: RevisionCandidate) -> dict[str, Any]:
-        return {
-            "evaluation_id": candidate.evaluation_id,
-            "object_type": candidate.object_type,
-            "object_id": candidate.object_id,
-            "chapter_id": candidate.chapter_id,
-            "scene_id": candidate.scene_id,
-            "revision_type": candidate.revision_type,
-            "source_text_ref": candidate.source_text_ref,
-            "proposed_text": candidate.proposed_text,
-            "instruction": deepcopy(candidate.instruction_json or []),
-            "diff_summary": deepcopy(candidate.diff_summary_json or {}),
-            "patches": deepcopy(candidate.patches_json or []),
-            "apply_mode": candidate.apply_mode,
-            "target_text_ref": candidate.target_text_ref,
-            "status": candidate.status,
-            "author_decision_note": candidate.author_decision_note,
-            "created_by": candidate.created_by,
-        }
-
     def _near_candidate_refs_and_hashes(
         self,
         *,
@@ -2860,7 +2659,7 @@ class Orchestrator:
                     "near-final evaluation candidate reference is not unique",
                     status_code=409,
                 )
-            snapshot = self._revision_candidate_snapshot(candidate)
+            snapshot = revision_candidate_snapshot(candidate)
         return (
             {
                 f"{prefix}_revision_candidate_id": candidate_id,
@@ -2889,7 +2688,7 @@ class Orchestrator:
         )
         if evaluation is None:
             self._raise_checkpoint_output_missing(row_id=evaluation_id)
-        normalized = self._near_evaluation_payload(result)
+        normalized = near_evaluation_payload(result)
         candidate_refs, candidate_hashes = self._near_candidate_refs_and_hashes(
             prefix=prefix,
             evaluation_id=evaluation.evaluation_id,
@@ -2909,7 +2708,7 @@ class Orchestrator:
         hashes = {
             f"{prefix}_payload": self._json_hash(normalized),
             f"{prefix}_evaluation": self._json_hash(
-                self._writer_evaluation_snapshot(evaluation)
+                writer_evaluation_snapshot(evaluation)
             ),
             **candidate_hashes,
         }
@@ -2959,7 +2758,7 @@ class Orchestrator:
         if (
             not isinstance(normalized, dict)
             or self._json_hash(normalized) != self._checkpoint_hash(f"{prefix}_payload")
-            or self._json_hash(self._writer_evaluation_snapshot(evaluation))
+            or self._json_hash(writer_evaluation_snapshot(evaluation))
             != self._checkpoint_hash(f"{prefix}_evaluation")
         ):
             raise DomainError(
@@ -3065,7 +2864,7 @@ class Orchestrator:
                 != f"source_draft:{source_generation.row_id}"
                 or candidate.proposed_text != source_generation.content
                 or candidate.status not in {"candidate", "superseded"}
-                or self._revision_candidate_snapshot(candidate) != candidate_snapshot
+                or revision_candidate_snapshot(candidate) != candidate_snapshot
             ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
@@ -3512,7 +3311,7 @@ class Orchestrator:
                     "near-final rewrite count is invalid",
                     status_code=409,
                 )
-            expected_payload = self._near_final_result_payload(
+            expected_payload = near_final_result_payload(
                 final_evaluation,
                 rewrite_count=rewrite_count,
                 rewrite_gate=rewrite_gate,
@@ -4784,7 +4583,7 @@ class Orchestrator:
                 "hard QC decision hash mismatch",
                 status_code=409,
             )
-        if self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash(
+        if self._json_hash(qc_report_snapshot(report)) != self._checkpoint_hash(
             "hard_qc_report"
         ):
             raise DomainError(
@@ -6464,26 +6263,6 @@ class Orchestrator:
                 details={"llm_call_id": call_id, "error_code": exc.code},
             ) from exc
 
-    @staticmethod
-    def _soft_decision_snapshot(
-        decision: SoftQcDecision,
-        *,
-        include_should_continue: bool,
-    ) -> dict[str, Any]:
-        snapshot = {
-            "branch": decision.branch,
-            "qc_report_id": decision.qc_report_id,
-            "human_review_event_id": decision.human_review_event_id,
-            "resolution_code": decision.resolution_code,
-            "next_action": decision.next_action,
-            "stop_reason": decision.stop_reason,
-            "llm_call_id": decision.llm_call_id,
-            "execution_step_key": decision.execution_step_key,
-        }
-        if include_should_continue:
-            snapshot["should_continue"] = decision.should_continue
-        return snapshot
-
     def _save_soft_qc_round_checkpoint(
         self,
         *,
@@ -6509,7 +6288,7 @@ class Orchestrator:
         if report is None:
             self._raise_checkpoint_output_missing(row_id=decision.qc_report_id)
         prefix = f"soft_qc{round_index}"
-        decision_snapshot = self._soft_decision_snapshot(
+        decision_snapshot = soft_decision_snapshot(
             decision, include_should_continue=True
         )
         refs: dict[str, Any] = {
@@ -6524,7 +6303,7 @@ class Orchestrator:
         }
         hashes = {
             f"{prefix}_decision": self._json_hash(decision_snapshot),
-            f"{prefix}_report": self._json_hash(self._qc_report_snapshot(report)),
+            f"{prefix}_report": self._json_hash(qc_report_snapshot(report)),
         }
         if round_index == 0 and patch_allowed is not None:
             control = {"patch_allowed": patch_allowed, "skip_reason": skip_reason}
@@ -6538,7 +6317,7 @@ class Orchestrator:
                 final_report = self.session.get(QcReport, completion_decision.qc_report_id)
                 if final_report is None:
                     self._raise_checkpoint_output_missing(row_id=completion_decision.qc_report_id)
-            legacy_decision = self._soft_decision_snapshot(
+            legacy_decision = soft_decision_snapshot(
                 final_decision, include_should_continue=False
             )
             completion = {
@@ -6578,7 +6357,7 @@ class Orchestrator:
                 {
                     "soft_final_draft": self._text_hash(final_generation.content),
                     "soft_qc_decision": self._json_hash(legacy_decision),
-                    "soft_qc_report": self._json_hash(self._qc_report_snapshot(final_report)),
+                    "soft_qc_report": self._json_hash(qc_report_snapshot(final_report)),
                     "soft_completion": self._json_hash(completion),
                 }
             )
@@ -6652,7 +6431,7 @@ class Orchestrator:
             or refs.get(f"{prefix}_llm_call_id") != decision.llm_call_id
             or refs.get(f"{prefix}_execution_step_key") != decision.execution_step_key
             or decision.execution_step_key != f"soft_qc:{round_index}"
-            or self._json_hash(self._qc_report_snapshot(report))
+            or self._json_hash(qc_report_snapshot(report))
             != self._checkpoint_hash(f"{prefix}_report")
         ):
             raise DomainError(
@@ -6833,7 +6612,7 @@ class Orchestrator:
                 "soft QC decision hash mismatch",
                 status_code=409,
             )
-        if self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash(
+        if self._json_hash(qc_report_snapshot(report)) != self._checkpoint_hash(
             "soft_qc_report"
         ):
             raise DomainError(
@@ -6938,10 +6717,10 @@ class Orchestrator:
                 or self._json_hash(completion)
                 != self._checkpoint_hash("soft_completion")
                 or refs.get("soft_completion_skip_reason") != expected_skip_reason
-                or self._soft_decision_snapshot(
+                or soft_decision_snapshot(
                     checkpoint_decision, include_should_continue=False
                 )
-                != self._soft_decision_snapshot(decision, include_should_continue=False)
+                != soft_decision_snapshot(decision, include_should_continue=False)
                 or expected_generation.row_id != generation.row_id
                 or expected_generation.llm_call_id != generation.llm_call_id
             ):
@@ -6951,20 +6730,6 @@ class Orchestrator:
                     status_code=409,
                 )
         return decision, generation
-
-    @staticmethod
-    def _qc_report_snapshot(report: QcReport) -> dict[str, Any]:
-        return {
-            "qc_type": report.qc_type,
-            "status": report.status,
-            "source_draft_row_id": report.source_draft_row_id,
-            "source_bundle_id": report.source_bundle_id,
-            "resolution_code": report.resolution_code,
-            "pass_flag": report.pass_flag,
-            "next_action": report.next_action,
-            "issues": deepcopy(report.issues_json or []),
-            "rewrite_brief": deepcopy(report.rewrite_brief_json or []),
-        }
 
     def _checkpoint_hash(self, key: str) -> str | None:
         return self._ckpt._checkpoint_hash(key)
@@ -7074,15 +6839,6 @@ class Orchestrator:
         return carry_notes
 
     @staticmethod
-    def _soft_risk_acceptance_event_id(soft_qc) -> str | None:
-        stop_reason = str(getattr(soft_qc, "stop_reason", "") or "")
-        prefix = "accepted_soft_risk:"
-        if not stop_reason.startswith(prefix):
-            return None
-        event_id = stop_reason[len(prefix) :].strip()
-        return event_id or None
-
-    @staticmethod
     def _near_final_rewrite_brief(near_final: dict[str, Any]) -> list[str]:
         rewrite_brief: list[str] = []
         for entry in near_final.get("revision_brief") or []:
@@ -7169,40 +6925,6 @@ class Orchestrator:
             if isinstance(issue, dict) and issue.get("quality_level") == "Q2":
                 warnings.append(issue)
         return warnings
-
-    @staticmethod
-    def _merged_warnings(
-        existing: Any, additions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        merged = [item for item in (existing or []) if isinstance(item, dict)]
-        merged.extend(additions)
-        return merged
-
-    @staticmethod
-    def _near_final_result_payload(
-        near_final: dict[str, Any],
-        *,
-        rewrite_count: int,
-        rewrite_gate: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload = {
-            "near_final_status": near_final.get("near_final_status"),
-            "pass_flag": bool(near_final.get("pass_flag")),
-            "overall_score": near_final.get("overall_score"),
-            "failure_class": near_final.get("failure_class"),
-            "requires_human_review": bool(near_final.get("requires_human_review")),
-            "evaluation_id": near_final.get("evaluation_id"),
-            "revision_candidate_id": near_final.get("revision_candidate_id"),
-            "should_rewrite": bool(near_final.get("should_rewrite")),
-            "rewrite_count": rewrite_count,
-            "findings": near_final.get("findings") or [],
-            "revision_brief": near_final.get("revision_brief") or [],
-        }
-        if rewrite_gate is not None:
-            # v2（W5）：重写稿 styled-draft gate 小结只在有绑定且产生过重写时出现；
-            # rejected=True 表示重写稿因抄袭被丢弃、终稿回退为来源稿。
-            payload["rewrite_style_gate"] = deepcopy(rewrite_gate)
-        return payload
 
     def _archive_effects(self) -> SceneArchiveEffects:
         """Build the archive-effects worker for the CURRENT run.
@@ -7701,7 +7423,7 @@ class Orchestrator:
             execution_step_key=selected_step_key,
             artifact_execution_id=selected_execution_id,
         )
-        hard_qc_payload = self._hard_qc_result_payload(hard_qc)
+        hard_qc_payload = qc_decision_payload(hard_qc)
         return self._finalize_after_style(
             scene=scene,
             state=state,
@@ -7732,43 +7454,3 @@ class Orchestrator:
         )
 
 
-    @staticmethod
-    def _soft_qc_result_payload(soft_qc) -> dict[str, str | None]:
-        return {
-            "branch": soft_qc.branch,
-            "qc_report_id": soft_qc.qc_report_id,
-            "human_review_event_id": soft_qc.human_review_event_id,
-            "resolution_code": soft_qc.resolution_code,
-            "next_action": soft_qc.next_action,
-            "stop_reason": soft_qc.stop_reason,
-        }
-
-    # hard_qc_decision 检查点哈希覆盖这些键与值（哈希按排好序的键算，键序不影响）：改键名 / 增删键就是改哈希。
-    @staticmethod
-    def _hard_qc_result_payload(hard_qc) -> dict[str, str | None]:
-        return {
-            "branch": hard_qc.branch,
-            "qc_report_id": hard_qc.qc_report_id,
-            "human_review_event_id": hard_qc.human_review_event_id,
-            "resolution_code": hard_qc.resolution_code,
-            "next_action": hard_qc.next_action,
-            "stop_reason": hard_qc.stop_reason,
-        }
-
-    @staticmethod
-    def _apply_finality(result: dict, *, gate_summary: dict, warnings) -> None:
-        # finality 四件套唯一装配点：顶层三布尔与 finality 镜像必须同源同值。
-        result["safe_to_archive"] = bool(
-            gate_summary.get("safe_to_archive", gate_summary.get("archivable", False))
-        )
-        result["literary_warnings_unresolved"] = bool(
-            gate_summary.get("literary_warnings_unresolved") or warnings
-        )
-        result["author_confirmed_final"] = bool(
-            gate_summary.get("author_confirmed_final")
-        )
-        result["finality"] = {
-            "safe_to_archive": result["safe_to_archive"],
-            "literary_warnings_unresolved": result["literary_warnings_unresolved"],
-            "author_confirmed_final": result["author_confirmed_final"],
-        }
