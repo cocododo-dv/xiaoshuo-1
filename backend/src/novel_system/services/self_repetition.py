@@ -116,9 +116,6 @@ class SelfRepetitionDetector:
         corpus = [(finals[scene_id], scene_id) for scene_id in scene_ids if scene_id in finals]
         return [text for text, _ in corpus], [scene_id for _, scene_id in corpus]
 
-    # 兼容：bundle 的新鲜度预算（bundle_freshness）还按这个旧的私有名调用；它改用 recent_corpus 之后删掉。
-    _load_corpus = recent_corpus
-
     def _previous_chapter_id(self, chapter_id: str) -> str | None:
         """同一部作品里排在 ``chapter_id`` 前面的那一章（目录次序：display_order，缺序的排后，同序按 chapter_id）。
 

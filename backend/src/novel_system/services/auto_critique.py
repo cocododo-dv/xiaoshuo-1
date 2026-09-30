@@ -200,10 +200,10 @@ def auto_critique(
         Dimensions with score **at or below** this value are flagged.
         Score semantics: 1.0 = clean, 0.0 = fully triggered.
     previous_scenes_text:
-        Optional prior-scene text for self-repetition context (not used
-        by this function directly — the underlying ``analyze_literary_quality``
-        operates on the single text; cross-scene repetition is handled by the
-        separate ``self_repetition`` module wired through ``external_signals``).
+        Optional prior-scene text (not used by this function: the rule analysis
+        reads the single text only). Cross-scene repetition is prompt guidance
+        that the bundle builder (``bundle_freshness``) builds from
+        ``services/self_repetition`` before drafting; it is not a critique signal.
     """
     if skip_critique or not text or not text.strip():
         return CritiqueResult(
