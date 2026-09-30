@@ -14,6 +14,7 @@ from typing import Protocol
 
 from novel_system.cache_registry import register_cache_reset
 from novel_system.services.errors import DomainError
+from novel_system.settings import get_settings
 
 
 def _score_text(text: str, query_text: str) -> int:
@@ -90,14 +91,28 @@ register_cache_reset("vector_store", _PROCESS_STORE.clear)
 
 
 def get_vector_store(*, backend: str | None = None) -> InMemoryVectorStore:
-    """本进程的集合。``backend`` 只为核对旧检查点里记下的后端名：``memory`` 以外的持久化索引已经不存在，
-    没法核对，照旧失败（fail closed），不假装查过。"""
-    selected_backend = (backend or "memory").strip().lower()
-    if selected_backend != "memory":
+    """本进程的集合。
+
+    ``backend`` 只为核对旧检查点里记下的后端名；不给时按 ``NOVEL_SYSTEM_VECTOR_BACKEND``（默认 ``memory``，各启动
+    脚本也强制它）。``memory`` 以外的后端已经不存在，两种来路都照旧失败（fail closed），不假装写过 / 查过：归档第 7 步
+    按同一个设置给产品标后端名，设成 ``chroma`` 时它和以前没装 Chroma 一样记一份 ``failed`` 产品、续跑照常，
+    不会把进程内集合记成一份「已索引」的持久化索引、续跑时再也核对不了。"""
+    if backend:
+        selected_backend = backend.strip().lower()
+        if selected_backend != "memory":
+            raise DomainError(
+                "VECTOR_BACKEND_UNSUPPORTED",
+                "只剩进程内的向量集合；Chroma 后端已删除，旧的持久化索引无法核对",
+                status_code=503,
+                details={"backend": selected_backend},
+            )
+        return _PROCESS_STORE
+    configured_backend = get_settings(include_runtime_config=False).vector_backend.strip().lower()
+    if configured_backend != "memory":
         raise DomainError(
             "VECTOR_BACKEND_UNSUPPORTED",
-            "只剩进程内的向量集合；Chroma 后端已删除，旧的持久化索引无法核对",
+            "NOVEL_SYSTEM_VECTOR_BACKEND 只能是 memory：Chroma 后端已删除",
             status_code=503,
-            details={"backend": selected_backend},
+            details={"backend": configured_backend, "setting": "NOVEL_SYSTEM_VECTOR_BACKEND"},
         )
     return _PROCESS_STORE
