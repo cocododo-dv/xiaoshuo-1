@@ -15,9 +15,11 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.cache_registry import register_cache_reset
+from novel_system.db.models import StyleReferenceInjectionBinding, StyleReferenceProfile
 from novel_system.services.literary_quality import DEFAULT_RULE_CALIBRATION, RuleCalibration, dimension_label
 from novel_system.services.literary_quality.calibration_source import (
     BoundProfile,
@@ -25,10 +27,12 @@ from novel_system.services.literary_quality.calibration_source import (
     ReferenceBookState,
     ReferenceCorpus,
     ReferenceStatsCache,
+    bound_profile,
     reference_book_state,
     reference_rule_stats,
     rule_calibration_from_reference,
 )
+from novel_system.services.maintenance import register_maintenance_task
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -212,3 +216,48 @@ def craft_calibration_for(session: Session, profile: BoundProfile | None) -> Cra
     except Exception:  # noqa: BLE001 — 校准失败退回默认阈值，不让诊断失败
         _LOGGER.warning("reference calibration unavailable for book %s; using the default thresholds", profile.book_id, exc_info=True)
         return DEFAULT_CRAFT_CALIBRATION
+
+
+# ---------------------------------------------------------------------------
+# 后台预热：绑定着的参考书的两份读数（X01-04）
+# ---------------------------------------------------------------------------
+
+REFERENCE_CALIBRATION_WARMUP_TASK = "reference_calibration_warmup"
+REFERENCE_CALIBRATION_WARMUP_INTERVAL_SECONDS = 6 * 3600
+
+
+def bound_profile_ids(session: Session) -> list[str]:
+    """活动绑定指着的 active 画像（去重，按画像号排）。"""
+    rows = session.execute(
+        select(StyleReferenceInjectionBinding.profile_id)
+        .join(StyleReferenceProfile, StyleReferenceProfile.profile_id == StyleReferenceInjectionBinding.profile_id)
+        .where(StyleReferenceInjectionBinding.status == "active", StyleReferenceProfile.status == "active")
+        .distinct()
+    ).scalars().all()
+    return sorted(str(row) for row in rows)
+
+
+def warm_reference_calibrations() -> int:
+    """全系统维护任务：绑定着的每本参考书，把规则与节奏两份读数算进进程缓存（按书的版本；真实参考书冷算要好几秒，
+    2026-10-01 在 perf 副本上量到规则校准冷 8.0 s、整本诊断汇总冷 12.2 s / 热 0.2 s）——写作台深改面板、文学质量与
+    成稿门读这本书的校准时就不必现算。书改过（重标段型、重新学习）之后下一轮把新版本算好。
+
+    只读库、只填进程里的缓存，不写任何东西（读路径从不写持久化的读数）。登记时 ``run_at_start=False``、每 6 小时
+    一次：后端热加载新代码后的第一拍不做这件重活。返回这一轮算到参考书读数的画像数。"""
+    from novel_system.db.session import SessionLocal
+
+    warmed = 0
+    with SessionLocal() as session:
+        for profile_id in bound_profile_ids(session):
+            if craft_calibration_for(session, bound_profile(session, profile_id)).source == "reference":
+                warmed += 1
+        session.rollback()
+    return warmed
+
+
+register_maintenance_task(
+    REFERENCE_CALIBRATION_WARMUP_TASK,
+    warm_reference_calibrations,
+    interval_seconds=REFERENCE_CALIBRATION_WARMUP_INTERVAL_SECONDS,
+    run_at_start=False,
+)
