@@ -1,16 +1,17 @@
-"""章名只有一个（阶段 Z，2026-09-20）。叶子模块：只依赖 ORM——目录服务、分章服务、雪花工作台都引用它。
+"""章名只有一个（阶段 Z，2026-09-20）。叶子模块：只依赖 ORM 与章表叶子——目录服务、分章服务、雪花工作台都引用它。
 
-一章的名字有三扇门：07 章节表、「整理章节结构」面板、章节编排。过去章节编排改的是目录里的**另一份**：
-分章面板和 09 的章头还挂着旧名，「AI 起章名」会给作者已经起过名的章再起一遍；反过来 07 里改的章名要等
-下一次「确认写入」才到得了目录。现在三扇门改的是同一个名字：
+一章的名字有两扇门：「整理章节结构」面板、章节编排；07 的章节表是分章结果的只读镜像（R11，2026-09-30——
+以前它是第三扇门）。过去章节编排改的是目录里的**另一份**：分章面板和 09 的章头还挂着旧名，「AI 起章名」会给
+作者已经起过名的章再起一遍。现在两扇门改的是同一个名字：
 
 - 章节编排改名 → :func:`adopt_catalog_title`（目录 PATCH 的同一事务里写穿章计划行）；
-- 07 保存章表 → :func:`follow_plan_titles`（目录里还是上次播下去的名字就跟着走）；
-- 分章面板确认 → ``SnowflakeChapteringService.save`` + 物化（阶段 W 的「目录章名跟随章表」）。
+- 分章面板「只保存章表」→ ``SnowflakeWorkspaceService.save_chapter_plan`` → :func:`follow_plan_titles`（目录里还是
+  上次播下去的名字就跟着走；API 调用方显式给 07 的章表时同一条路）；
+- 分章面板确认写入 → ``SnowflakeChapteringService.save`` + 物化（阶段 W 的「目录章名跟随章表」）。
 
 目录那一行的 ``writer_brief_json["chapter_title"]`` 记着「上一次由章表播下去的名字」；两边一致时它就等于
-当前章名，之后任何一扇门再改都还跟得上。章表在 07 草稿里的镜像（``chapters`` 与前端写穿缓存
-``fe_scaffold.chapters``）由 :func:`mirror_chapters_into_long_synopsis` 统一维护。
+当前章名，之后任何一扇门再改都还跟得上。章表在 07 草稿里的镜像（``chapters``）由
+:func:`mirror_chapters_into_long_synopsis`（实现在 ``snowflake_chapter_table``）统一维护。
 """
 
 from __future__ import annotations
