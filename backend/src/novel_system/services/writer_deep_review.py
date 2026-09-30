@@ -159,16 +159,6 @@ class WriterDeepReviewService:
             provider_execution_mode=self._llm_runner.provider_execution_mode,
         )
 
-    def scene_summary(self, scene_id: str) -> dict[str, Any]:
-        """写作台深改面板的载荷：统一的场景诊断（规则 / 节奏 / 评审 / AI 深评），见 scene_diagnosis。"""
-
-        return SceneDiagnosisService(self.session).payload(scene_id)
-
-    def chapter_summary(self, chapter_id: str) -> dict[str, Any]:
-        """成稿中心「AI 通读本章」的载荷：章级判断 + 各场的诊断计数 + 落到各场的通读发现（scene_diagnosis.chapter_payload）。"""
-
-        return SceneDiagnosisService(self.session).chapter_payload(chapter_id)
-
     def run_scene_review(self, scene_id: str, actor_ref: str = "operator") -> dict[str, Any]:
         """「AI 深评」：对当前作者稿跑一次 writer_deep_review 节点，返回统一诊断载荷。拒绝式：无模型即 409。"""
 
