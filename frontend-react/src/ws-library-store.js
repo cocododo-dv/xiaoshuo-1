@@ -36,7 +36,6 @@ export const LIB_BY_ID = {};
 /* 不可变快照：每次档案变化换一份新对象（身份变了 = 内容变了） */
 const LIB_EMPTY = Object.freeze({ entries: [], byId: {} });
 let libSnap = LIB_EMPTY;
-let libRelations = [];
 let libRevision = 0;
 const libSubscribers = createSubscribers();
 let libSubscriberCount = 0;
@@ -155,14 +154,11 @@ function libAdapt(data) {
     (linkIndex[rel.to_ref] = linkIndex[rel.to_ref] || []).push({ id: libStripRef(rel.from_ref), rel: rel.note || "", type: rel.kind, relationId: rel.relation_id });
   }
   const linksOf = (ref) => linkIndex[ref] || [];
-  return {
-    relations,
-    entries: [
-      ...((data && data.characters) || []).map(c => libAdaptCharacter(c, linksOf)),
-      ...((data && data.entities) || []).map(e => libAdaptEntity(e, linksOf)),
-      ...((data && data.timeline) || []).map(ev => libAdaptEvent(ev)),
-    ],
-  };
+  return [
+    ...((data && data.characters) || []).map(c => libAdaptCharacter(c, linksOf)),
+    ...((data && data.entities) || []).map(e => libAdaptEntity(e, linksOf)),
+    ...((data && data.timeline) || []).map(ev => libAdaptEvent(ev)),
+  ];
 }
 
 let libFetching = null;
@@ -179,7 +175,6 @@ export function libLoadState() { return libLoad; }
 function libClearForProject(projectId) {
   libVisibleProjectId = projectId || null;
   libLoad = { pid: projectId || null, status: projectId ? "loading" : "idle", message: "" };
-  libRelations = [];
   libReplace([]);
   libBump();
 }
@@ -188,7 +183,7 @@ function libClearForProject(projectId) {
 export function libRefetch() {
   const pid = libActiveId();
   if (!isRealWorkId(pid)) {
-    if (libVisibleProjectId !== null || libSnap.entries.length || libRelations.length) {
+    if (libVisibleProjectId !== null || libSnap.entries.length) {
       libRequestSerial += 1; // 让尚未返回的旧作品请求失效
       libFetching = null;
       libFetchingProjectId = null;
@@ -215,9 +210,7 @@ export function libRefetch() {
       const data = await apiGet(`/api/v2/projects/${pid}/library`);
       /* A→B 快速切换时，A 的迟到响应不得覆盖 B 的资料库。 */
       if (requestSerial !== libRequestSerial || libActiveId() !== pid || libVisibleProjectId !== pid) return false;
-      const next = libAdapt(data);
-      libRelations = next.relations;
-      libReplace(next.entries);
+      libReplace(libAdapt(data));
       libLoad = { pid, status: "ready", message: "" };
       libBump();
       return true;

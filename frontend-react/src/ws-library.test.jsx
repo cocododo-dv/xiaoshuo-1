@@ -662,6 +662,21 @@ describe("WsLibrary 视图：新建、键盘与删除", () => {
     }
   });
 
+  it("从写作台点名字跳来（排队的 ws:lib-open 指令）：资料页一挂上就打开那份档案", async () => {
+    const intents = await import("./ws-view-intents.js");
+    intents.queueViewIntent("library", "ws:lib-open", "zhou");
+    const view = await mountLibrary(libResponse());
+    try {
+      await vi.waitFor(() => expect(view.host.querySelector(".dossier-name")).toBeTruthy(), T);
+      expect(view.host.querySelector(".dossier-name").textContent).toBe("周岚");
+      // 挂着的时候再跳一次：换到另一份
+      await act(async () => { window.dispatchEvent(new CustomEvent("ws:lib-open", { detail: "arch" })); });
+      expect(view.host.querySelector(".dossier-name").textContent).toBe("档案馆");
+    } finally {
+      await view.unmount();
+    }
+  });
+
   it("删除真实条目：先确认，确认后调 DELETE 并回到总览", async () => {
     const view = await mountLibrary(libResponse());
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
