@@ -49,7 +49,7 @@ Invoke-NativeCommand -Label "Windows verification lane" -FilePath "powershell" -
 
 # React mainline contract E2E (run-smokes.mjs) is the default release gate for the
 # production frontend: verify_react_e2e.ps1 spins up an isolated seeded backend on :8009
-# + the React app on :5174, runs the smoke suites (reseeding between each), then tears
+# + the React app on :5176, runs the smoke suites (reseeding between each), then tears
 # everything down. Needs Playwright installed in frontend-react/ (cd frontend-react; npm ci).
 $reactE2eScript = Join-Path $repoRoot "scripts\verify_react_e2e.ps1"
 Invoke-NativeCommand -Label "React mainline contract E2E (run-smokes)" -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $reactE2eScript)

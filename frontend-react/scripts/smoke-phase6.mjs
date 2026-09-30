@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
-const BASE = process.argv[2] || "http://127.0.0.1:5174/";
+const BASE = process.argv[2] || "http://127.0.0.1:5176/";
 const API = process.argv[3] || "http://127.0.0.1:8009";
 let failed = 0;
 const errors = [];

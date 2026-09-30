@@ -60,7 +60,7 @@ function Get-RecordedRootProcessIds {
     )
 
     $recorded = New-Object System.Collections.Generic.List[int]
-    foreach ($pidFileName in @("backend.pid", "frontend.pid")) {
+    foreach ($pidFileName in @("backend.pid")) {
         $pidFile = Join-Path $RunDir $pidFileName
         if (-not (Test-Path -LiteralPath $pidFile)) {
             continue
