@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { wsToast } from "./ws-notify.jsx";
-import { CloseButton, PageHeader, Segmented, Spinner, Tag } from "./ws-ui.jsx";
+import { CloseButton, PageHeader, Segmented, Spinner, Tag, usePopover } from "./ws-ui.jsx";
 import { CHAPTER_STATE_META, CHAPTER_STATE_ORDER, chapterLabel, chapterStateMeta } from "./labels/catalog.js";
 import { manuCompile, manuScopeProblem } from "./ws-manuscripts-compile.js";
 import { manuDownload, manuRefreshChapters, manuSnapshotOf } from "./ws-manuscripts-workflow.js";
@@ -71,7 +71,11 @@ function ManuHero({ book, cells, activeId, stats, exportCtx, fidelity = null }) 
 
 const EXPORT_FORMATS = [["md", "Markdown"], ["txt", "纯文本"], ["doc", "Word"]];
 
-/* 统一导出：逐章核验服务端权威正文后编译下载。 */
+/* 统一导出：逐章核验服务端权威正文后编译下载。
+   面板是非模态浮层（ws-ui 的 usePopover：点外面、Esc、焦点离开这一块都收起，Esc 把焦点还给按钮）。
+   打开时焦点进面板本身（role=dialog，读屏报出「统一导出」，下一下 Tab 就是面板里的第一个控件）——不直接落在
+   某个单选上：一打开就开始核验，核验中所有控件都是禁用的，落在它们上面的焦点会被浏览器丢回 <body>。
+   焦点只是掉到 <body>（点了面板空白、控件在核验中变成禁用）不算离开。 */
 function ManuExport({ ctx }) {
   const { catChs = [], book = {}, chs = [], pickedId } = ctx || {};
   const approvedIds = chs.filter((c) => c.stage === "approved").map((c) => c.id);
@@ -82,8 +86,8 @@ function ManuExport({ ctx }) {
   const [toc, setToc] = useState(true);
   const [appendix, setAppendix] = useState(false);
   const [exportState, setExportState] = useState({ busy: false, error: "", note: "" });
-  const ref = useRef(null);
   const btnRef = useRef(null);
+  const popRef = useRef(null);
   const exportBusyRef = useRef(false);
   const closeTimerRef = useRef(null);
 
@@ -93,29 +97,7 @@ function ManuExport({ ctx }) {
     setOpen(false);
     if (restoreFocus && btnRef.current) btnRef.current.focus();
   };
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); close(true); } };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* 打开时焦点进面板本身（role=dialog，读屏报出「统一导出」，下一下 Tab 就是面板里的第一个控件）。
-     过去焦点留在按钮上，Tab 要穿过整块面板才知道它开着。不直接落在某个单选上：一打开就开始核验，
-     核验中所有控件都是禁用的，落在它们上面的焦点会被浏览器丢回 <body>。
-     焦点离开这一块（Tab 出去、点到页面别处的控件）就收起——非模态浮层不把焦点关住，也不在身后留一块开着的面板；
-     焦点只是掉到 <body>（点了面板空白、控件在核验中变成禁用）不算离开。 */
-  const popRef = useRef(null);
-  useEffect(() => {
-    if (open && popRef.current) popRef.current.focus({ preventScroll: true });
-  }, [open]);
-  const onBlurWithin = (e) => {
-    const next = e.relatedTarget;
-    if (!open || !next || !ref.current || ref.current.contains(next)) return;
-    setOpen(false);
-  };
+  usePopover(popRef, { open, onClose: () => setOpen(false), anchorRef: btnRef, initialFocus: popRef });
 
   // 打开时按当时有没有定稿重选默认范围（作者上次选的范围若已经空了，不停在一个空范围上）
   useEffect(() => {
@@ -177,7 +159,7 @@ function ManuExport({ ctx }) {
   const statusIsError = !exportState.busy && !!(exportState.error || scopeProblem);
 
   return (
-    <div className="ms-export" ref={ref} onBlur={onBlurWithin}>
+    <div className="ms-export">
       {/* 整书导出是次要动作：这一页唯一的实心主按钮留给阅读器页脚里这一章的下一步（续写 / 核对正史 / 送审） */}
       <button ref={btnRef} type="button" className={`btn btn-ghost ms-export-btn ${open ? "is-open" : ""}`} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((o) => !o)}>
         <I.UploadCloud size={15} /> 统一导出

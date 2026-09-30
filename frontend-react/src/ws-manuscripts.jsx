@@ -18,6 +18,7 @@ import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog, ManuReturnDialog } from "./ws-manuscripts-dialogs.jsx";
+import { writerIntents } from "./ws-finding-ui.jsx";
 
 /* ==========================================================
    成稿中心 — 一本书在这里一章章成形：页头是整书进度与统一导出，
@@ -263,10 +264,7 @@ function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReas
   }
   if (canonical.status !== "ready") return null;
   const firstMissing = manuFirstMissingScene(chapter, canonical);
-  const goWrite = () => {
-    if (!go) return;
-    go("writer", firstMissing && firstMissing.sid ? [{ type: "ws:writer-scene", detail: firstMissing.sid }] : []);
-  };
+  const goWrite = () => { if (go) go("writer", writerIntents(firstMissing && firstMissing.sid)); };
   return <button type="button" className="btn btn-accent" onClick={goWrite}><I.Pen size={14} /> {picked.words ? "去写作台续写" : "去写作台动笔"}</button>;
 }
 

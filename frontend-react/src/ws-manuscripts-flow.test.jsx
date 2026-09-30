@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({ catalog: [], projectId: "p1", catalogReady: true, catalogError: null, removeScenes: null }));
 const flow = vi.hoisted(() => ({
+  subscribe: vi.fn(() => () => {}),
   refresh: vi.fn().mockResolvedValue({}),
   body: vi.fn(() => null),
   snapshot: vi.fn(),
@@ -34,10 +35,10 @@ vi.mock("./ws-works.jsx", () => ({
   WsWorks: {
     activeId: () => fixture.projectId,
     active: () => ({ id: fixture.projectId, title: "测试长篇", genre: "悬疑", wordsTarget: 100000, chaptersTotal: 2 }),
-    __refresh: worksRefresh,
+    retry: worksRefresh,
   },
 }));
-vi.mock("./ws-review.jsx", () => ({ rvPush: vi.fn() }));
+vi.mock("./ws-review-store.js", () => ({ rvPush: vi.fn() }));
 /* 诊断计数与诊断页签：这里只验成稿中心把它们接在哪儿；面板本身在 ws-manuscripts-diagnosis.test.jsx */
 const diagFx = vi.hoisted(() => ({ chapters: {}, scenes: {} }));
 vi.mock("./ws-diagnosis-summary.jsx", () => ({
@@ -72,9 +73,7 @@ vi.mock("./ws-manuscripts-store.jsx", () => ({
 const dialog = () => document.querySelector('[role="dialog"]');
 
 import { WsManuscripts } from "./ws-manuscripts.jsx";
-import { rvPush } from "./ws-review.jsx";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+import { rvPush } from "./ws-review-store.js";
 const mounted = [];
 
 function chapter(state) {
@@ -203,6 +202,7 @@ describe("成稿中心权威章节流", () => {
 
     expect(flow.reopenFinal).toHaveBeenCalledWith("p1", "c1", "第三场时间线需要纠正");
     expect(catalogRefresh).toHaveBeenCalledWith("p1");
+    expect(worksRefresh).toHaveBeenCalledWith("projects");
   });
 
   it("送入审阅等待服务端目录 PATCH 成功后再刷新权威目录", async () => {
@@ -542,6 +542,19 @@ describe("成稿中心 · 阶段、下一步与空态", () => {
     expect(removeScenes).not.toHaveBeenCalled();
   });
 
+  it("场景三问「回第 10 步」：和章节编排、写作台同一组意图（先切到第 10 步，再选中这一场）", async () => {
+    const go = vi.fn();
+    const ch = chapter("review");
+    ch.scenes[0].storyCheck = { verdict: "maybe", crucible_identified: true, shape_landed: false };
+    const host = await renderPage([ch], go);
+    await click([...host.querySelectorAll('[role="radio"]')].find((b) => b.textContent === "结构"));
+    await click(host.querySelector('[data-testid="ms-story-check-plan"]'));
+    expect(go).toHaveBeenLastCalledWith("snowflake", [
+      { type: "ws:snow-step", detail: "planning" },
+      { type: "ws:snow-scene", detail: "s1" },
+    ]);
+  });
+
   it("标待删确认后走目录 store（ES 导入，不读 window.WsCatalog）移入回收站", async () => {
     const removeScenes = vi.fn(() => true);
     fixture.removeScenes = removeScenes;
@@ -645,7 +658,8 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
   it("开发模式下退回对话框的焦点落在理由框上；定位到场是方向键可切换的单选，只有选中的一场占 Tab 位", async () => {
     const ch = chapter("review");
     ch.scenes = [...ch.scenes, { sid: "ch01s2", backendId: "s2", title: "夜渡", state: "done" }];
-    const host = await renderPage([ch], vi.fn(), { strict: true });
+    const go = vi.fn();
+    const host = await renderPage([ch], go, { strict: true });
     const opener = button(host.querySelector(".ms-reader-foot"), "退回小修");
     opener.focus();
     await click(opener);
@@ -668,6 +682,11 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
       where: "第 1 章 · 夜渡",
     }));
     expect(rvPush.mock.calls[0][0].actions[0].scene).toBe("ch01s2");
+    // 「直达深改」默认勾着：带着深改姿态进写作台，落在定位的那一场
+    expect(go).toHaveBeenLastCalledWith("writer", [
+      { type: "ws:writer-scene", detail: "ch01s2" },
+      { type: "ws:writer-posture", detail: "deep" },
+    ]);
   });
 
   it("章名是占位的「第 1 章」时，进度条提示与退回待办的标题都不写两遍", async () => {

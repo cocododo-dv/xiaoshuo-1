@@ -12,7 +12,8 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
    不碰 DOM、不写 window——所以能直接单测。
    ========================================================== */
 
-const IDLE_SNAPSHOT = { status: "idle", body: null, error: null };
+/* 没有后端 id / 还没拉过的章：没有正文可言（工作流与导出都用这一份） */
+export const MANU_IDLE_SNAPSHOT = Object.freeze({ status: "idle", body: null, error: null });
 
 /* 服务端说这一章可以流转：聚合完整、没有缺场、正史核验完成。 */
 export function manuCanonicalComplete(snapshot) {
@@ -155,6 +156,24 @@ export function manuProgressCells(chapters, planChapters) {
   return cells;
 }
 
+/* 退回小修的待办：理由 + 定位到哪一场 + 直达深改的动作（rvPush 的载荷）。picked 是成稿中心的章行。 */
+export function manuReturnTodo(picked, { reason, sid, sceneTitle } = {}) {
+  const head = chapterLabel(picked, { withTitle: false });
+  return {
+    kind: "qc", priority: 1,
+    // 「退回小修：第 3 章 · 盐场」；章名是占位的「第 3 章」时不写两遍
+    title: `退回小修：${chapterLabel(picked, { maxTitle: Infinity })}`,
+    where: `${head}${sceneTitle ? " · " + sceneTitle : ""}`,
+    source: "成稿中心",
+    detail: reason,
+    actions: [
+      { label: "直达深改 · 定位本场", intent: "primary", op: "nav", to: "writer", scene: sid, posture: "deep" },
+      { label: "查看本章", intent: "ghost", op: "nav", to: "manuscripts" },
+      { label: "标记完成", intent: "quiet", op: "resolve" },
+    ],
+  };
+}
+
 /* 先去写哪一场：服务端说缺的第一场，没有就目录里第一场没写完的。 */
 export function manuFirstMissingScene(chapter, snapshot) {
   const scenes = (chapter && chapter.scenes) || [];
@@ -172,7 +191,7 @@ export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   if (!selected.length) return "该范围内没有章节。";
   const unsynced = selected.filter((c) => !c.backendId);
   if (unsynced.length) return `有 ${unsynced.length} 章尚未同步到服务端。`;
-  const snapshots = selected.map((c) => (snapshotOf && snapshotOf(c)) || IDLE_SNAPSHOT);
+  const snapshots = selected.map((c) => (snapshotOf && snapshotOf(c)) || MANU_IDLE_SNAPSHOT);
   const failed = snapshots.find((snapshot) => snapshot.status === "error");
   if (failed) return (failed.error && failed.error.message) || "服务端正文加载失败。";
   const pending = snapshots.filter((snapshot) => snapshot.status === "idle" || snapshot.status === "loading");

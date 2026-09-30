@@ -2,6 +2,8 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { wsConfirm, wsToast } from "./ws-notify.jsx";
+import { planIntentsForScene } from "./ws-scene-design.jsx";
+import { writerIntents } from "./ws-finding-ui.jsx";
 import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
 import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle, dramaFieldLabel } from "./labels/catalog.js";
 import { MANU_DRAMA_KEYS, manuArchivedParas, manuDramaOf } from "./ws-manuscripts-compile.js";
@@ -99,8 +101,8 @@ function ManuStoryCheck({ check, sceneId, sid, go }) {
   /* 阶段 R：原著的七步救治从这里回路——Maybe / No 都回第 10 步改形态与三拍再重写；No 还可以标记待删（回收站可恢复，不真删） */
   const backToPlan = () => {
     if (!go || !sceneId) return;
-    // 视图意图在构思视图就绪后依次派发：先切到第 10 步，再选中这一场（ws-snow 自己处理挂载竞态）
-    go("snowflake", [{ type: "ws:snow-step", detail: "planning" }, { type: "ws:snow-scene", detail: sceneId }]);
+    // 视图意图在构思视图就绪后依次派发：先切到第 10 步，再选中这一场（与章节编排、写作台「在构思里改」同一组意图）
+    go("snowflake", planIntentsForScene(sceneId));
   };
   const markCut = async () => {
     if (!sid) return;
@@ -123,6 +125,17 @@ function ManuStoryCheck({ check, sceneId, sid, go }) {
         <button type="button" className="ms-story-check-act" data-testid="ms-story-check-cut" onClick={markCut} title="标记待删：送进回收站，可恢复">标待删</button>
       )}
     </span>
+  );
+}
+
+/* 这一场在写作台深改面板里还开着的发现数（忽略过的不算）；点了带着深改姿态进写作台。没有开着的就不占位。 */
+function SceneDiagChip({ counts, onOpen }) {
+  if (!counts || !counts.open) return null;
+  return (
+    <button type="button" className="ms-diag-chip ms-diag-chip-btn" data-testid="ms-scene-diag" onClick={onOpen}
+      title={`写作台深改面板里还开着 ${counts.open} 条诊断${counts.blocking ? `，其中阻断 ${counts.blocking}` : ""}`}>
+      诊断 {counts.open}
+    </button>
   );
 }
 
@@ -152,7 +165,7 @@ function structureRows(chapter, body, canonical) {
 function ManuStructure({ body, chapter, canonical, go, diag = null, fidelity = null }) {
   const drama = (body && body.drama) || manuDramaOf(chapter);
   const rows = structureRows(chapter, body, canonical);
-  const openDeep = (sid) => { if (go && sid) go("writer", [{ type: "ws:writer-scene", detail: sid }, { type: "ws:writer-posture", detail: "deep" }]); };
+  const openDeep = (sid) => { if (go && sid) go("writer", writerIntents(sid, { deep: true })); };
   return (
     <div className="ms-struct">
       {drama && (
@@ -176,17 +189,7 @@ function ManuStructure({ body, chapter, canonical, go, diag = null, fidelity = n
               {/* 一格放这一场的几个小标：场景三问、诊断数、像不像（终稿）——哪个没有都不占位，列数不跟着变 */}
               <span className="ms-struct-flags">
                 <ManuStoryCheck check={s.check} sceneId={s.sceneId} sid={s.sid} go={go} />
-                {(() => {
-                  const counts = diag && s.sceneId ? diag.sceneCounts(s.sceneId) : null;
-                  if (!counts || !counts.open) return null;
-                  /* 深改面板里还开着的发现数（忽略过的不算）；点了带着深改姿态进写作台 */
-                  return (
-                    <button type="button" className="ms-diag-chip ms-diag-chip-btn" data-testid="ms-scene-diag" onClick={() => openDeep(s.sid)}
-                      title={`写作台深改面板里还开着 ${counts.open} 条诊断${counts.blocking ? `，其中阻断 ${counts.blocking}` : ""}`}>
-                      诊断 {counts.open}
-                    </button>
-                  );
-                })()}
+                <SceneDiagChip counts={diag && s.sceneId ? diag.sceneCounts(s.sceneId) : null} onOpen={() => openDeep(s.sid)} />
                 <ManuFidelityBadge finals={fidelity} sceneId={s.sceneId} />
               </span>
               <span className="text-muted text-sm">{s.meta}</span>
