@@ -32,21 +32,39 @@ def _is_ignorable(ch: str) -> bool:
     return cat.startswith("P") or cat.startswith("S")
 
 
+class _MatchingTable(dict):
+    """``str.translate`` 用的表:码位 → 规范化后的字符串(丢弃的给 ``None``)。第一次遇到一个码位时按
+    :func:`_is_ignorable` / ``lower()`` 现算并记住——规则只有这一处,结果与逐字判断逐字节相同
+    (``tests/test_matching_normalizer_equivalence.py`` 对整个 BMP 比过)。整本参考书(约 180 万字)规范化
+    从逐字调用约 1.2 s 降到约 0.2 s(审计 X01-04:抄袭门的书索引冷建时付这笔)。"""
+
+    def __missing__(self, codepoint: int) -> str | None:
+        ch = chr(codepoint)
+        value = None if _is_ignorable(ch) else ch.lower()
+        self[codepoint] = value
+        return value
+
+
+_MATCHING_TABLE = _MatchingTable()
+
+
 def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     """返回 (规范化文本, 每个规范化字符在原文中的下标)。"""
     chars: list[str] = []
     index_map: list[int] = []
+    table = _MATCHING_TABLE
     for i, ch in enumerate(text):
-        if _is_ignorable(ch):
+        mapped = table[ord(ch)]
+        if mapped is None:
             continue
-        chars.append(ch.lower())
+        chars.append(mapped)
         index_map.append(i)
     return "".join(chars), index_map
 
 
 def normalize_text_for_matching(text: str) -> str:
     """Normalize by lowering and stripping whitespace/punctuation for comparison."""
-    return "".join(ch.lower() for ch in text if not _is_ignorable(ch))
+    return text.translate(_MATCHING_TABLE)
 
 
 def normalize_with_offsets(text: str) -> tuple[str, list[int]]:
