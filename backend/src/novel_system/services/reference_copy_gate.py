@@ -36,13 +36,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import (
     StyleReferenceBannedTerm,
-    StyleReferenceBook,
     StyleReferenceParagraph,
     StyleReferenceProfile,
 )
@@ -52,7 +51,7 @@ from novel_system.services.source_safety import (
     find_protected_term_spans,
     normalize_for_term_match,
 )
-from novel_system.services.style_reference.paragraph_root import COUNT_KEY, ROOT_KEY
+from novel_system.services.style_reference.paragraph_root import read_book_version
 from novel_system.services.style_reference.validation.plagiarism import (
     normalize_text_for_matching,
     normalize_with_offsets,
@@ -199,34 +198,11 @@ class _BookCopyIndex:
 
 
 def _book_fingerprint(session: Session, book_id: str) -> tuple[Any, ...] | None:
-    """段落表的廉价指纹（索引缓存与结果缓存的键），加上书的校验和与建书时间（同一个书号删了重导入也认得出来）。
-
-    书的统计里存着段落根哈希时就用它：改段落文本或行的写入者负责把它 pop 掉（契约 §3.1；导入之后只有校对工具
-    会动段落行），段落表一变它就没了或换了——用不着每次检查都把全书段落数一遍、加一遍长度（2.6 万段一次十几毫秒，
-    一场运行要查十来次，B04-25）。没存根哈希时照旧按段数 / 总字数 / 最新段落时间认。两条路都现读库：会话在提交时
-    不过期对象，身份映射里的书可能是别的连接改之前的样子。"""
-    row = session.execute(
-        select(
-            func.json_extract(StyleReferenceBook.stats_json, f"$.{ROOT_KEY}"),
-            func.json_extract(StyleReferenceBook.stats_json, f"$.{COUNT_KEY}"),
-            StyleReferenceBook.text_checksum,
-            StyleReferenceBook.created_at,
-        ).where(StyleReferenceBook.book_id == book_id)
-    ).one_or_none()
-    if row is None:
-        return None
-    root, stored_count, checksum, created_at = row
-    identity = (str(checksum or ""), str(created_at or ""))
-    if isinstance(root, str) and root:
-        return ("root", root, str(stored_count if stored_count is not None else ""), *identity)
-    count, total, latest = session.execute(
-        select(
-            func.count(StyleReferenceParagraph.paragraph_id),
-            func.coalesce(func.sum(func.length(StyleReferenceParagraph.text)), 0),
-            func.max(StyleReferenceParagraph.created_at),
-        ).where(StyleReferenceParagraph.book_id == book_id)
-    ).one()
-    return ("scan", int(count or 0), int(total or 0), str(latest or ""), *identity)
+    """段落文本的版本（索引缓存与结果缓存的键）：与规则 / 节奏校准的读数缓存共用一次读库
+    （``paragraph_root.read_book_version``）。存着段落根哈希时不数段落表（2.6 万段一次十几毫秒，一场运行要查十来次，
+    B04-25）；没存时按段数 / 总字数 / 最新段落时间认。书不存在 → None。"""
+    version = read_book_version(session, book_id)
+    return version.text_key if version is not None else None
 
 
 def _book_index(session: Session, book_id: str, fingerprint: tuple[Any, ...]) -> _BookCopyIndex:

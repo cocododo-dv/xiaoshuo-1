@@ -19,6 +19,7 @@ from novel_system.db.models import AuthorDraft, ChapterGoal, FinalScene, SceneCa
 from novel_system.services.aggregator import Aggregator, ChapterAggregateDerivation
 from novel_system.services.errors import DomainError
 from novel_system.services.literary_quality.calibration import RuleCalibration
+from novel_system.services.literary_quality.calibration_source import PolicyRuleCalibrations
 from novel_system.services.literary_quality.chapter_set import (
     _chapter_set_payoff_reveal_checks,
     _chapter_set_repeated_patterns,
@@ -45,6 +46,7 @@ from novel_system.services.literary_quality.rules import analyze_literary_qualit
 from novel_system.services.literary_quality.scoring import automated_diagnostic_assessment, weighted_score
 from novel_system.services.manuscript_html import plain_manuscript_text
 from novel_system.services.scene_text import current_author_drafts, pointed_final_scenes
+from novel_system.services.style_policy import live_policies_without_contract, style_policy_live
 from novel_system.services.value_coercion import optional_text
 
 
@@ -52,6 +54,8 @@ _LOGGER = logging.getLogger(__name__)
 
 
 RuleCalibrationResolver = Callable[[SceneCard], "RuleCalibration | None"]
+# 按场取风格策略的任务类型（与写作台深改面板同一个：scene_diagnosis.STYLE_TASK_TYPE）
+_STYLE_TASK_TYPE = "scene_generation"
 
 
 @dataclass(frozen=True)
@@ -70,9 +74,11 @@ class _TextRows:
 class LiteraryQualityService:
     def __init__(self, session: Session, *, rule_calibration_resolver: RuleCalibrationResolver | None = None) -> None:
         self.session = session
-        # 2026-09-22 第三轮：文学质量视图与写作台深改面板用同一份参考书校准（路由层注入 scene_diagnosis 的解析器；
-        # 这里不能 import scene_diagnosis——它在本模块之上）
+        # 2026-09-22 第三轮：文学质量视图与写作台深改面板、成稿门用同一份参考书校准。读数在本包的
+        # calibration_source（B04-21）：没给解析器时按这一场当前的风格绑定现取；解析器参数留给测试注入
         self._rule_calibration_resolver = rule_calibration_resolver
+        self._policy_calibrations = PolicyRuleCalibrations(session)
+        self._scene_policies: dict[str, Any] = {}
 
     def overview(
         self,
@@ -95,20 +101,24 @@ class LiteraryQualityService:
             source = self._chapter_source(chapter.chapter_id, text_layer=text_layer, rows=rows)
             if source is not None:
                 items.append(self._analyze_item("chapter", chapter.chapter_id, chapter.chapter_id, None, source))
-        for scene in scenes:
-            source = self._scene_source(scene.scene_id, text_layer=text_layer, rows=rows)
-            if source is not None:
-                items.append(
-                    self._analyze_item(
-                        "scene",
-                        scene.scene_id,
-                        scene.chapter_id,
-                        scene.scene_id,
-                        source,
-                        ignored_keys=self._scene_ignored_keys(scene),
-                        scene=scene,
-                    )
+        scene_sources = [
+            (scene, source)
+            for scene in scenes
+            if (source := self._scene_source(scene.scene_id, text_layer=text_layer, rows=rows)) is not None
+        ]
+        self._prime_scene_policies([scene for scene, _source in scene_sources])
+        for scene, source in scene_sources:
+            items.append(
+                self._analyze_item(
+                    "scene",
+                    scene.scene_id,
+                    scene.chapter_id,
+                    scene.scene_id,
+                    source,
+                    ignored_keys=self._scene_ignored_keys(scene),
+                    scene=scene,
                 )
+            )
 
         items = _filter_quality_items(items, risk_type=risk_type, min_severity=min_severity)
         mean_score = round(sum(item["score"] for item in items) / len(items), 4) if items else None
@@ -198,6 +208,7 @@ class LiteraryQualityService:
         chapter_items: list[dict[str, Any]] = []
         scene_items: list[dict[str, Any]] = []
         source_rows: list[dict[str, Any]] = []
+        self._prime_scene_policies([scene for members in chapter_scenes.values() for scene in members])
         for chapter in chapters:
             chapter_source = self._chapter_source(chapter.chapter_id, text_layer=text_layer, rows=rows)
             if chapter_source is not None:
@@ -284,9 +295,9 @@ class LiteraryQualityService:
         # 作者稿是 HTML：按可见文字算，否则「第一句」里带着 <p>，同一条发现在写作台和这里 id 不同
         text = plain_manuscript_text(source["content"] or "")
         calibration: RuleCalibration | None = None
-        if scene is not None and self._rule_calibration_resolver is not None:
+        if scene is not None:
             try:
-                calibration = self._rule_calibration_resolver(scene)
+                calibration = self._rule_calibration(scene)
             except Exception:  # noqa: BLE001 — 校准失败按房风词表看
                 _LOGGER.debug("rule calibration unavailable for %s", scene.scene_id, exc_info=True)
                 calibration = None
@@ -330,6 +341,26 @@ class LiteraryQualityService:
             "fingerprint": fingerprint,
             "recommended_next_action": _recommended_next_action(findings, signals),
         }
+
+    def _prime_scene_policies(self, scenes: list[SceneCard]) -> None:
+        """逐场取校准之前，一次把这些场的风格策略解析好（``live_policies_without_contract``：查询数不随场数增长）。"""
+        if self._rule_calibration_resolver is not None:
+            return
+        pending = [scene for scene in scenes if scene.scene_id not in self._scene_policies]
+        if pending:
+            policies = live_policies_without_contract(self.session, pending, task_type=_STYLE_TASK_TYPE)
+            self._scene_policies.update(zip((scene.scene_id for scene in pending), policies))
+
+    def _rule_calibration(self, scene: SceneCard) -> RuleCalibration | None:
+        """这一场按绑定的参考书校准的规则维度；未绑定 / 校准不可用 → None。策略与写作台深改面板同一个解析
+        （``style_policy_live``：按当前活动绑定轻量现解析，不冻结契约）。"""
+        if self._rule_calibration_resolver is not None:
+            return self._rule_calibration_resolver(scene)
+        policy = self._scene_policies.get(scene.scene_id)
+        if policy is None:
+            policy = style_policy_live(self.session, scene, task_type=_STYLE_TASK_TYPE, freeze_contract=False)
+            self._scene_policies[scene.scene_id] = policy
+        return self._policy_calibrations.for_policy(policy)
 
     @staticmethod
     def _scene_ignored_keys(scene: SceneCard | None) -> list[str]:

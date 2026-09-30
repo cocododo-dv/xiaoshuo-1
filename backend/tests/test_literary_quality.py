@@ -471,6 +471,29 @@ def test_chapter_set_review_reads_the_reference_calibration_like_the_overview(se
     assert calibrated and all(finding["severity"] == "info" for finding in calibrated)
 
 
+def test_the_overview_reads_the_binding_calibration_without_an_injected_resolver(session) -> None:
+    """B04-21：文学质量自己经 ``literary_quality.calibration_source`` 取这一场绑定的参考书的规则校准（路由不必再把场景
+    诊断的解析器注入进来）——与写作台深改面板读到的是同一份。"""
+    from novel_system.services.literary_quality import LiteraryQualityService
+    from novel_system.services.scene_diagnosis import SceneDiagnosisService
+    from tests.style_reference_factories import make_binding, make_book, make_profile, synthetic_paragraphs
+
+    _seed_quality_scene(session, chapter_id="LQBIND", scene_id="LQBIND_SC01")
+    book_id = make_book(session, "book_lqbind", paragraphs=synthetic_paragraphs(600))
+    make_profile(session, book_id, profile_id="profile_lqbind")
+    make_binding(session, "profile_lqbind", binding_id="bind_lqbind", scope="global")
+    session.commit()
+
+    expected = SceneDiagnosisService(session).rule_calibration_for_scene(session.get(SceneCard, "LQBIND_SC01"))
+    assert expected is not None and expected.active
+    item = next(
+        entry
+        for entry in LiteraryQualityService(session).overview(chapter_id="LQBIND")["items"]
+        if entry["object_type"] == "scene"
+    )
+    assert item["rule_calibration"] == expected.as_dict()
+
+
 def test_literary_quality_chapter_set_review_reports_missing_payoff_chapter_ids(client, session) -> None:
     session.add(
         ChapterGoal(
