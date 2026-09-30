@@ -29,12 +29,11 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.author_lifecycle import AuthorLifecycleService
-from novel_system.services.author_state import compute_author_state
+from novel_system.services.author_state import project_run_states, scene_status_payload
 from novel_system.services.candidate_selection import candidates_view, select_candidate
 from novel_system.services.chapter_approval import is_chapter_approved, require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
-from novel_system.services.projects import ProjectService
 from novel_system.services.run_job_leases import STATUS_QUEUED
 from novel_system.services.scene_adoption import adopt_current
 from novel_system.services.scene_budget import apply_topup, validated_topup
@@ -421,76 +420,15 @@ def get_latest_scene_run_job(
 def list_scene_run_states(
     project_id: str, request: Request, session: Session = Depends(get_session)
 ):
-    """项目内全部场景运行态（管线真相）。
-
-    起草台队列成员的后端派生源：换浏览器后 FE 据此恢复「哪些场进过管线」，
-    localStorage 队列退化为这份真相的读缓存（贯通轮遗留项 ①）。
-    只返回有运行态行且离开过 ready 的场——ready/无行 = 从未进管线，不参与恢复。
-    """
-    ProjectService(session).require_project(project_id)
-    rows = session.execute(
-        select(SceneRunState, SceneCard)
-        .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
-        .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
-        .order_by(SceneRunState.updated_at.desc())
-    ).all()
-    items = [
-        {
-            "scene_id": state.scene_id,
-            "chapter_id": card.chapter_id,
-            "scene_status": state.scene_status,
-            # 治理 §5.3：列表恢复面也带作者可见态（枚举），FE 不再从 scene_status 猜
-            "author_state": compute_author_state(session, state.scene_id, state)[
-                "author_state"
-            ],
-            "total_attempt_count": state.total_attempt_count,
-            "updated_at": state.updated_at,
-        }
-        for state, card in rows
-        if state.scene_status != "ready"
-    ]
-    return respond(request, {"items": items, "count": len(items)})
+    """项目内离开过 ready 的场景运行态：起草台换浏览器后据此恢复队列（见 ``author_state.project_run_states``）。"""
+    return respond(request, project_run_states(session, project_id))
 
 
 @router.get("/api/v1/scenes/{scene_id}/status")
 def scene_status(
     scene_id: str, request: Request, session: Session = Depends(get_session)
 ):
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    state = session.get(SceneRunState, scene_id)
-    if state is None:
-        # 经目录新建、从未 run 的有效场景没有运行态行——返回 ready 空态投影，
-        # 与只读 workbench 一致；GET 不为查看动作补建持久行。
-        return respond(
-            request,
-            {
-                "scene_status": "ready",
-                "current_bundle_id": None,
-                "current_bundle_hash": None,
-                "current_neutral_draft_row_id": None,
-                "current_style_draft_row_id": None,
-                "current_final_scene_row_id": None,
-                "repeat_issue_key": None,
-                "repeat_issue_count": 0,
-                # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
-                **compute_author_state(session, scene_id, None),
-            },
-        )
-    return respond(
-        request,
-        {
-            "scene_status": state.scene_status,
-            "current_bundle_id": state.current_bundle_id,
-            "current_bundle_hash": state.current_bundle_hash,
-            "current_neutral_draft_row_id": state.current_neutral_draft_row_id,
-            "current_style_draft_row_id": state.current_style_draft_row_id,
-            "current_final_scene_row_id": state.current_final_scene_row_id,
-            "repeat_issue_key": state.repeat_issue_key,
-            "repeat_issue_count": state.repeat_issue_count,
-            # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
-            **compute_author_state(session, scene_id, state),
-        },
-    )
+    return respond(request, scene_status_payload(session, scene_id))
 
 
 @router.get("/api/v1/scenes/{scene_id}/style-candidates")
