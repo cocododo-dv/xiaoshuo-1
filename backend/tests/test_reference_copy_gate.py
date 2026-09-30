@@ -297,20 +297,6 @@ def test_unbound_and_empty_text_pass(session) -> None:
     assert check_reference_copy(session, "   ", policy=policy).blocked is False
 
 
-def test_scope_helper_checks_the_live_binding_even_when_the_bundle_froze_none(session) -> None:
-    """冻结「无绑定」之后才绑上的书照样要拦：正文可能在冻结之后才粘进参考原文。"""
-    scene = _seed_scene(session)
-    _bind(session)
-    absent_bundle = {
-        "source_version_refs": {"style_reference_runtime_contract_status": "absent"},
-        "inline_digests": {"scene_card": "Goal"},
-    }
-    check = check_reference_copy_for_scope(
-        session, "他想：" + REFERENCE_PASSAGE[:30], scope=scene, bundle_snapshot=absent_bundle
-    )
-    assert check.blocked is True
-
-
 def test_copy_gate_policies_take_the_callers_resolved_policy(session) -> None:
     """B04-26：成稿门把已经解析好的这一场的策略交给 ``copy_gate_policies``（文学规则与抄袭门看同一份）——它就是
     第一份；它本身已是现解析时不再补一份现解析；冻结了「无绑定」时照旧补上当前的活动绑定。"""
@@ -326,6 +312,20 @@ def test_copy_gate_policies_take_the_callers_resolved_policy(session) -> None:
     assert [item.mode for item in copy_gate_policies(session, scope=scene, policy=StylePolicy(mode="absent"))] == ["live"]
     degraded = StylePolicy(mode="degraded", error_code="runtime_contract_invalid")
     assert copy_gate_policies(session, scope=None, policy=degraded) == [degraded]
+
+
+def test_scope_helper_checks_the_live_binding_even_when_the_bundle_froze_none(session) -> None:
+    """冻结「无绑定」之后才绑上的书照样要拦：正文可能在冻结之后才粘进参考原文。"""
+    scene = _seed_scene(session)
+    _bind(session)
+    absent_bundle = {
+        "source_version_refs": {"style_reference_runtime_contract_status": "absent"},
+        "inline_digests": {"scene_card": "Goal"},
+    }
+    check = check_reference_copy_for_scope(
+        session, "他想：" + REFERENCE_PASSAGE[:30], scope=scene, bundle_snapshot=absent_bundle
+    )
+    assert check.blocked is True
 
 
 def test_applying_an_ai_proposal_that_copies_the_reference_is_refused(session) -> None:
