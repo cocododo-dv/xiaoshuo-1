@@ -37,7 +37,13 @@ await page.waitForTimeout(2200);
 
 await check("资料库来自后端（人物/世界/大事记齐全）", async () => {
   await page.evaluate(() => { location.hash = "#library"; });
-  await page.waitForTimeout(1800);
+  // 资料库是懒加载的路由：冷启动时模块加载 + 读后端要 2.0–2.3 s，以前固定等 1.8 s 偶尔落空。等资料库的 store 真的装好
+  // （编辑入口挂上、条目读到）再看；下一项「人物改名」也要用 LIB_persist。
+  await page.waitForFunction(
+    () => typeof window.LIB_persist === "function" && (window.LIB_ENTRIES || []).length > 0,
+    null,
+    { timeout: 20_000 },
+  );
   const counts = await page.evaluate(() => {
     const all = window.LIB_ENTRIES || [];
     return {
