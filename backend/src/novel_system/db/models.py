@@ -151,10 +151,6 @@ class SnowflakeStepRun(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
-    @property
-    def artifact_json(self) -> dict[str, Any]:
-        return self.draft_json or {}
-
 
 class SnowflakeAssistantTurn(Base):
     __tablename__ = "snowflake_assistant_turns"
@@ -1881,18 +1877,6 @@ class SystemSecret(Base):
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
-
-
-# ---------------------------------------------------------------------------
-# Wave 5（结果闭环治理 §6.2）— 质量实验通道：匿名 A/B 人类盲评三张表。
-# 实验通道**不写 FinalScene**，只写实验产物；实验失败不影响生产状态（§5.1）。
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 第二阶段质量证据：隐藏题包只落不可逆哈希；生成结果、真人价值观测与
-# 题材×场景功能策略分开存证。任何表都不保存隐藏答案或 rubric 正文。
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
