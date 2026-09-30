@@ -584,6 +584,8 @@ def _scene_final_brief(row: StyleFidelityReading) -> dict[str, Any]:
         "percentile": row.percentile,
         "within_range": bool(data.get("within_range")),
         "reliable": bool(data.get("reliable", False)),
+        # 入库时判「在不在作者范围内」用的上限：每一场的角标按它自己的判（旧读数没记 → None，前端用默认值）
+        "max_percentile": finite_or_none(data.get("max_percentile")),
         "created_at": row.created_at,
     }
 
