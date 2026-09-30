@@ -370,19 +370,16 @@ def test_same_text_first_promotion_records_author_provenance_then_new_key_is_noo
     assert after_replay == before_replay
 
 
-def test_same_revision_repairs_missing_chapter_derivation_instead_of_false_noop(client, session) -> None:
+def test_same_revision_repairs_missing_scene_derivation_instead_of_false_noop(client, session) -> None:
     seeded = _seed_scene(session, "DERIVATION_REPAIR")
     first = _promote(client, seeded, key="derivation-repair-first")
     assert first.status_code == 200, first.text
     final_id = first.json()["data"]["final_scene_row_id"]
 
     session.expire_all()
-    active_chapter_memory = session.query(ChapterMemory).filter_by(
-        chapter_id=seeded["chapter_id"], aggregate_stage="final", active_flag=1
-    ).one()
-    active_chapter_memory.active_flag = 0
-    active_chapter_memory.runtime_eligible = 0
-    active_chapter_memory.runtime_eligibility_basis = "test_missing_derivation"
+    active_scene_memory = session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"], active_flag=1).one()
+    active_scene_memory.active_flag = 0
+    active_scene_memory.runtime_eligible = 0
     session.commit()
     before_chapter_total = session.query(ChapterMemory).filter_by(
         chapter_id=seeded["chapter_id"], aggregate_stage="final"
@@ -403,7 +400,8 @@ def test_same_revision_repairs_missing_chapter_derivation_instead_of_false_noop(
     session.expire_all()
     assert session.query(FinalScene).filter_by(scene_id=seeded["scene_id"]).count() == 2
     assert session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"]).count() == 2
-    assert session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"], active_flag=1).count() == 1
+    repaired_memory = session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"], active_flag=1).one()
+    assert repaired_memory.row_id == active_scene_memory.row_id
     assert session.query(ChapterMemory).filter_by(
         chapter_id=seeded["chapter_id"], aggregate_stage="final"
     ).count() == before_chapter_total + 1
@@ -413,6 +411,52 @@ def test_same_revision_repairs_missing_chapter_derivation_instead_of_false_noop(
     assert session.query(OperationLog).filter_by(
         event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
     ).count() == 2
+
+
+def test_same_revision_noop_does_not_depend_on_the_chapter_aggregate(client, session) -> None:
+    """R13：章汇总只是派生缓存（章级读者读各场终稿现拼），不算这一场的派生——它不在了、落后了，同一修订的重放
+    照样是真正的空操作，不再为它重新发布一遍。"""
+    seeded = _seed_scene(session, "AGGREGATE_NOT_DERIVATION")
+    first = _promote(client, seeded, key="aggregate-not-derivation-first")
+    assert first.status_code == 200, first.text
+    final_id = first.json()["data"]["final_scene_row_id"]
+
+    session.expire_all()
+    active_chapter_memory = session.query(ChapterMemory).filter_by(
+        chapter_id=seeded["chapter_id"], aggregate_stage="final", active_flag=1
+    ).one()
+    active_chapter_memory.active_flag = 0
+    active_chapter_memory.runtime_eligible = 0
+    active_chapter_memory.runtime_eligibility_basis = "test_missing_aggregate"
+    session.commit()
+    before = {
+        "chapter_memory_total": session.query(ChapterMemory).filter_by(chapter_id=seeded["chapter_id"]).count(),
+        "scene_memory_total": session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"]).count(),
+        "promotion_log_total": session.query(OperationLog).filter_by(
+            event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+        ).count(),
+    }
+
+    again = _promote(
+        client,
+        seeded,
+        key="aggregate-not-derivation-second",
+        expected_current_final_scene_row_id=final_id,
+    )
+
+    assert again.status_code == 200, again.text
+    data = again.json()["data"]
+    assert data["already_current"] is True
+    assert data["derivation_reused"] is True
+    assert data["final_scene_row_id"] == final_id
+    session.expire_all()
+    assert {
+        "chapter_memory_total": session.query(ChapterMemory).filter_by(chapter_id=seeded["chapter_id"]).count(),
+        "scene_memory_total": session.query(SceneMemory).filter_by(scene_id=seeded["scene_id"]).count(),
+        "promotion_log_total": session.query(OperationLog).filter_by(
+            event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+        ).count(),
+    } == before
 
 
 def test_missing_or_corrupt_persisted_final_hash_never_uses_true_noop(client, session) -> None:
@@ -662,7 +706,8 @@ def test_final_text_gate_blocks_before_any_canonical_write_even_without_caller_r
     assert stateless_draft is not None and stateless_draft.last_promoted_revision_no is None
 
 
-def test_promote_source_safety_and_aggregate_failure_roll_back_everything(client, session, monkeypatch) -> None:
+def test_promote_source_safety_failure_rolls_back_everything(client, session, monkeypatch) -> None:
+    # 章汇总重建不成不再回滚发布（R13：它只是派生缓存，只记日志）——那一半在 test_chapter_aggregate_derive_on_read.py
     unsafe = _seed_scene(session, "UNSAFE")
     from novel_system.services.reference_copy_gate import CopyCheck, CopyHit
 
@@ -679,20 +724,8 @@ def test_promote_source_safety_and_aggregate_failure_roll_back_everything(client
     session.expire_all()
     assert session.query(FinalScene).filter_by(scene_id=unsafe["scene_id"]).count() == 1
     assert session.get(FinalScene, unsafe["old_final_id"]).status == "archived"
-
-    monkeypatch.undo()
-    blocked = _seed_scene(session, "AGG_BLOCKED")
-    chapter_state = session.get(ChapterState, blocked["chapter_id"])
-    chapter_state.aggregate_block_reason = "project_backtrack"
-    session.commit()
-    blocked_response = _promote(client, blocked, key="aggregate-blocked")
-    assert blocked_response.status_code == 409
-    assert blocked_response.json()["error"]["code"] == "CANONICAL_AGGREGATE_REBUILD_BLOCKED"
-    session.expire_all()
-    assert session.query(FinalScene).filter_by(scene_id=blocked["scene_id"]).count() == 1
-    assert session.get(FinalScene, blocked["old_final_id"]).status == "archived"
-    assert session.get(SceneRunState, blocked["scene_id"]).current_final_scene_row_id == blocked["old_final_id"]
-    assert session.get(AuthorDraft, blocked["draft_id"]).last_promoted_revision_no is None
+    assert session.get(SceneRunState, unsafe["scene_id"]).current_final_scene_row_id == unsafe["old_final_id"]
+    assert session.get(AuthorDraft, unsafe["draft_id"]).last_promoted_revision_no is None
 
 
 def test_promote_rejects_approved_chapter_and_non_scene_scope(client, session) -> None:
@@ -723,3 +756,44 @@ def test_promote_rejects_approved_chapter_and_non_scene_scope(client, session) -
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "AUTHOR_DRAFT_PROMOTION_SCOPE_UNSUPPORTED"
+
+
+def test_promotion_keeps_the_gate_summary_and_warnings_not_the_whole_gate_result(client, session) -> None:
+    """B04-24：晋升的审计与回包存成稿门的归档摘要（与归档尝试记录同一份）+ 不拦的警告（前端提升之后要说一句），
+    不再存整份结果——每一维的信号、全部发现、连续性明细没有人读。"""
+    seeded = _seed_scene(session, "GATE_RECORD")
+
+    response = _promote(client, seeded, key="gate-record")
+
+    assert response.status_code == 200, response.text
+    gate = response.json()["data"]["validation"]["final_text_gate"]
+    session.expire_all()
+    log = session.query(OperationLog).filter_by(
+        event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
+    ).one()
+    assert log.payload_json["final_text_gate"] == gate
+    new_final_id = response.json()["data"]["final_scene_row_id"]
+    attempt = next(
+        row
+        for row in session.execute(
+            select(AttemptTracker).where(AttemptTracker.scene_id == seeded["scene_id"], AttemptTracker.step == "archive")
+        ).scalars()
+        if row.details_json["final_scene_row_id"] == new_final_id
+    )
+    summary = attempt.details_json["final_text_gate"]
+    assert set(gate) == set(summary) | {"warnings", "warning_codes"}
+    assert gate["content_hash"] == summary["content_hash"] == response.json()["data"]["content_hash"]
+    assert isinstance(gate["warnings"], list) and isinstance(gate["warning_codes"], list)
+    for heavy in ("literary_quality", "continuity", "source_safety", "bundle_integrity"):
+        assert heavy not in gate
+
+    # 同一修订的重放（换一个幂等键）原样回报审计里的那一份
+    again = _promote(
+        client,
+        seeded,
+        key="gate-record-replay",
+        expected_current_final_scene_row_id=new_final_id,
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["data"]["derivation_reused"] is True
+    assert again.json()["data"]["validation"]["final_text_gate"] == gate

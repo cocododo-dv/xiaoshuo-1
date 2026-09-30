@@ -111,7 +111,7 @@
      },
      "source_blueprint_row_id": null,
      "source_bundle_id": null,
-     "source_text_ref": "chapter_memory:chapter_memory_final_CH_RESUME_v1",
+     "source_text_ref": "chapter_assembled:CH_RESUME",
      "status": "completed"
     },
     "evaluator_llm_call_id": "llm_call_CH_RESUME_<hex#50>",

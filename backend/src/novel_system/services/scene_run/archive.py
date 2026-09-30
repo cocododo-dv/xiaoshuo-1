@@ -35,6 +35,7 @@ from novel_system.db.models import (
     VolumeSummary,
     WriterEvaluation,
 )
+from novel_system.services.aggregator import is_chapter_aggregate_of
 from novel_system.services.llm_accounting import (
     ACCOUNTING_EXECUTION_MODE_KEY,
     LLMAccountingError,
@@ -1140,16 +1141,9 @@ class ArchiveCheckpointMixin:
         return product
 
     def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
-        memories = list(
-            self.session.scalars(
-                select(SceneMemory)
-                .where(
-                    SceneMemory.chapter_id == chapter_id,
-                    SceneMemory.active_flag == 1,
-                )
-                .order_by(SceneMemory.row_id.asc())
-            ).all()
-        )
+        # 输入清单 = 章汇总真正拼进去的那些记忆（row_id 序）：回收站里的场的记忆不算进这一章（R13），
+        # 清单要与汇总一致，续跑复验才对得上
+        memories = self.aggregator.derive_final_aggregate(chapter_id).inputs
         return [
             {
                 "row_id": memory.row_id,
@@ -1271,10 +1265,15 @@ class ArchiveCheckpointMixin:
                 "runtime_eligibility_basis",
             ):
                 actual[mutable_field] = snapshot.get(mutable_field)
-            expected_content = "\n".join(
+            # 汇总按场序拼，清单按 row_id 排，两个次序不必一致（手加的场 id 带随机后缀；场序归档之后也可能再改），
+            # 产品里也不记拼的次序。以前按 row_id 序重拼再逐字比，这样的章章末那一场每次都在第 8 步自检时报损坏。这里
+            # 只认「汇总恰好是这几条记忆各一次、用换行拼起来」，逐段对（一场的全文也出现在别的场里时照样认得出）。
+            input_texts = [
                 self.session.get(SceneMemory, item["row_id"]).content for item in inputs
-            )
-            if actual != snapshot or memory.content != expected_content:
+            ]
+            if actual != snapshot or not is_chapter_aggregate_of(
+                memory.content, input_texts
+            ):
                 raise checkpoint_corrupt("chapter aggregate output changed")
         elif snapshot is not None:
             raise checkpoint_corrupt("chapter no-op unexpectedly has output")
