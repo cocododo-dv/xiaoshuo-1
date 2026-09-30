@@ -279,8 +279,9 @@ describe("缓存归一与服务端脚手架的落地（F02-01 / F02-02）", () =
 });
 
 describe("章名规则只有一份，与后端同一张标记表（F02-06）", () => {
-  it("PLACEHOLDER_CHAPTER_TITLE_MARKERS 与后端 chapter_title_sync.PLACEHOLDER_TITLE_MARKERS 逐项相同", () => {
-    const src = fs.readFileSync(path.resolve(__dirname, "../../backend/src/novel_system/services/chapter_title_sync.py"), "utf8");
+  it("PLACEHOLDER_CHAPTER_TITLE_MARKERS 与后端 snowflake_chapter_table.PLACEHOLDER_TITLE_MARKERS 逐项相同", () => {
+    // 标记表的定义在章表叶子 snowflake_chapter_table（B07-05）；chapter_title_sync 只是转出，读它会找不到元组
+    const src = fs.readFileSync(path.resolve(__dirname, "../../backend/src/novel_system/services/snowflake_chapter_table.py"), "utf8");
     const tuple = /PLACEHOLDER_TITLE_MARKERS\s*=\s*\(([^)]*)\)/.exec(src);
     expect(tuple).toBeTruthy();
     const backend = [...tuple[1].matchAll(/"([^"]*)"/g)].map(m => m[1]);
