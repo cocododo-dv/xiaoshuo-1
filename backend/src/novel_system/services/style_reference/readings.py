@@ -20,7 +20,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import StyleFidelityReading, utcnow
@@ -592,6 +592,41 @@ def _average(values: Sequence[float]) -> float | None:
     return round(sum(values) / len(values), 2) if values else None
 
 
+_OLDEST_FIRST = (StyleFidelityReading.created_at.asc(), StyleFidelityReading.reading_id.asc())
+_NEWEST_FIRST = (StyleFidelityReading.created_at.desc(), StyleFidelityReading.reading_id.desc())
+_SCENE_SCOPED = (StyleFidelityReading.scene_id.is_not(None), StyleFidelityReading.scene_id != "")
+# 评审分：``judge_json`` 是一个 JSON 对象（SQL 的 NULL、JSON 的 null、别的形状都不算）
+_JUDGED = func.json_type(StyleFidelityReading.judge_json) == "object"
+
+
+def _latest_per_scene(session: Session, conditions: Sequence[Any]) -> list[StyleFidelityReading]:
+    """满足条件的读数里每一场最新的一条（按创建时间，同一时刻按读数 id）。结果按各场**最早**一条的先后排——与
+    原来按时间顺序逐行覆盖的字典同序（``scene_finals`` 的键序、按维平均的求和次序都不变）。"""
+    partition = StyleFidelityReading.scene_id
+    ranked = (
+        select(
+            StyleFidelityReading.reading_id.label("reading_id"),
+            func.row_number().over(partition_by=partition, order_by=_NEWEST_FIRST).label("rank"),
+            func.first_value(StyleFidelityReading.created_at)
+            .over(partition_by=partition, order_by=_OLDEST_FIRST)
+            .label("first_at"),
+            func.first_value(StyleFidelityReading.reading_id)
+            .over(partition_by=partition, order_by=_OLDEST_FIRST)
+            .label("first_id"),
+        )
+        .where(*conditions, *_SCENE_SCOPED)
+        .subquery()
+    )
+    return list(
+        session.scalars(
+            select(StyleFidelityReading)
+            .join(ranked, ranked.c.reading_id == StyleFidelityReading.reading_id)
+            .where(ranked.c.rank == 1)
+            .order_by(ranked.c.first_at, ranked.c.first_id)
+        )
+    )
+
+
 def project_fidelity_summary(
     session: Session,
     project_id: str,
@@ -603,14 +638,25 @@ def project_fidelity_summary(
 
     按维平均：确定性分只数每一场最新的一条终稿读数（每场一票）；评审分每一场取最新一条带评审分的读数（对照检查 /
     软 QC 参考评审，每场一票——同一份评审挂在补丁与终稿两条读数上不重复计票），不在场景上的文字检查各算一票。
+
+    几条定向查询（趋势取最近 ``trend_limit`` 条；每场最新的终稿 / 评审读数用窗口函数挑；读数总数用 COUNT），不把
+    作品的全部读数连同 JSON 读进来（B10-20；``ix_style_fidelity_readings_project_created`` 覆盖这几条）。
     """
-    stmt = select(StyleFidelityReading).where(StyleFidelityReading.project_id == str(project_id))
+    conditions: list[Any] = [StyleFidelityReading.project_id == str(project_id)]
     if profile_id:
-        stmt = stmt.where(StyleFidelityReading.profile_id == str(profile_id))
-    rows = list(
-        session.scalars(stmt.order_by(StyleFidelityReading.created_at.asc(), StyleFidelityReading.reading_id.asc()))
+        conditions.append(StyleFidelityReading.profile_id == str(profile_id))
+    reading_count = int(
+        session.scalar(select(func.count()).select_from(StyleFidelityReading).where(*conditions)) or 0
     )
-    trend_rows = [row for row in rows if row.stage in (STAGE_FIRST_DRAFT, STAGE_FINAL)]
+    trend_stmt = (
+        select(StyleFidelityReading)
+        .where(*conditions, StyleFidelityReading.stage.in_((STAGE_FIRST_DRAFT, STAGE_FINAL)))
+        .order_by(*_NEWEST_FIRST)
+    )
+    limit = max(0, int(trend_limit))
+    if limit:  # 0 = 不限（原来的切片 ``[-0:]`` 就是整张表）
+        trend_stmt = trend_stmt.limit(limit)
+    trend_rows = list(reversed(list(session.scalars(trend_stmt))))
     trend = [
         {
             "reading_id": row.reading_id,
@@ -624,29 +670,32 @@ def project_fidelity_summary(
             "max_percentile": finite_or_none((row.reading_json or {}).get("max_percentile")),
             "created_at": row.created_at,
         }
-        for row in trend_rows[-max(0, int(trend_limit)) :]
+        for row in trend_rows
     ]
-    latest_final: dict[str, StyleFidelityReading] = {}
-    for row in rows:
-        if row.stage == STAGE_FINAL and row.scene_id:
-            latest_final[str(row.scene_id)] = row
+    latest_final = {
+        str(row.scene_id): row
+        for row in _latest_per_scene(session, [*conditions, StyleFidelityReading.stage == STAGE_FINAL])
+    }
     deterministic: dict[str, list[float]] = {}
     for row in latest_final.values():
         for dim, score in dict((row.reading_json or {}).get("dimension_scores") or {}).items():
             number = finite_or_none(score)
             if number is not None:
                 deterministic.setdefault(str(dim), []).append(number)
-    latest_judged: dict[str, StyleFidelityReading] = {}
-    unscoped_judged: list[StyleFidelityReading] = []
-    for row in rows:
-        if not isinstance(row.judge_json, Mapping):
-            continue
-        if row.scene_id:
-            latest_judged[str(row.scene_id)] = row
-        else:
-            unscoped_judged.append(row)
+    latest_judged = _latest_per_scene(session, [*conditions, _JUDGED])
+    unscoped_judged = list(
+        session.scalars(
+            select(StyleFidelityReading)
+            .where(
+                *conditions,
+                _JUDGED,
+                or_(StyleFidelityReading.scene_id.is_(None), StyleFidelityReading.scene_id == ""),
+            )
+            .order_by(*_OLDEST_FIRST)
+        )
+    )
     judged: dict[str, list[float]] = {}
-    for row in [*latest_judged.values(), *unscoped_judged]:
+    for row in [*latest_judged, *unscoped_judged]:
         judge = row.judge_json if isinstance(row.judge_json, Mapping) else None
         for dim, entry in dict((judge or {}).get("dimensions") or {}).items():
             number = finite_or_none(entry.get("score") if isinstance(entry, Mapping) else entry)
@@ -670,7 +719,7 @@ def project_fidelity_summary(
             }
             for dim in dims
         },
-        "reading_count": len(rows),
+        "reading_count": reading_count,
         "final_scene_count": len(latest_final),
     }
 
