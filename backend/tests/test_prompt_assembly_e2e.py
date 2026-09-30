@@ -126,6 +126,18 @@ def test_section_specs_covers_all_bundle_writes() -> None:
     )
 
 
+def test_every_render_slot_has_a_bundle_writer() -> None:
+    """The reverse direction: a digest key registered in SECTION_SPECS that no bundle writer can fill is a
+    dead render slot (``avoid_recent_expressions`` and the ``character_pressure_blueprint`` /
+    ``scene_memory_digest`` aliases were such slots until 2026-10-01)."""
+    from novel_system.services.bundle_sections import BUNDLE_SECTION_DIGEST_KEYS
+
+    unwritten = _registered_digest_keys() - BUNDLE_SECTION_DIGEST_KEYS
+    assert not unwritten, (
+        f"SECTION_SPECS registers digest keys nothing writes (dead render slots): {sorted(unwritten)}"
+    )
+
+
 def test_bundle_builder_writes_sections_only_through_the_declared_registry() -> None:
     """No bundle module assigns ``inline_digests[...]`` directly: every section goes through
     ``BundleSections`` (which checks the key against the declared set above)."""
