@@ -14,6 +14,7 @@
 - :mod:`.kernel` 检查点内核（执行归属四字段、守卫、读写、哈希）；
 - :mod:`.critique` 软 QC 前的自动批评产品（装配、复验、被拒产品的恢复）；
 - :mod:`.planning` 规划检查点（``planning_ready`` 子游标 0..3）的读回与复验；
+- :mod:`.drafts` bundle、首稿与硬 QC 的读回，生成产品的账本父调用核对；
 - :mod:`.archive` 归档尾段（``near_final_ready`` 子游标 4..11 与 ``archived``）。
 
 包本身不导入子模块（免得包与子模块互相导入成环）。
