@@ -176,7 +176,7 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
     final_scene = session.get(FinalScene, data["current_final_scene_row_id"])
     assert final_scene.content_hash == hashlib.sha256(final_scene.content.encode("utf-8")).hexdigest()
 
-    workbench = client.get("/api/v1/scenes/CH001_SC01/workbench")
+    workbench = client.get("/api/v1/scenes/CH001_SC01/workbench?include=diagnostics")
     assert workbench.status_code == 200
     workbench_data = workbench.json()["data"]
     assert workbench_data["scene_memory"]

@@ -293,7 +293,7 @@ def test_fe_scene_with_pov_is_not_blocked_by_a_missing_voice_card(client, sessio
 
     scene_id, char_id = _seed_scene_with_pov(session)
 
-    wb = client.get(f"/api/v1/scenes/{scene_id}/workbench").json()["data"]
+    wb = client.get(f"/api/v1/scenes/{scene_id}/workbench?include=diagnostics").json()["data"]
     pf = wb["run_preflight"]
     assert pf["can_run"] is True
     assert pf["blocking_items"] == []

@@ -2,7 +2,7 @@
 
 - ``GET /api/v2/style-reference/books/{book_id}/paragraphs?start=&end=``:按段落序号闭区间读
   参考书原文(展开窗口用),每次最多 80 段、未知书 404、倒置 / 负区间 400。
-- ``_serialize_generation_summary`` 的 ``style_windows``:只读本次运行 bundle 内最近一次带
+- ``serialize_generation_summary`` 的 ``style_windows``:只读本次运行 bundle 内最近一次带
   ``few_shot_window_refs`` 的 completed 尝试(风格稿 > 首稿 > 重写稿),窗口只有段落区间与
   读数,参考书由契约最具体层的画像解析。
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from novel_system.api.routes.scenes import _serialize_generation_summary
+from novel_system.services.scene_workbench import serialize_generation_summary
 from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
@@ -256,7 +256,7 @@ def test_generation_summary_exposes_style_windows_scoped_to_the_current_bundle(s
     )
     session.commit()
 
-    summary = _serialize_generation_summary(session, scene_id, state)
+    summary = serialize_generation_summary(session, scene_id, state)
     assert summary is not None
     assert summary["style_windows"] == {
         "step": "style_draft",
@@ -268,14 +268,14 @@ def test_generation_summary_exposes_style_windows_scoped_to_the_current_bundle(s
     # 切到上一次运行的 bundle → 只看到那次的窗口(书按那次契约的画像解析)
     state.current_bundle_id = "bundle_v1"
     session.commit()
-    previous = _serialize_generation_summary(session, scene_id, state)["style_windows"]
+    previous = serialize_generation_summary(session, scene_id, state)["style_windows"]
     assert previous["windows"] == [_WINDOW_B]
     assert (previous["profile_id"], previous["book_id"]) == ("profile_global", "book_global")
 
     # 没有带窗口尝试的 bundle → null;解析不出 bundle 同样 null(不做无范围回读)
     state.current_bundle_id = "bundle_v3"
     session.commit()
-    assert _serialize_generation_summary(session, scene_id, state)["style_windows"] is None
+    assert serialize_generation_summary(session, scene_id, state)["style_windows"] is None
 
 
 def test_style_windows_prefers_style_draft_then_first_draft_then_rewrite(session: Session) -> None:
@@ -288,26 +288,26 @@ def test_style_windows_prefers_style_draft_then_first_draft_then_rewrite(session
     session.add(_attempt(scene_id, step="scene_literary_rewrite", bundle_id="bundle_v2", refs=[_WINDOW_B],
                          profile_ids=["profile_one"]))
     session.commit()
-    assert _serialize_generation_summary(session, scene_id, state)["style_windows"]["step"] == "scene_literary_rewrite"
+    assert serialize_generation_summary(session, scene_id, state)["style_windows"]["step"] == "scene_literary_rewrite"
 
     # 风格直起的首稿(中性步位)带窗口 → 优先于重写稿
     session.add(_attempt(scene_id, step="neutral_draft", bundle_id="bundle_v2", refs=[_WINDOW_A],
                          profile_ids=["profile_one"]))
     session.commit()
-    first_draft = _serialize_generation_summary(session, scene_id, state)["style_windows"]
+    first_draft = serialize_generation_summary(session, scene_id, state)["style_windows"]
     assert (first_draft["step"], first_draft["windows"]) == ("neutral_draft", [_WINDOW_A])
 
     # 风格稿没有窗口(注入未命中 / 回退)→ 越过它,仍取首稿
     session.add(_attempt(scene_id, step="style_draft", bundle_id="bundle_v2", refs=[], profile_ids=["profile_one"]))
     session.add(_attempt(scene_id, step="style_draft", bundle_id="bundle_v2", refs=None, profile_ids=["profile_one"]))
     session.commit()
-    assert _serialize_generation_summary(session, scene_id, state)["style_windows"]["step"] == "neutral_draft"
+    assert serialize_generation_summary(session, scene_id, state)["style_windows"]["step"] == "neutral_draft"
 
     # 风格稿带窗口 → 风格稿优先(最近一次 completed)
     session.add(_attempt(scene_id, step="style_draft", bundle_id="bundle_v2", refs=[_WINDOW_B],
                          profile_ids=["profile_one"]))
     session.commit()
-    styled = _serialize_generation_summary(session, scene_id, state)["style_windows"]
+    styled = serialize_generation_summary(session, scene_id, state)["style_windows"]
     assert (styled["step"], styled["windows"]) == ("style_draft", [_WINDOW_B])
 
 
@@ -331,7 +331,7 @@ def test_style_windows_normalizes_refs_and_tolerates_missing_profile(session: Se
     )
     session.commit()
 
-    windows = _serialize_generation_summary(session, scene_id, state)["style_windows"]
+    windows = serialize_generation_summary(session, scene_id, state)["style_windows"]
     assert windows == {
         "step": "style_draft",
         "profile_id": "profile_deleted",
@@ -354,4 +354,4 @@ def test_style_windows_normalizes_refs_and_tolerates_missing_profile(session: Se
         _attempt(scene_id, step="style_draft", bundle_id="bundle_v2", refs=[{"start": 3, "end": 1}, 42])
     )
     session.commit()
-    assert _serialize_generation_summary(session, scene_id, state)["style_windows"] is None
+    assert serialize_generation_summary(session, scene_id, state)["style_windows"] is None

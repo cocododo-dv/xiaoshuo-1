@@ -486,7 +486,7 @@ def _seed_scene(api: TestClient) -> None:
 
 
 READ_PATHS = (
-    "/api/v1/scenes/CH930_SC01/workbench",
+    "/api/v1/scenes/CH930_SC01/workbench?include=diagnostics",
     "/api/v1/scenes/CH930_SC01/deep-review",
     "/api/v1/scenes/CH930_SC01/diagnosis-rollup",
     "/api/v1/chapters/CH930/deep-review",

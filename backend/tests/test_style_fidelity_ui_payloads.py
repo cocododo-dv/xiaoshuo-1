@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from novel_system.api.routes.scenes import _serialize_generation_summary
+from novel_system.services.scene_workbench import serialize_generation_summary
 from novel_system.db.models import StyleFidelityReading, StyleReferenceWindow
 from novel_system.services.style_reference import readings as R
 from novel_system.services.style_reference.fidelity import (
@@ -211,7 +211,7 @@ def test_workbench_windows_carry_the_learned_gist_and_tags_for_v3_refs(session: 
     )
     session.commit()
 
-    windows = _serialize_generation_summary(session, scene_id, state)["style_windows"]["windows"]
+    windows = serialize_generation_summary(session, scene_id, state)["style_windows"]["windows"]
     assert windows[0] == {
         "start": 120,
         "end": 179,

@@ -147,6 +147,56 @@ def seed_literary_ready_state(session: Session, scene_id: str = "CH910_SC01", ch
     session.commit()
 
 
+# B12-02 / X01-08：起草台（ws-scene-api.js / ws-scene-derive.js）只读这些键；其余诊断部分要 ?include=diagnostics
+DESK_WORKBENCH_KEYS = {
+    "scene_run_state",
+    "author_state",
+    "bundle",
+    "neutral_draft",
+    "style_draft",
+    "final_scene",
+    "generation_summary",
+    "hard_qc_summary",
+    "soft_qc_summary",
+}
+DIAGNOSTIC_WORKBENCH_KEYS = {
+    "chapter_goal",
+    "scene_card",
+    "chapter_state",
+    "run_preflight",
+    "source_safety_scan",
+    "literary_blueprint",
+    "execution_contract",
+    "scene_memory",
+    "near_final_summary",
+    "rewrite_counters",
+    "human_review_summary",
+    "attempts",
+}
+
+
+def test_workbench_default_payload_carries_only_what_the_drafting_desk_reads(client) -> None:
+    """默认载荷不再每次现算预检、抄袭门、蓝图、准终稿摘要、尝试历史、bundle 冻结快照（界面一个都不读）。"""
+    create_chapter(client, "CH925")
+    create_scene(client, chapter_id="CH925", scene_id="CH925_SC01")
+
+    default = client.get("/api/v1/scenes/CH925_SC01/workbench")
+    assert default.status_code == 200
+    data = default.json()["data"]
+    assert set(data) == DESK_WORKBENCH_KEYS
+    assert set(data["bundle"]) == {"bundle_id", "bundle_snapshot_hash"}
+
+    full = client.get("/api/v1/scenes/CH925_SC01/workbench?include=diagnostics").json()["data"]
+    assert set(full) == DESK_WORKBENCH_KEYS | DIAGNOSTIC_WORKBENCH_KEYS
+    assert set(full["bundle"]) == {"bundle_id", "bundle_snapshot_hash", "snapshot"}
+    for key in DESK_WORKBENCH_KEYS - {"bundle"}:
+        assert full[key] == data[key]
+
+    unknown = client.get("/api/v1/scenes/CH925_SC01/workbench?include=everything")
+    assert unknown.status_code == 422
+    assert unknown.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+
+
 def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields(client, session: Session) -> None:
     create_chapter(client)
     create_scene(client)
@@ -154,7 +204,7 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
     seed_relation_profile(session)
     seed_literary_ready_state(session)
 
-    response = client.get("/api/v1/scenes/CH910_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH910_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -193,7 +243,7 @@ def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_ru
     seed_voice_profile(session)
     seed_relation_profile(session)
 
-    response = client.get("/api/v1/scenes/CH915_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH915_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     data = response.json()["data"]
@@ -253,7 +303,7 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     session.add_all([bundle, final])
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH921_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH921_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     scan = response.json()["data"]["source_safety_scan"]
@@ -296,7 +346,7 @@ def test_workbench_payload_scans_final_scene_against_the_bound_reference(client,
     session.add(final)
     session.commit()
 
-    scan = client.get("/api/v1/scenes/CH921D_SC01/workbench").json()["data"]["source_safety_scan"]
+    scan = client.get("/api/v1/scenes/CH921D_SC01/workbench?include=diagnostics").json()["data"]["source_safety_scan"]
 
     assert scan["safe"] is False
     assert scan["checked_books"] == [refs["book_id"]]
@@ -314,7 +364,7 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     create_chapter(client, "CH911")
     create_scene(client, chapter_id="CH911", scene_id="CH911_SC01")
 
-    response = client.get("/api/v1/scenes/CH911_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH911_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
@@ -375,7 +425,7 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
         must_include_text="",
     )
 
-    response = client.get("/api/v1/scenes/CH913_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH913_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
@@ -403,7 +453,7 @@ def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Sess
     scene.forbidden_text = "死亡证明"
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH919_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH919_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
@@ -476,7 +526,7 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH915_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH915_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -527,7 +577,7 @@ def test_workbench_soft_qc_summary_only_uses_reports_from_the_active_run(client,
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH916_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH916_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -566,7 +616,7 @@ def test_workbench_generation_summary_stays_empty_when_current_run_has_no_genera
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH917_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH917_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]

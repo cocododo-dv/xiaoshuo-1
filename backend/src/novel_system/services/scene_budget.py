@@ -655,6 +655,34 @@ def budget_unit(state: SceneRunState) -> int:
     return FALLBACK_INPUT_TOKENS + FALLBACK_OUTPUT_TOKENS
 
 
+def lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | None:
+    """Author-safe lifecycle counters used by the explicit topup UI.
+
+    The immutable basis remains server-owned; only the single-call unit needed
+    for an informed author topup is projected. No routing or credential data is
+    exposed. 预算还没初始化（从没跑过）时为 ``None``。
+    """
+    if state.scene_token_budget is None:
+        return None
+    budget = int(state.scene_token_budget)
+    used = int(state.scene_tokens_used or 0)
+    reserved = int(state.scene_tokens_reserved or 0)
+    # 单发基线：依据里记的优先，旧依据按初始预算 ÷ 当时的倍率还原（不拿追加过的当前预算去除）
+    baseline = budget_unit(state)
+    return {
+        "scene_token_budget": budget,
+        "scene_tokens_used": used,
+        "scene_tokens_reserved": reserved,
+        "scene_tokens_remaining": max(0, budget - used - reserved),
+        "baseline_tokens": baseline,
+        "recommended_topup_tokens": baseline,
+        "attempt_budget": int(state.attempt_budget),
+        "total_attempt_count": int(state.total_attempt_count or 0),
+        "provider_attempt_budget": int(state.provider_attempt_budget),
+        "provider_attempts_used": int(state.provider_attempts_used or 0),
+    }
+
+
 def can_spend(state: SceneRunState | None, estimated_tokens: int) -> bool:
     """可选支出的前置预留检查；预算未初始化不拦（渐进迁移）。"""
     if state is None or state.scene_token_budget is None:

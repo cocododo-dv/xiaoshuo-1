@@ -863,7 +863,7 @@ def test_near_final_rewrite_is_gated_and_notices_land_on_the_rewrite_attempt(ses
 
 def test_api_style_notice_readers_are_scoped_to_the_current_run_bundle(session) -> None:
     """run/full 与工作台只回读本次运行 bundle 的 notices；解析不出 bundle 时不做无范围回读。"""
-    from novel_system.api.routes.scenes import _attach_style_notices, _serialize_generation_summary
+    from novel_system.services.scene_workbench import attach_style_notices, serialize_generation_summary
 
     scene = _seed_style_scene(session, project_id="proj_v2_scope")
     stale_hit = {"code": STYLE_NOTICE_PLAGIARISM_HIT, "message": "run 1", "severity": "blocking"}
@@ -885,20 +885,20 @@ def test_api_style_notice_readers_are_scoped_to_the_current_run_bundle(session) 
     session.commit()
 
     blocked = {"scene_status": "hard_qc_blocked", "current_bundle_id": "bundle_v2"}
-    assert _attach_style_notices(session, scene.scene_id, blocked) == blocked
+    assert attach_style_notices(session, scene.scene_id, blocked) == blocked
     # 运行在建 bundle 之前早退：结果与状态都没有 bundle → 原样返回，而不是读别的运行
     state.current_bundle_id = None
     session.commit()
     early = {"scene_status": "preflight_blocked"}
-    assert _attach_style_notices(session, scene.scene_id, early) == early
+    assert attach_style_notices(session, scene.scene_id, early) == early
     # 拥有这些 notices 的运行照常拿到（结果里的 bundle id，或退而取 SceneRunState 的）
-    owner = _attach_style_notices(
+    owner = attach_style_notices(
         session, scene.scene_id, {"scene_status": "human_review_required", "current_bundle_id": "bundle_v1"}
     )
     assert [item["code"] for item in owner["notices"]] == [STYLE_NOTICE_PLAGIARISM_HIT]
     state.current_bundle_id = "bundle_v1"
     session.commit()
-    via_state = _attach_style_notices(session, scene.scene_id, {"scene_status": "human_review_required"})
+    via_state = attach_style_notices(session, scene.scene_id, {"scene_status": "human_review_required"})
     assert [item["code"] for item in via_state["notices"]] == [STYLE_NOTICE_PLAGIARISM_HIT]
 
     # 工作台生成摘要：与 llm_call 同一次运行（bundle_v2 的中性稿）→ 不带 bundle_v1 的旧 notice
@@ -918,13 +918,13 @@ def test_api_style_notice_readers_are_scoped_to_the_current_run_bundle(session) 
     state.current_neutral_draft_row_id = "draft_neutral_scope_v2"
     state.current_bundle_id = "bundle_v2"
     session.commit()
-    summary = _serialize_generation_summary(session, scene.scene_id, state)
+    summary = serialize_generation_summary(session, scene.scene_id, state)
     assert summary["raw_step"] == "neutral_draft"
     assert summary["notices"] == []
     state.current_bundle_id = "bundle_v1"
     session.commit()
     assert [
-        item["code"] for item in _serialize_generation_summary(session, scene.scene_id, state)["notices"]
+        item["code"] for item in serialize_generation_summary(session, scene.scene_id, state)["notices"]
     ] == [STYLE_NOTICE_PLAGIARISM_HIT]
 
 
@@ -962,14 +962,14 @@ def test_latest_style_notices_reads_most_recent_completed_style_attempt(session)
     assert latest_style_notices(session, "CH901_SC99") == []
 
     # 路由层透传：运行结果 dict 追加本次运行 bundle 的 notices（非 dict 原样返回、无 notice 不加键）
-    from novel_system.api.routes.scenes import _attach_style_notices
+    from novel_system.services.scene_workbench import attach_style_notices
 
-    attached = _attach_style_notices(
+    attached = attach_style_notices(
         session, scene.scene_id, {"scene_status": "archived", "current_bundle_id": "bundle_new"}
     )
     assert [item["code"] for item in attached["notices"]] == [STYLE_NOTICE_DRAFT_FALLBACK_NEUTRAL]
     assert attached["scene_status"] == "archived"
-    assert _attach_style_notices(
+    assert attach_style_notices(
         session, "CH901_SC99", {"scene_status": "x", "current_bundle_id": "bundle_new"}
     ) == {"scene_status": "x", "current_bundle_id": "bundle_new"}
-    assert _attach_style_notices(session, scene.scene_id, "not-a-dict") == "not-a-dict"
+    assert attach_style_notices(session, scene.scene_id, "not-a-dict") == "not-a-dict"
