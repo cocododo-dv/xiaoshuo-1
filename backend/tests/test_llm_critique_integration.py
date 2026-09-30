@@ -239,10 +239,14 @@ def test_auto_critique_passes_explicit_context_to_run_task(session) -> None:
     assert captured["context"] is context
 
 
-def test_auto_critique_called_product_normalizes_context_to_online(session) -> None:
+def test_auto_critique_called_product_is_always_online(session) -> None:
+    """离线确定性执行已退役：带离线模式的上下文根本造不出来，被调用的批评永远是在线产品。"""
     from dataclasses import replace
 
     from novel_system.services.auto_critique import llm_auto_critique
+
+    with pytest.raises(ValueError, match="must be online"):
+        replace(_llm_context(), provider_execution_mode="offline_deterministic")
 
     captured: dict = {}
 
@@ -251,10 +255,7 @@ def test_auto_critique_called_product_normalizes_context_to_online(session) -> N
             captured["context"] = context
             return _FakeResponse('{"should_rewrite": false, "issues": []}')
 
-    supplied = replace(
-        _llm_context(),
-        provider_execution_mode="offline_deterministic",
-    )
+    supplied = _llm_context()
     _seed_success_ledger(session, context=supplied, call_id="llmcall_auto_test")
     result = llm_auto_critique(
         "SCENE TEXT",
@@ -888,20 +889,3 @@ def test_llm_critique_requires_session_before_provider_io() -> None:
     assert calls == []
 
 
-def test_llm_critique_offline_runner_is_explicit_no_call() -> None:
-    from novel_system.services.auto_critique import llm_auto_critique
-
-    class _OfflineRunner:
-        provider_execution_mode = "offline_deterministic"
-
-        def run_task(self, **_kwargs):
-            raise AssertionError("offline advisory pass must not call run_task")
-
-    result = llm_auto_critique(
-        "prose",
-        llm_runner=_OfflineRunner(),
-        llm_context=_llm_context(),
-    )
-    assert result.outcome == "not_invoked"
-    assert result.reason == "offline_unsupported"
-    assert result.llm_call_id is None

@@ -4875,7 +4875,6 @@ class Orchestrator:
                     critique_step_key if self._execution_id is not None else None
                 ),
                 run_job_id=self._run_job_id,
-                provider_execution_mode=("online"),
             )
             self._reconcile_execution_step(critique_step_key)
             skip_critique = bool(getattr(criticality, "skip_critique", False))
@@ -4891,16 +4890,7 @@ class Orchestrator:
                     # its recovered deterministic product therefore is not a skip result.
                     skip_critique=False,
                 ),
-                allow_retry=(
-                    critique_runner is not None
-                    and not skip_critique
-                    and getattr(
-                        critique_runner,
-                        "provider_execution_mode",
-                        "online",
-                    )
-                    == "online"
-                ),
+                allow_retry=critique_runner is not None and not skip_critique,
             )
             if critique is None:
                 critique = _auto_critique.llm_auto_critique(
@@ -4981,26 +4971,8 @@ class Orchestrator:
                             exc_info=True,
                         )
 
-            reused_selected_generation = (
-                style_generation.llm_call_id == selected_style_generation.llm_call_id
-            )
-            reused_parent = (
-                self.session.get(LlmCall, style_generation.llm_call_id)
-                if reused_selected_generation
-                else None
-            )
             generation_parent = self._validate_generation_before_checkpoint(
-                scene_id,
-                style_generation,
-                expected_provider_execution_mode=(
-                    self._parent_execution_mode(reused_parent)
-                    if reused_parent is not None
-                    else getattr(
-                        self.scene_generation_service._llm_runner,
-                        "provider_execution_mode",
-                        "online",
-                    )
-                ),
+                scene_id, style_generation
             )
             generation_provider_execution_mode = self._parent_execution_mode(
                 generation_parent
@@ -5522,9 +5494,6 @@ class Orchestrator:
                 draft_stage=draft.stage,
                 execution_step_key=execution_step_key,
                 execution_id=artifact_execution_id,
-                expected_provider_execution_mode=(
-                    historical_execution_mode if prefix == "soft_input" else None
-                ),
                 draft=draft,
             )
             self._validate_settled_parent_ledger(generation_parent)
@@ -5618,8 +5587,6 @@ class Orchestrator:
         self,
         scene_id: str,
         generation: StyleGenerationResult,
-        *,
-        expected_provider_execution_mode: str | None = None,
     ) -> LlmCall:
         parent = self.session.get(LlmCall, generation.llm_call_id)
         owner = generation.artifact_execution_id or self._execution_id
@@ -5644,7 +5611,6 @@ class Orchestrator:
             draft_stage=draft.stage,
             execution_step_key=generation.execution_step_key,
             execution_id=owner,
-            expected_provider_execution_mode=expected_provider_execution_mode,
             draft=draft,
         )
         self._validate_settled_parent_ledger(parent)
@@ -5674,7 +5640,6 @@ class Orchestrator:
         draft_stage: str,
         execution_step_key: str | None,
         execution_id: str | None,
-        expected_provider_execution_mode: str | None = None,
         draft: SceneDraft | None = None,
     ) -> None:
         scene = self.session.get(SceneCard, scene_id)
@@ -5702,15 +5667,8 @@ class Orchestrator:
             if isinstance(parent.request_payload_summary, dict)
             else None
         )
-        # Without an explicit trusted snapshot this is a historical product:
-        # its strictly validated durable mode/attempt shape is authoritative,
-        # because the process configuration may legitimately have changed.
-        expected_execution_mode = (
-            expected_provider_execution_mode
-            if expected_provider_execution_mode is not None
-            else actual_execution_mode
-        )
-        if expected_execution_mode != "online":
+        # 只有在线执行记账（离线确定性执行已退役）：历史上的离线父调用过不了这里。
+        if actual_execution_mode != "online":
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                 "generation product execution mode snapshot is invalid",
@@ -5732,7 +5690,6 @@ class Orchestrator:
             or parent.execution_step_key != execution_step_key
             or parent.node_id != node_id
             or parent.step != step
-            or actual_execution_mode != expected_execution_mode
         ):
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
@@ -5759,7 +5716,6 @@ class Orchestrator:
         self,
         scene_id: str,
         *,
-        provider_execution_mode: str | None = None,
         execution_id: str | None = None,
         run_job_id: str | None = None,
     ) -> LLMCallContext:
@@ -5786,14 +5742,6 @@ class Orchestrator:
             execution_id=execution_id or self._execution_id,
             execution_step_key="soft_patch:auto_critique:0",
             run_job_id=run_job_id if execution_id is not None else self._run_job_id,
-            provider_execution_mode=(
-                provider_execution_mode
-                or getattr(
-                    self.scene_generation_service._llm_runner,
-                    "provider_execution_mode",
-                    "online",
-                )
-            ),
         )
 
     def _build_auto_critique_patch_failure_product(
@@ -6054,7 +6002,6 @@ class Orchestrator:
             )
         context = self._auto_critique_patch_context(
             scene_id,
-            provider_execution_mode=product["provider_execution_mode"],
             execution_id=product["execution_id"],
             run_job_id=product["run_job_id"],
         )
@@ -6158,10 +6105,7 @@ class Orchestrator:
             )
         parent = rejected[0]
         historical_execution_mode = self._parent_execution_mode(parent)
-        context = self._auto_critique_patch_context(
-            scene_id,
-            provider_execution_mode=historical_execution_mode,
-        )
+        context = self._auto_critique_patch_context(scene_id)
         if not isinstance(parent.error_code, str) or not parent.error_code:
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
@@ -6388,7 +6332,6 @@ class Orchestrator:
                     "budget_or_candidate_cap",
                     "feature_disabled",
                     "runner_unavailable",
-                    "offline_unsupported",
                 }
                 or error_code is not None
             ):
@@ -6467,7 +6410,6 @@ class Orchestrator:
             execution_id=product.get("execution_id"),
             execution_step_key=expected_step,
             run_job_id=product.get("run_job_id"),
-            provider_execution_mode="online",
         )
         expected_status = {
             "completed": "settled",

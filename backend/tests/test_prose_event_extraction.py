@@ -269,16 +269,17 @@ def test_extract_with_runner_but_no_context_fails_before_runner_io() -> None:
     assert runner.calls == []
 
 
-def test_called_prose_extractor_normalizes_context_to_online(session) -> None:
+def test_called_prose_extractor_is_always_online(session) -> None:
+    """离线确定性执行已退役：带离线模式的上下文根本造不出来，被调用的抽取永远是在线产品。"""
     from dataclasses import replace
 
     from novel_system.services.prose_event_extractor import extract_events_from_prose
 
+    with pytest.raises(ValueError, match="must be online"):
+        replace(_llm_context(), provider_execution_mode="offline_deterministic")
+
     runner = _Runner('{"events": []}')
-    supplied = replace(
-        _llm_context(),
-        provider_execution_mode="offline_deterministic",
-    )
+    supplied = _llm_context()
     _seed_success_ledger(session, context=supplied)
     result = extract_events_from_prose(
         "some prose",
