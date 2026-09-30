@@ -281,8 +281,6 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         n_candidates: int = 3,
-        # 编排器还在传补候选的上限（P01c 删掉这个传参后一起删）；多稿不再补候选，用不上它
-        max_candidates: int | None = None,
         step_reconciler: Callable[[str], None] | None = None,
         resume_bases: dict[str, StyleGenerationResult] | None = None,
         resume_products: dict[str, StyleGenerationResult] | None = None,

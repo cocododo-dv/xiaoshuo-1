@@ -1958,7 +1958,6 @@ def test_best_of_n_without_style_first_drafts_one_candidate(session) -> None:
         neutral_draft_row_id=neutral.row_id,
         neutral_content=neutral.content,
         n_candidates=3,
-        max_candidates=5,
         step_reconciler=reconciled.append,
     )
     session.commit()

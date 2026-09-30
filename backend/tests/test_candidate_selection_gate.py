@@ -76,7 +76,6 @@ def _multi_candidate_authorization_for_candidate_gate_tests(monkeypatch) -> None
     from novel_system.services.orchestrator import Orchestrator
 
     def _three_candidates(self, contract, *, criticality=None):
-        self._best_of_n_policy_cap = 3
         if criticality is not None:
             return max(1, min(3, int(criticality.initial_best_of_n)))
         return 3

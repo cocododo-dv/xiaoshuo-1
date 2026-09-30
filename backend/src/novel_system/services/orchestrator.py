@@ -781,14 +781,11 @@ class Orchestrator:
                 },
             )
 
-        # Wave 3（§5.5 成本分配）：初始 N（关键 3/标准 2/过渡 1），低分散在预算内
-        # 渐进补候选至上限（关键 5/标准 3）——不再一次生成后整批无上限重试。
-        self._best_of_n_policy_cap = None
+        # Wave 3（§5.5 成本分配）：候选数 N 由开关与关键度定（关键 3 / 标准 2 / 过渡 1）。
+        # [批准#2] 只有作者手笔直起才出多稿：其余起草方式即使开关打开也只起一稿（检查点如实记 single）。
         n_candidates = self._best_of_n_count(contract, criticality=criticality)
-        authorized_max_candidates = self._best_of_n_max_count(
-            criticality=criticality,
-            initial_count=n_candidates,
-        )
+        if n_candidates > 1 and not style_policy_for_bundle(bundle).style_first:
+            n_candidates = 1
         candidate_summaries: list[dict[str, Any]] = []
         if self._checkpoint_reached("style_ready"):
             candidates = self._load_style_checkpoint_candidates(scene_id)
@@ -866,7 +863,6 @@ class Orchestrator:
                         neutral_content=neutral_content,
                         author_note=author_note,
                         n_candidates=n_candidates,
-                        max_candidates=authorized_max_candidates,
                         step_reconciler=self._reconcile_execution_step,
                         resume_bases=resume_bases,
                         resume_products=resume_products,
@@ -1015,7 +1011,6 @@ class Orchestrator:
             hard_qc_payload=hard_qc_payload,
             style_generation=style_generation,
             candidate_summaries=candidate_summaries if candidate_summaries else None,
-            candidates_total=len(candidates),
             run_policy=run_policy,
         )
 
@@ -1031,27 +1026,18 @@ class Orchestrator:
         hard_qc_payload: dict[str, Any],
         style_generation,
         candidate_summaries: list[dict[str, Any]] | None,
-        candidates_total: int,
         run_policy: str,
     ) -> dict:
         """§5.5 顺序的后半段：批判修订 → 软 QC → near-final → 严格停点 → 归档。
 
         run_scene 与 resume_after_selection 共用。可选支出（LLM 批判、补丁、
-        near-final 重写）过预算闸（§5.8 预算耗尽停止新调用、交付最佳稿）；
-        候选补满上限的场按 §5.5 固定预算优先级放弃 LLM 批判与补丁。
+        near-final 重写）过预算闸（§5.8 预算耗尽停止新调用、交付最佳稿）。
         """
         scene_id = scene.scene_id
         strict_mode = run_policy == "strict"
-        gave_up_optional = (
-            criticality is not None
-            and criticality.max_best_of_n > 1
-            and candidates_total >= criticality.max_best_of_n
-        )
 
         def _optional_spend_allowed() -> bool:
-            return (not gave_up_optional) and scene_budget.can_spend(
-                state, scene_budget.budget_unit(state)
-            )
+            return scene_budget.can_spend(state, scene_budget.budget_unit(state))
 
         if self._near_final_checkpoint_progress() >= 3:
             return self._archive_near_final_checkpoint(
@@ -3819,25 +3805,15 @@ class Orchestrator:
 
     @staticmethod
     def _style_slot_identity(slot_key: str) -> tuple[str, int]:
+        # [批准#2] 补候选（topup:N）随先中性后润色的多稿删掉，工作项只有 initial:N 槽位
         parts = slot_key.split(":") if isinstance(slot_key, str) else []
-        if (
-            len(parts) != 2
-            or parts[0] not in {"initial", "topup"}
-            or not parts[1].isdigit()
-        ):
+        if len(parts) != 2 or parts[0] != "initial" or not parts[1].isdigit():
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "style work-item slot key is invalid",
                 status_code=409,
             )
-        index = int(parts[1])
-        if (parts[0] == "initial" and index < 0) or (parts[0] == "topup" and index < 1):
-            raise DomainError(
-                "RUN_CHECKPOINT_CORRUPT",
-                "style work-item slot index is invalid",
-                status_code=409,
-            )
-        return parts[0], index
+        return parts[0], int(parts[1])
 
     def _style_artifact_descriptor(
         self,
@@ -4176,35 +4152,21 @@ class Orchestrator:
         products: list[tuple[StyleGenerationResult, StyleGenerationResult | None]] = []
         saw_partial = False
         for order, item in enumerate(work_items):
-            expected_slot = (
-                f"initial:{order}"
-                if order < expected_initial_count
-                else f"topup:{order - expected_initial_count + 1}"
-            )
             if (
                 saw_partial
+                or order >= expected_initial_count
                 or not isinstance(item, dict)
-                or item.get("slot_key") != expected_slot
+                or item.get("slot_key") != f"initial:{order}"
                 or item.get("slot_order") != order
-                or item.get("kind")
-                != ("initial" if order < expected_initial_count else "topup")
-                or item.get("slot_index")
-                != (
-                    order
-                    if order < expected_initial_count
-                    else order - expected_initial_count + 1
-                )
+                or item.get("kind") != "initial"
+                or item.get("slot_index") != order
             ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
                     "style work-item prefix/slot identity is invalid",
                     status_code=409,
                 )
-            base_step_key = (
-                f"style_draft:{order}"
-                if order < expected_initial_count
-                else f"style_draft:topup:{order - expected_initial_count + 1}"
-            )
+            base_step_key = f"style_draft:{order}"
             base = self._validate_style_artifact_descriptor(
                 item.get("base"),
                 scene_id=scene_id,
@@ -4550,7 +4512,7 @@ class Orchestrator:
     ) -> tuple[dict[str, StyleGenerationResult], dict[str, StyleGenerationResult]]:
         if not work_items:
             return {}, {}
-        initial_count = sum(1 for item in work_items if item.get("kind") == "initial")
+        initial_count = len(work_items)
         products = self._validate_style_work_items(
             work_items,
             scene_id=scene_id,
@@ -7391,45 +7353,21 @@ class Orchestrator:
 
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:
-        """Number of style-draft candidates to generate for this run.
+        """Number of style-draft candidates the switch and the scene's criticality allow.
 
-        2026-09-14:the evidence-gated authorization (benchmark report hash) is gone with the
-        benchmark package; Best-of-N is now a plain opt-in switch
-        (``NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED``, default off → always one candidate).
-        When enabled the scene's criticality decides: transition scenes still draft one,
-        standard scenes ``initial_best_of_n`` (2) with progressive top-up to ``max_best_of_n``,
-        and critical scenes pause at the blinded author terminal selection (``human_gate``).
-        Tests may still override this method directly.
+        Best-of-N is a plain opt-in switch (``NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED``, default off → one
+        candidate). When enabled the scene's criticality decides: transition scenes draft one, standard
+        scenes ``initial_best_of_n`` (2), critical scenes 3 and pause at the blinded author terminal
+        selection (``human_gate``). Only a style_first bundle drafts several — the pipeline caps every
+        other draft mode at one ([批准#2]). Tests may still override this method directly.
         """
         try:
             enabled = bool(getattr(get_settings(), "scene_best_of_n_enabled", False))
         except Exception:  # noqa: BLE001 — settings 读不到就按关闭
             enabled = False
         if not enabled or criticality is None:
-            self._best_of_n_policy_cap = 1
             return 1
-        initial = max(1, int(getattr(criticality, "initial_best_of_n", 1) or 1))
-        maximum = max(initial, int(getattr(criticality, "max_best_of_n", initial) or initial))
-        self._best_of_n_policy_cap = maximum
-        return initial
-
-    def _best_of_n_max_count(self, *, criticality=None, initial_count: int) -> int:
-        """Cap progressive candidate expansion by the evidence authorization.
-
-        A ``None`` cap means a legacy/test override replaced ``_best_of_n_count``;
-        preserving the criticality maximum keeps those explicit harnesses stable.
-        The real resolver always records an integer cap.
-        """
-
-        criticality_max = (
-            int(criticality.max_best_of_n)
-            if criticality is not None
-            else max(1, int(initial_count))
-        )
-        policy_cap = getattr(self, "_best_of_n_policy_cap", None)
-        if policy_cap is None:
-            return max(1, criticality_max)
-        return max(1, min(criticality_max, int(policy_cap)))
+        return max(1, int(getattr(criticality, "initial_best_of_n", 1) or 1))
 
     @staticmethod
     def _distinct_candidate_count(candidates: list[Any]) -> int:
@@ -7707,7 +7645,8 @@ class Orchestrator:
         selected_index = offered_row_ids.index(selected_row_id)
         if (
             draft.scene_id != scene_id
-            or draft.stage not in {"style_draft", "de_template"}
+            # [批准#2] 终选门只为作者手笔直起的多稿开：候选都是 style_draft 行（去模板谱系随先中性后润色的多稿删掉）
+            or draft.stage != "style_draft"
             or draft.source_bundle_id != bundle["bundle_id"]
             or draft.source_bundle_hash != bundle["bundle_snapshot_hash"]
             or self._text_hash(draft.content)
@@ -7832,7 +7771,6 @@ class Orchestrator:
             artifact_execution_id=selected_execution_id,
         )
         hard_qc_payload = self._hard_qc_result_payload(hard_qc)
-        candidates_total = len(details.get("candidate_row_ids") or []) or 1
         return self._finalize_after_style(
             scene=scene,
             state=state,
@@ -7843,7 +7781,6 @@ class Orchestrator:
             hard_qc_payload=hard_qc_payload,
             style_generation=style_generation,
             candidate_summaries=None,
-            candidates_total=candidates_total,
             run_policy=state.run_policy or "reliable",
         )
 
