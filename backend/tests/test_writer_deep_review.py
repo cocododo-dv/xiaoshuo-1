@@ -191,7 +191,7 @@ def test_scene_deep_review_get_returns_the_unified_diagnosis_before_any_ai_run(c
     assert payload["rubric_id"] == LITERARY_REVISION_RUBRIC_ID
     assert payload["ai"]["status"] == "not_run"
     assert payload["text"]["layer"] == "runtime_final_scene"
-    assert payload["findings"], "the 21-dimension rules already diagnose the final text"
+    assert payload["findings"], "the rule dimensions already diagnose the final text"
     assert {item["source"] for item in payload["findings"]} <= {"rules", "craft"}
     assert all(item["signal_id"] and item["label"] and item["issue"] for item in payload["findings"])
     assert payload["summary"]["open"] == len(payload["findings"])
@@ -265,6 +265,44 @@ def test_scene_deep_review_uses_llm_when_live(client: TestClient, session, monke
     assert evaluation["evaluator_llm_call_id"] == "llm_call_writer_deep_review_test"
     assert evaluation["overall_score"] == 0.61
     assert evaluation["findings"][0]["issue"] == "The choice is described rather than enacted."
+
+
+def test_a_lens_the_model_scored_zero_keeps_its_zero(client: TestClient, session, monkeypatch) -> None:
+    """模型给一个镜头打 0 分就是 0 分：不当作「没给」、再拿各维分的平均顶上（B05-05：``or`` 把 0.0 当成缺失）。"""
+
+    class ZeroLensRunner:
+        def __init__(self, db_session, **kwargs) -> None:
+            self.session = db_session
+
+        @property
+        def provider_execution_mode(self):
+            return "online"
+
+        def run(self, **kwargs):
+            return SimpleNamespace(
+                llm_call_id="llm_call_zero_lens",
+                response=SimpleNamespace(
+                    structured_output={
+                        "overall_score": 0.4,
+                        "scores": {"choice_pressure": 0.5},
+                        "findings": [],
+                        "revision_brief": [],
+                        "lens_evaluations": [
+                            {"lens": "story", "overall_score": 0.0, "scores": {"choice_pressure": 0.5}, "findings": [], "revision_brief": []}
+                        ],
+                    }
+                ),
+            )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    monkeypatch.setattr("novel_system.services.writer_deep_review.LLMNodeRunner", ZeroLensRunner)
+    _seed_finished_scene(session)
+
+    response = client.post(f"/api/v1/scenes/{SCENE_ID}/deep-review")
+
+    assert response.status_code == 200
+    lenses = {item["lens"]: item for item in response.json()["data"]["ai"]["lenses"]}
+    assert lenses["story"]["overall_score"] == 0.0
 
 
 def test_scene_deep_review_prefers_current_author_draft_over_runtime_final(client: TestClient, session, monkeypatch) -> None:

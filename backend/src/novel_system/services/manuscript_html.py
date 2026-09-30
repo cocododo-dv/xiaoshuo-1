@@ -187,7 +187,7 @@ def manuscript_paragraphs(content: str | None) -> list[str]:
 def plain_manuscript_text(content: str | None) -> str:
     """作者稿（HTML 或纯文本）→ 一行可分析的可见文字：段落之间一个空格，没有标签。
 
-    文学质量的 21 维规则、成稿门与场景诊断都按这份字算——过去规则直接吃作者稿的 HTML，
+    文学质量的规则维度、成稿门与场景诊断都按这份字算——过去规则直接吃作者稿的 HTML，
     「第一句」里带着 ``<p>``，同一条发现在两个页面里算出两个不同的 id。
     """
 

@@ -1,6 +1,6 @@
 """场景诊断（2026-09-22）：一场正文「哪里有问题」只有一份记录。
 
-之前有四套引擎各算各的——文学质量视图的 21 维规则、写作台深改姿态里三条浏览器本地正则、
+之前有四套引擎各算各的——文学质量视图的规则维度、写作台深改姿态里三条浏览器本地正则、
 后端从没被任何界面调用过的 LLM 深评（``writer_deep_review``）、起草管线在去模板门 / 成稿门
 里再跑一遍的同一批规则——三套词汇、三种严重度，页面之间只有跳转、没有数据。这里把它们
 合成**一种**发现形状，写作台的深改面板是唯一的展示处：
@@ -9,7 +9,7 @@
      evidence: {excerpt, paragraph_index, start, end} | None, context,
      ignored, stale, house_taste, origin, patch, opinion}
 
-* ``source``：``rules``（21 维规则，`literary_quality.py`）/ ``craft``（段落节奏：贴邻叠句、
+* ``source``：``rules``（规则维度，``literary_quality`` 包）/ ``craft``（段落节奏：贴邻叠句、
   段落偏长、句首重复——从浏览器本地规则搬到服务端）/ ``review``（起草台的准定稿评审）/
   ``ai``（写作台的 AI 深评：整场一次、「AI 看这一处」的局部深评、成稿中心「AI 通读本章」
   里落到这一场的发现——``origin.kind`` 区分 ``scene`` / ``passage`` / ``chapter``）。
@@ -25,7 +25,7 @@
   其余段全文给到 ``PASSAGE_SCENE_FULL_CHARS`` 字，再长的远段只留开头），所以它能指出焦点段与本场
   另一段的矛盾——那样的发现带 ``related``（另一段的原话与段号）。
 * 有风格绑定的场，检查按参考作者校准（``craft_calibration``）：节奏三条（段落偏长的阈值取参考书
-  段长的长尾，参考作者常用的贴邻叠句 / 句首重复不再提示）+ 21 维规则的词表与维度
+  段长的长尾，参考作者常用的贴邻叠句 / 句首重复不再提示）+ 规则维度的词表与维度
   （``literary_quality.RuleCalibration``：参考作者每万字用到一次以上的词表词不当毛病，在参考书一半
   以上的场级窗口上都会响的规则降为提示并带 ``calibrated``）；规则与节奏发现标 ``house_taste``。
 * 计数随写回传：``scene_rollup`` / ``chapter_rollup`` 是作者稿保存、深评动作、通读的响应里带的
@@ -153,7 +153,7 @@ CRAFT_LONG_PARAGRAPH_CHARS = 170
 # 参考作者的习惯：每千段里贴邻叠句 / 三句同字开头的段落数到了这个水平，就是这位作者的手法，不提示
 CRAFT_ECHO_HABIT_PER_1K = 5.0
 CRAFT_SAME_OPENING_HABIT_PER_1K = 10.0
-# 21 维规则的校准：参考书按标题段 / 场分隔行 / 导入时记下的场界切成单元，单元内按 ~2400 字（一场的量）切窗口；
+# 规则维度的校准：参考书按标题段 / 场分隔行 / 导入时记下的场界切成单元，单元内按 ~2400 字（一场的量）切窗口；
 # 一般维度在最多 96 个窗口上量「响的比例」，收尾三条只在最多 96 个真实收尾（章末 / 场界，不够时补转场段之前的
 # 那一段）上量；窗口 / 收尾都至少要 4 个才算数（更少的样本连 Wilson 下界也撑不起来）
 RULE_CALIBRATION_WINDOW_CHARS = 2400
@@ -310,7 +310,7 @@ def passage_scope(
 
 
 # ---------------------------------------------------------------------------
-# 缓存：同一场同一份字的规则 / 节奏发现（21 维规则一场约 30 ms，全书计数一次跑几十场）
+# 缓存：同一场同一份字的规则 / 节奏发现（规则维度一场约 30 ms，全书计数一次跑几十场）
 # ---------------------------------------------------------------------------
 
 _FINDINGS_CACHE: "OrderedDict[tuple[Any, ...], list[dict[str, Any]]]" = OrderedDict()
@@ -346,7 +346,7 @@ class CraftCalibration:
     flag_echo: bool = True
     flag_same_opening: bool = True
     deliberate_repetition: bool = False
-    # 2026-09-22 第三轮：21 维规则的词表 / 维度校准也挂在这里（写作台读的是同一个 craft_calibration 载荷）
+    # 2026-09-22 第三轮：规则维度的词表 / 维度校准也挂在这里（写作台读的是同一个 craft_calibration 载荷）
     rules: RuleCalibration = DEFAULT_RULE_CALIBRATION
 
     @property
@@ -485,7 +485,7 @@ def compute_reference_rules(
     paragraph_types: list[str] | None = None,
     scene_breaks: Iterable[int] | None = None,
 ) -> dict[str, Any]:
-    """参考书上的 21 维规则读数：词表词的密度（每万字）与每条规则在场级窗口上「响」的次数。
+    """参考书上的规则维度读数：词表词的密度（每万字）与每条规则在场级窗口上「响」的次数。
 
     参考书按 ``_reference_units`` 切成单元，单元内按 ~2400 字切窗口；收尾三条（summary_ending /
     ending_drive / false_poetic_closure）只在真实的单元末尾上量——随手切的窗口末尾不是收尾。
@@ -675,7 +675,7 @@ def _patch_hint(dimension: str, recommendation: str) -> dict[str, str]:
 
 
 def candidate_category_for_dimension(dimension: str) -> str:
-    """一条发现的维度 → 局部修补的类别（偏好画像按类别学）。规则 21 维与深评十维都认。"""
+    """一条发现的维度 → 局部修补的类别（偏好画像按类别学）。规则维度与深评十维都认。"""
 
     value = str(dimension or "")
     if value in {"dialogue_subtext", "dialogue_edge", "relationship_tension", "expository_dialogue", "dialogue_as_report"}:
@@ -697,7 +697,7 @@ def rule_findings(
     house_taste: bool = False,
     calibration: RuleCalibration = DEFAULT_RULE_CALIBRATION,
 ) -> list[dict[str, Any]]:
-    """21 维规则的发现。``calibration`` 来自参考书时：作者的常用词不再命中，作者常态的维度降为提示
+    """规则维度的发现。``calibration`` 来自参考书时：作者的常用词不再命中，作者常态的维度降为提示
     （``calibrated`` 说明它在参考书多少窗口上也会响）。"""
 
     _, raw = analyze_literary_quality(text.plain, calibration=calibration if calibration.active else None)
@@ -1309,7 +1309,7 @@ class SceneDiagnosisService:
         """这一场的风格策略（风格参考 v3）：诊断没有 bundle，按当前活动绑定轻量现解析（scene > character >
         project > global，同层取最新；画像不 active 的绑定不算），不冻结契约、不加载 profile_json。
 
-        ``bound``：按参考书校准节奏检查与 21 维规则；``defers_house_taste()``（绑定且作者手笔直起）：规则 /
+        ``bound``：按参考书校准节奏检查与规则维度；``defers_house_taste()``（绑定且作者手笔直起）：规则 /
         节奏发现标 ``house_taste``——与成稿门、起草管线同一个判定（此前这里把 neutral_first 的绑定也当让位）。
         """
 
@@ -1353,7 +1353,7 @@ class SceneDiagnosisService:
         return calibration.rules if style_bound and calibration.rules.active else None
 
     def rule_calibration_for_policy(self, policy: StylePolicy) -> RuleCalibration | None:
-        """成稿门用的解析器（风格参考 v3 V11）：按策略绑定的书校准的 21 维规则；未绑定 / 校准不可用 → None。"""
+        """成稿门用的解析器（风格参考 v3 V11）：按策略绑定的书校准的规则维度；未绑定 / 校准不可用 → None。"""
 
         profile = self.bound_profile_for_policy(policy)
         if profile is None:
@@ -1362,7 +1362,7 @@ class SceneDiagnosisService:
         return rules if rules.active else None
 
     def craft_calibration(self, profile: BoundProfile | None) -> CraftCalibration:
-        """按绑定画像的参考书校准节奏检查与 21 维规则；读数按（书、段落数、最新段落时间）缓存在进程里
+        """按绑定画像的参考书校准节奏检查与规则维度；读数按（书、段落数、最新段落时间）缓存在进程里
         （『龙族』26k 段：节奏读数 ≈1.1 s、规则读数 ≈0.6 s，每个进程每本书算一次）。"""
 
         if profile is None or not profile.book_id:

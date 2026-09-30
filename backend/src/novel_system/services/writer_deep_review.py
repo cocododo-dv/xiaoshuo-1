@@ -715,7 +715,7 @@ class WriterDeepReviewService:
         prompt_tail: str | None = None,
         extra_findings: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> None:
         """深评是拒绝式的 LLM 节点：没有真实模型就 409 + author_action，不再有本地词表兜底。
 
         （2026-09-22 之前这里有一条 ``_diagnose_by_lens``：按「保护 / 真相 / 公开 / 隐藏」这类
@@ -723,7 +723,7 @@ class WriterDeepReviewService:
         """
 
         self._require_live_llm("writer_deep_review")
-        return self._create_deep_review_with_llm(
+        self._create_deep_review_with_llm(
             object_type=object_type,
             object_id=object_id,
             chapter_id=chapter_id,
@@ -761,7 +761,9 @@ class WriterDeepReviewService:
         prompt_tail: str | None = None,
         extra_findings: list[dict[str, Any]] | None = None,
         meta: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> None:
+        """跑节点、写评审行（一行 aggregate + 各镜头行）；调用方随后按统一诊断回载荷，这里不另拼一份。"""
+
         snapshot = {
             "object_type": object_type,
             "object_id": object_id,
@@ -864,7 +866,6 @@ class WriterDeepReviewService:
             evaluator_llm_call_id=node_result.llm_call_id,
             lens="aggregate",
             parent_evaluation_id=None,
-            evidence_spans_json=_evidence_spans(source["content"], normalized["findings"]),
             overall_score=normalized["overall_score"],
             scores_json=normalized["scores"],
             findings_json=normalized["findings"],
@@ -892,8 +893,7 @@ class WriterDeepReviewService:
                 evaluator_llm_call_id=node_result.llm_call_id,
                 lens=lens,
                 parent_evaluation_id=parent.evaluation_id,
-                evidence_spans_json=_evidence_spans(source["content"], findings),
-                overall_score=_optional_score(payload.get("overall_score")) or (round(mean(scores.values()), 2) if scores else None),
+                overall_score=_lens_overall_score(payload.get("overall_score"), scores),
                 scores_json=scores,
                 findings_json=findings,
                 revision_brief_json=_normalize_revision_brief(payload.get("revision_brief"), findings),
@@ -902,7 +902,6 @@ class WriterDeepReviewService:
             )
             self.session.add(row)
         self.session.flush()
-        return self._review_payload(object_type, object_id)
 
     def _scene_design_sections(self, scene_id: str) -> dict[str, str]:
         """这一场的结构事实段 + 设计背景段（有就给，任何一段渲染失败都只是少一段）。"""
@@ -924,43 +923,6 @@ class WriterDeepReviewService:
         except Exception:  # noqa: BLE001
             _LOGGER.debug("scene design context unavailable for %s", scene_id, exc_info=True)
         return sections
-
-    def _review_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
-        latest = self.session.execute(
-            select(WriterEvaluation)
-            .where(
-                WriterEvaluation.object_type == object_type,
-                WriterEvaluation.object_id == object_id,
-                WriterEvaluation.rubric_id == LITERARY_REVISION_RUBRIC_ID,
-                WriterEvaluation.parent_evaluation_id.is_(None),
-            )
-            .order_by(WriterEvaluation.created_at.desc(), WriterEvaluation.evaluation_id.desc())
-        ).scalars().first()
-        lenses: list[dict[str, Any]] = []
-        if latest is not None:
-            lens_rows = self.session.execute(
-                select(WriterEvaluation)
-                .where(WriterEvaluation.parent_evaluation_id == latest.evaluation_id)
-                .order_by(WriterEvaluation.lens.asc(), WriterEvaluation.evaluation_id.asc())
-            ).scalars().all()
-            lenses = [item for item in (self.serialize_evaluation(row) for row in lens_rows) if item]
-        patch_rows = self.session.execute(
-            select(PassagePatchCandidate)
-            .where(PassagePatchCandidate.object_type == object_type, PassagePatchCandidate.object_id == object_id)
-            .order_by(PassagePatchCandidate.created_at.desc(), PassagePatchCandidate.patch_id.desc())
-        ).scalars().all()
-        latest_payload = self.serialize_evaluation(latest)
-        return {
-            "status": "reviewed" if latest else "not_run",
-            "object_type": object_type,
-            "object_id": object_id,
-            "rubric_id": LITERARY_REVISION_RUBRIC_ID,
-            "latest_evaluation": latest_payload,
-            "latest_score": latest_payload["overall_score"] if latest_payload else None,
-            "requires_human_review": bool(latest_payload["requires_human_review"]) if latest_payload else False,
-            "lens_evaluations": lenses,
-            "patch_candidates": [self.serialize_patch_candidate(row) for row in patch_rows],
-        }
 
     def _run_passage_patch(
         self,
@@ -1851,6 +1813,14 @@ def _optional_score(value: Any) -> float | None:
     return None if score is None else round(score, 2)
 
 
+def _lens_overall_score(value: Any, scores: dict[str, float]) -> float | None:
+    """镜头行的总分：模型给了（合法的）就用它——0.0 也是分，不当作没给；没给才按各维分取平均。"""
+    score = _optional_score(value)
+    if score is not None:
+        return score
+    return round(mean(scores.values()), 2) if scores else None
+
+
 def _normalize_findings(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1920,21 +1890,6 @@ def _revision_brief_from_findings(findings: list[dict[str, Any]]) -> list[dict[s
             }
         )
     return brief
-
-
-def _evidence_spans(content: str, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    spans: list[dict[str, Any]] = []
-    for finding in findings:
-        excerpt = str(finding.get("evidence_excerpt") or "")
-        if not excerpt:
-            continue
-        start = content.find(excerpt)
-        if start < 0:
-            continue
-        spans.append({"text": excerpt, "start": start, "end": start + len(excerpt)})
-        if len(spans) >= 8:
-            break
-    return spans
 
 
 def _preference_summary(rows: list[PassagePatchCandidate]) -> dict[str, list[str]]:

@@ -4,7 +4,7 @@ Each behaviour has its own explicit name; copies that behaved differently were n
 merged. Variants that stay local on purpose (different contract):
 ``pricing._as_int`` (clamps to >= 0), ``scene_design_context._coerce_int`` (0 → None),
 ``learn_extract._as_int`` (parses 【12】-style page labels), ``projects._optional_text``
-(``str()`` of any non-None value), ``literary_quality._string_list`` (de-duplicates),
+(``str()`` of any non-None value), ``literary_quality.service._string_list`` (de-duplicates),
 ``near_final._string_list`` / ``projects._string_list`` (scalar text / wraps a scalar).
 """
 
