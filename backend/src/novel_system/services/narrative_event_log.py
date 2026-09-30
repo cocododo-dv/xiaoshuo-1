@@ -56,7 +56,6 @@ class NarrativeEventLog(NarrativeEventStore):
     def format_state_for_prompt(
         self,
         project_id: str,
-        scene_seq: None = None,
         *,
         scene_id: str,
         pov_character_id: str | None = None,
@@ -67,7 +66,7 @@ class NarrativeEventLog(NarrativeEventStore):
         Wave 4（§5.6）：指定 ``pov_character_id`` 时做 POV 减法投影，隐藏非 POV 秘密内容；``pov=None``
         保持全知视角全量注入。**硬 QC 不走此方法**——它读 ``check_consistency`` 的全量权威状态。
         """
-        snapshot = snapshot_before(self, project_id, require_scene_boundary(scene_seq, scene_id))
+        snapshot = snapshot_before(self, project_id, require_scene_boundary(scene_id))
         if pov_character_id:
             return pov.format_pov_state(snapshot, pov_character_id, onstage_character_ids)
         return digests.format_state(snapshot, onstage_character_ids=onstage_character_ids)
@@ -75,10 +74,9 @@ class NarrativeEventLog(NarrativeEventStore):
     def information_asymmetry_digest(
         self,
         project_id: str,
-        scene_seq: None = None,
-        onstage_character_ids: list[str] | None = None,
         *,
         scene_id: str,
+        onstage_character_ids: list[str] | None = None,
         pov_character_id: str | None = None,
     ) -> str:
         """蓝图 §2 / §11：在场角色之间的信息差摘要（截到这一场之前）。
@@ -86,7 +84,7 @@ class NarrativeEventLog(NarrativeEventStore):
         Wave 4（§5.6）：指定 ``pov_character_id`` 时只展示 POV 独有认知，他人独有内容 / 秘密只给
         内容无关的盲区提示，绝不打印 "Secrets held by X" 正文；``pov=None`` 保持全量。
         """
-        scene_id = require_scene_boundary(scene_seq, scene_id)
+        scene_id = require_scene_boundary(scene_id)
         onstage = list(onstage_character_ids or [])
         if len(onstage) < 2:
             return ""

@@ -52,48 +52,48 @@ def _collect(session) -> dict[str, Any]:
     target = WORLD_TARGET_SCENE
     return {
         "state_omniscient_onstage": log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=target, onstage_character_ids=ONSTAGE
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=ONSTAGE
         ),
         "state_omniscient_all_characters": log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=target
+            WORLD_PROJECT, scene_id=target
         ),
         "state_omniscient_chapter_two_opening": log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=world_scene(2, 1)
+            WORLD_PROJECT, scene_id=world_scene(2, 1)
         ),
         "state_pov_linyuan": log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=target, pov_character_id=LINYUAN, onstage_character_ids=ONSTAGE
+            WORLD_PROJECT, scene_id=target, pov_character_id=LINYUAN, onstage_character_ids=ONSTAGE
         ),
         "state_pov_guzhou": log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=target, pov_character_id=GUZHOU, onstage_character_ids=ONSTAGE
+            WORLD_PROJECT, scene_id=target, pov_character_id=GUZHOU, onstage_character_ids=ONSTAGE
         ),
         "asymmetry_omniscient_suwan_guzhou": log.information_asymmetry_digest(
-            WORLD_PROJECT, None, [SUWAN, GUZHOU], scene_id=target
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=[SUWAN, GUZHOU]
         ),
         # 林远对苏晚有两条独有认知：两条的先后必须与进程的字符串哈希种子无关
         "asymmetry_omniscient_onstage": log.information_asymmetry_digest(
-            WORLD_PROJECT, None, ONSTAGE, scene_id=target
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=ONSTAGE
         ),
         "asymmetry_pov_linyuan": log.information_asymmetry_digest(
-            WORLD_PROJECT, None, ONSTAGE, scene_id=target, pov_character_id=LINYUAN
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=ONSTAGE, pov_character_id=LINYUAN
         ),
         "asymmetry_pov_suwan": log.information_asymmetry_digest(
-            WORLD_PROJECT, None, ONSTAGE, scene_id=target, pov_character_id=SUWAN
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=ONSTAGE, pov_character_id=SUWAN
         ),
         "asymmetry_single_onstage": log.information_asymmetry_digest(
-            WORLD_PROJECT, None, [LINYUAN], scene_id=target, pov_character_id=LINYUAN
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=[LINYUAN], pov_character_id=LINYUAN
         ),
         "recent_checkpoint": canon.format_recent_checkpoint_for_prompt(WORLD_PROJECT, target),
         "recent_checkpoint_pov_linyuan": canon.format_recent_checkpoint_for_prompt(
             WORLD_PROJECT, target, pov_character_id=LINYUAN
         ),
         "pov_known_fact_values_linyuan": sorted(
-            projection.pov_known_fact_values(WORLD_PROJECT, None, LINYUAN, scene_id=target)
+            projection.pov_known_fact_values(WORLD_PROJECT, LINYUAN, scene_id=target)
         ),
         "suppressed_secret_values_linyuan": sorted(
-            projection.suppressed_secret_values(WORLD_PROJECT, None, LINYUAN, ONSTAGE, scene_id=target)
+            projection.suppressed_secret_values(WORLD_PROJECT, LINYUAN, ONSTAGE, scene_id=target)
         ),
         "suppressed_secret_values_guzhou": sorted(
-            projection.suppressed_secret_values(WORLD_PROJECT, None, GUZHOU, ONSTAGE, scene_id=target)
+            projection.suppressed_secret_values(WORLD_PROJECT, GUZHOU, ONSTAGE, scene_id=target)
         ),
         "redact_brief_linyuan": projection.redact_brief(
             [
@@ -102,7 +102,6 @@ def _collect(session) -> dict[str, Any]:
                 "节奏再紧一点",
             ],
             WORLD_PROJECT,
-            None,
             scene_id=target,
             pov_character_id=LINYUAN,
             onstage_character_ids=ONSTAGE,

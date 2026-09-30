@@ -297,7 +297,6 @@ class ChapterPlanningContextBuilder:
         try:
             text = NarrativeEventLog(self.session).format_state_for_prompt(
                 project_id,
-                None,
                 scene_id=first_scene.scene_id,
                 pov_character_id=None,
                 onstage_character_ids=None,

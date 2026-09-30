@@ -92,12 +92,12 @@ def test_digests_name_characters_and_places_instead_of_printing_ids(session) -> 
     seed_narrative_world(session)
     log = NarrativeEventLog(session)
 
-    state = log.format_state_for_prompt(WORLD_PROJECT, None, scene_id=WORLD_TARGET_SCENE, onstage_character_ids=CAST)
+    state = log.format_state_for_prompt(WORLD_PROJECT, scene_id=WORLD_TARGET_SCENE, onstage_character_ids=CAST)
     pov_state = log.format_state_for_prompt(
-        WORLD_PROJECT, None, scene_id=WORLD_TARGET_SCENE, pov_character_id=LINYUAN, onstage_character_ids=CAST
+        WORLD_PROJECT, scene_id=WORLD_TARGET_SCENE, pov_character_id=LINYUAN, onstage_character_ids=CAST
     )
     asymmetry = log.information_asymmetry_digest(
-        WORLD_PROJECT, None, CAST, scene_id=WORLD_TARGET_SCENE, pov_character_id=LINYUAN
+        WORLD_PROJECT, scene_id=WORLD_TARGET_SCENE, onstage_character_ids=CAST, pov_character_id=LINYUAN
     )
 
     assert "### 林远 (CHAR_LINYUAN)" in state
@@ -117,7 +117,7 @@ def test_ids_without_a_known_name_are_printed_as_before(session) -> None:
     session.commit()
     log = NarrativeEventLog(session)
 
-    state = log.format_state_for_prompt(WORLD_PROJECT, None, scene_id=WORLD_TARGET_SCENE, onstage_character_ids=["路人甲"])
+    state = log.format_state_for_prompt(WORLD_PROJECT, scene_id=WORLD_TARGET_SCENE, onstage_character_ids=["路人甲"])
     report = log.check_consistency("路人甲站起身说话。", WORLD_PROJECT, WORLD_TARGET_SCENE, character_ids=["路人甲"])
 
     assert "### 路人甲\n- alive: dead" in state

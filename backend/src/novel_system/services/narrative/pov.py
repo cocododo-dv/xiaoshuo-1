@@ -297,19 +297,18 @@ class PovKnowledgeProjection:
         self.log = event_log if event_log is not None else NarrativeEventStore(session)
         self.positions = NarrativePositionService(session)
 
-    def _snapshot(self, project_id: str, scene_seq: None, scene_id: str | None) -> ProjectionSnapshot:
-        return snapshot_before(self.log, project_id, require_scene_boundary(scene_seq, scene_id))
+    def _snapshot(self, project_id: str, scene_id: str | None) -> ProjectionSnapshot:
+        return snapshot_before(self.log, project_id, require_scene_boundary(scene_id))
 
     def pov_known_fact_values(
         self,
         project_id: str,
-        scene_seq: None,
         pov_character_id: str,
         *,
         scene_id: str,
     ) -> set[str]:
         """POV 已知的全部事实值集合——供脱敏与信息盲区判定。"""
-        snapshot = self._snapshot(project_id, scene_seq, scene_id)
+        snapshot = self._snapshot(project_id, scene_id)
         return pov_known_fact_values(
             snapshot,
             pov_character_id,
@@ -317,26 +316,25 @@ class PovKnowledgeProjection:
         )
 
     def suppressed_secret_values(
-        self, project_id: str, scene_seq: None, pov_character_id: str,
+        self, project_id: str, pov_character_id: str,
         onstage_character_ids: list[str] | None = None,
         *,
         scene_id: str,
     ) -> set[str]:
         """非 POV 角色持有、且 POV 不知的秘密/错误信念内容集合。"""
-        snapshot = self._snapshot(project_id, scene_seq, scene_id)
+        snapshot = self._snapshot(project_id, scene_id)
         return suppressed_secret_values(snapshot, pov_character_id, onstage_character_ids)
 
     def format_state_for_prompt(
         self,
         project_id: str,
-        scene_seq: None = None,
         *,
         scene_id: str,
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> str:
         """POV 过滤的权威状态摘要（写作提示词用）；pov=None → 全知摘要（逐字节不变）。"""
-        snapshot = self._snapshot(project_id, scene_seq, scene_id)
+        snapshot = self._snapshot(project_id, scene_id)
         if not pov_character_id:
             return digests.format_state(snapshot, onstage_character_ids=onstage_character_ids)
         return format_pov_state(snapshot, pov_character_id, onstage_character_ids)
@@ -344,14 +342,13 @@ class PovKnowledgeProjection:
     def information_asymmetry_digest(
         self,
         project_id: str,
-        scene_seq: None = None,
-        onstage_character_ids: list[str] | None = None,
         *,
         scene_id: str,
+        onstage_character_ids: list[str] | None = None,
         pov_character_id: str | None = None,
     ) -> str:
         """POV 视角的信息不对称摘要；pov=None → 全知摘要（逐字节不变）。"""
-        scene_id = require_scene_boundary(scene_seq, scene_id)
+        scene_id = require_scene_boundary(scene_id)
         onstage = list(onstage_character_ids or [])
         if len(onstage) < 2:
             return ""
@@ -364,7 +361,6 @@ class PovKnowledgeProjection:
         self,
         findings: list[Any],
         project_id: str,
-        scene_seq: None,
         *,
         scene_id: str | None = None,
         pov_character_id: str | None = None,
@@ -380,7 +376,6 @@ class PovKnowledgeProjection:
             return list(findings), []
         suppressed = self.suppressed_secret_values(
             project_id,
-            scene_seq,
             pov_character_id,
             onstage_character_ids,
             scene_id=scene_id,
@@ -393,7 +388,6 @@ class PovKnowledgeProjection:
         self,
         brief_lines: list[str],
         project_id: str,
-        scene_seq: None = None,
         *,
         scene_id: str | None = None,
         pov_character_id: str | None = None,
@@ -401,7 +395,7 @@ class PovKnowledgeProjection:
     ) -> list[str]:
         """从自动补丁 brief（``list[str]`` 指令）中剔除引用非 POV 秘密的条目。"""
         safe, _redacted = self.desensitize_findings(
-            list(brief_lines), project_id, scene_seq,
+            list(brief_lines), project_id,
             scene_id=scene_id,
             pov_character_id=pov_character_id,
             onstage_character_ids=onstage_character_ids,

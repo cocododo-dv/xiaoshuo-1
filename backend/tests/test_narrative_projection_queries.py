@@ -89,21 +89,20 @@ def _digest_calls(session, cast: list[str]) -> dict[str, Callable[[], object]]:
     target = WORLD_TARGET_SCENE
     return {
         "state_pov": lambda: log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=target, pov_character_id=LINYUAN, onstage_character_ids=cast
+            WORLD_PROJECT, scene_id=target, pov_character_id=LINYUAN, onstage_character_ids=cast
         ),
         "state_omniscient": lambda: log.format_state_for_prompt(
-            WORLD_PROJECT, None, scene_id=target, onstage_character_ids=cast
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=cast
         ),
         "asymmetry_pov": lambda: log.information_asymmetry_digest(
-            WORLD_PROJECT, None, cast, scene_id=target, pov_character_id=LINYUAN
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=cast, pov_character_id=LINYUAN
         ),
         "asymmetry_omniscient": lambda: log.information_asymmetry_digest(
-            WORLD_PROJECT, None, cast, scene_id=target
+            WORLD_PROJECT, scene_id=target, onstage_character_ids=cast
         ),
         "redact_brief": lambda: projection.redact_brief(
             ["节奏再紧一点", "把秘密写得更隐晦"],
             WORLD_PROJECT,
-            None,
             scene_id=target,
             pov_character_id=LINYUAN,
             onstage_character_ids=cast,

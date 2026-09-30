@@ -224,7 +224,7 @@ def test_information_asymmetry_digest_pov_hides_secrets(session) -> None:
     session.commit()
 
     out = log.information_asymmetry_digest(
-        "PROJ1", None, ["CHAR_X", "CHAR_POV"], scene_id="CH_EVT01_SC02", pov_character_id="CHAR_POV",
+        "PROJ1", scene_id="CH_EVT01_SC02", onstage_character_ids=["CHAR_X", "CHAR_POV"], pov_character_id="CHAR_POV",
     )
     assert "毒药在酒里" not in out
     assert "Secrets held by CHAR_X" not in out

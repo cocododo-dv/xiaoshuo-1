@@ -135,7 +135,7 @@ def test_projection_onstage_derivation_feeds_pov_known(session) -> None:
     session.commit()
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
-    known = proj.pov_known_fact_values(PROJECT, None, "Y", scene_id=f"{CHAPTER}_SC02")
+    known = proj.pov_known_fact_values(PROJECT, "Y", scene_id=f"{CHAPTER}_SC02")
     assert "旧仓库" in known
 
 
@@ -174,7 +174,7 @@ def test_asymmetry_digest_pov_hides_other_secret(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.information_asymmetry_digest(
-        PROJECT, None, ["X", "Y"], scene_id=f"{CHAPTER}_SC02", pov_character_id="Y",
+        PROJECT, scene_id=f"{CHAPTER}_SC02", onstage_character_ids=["X", "Y"], pov_character_id="Y",
     )
     assert "X毒了酒" not in out
     assert "Secrets held by X" not in out
@@ -199,7 +199,7 @@ def test_asymmetry_digest_pov_shows_own_exclusive_knowledge(session) -> None:
 
     proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.information_asymmetry_digest(
-        PROJECT, None, ["X", "Y"], scene_id=f"{CHAPTER}_SC02", pov_character_id="Y",
+        PROJECT, scene_id=f"{CHAPTER}_SC02", onstage_character_ids=["X", "Y"], pov_character_id="Y",
     )
     assert "密道在西墙" in out          # POV 独有认知可见
     assert "内奸是Y" not in out         # 他人独有认知（POV 未知）内容不可见

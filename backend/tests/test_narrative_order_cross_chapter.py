@@ -77,7 +77,6 @@ def test_second_chapter_first_scene_replays_previous_chapter(session) -> None:
     assert state.get("location") == "archive"
     prompt = log.format_state_for_prompt(
         PROJECT,
-        None,
         scene_id="NO_CH2_SC1",
         onstage_character_ids=["CHAR_A"],
     )
