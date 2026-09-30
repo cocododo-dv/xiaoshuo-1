@@ -46,6 +46,38 @@ export async function srConfirmDeleteBooks(books) {
   });
 }
 
+/* 删书的整个流程（页头单本删除与书库多选删除共用）：确认 → 批量删除 → 说结果 → 只把真删掉的书交给 onDeleted，
+   连同它们删之前在书库里的位置（切到原位置的邻居用）。没删成的书不当成删掉了（审计 F05-06：以前把选中的全部
+   交出去，没删成的那本正开着时页面也跳走了）。single：页头的「删除这本书」（说法按一本书说）；书库多选即使只选了
+   一本也按「删除了 N 本」说。返回 store 的结果；没确认或请求失败返回 null。 */
+export async function srDeleteBooksFlow(books, { single = false, onStart, onDeleted } = {}) {
+  const list = (books || []).filter(Boolean);
+  if (!list.length || !(await srConfirmDeleteBooks(list))) return null;
+  if (onStart) onStart();
+  const before = srBooks();
+  const positions = Object.fromEntries(list.map((b) => [b.id, before.findIndex((x) => x.id === b.id)]));
+  let result;
+  try {
+    result = await srDeleteBooks(list.map((b) => b.id));
+  } catch (e) {
+    srNotifyError(e, "删除没有完成，请稍后重试。");
+    return null;
+  }
+  const { deletedIds, failedItems } = result;
+  const reasonOf = (item) => srErrorInfo(item.error, "请稍后重试。").message;
+  if (single) {
+    if (failedItems.length) srNotify(`没有删掉：${reasonOf(failedItems[0])}`);
+    else srNotify(`已删除参考书《${list[0].title}》`, "neutral");
+  } else if (failedItems.length) {
+    const titleOf = (id) => { const b = list.find((x) => x.id === id); return b ? `《${b.title}》` : "一本书"; };
+    srNotify(`删除了 ${deletedIds.length} 本，另有 ${failedItems.length} 本没删成。${failedItems.map((item) => `${titleOf(item.book_id)}：${reasonOf(item)}`).join("")}`);
+  } else {
+    srNotify(`已删除 ${deletedIds.length} 本参考书`, "neutral");
+  }
+  if (deletedIds.length && onDeleted) onDeleted(deletedIds, positions);
+  return result;
+}
+
 /* 左栏（和窄屏下的书库对话框）：书库标题 + 导入、参考书活动、筛选、书单；「选择」后多选删除。 */
 export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
   useSrStore("books", "activity");
@@ -76,24 +108,13 @@ export function SrLibrary({ bookId, onSelect, onImport, onDeleted }) {
   const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
   const allVisibleSelected = books.length > 0 && books.every((b) => selected.has(b.id));
 
+  /* 多选删除：确认之后才进「删除中…」；删完（哪怕有几本没删成）退出选择模式，请求整个失败时留在选择里 */
   const deleteSelected = async () => {
     const chosen = all.filter((b) => selected.has(b.id));
     if (!chosen.length || busy) return;
-    if (!(await srConfirmDeleteBooks(chosen))) return;
-    setBusy(true);
     try {
-      const result = await srDeleteBooks(chosen.map((b) => b.id));
-      const failed = (result.results || []).filter((item) => !item.deleted && !(item.error && item.error.code === "STYLE_REFERENCE_BOOK_NOT_FOUND"));
-      const done = chosen.length - failed.length;
-      const titleOf = (id) => { const b = chosen.find((x) => x.id === id); return b ? `《${b.title}》` : "一本书"; };
-      if (failed.length) {
-        const reasons = failed.map((item) => `${titleOf(item.book_id)}：${srErrorInfo(item.error, "请稍后重试。").message}`).join("");
-        srNotify(`删除了 ${done} 本，另有 ${failed.length} 本没删成。${reasons}`);
-      } else srNotify(`已删除 ${done} 本参考书`, "neutral");
-      stopSelecting();
-      if (onDeleted) onDeleted(chosen.map((b) => b.id));
-    } catch (e) {
-      srNotifyError(e, "删除没有完成，请稍后重试。");
+      const result = await srDeleteBooksFlow(chosen, { onStart: () => setBusy(true), onDeleted });
+      if (result) stopSelecting();
     } finally {
       setBusy(false);
     }

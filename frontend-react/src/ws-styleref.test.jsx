@@ -248,6 +248,48 @@ describe("参考书库：多选删除", () => {
     expect(byTestId("sr-select-bar")).toBeNull();
   });
 
+  it("多选删除有一本没删成、而它正是眼下打开的那本：页面留在它上面，不跳到别的书（F05-06）", async () => {
+    state.books = [bookRow(), bookRow({ book_id: "bk-b", title: "乙书" }), bookRow({ book_id: "bk-c", title: "丙书" })];
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    client.apiPost.mockImplementation((url) => (url === `${API}/books/bulk-delete`
+      ? Promise.resolve({
+        results: [{ book_id: "bk-a", deleted: false, error: { code: "STYLE_REFERENCE_BOOK_LEARNING" } }, { book_id: "bk-b", deleted: true }],
+        deleted_count: 1, failed_count: 1,
+      })
+      : Promise.resolve({})));
+    await mountView();
+    expect($(".sr-stage-title").textContent).toBe("甲书");
+    await openStage("book");
+    await click(byTestId("sr-books-select"));
+    await click($('[data-sr-select="bk-a"]'));
+    await click($('[data-sr-select="bk-b"]'));
+    state.books = [bookRow(), bookRow({ book_id: "bk-c", title: "丙书" })];
+    await click(byTestId("sr-books-delete-selected"));
+    await settle();
+    expect($(".sr-stage-title").textContent).toBe("甲书");
+    expect($(".sr-step.is-active").dataset.stage).toBe("book");
+    const said = window.alert.mock.calls.map(([m]) => m).join("\n");
+    expect(said).toContain("删除了 1 本，另有 1 本没删成。《甲书》：这本书正在学习文风");
+  });
+
+  it("删掉的是眼下打开的那本：切到它原来位置上的邻居（F05-06）", async () => {
+    state.books = [bookRow(), bookRow({ book_id: "bk-b", title: "乙书" }), bookRow({ book_id: "bk-c", title: "丙书" })];
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    client.apiPost.mockImplementation((url) => (url === `${API}/books/bulk-delete`
+      ? Promise.resolve({ results: [{ book_id: "bk-b", deleted: true }], deleted_count: 1, failed_count: 0 })
+      : Promise.resolve({})));
+    await mountView();
+    await click($('[data-sr-book="bk-b"]'));
+    await settle();
+    expect($(".sr-stage-title").textContent).toBe("乙书");
+    state.books = [bookRow(), bookRow({ book_id: "bk-c", title: "丙书" })];
+    await click($(".sr-stage-actions button"));
+    await click(byTestId("sr-header-delete"));
+    await settle();
+    expect($(".sr-stage-title").textContent).toBe("丙书");
+    expect(window.alert.mock.calls.map(([m]) => m).join("\n")).toContain("已删除参考书《乙书》");
+  });
+
   it("确认框点取消：不发删除请求", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     await mountView();
