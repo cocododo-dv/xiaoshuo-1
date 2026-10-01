@@ -9,7 +9,7 @@ import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-inte
 import { useUndoToast, UndoToast } from "./ws-undo-toast.jsx";
 import {
   S2_STEPS, S2_BE_STEPS, S2_BE_KEY, S2_STEP_DATA, TRACK_LABEL,
-  s2BlankScaffolds, s2Content, s2SceneNo, s2StaleMap,
+  s2BlankScaffolds, s2Content, s2PrependHistory, s2SceneNo, s2StaleMap,
 } from "./ws-snow-model.js";
 import {
   activeWorkId, s2Key, s2WorkIdOfKey, useSnowDocument, useSnowEvents, useSnowNotices, useSnowSyncMirror, useStableCallback,
@@ -22,7 +22,7 @@ import { S2StepEditor } from "./ws-snow-scaffolds.jsx";
 import { S2SceneAiActions, useSnowTriage } from "./ws-snow-scenes.jsx";
 import { S2AiBar, S2Coach, useSnowCoach } from "./ws-snow-coach.jsx";
 import { S2Rail } from "./ws-snow-rail.jsx";
-import { S2History, S2Ref, S2SnapDiff, S2UpstreamDiff } from "./ws-snow-history.jsx";
+import { S2History, S2Ref, S2ServerVersions, S2SnapDiff, S2UpstreamDiff, S2VersionDiff } from "./ws-snow-history.jsx";
 import {
   S2DeliveredBanner, S2Footer, S2ImportPlanDialog, S2ResetDialog, S2ResyncBanner, S2StaleBanner,
   S2StepList, S2Strip, S2SyncNotice, S2Tab,
@@ -75,7 +75,9 @@ function WsSnowflake({ initialStep }) {
 
   /* 十步内容（本机缓存写穿 SnowSync）与同步层镜像。先挂内容：水合时它先重读缓存，
      后面的落点 / 场景目标处理拿到的就是重读之后的状态。 */
-  const { drafts, setDrafts, scaffolds, setScaffolds, checks, setChecks, states, setStates, history, setHistory, savedAt, latestRef } = useSnowDocument(myKey, snowWorkId);
+  const {
+    drafts, setDrafts, scaffolds, setScaffolds, checks, setChecks, states, setStates, history, setHistory, savedAt, latestRef, flushNow, replaceNow,
+  } = useSnowDocument(myKey, snowWorkId);
   const { syncState, health: beHealth, resync: resyncInfo, briefTick } = useSnowSyncMirror(snowWorkId);
 
   /* 落在哪一步、按步骤记住的页签、外部跳步 / 跳场（钩子在 ws-snow-workbench.jsx）。挂在内容之后：
@@ -102,9 +104,7 @@ function WsSnowflake({ initialStep }) {
   /* 历史时间线：snap 是可回滚的内容快照（只给最近 20 条保留，控制体积）。key 显式传入——
      异步生成回来时作者可能已经换了步，记账记在发起时的那一步上。 */
   const pushHist = (action, note, who = "我", snap = null, key = activeKey) =>
-    setHistory(prev => [{ t: Date.now(), who, action, note: note || "", key, snap }, ...prev]
-      .slice(0, 80)
-      .map((h, i) => (i < 20 ? h : (h.snap ? { ...h, snap: null } : h))));
+    setHistory(prev => s2PrependHistory(prev, { t: Date.now(), who, action, note: note || "", key, snap }));
   const snapNow = (key) => {
     const cur = latestRef.current;
     try { return JSON.parse(JSON.stringify({ draft: cur.drafts[key] || "", scaffold: cur.scaffolds[key] })); } catch (e) { return null; }
@@ -229,9 +229,12 @@ function WsSnowflake({ initialStep }) {
   const { narrow, ctxOpen, setCtxOpen, railShown, toggleContext, ctxRef, ctxBtnRef, ctxExpanded, guideFirstVisit } = useSnowContextRail(activeKey);
   const openBriefInCoach = useStableCallback(() => { setTabFor(activeKey, "coach"); setCtxOpen(false); });
 
-  const { goStep, confirmStep, reviewStep, showUpstreamDiff, skipStep, restoreSnap, applySnap, upDiff, setUpDiff, snapDiff, setSnapDiff } = useSnowStepFlow({
+  const {
+    goStep, confirmStep, reviewStep, showUpstreamDiff, skipStep, restoreSnap, applySnap, upDiff, setUpDiff, snapDiff, setSnapDiff,
+    previewVersion, restoreVersion, versionDiff, setVersionDiff, versionsTick,
+  } = useSnowStepFlow({
     activeKey, active, idx, states, setStates, staleMap, curBeStale, pushHist, snapNow, pushToast, showToast, catalogSyncRef,
-    selectStep, setTabFor, setDrafts, setScaffolds, setHistory,
+    selectStep, setTabFor, setDrafts, setScaffolds, setHistory, flushDoc: flushNow, replaceDoc: replaceNow,
   });
 
   const { regenFromUpstream, aiFocus, adoptDirection, adoptDirectionAsText, generateStep, regenWithBrief, stepAI, isTableStep } = useSnowAiActions({
@@ -254,7 +257,7 @@ function WsSnowflake({ initialStep }) {
   });
 
   /* 这张视图自己开着模态框（分章面板、导入、清空、两个对照框）时，全局快捷键一律不响 */
-  const modalOpen = chapterPlanOpen || importOpen || resetOpen || !!upDiff || !!snapDiff;
+  const modalOpen = chapterPlanOpen || importOpen || resetOpen || !!upDiff || !!snapDiff || !!versionDiff;
   useSnowKeyboard({ modalOpen, narrow, ctxOpen, setCtxOpen, confirmStep, idx, goStep });
 
 
@@ -381,7 +384,16 @@ function WsSnowflake({ initialStep }) {
                 briefUsage={briefUsage} onRegenWithBrief={regenWithBrief} structBusy={structBusy} busyTarget={genTarget}
                 err={genErr} onClearErr={() => gen.clearGenErr(activeKey)} />
             )}
-            {tab === "history" && <S2History history={history} go={selectStep} onRestore={restoreSnap} />}
+            {tab === "history" && (
+              <div className="sf-history">
+                {/* 上面是这一步在服务器上的每一版（R15a：换了浏览器、整步被清空也找得回），下面是这台电脑上的操作记录 */}
+                <S2ServerVersions workId={snowWorkId} step={active} refreshKey={versionsTick} onPreview={(item) => previewVersion(activeKey, item)} />
+                <section className="sf-history-local" aria-labelledby="sf-history-local-title">
+                  <h3 className="sf-history-title" id="sf-history-local-title">本机的操作记录</h3>
+                  <S2History history={history} go={selectStep} onRestore={restoreSnap} />
+                </section>
+              </div>
+            )}
             {tab === "ref" && <S2Ref active={active} drafts={drafts} scaffolds={scaffolds} />}
           </div>
 
@@ -412,6 +424,10 @@ function WsSnowflake({ initialStep }) {
       {snapDiff && (
         <S2SnapDiff h={snapDiff} current={{ draft: drafts[snapDiff.key] || "", scaffold: scaffolds[snapDiff.key] }} refs={scaffolds}
           onApply={() => applySnap(snapDiff)} onClose={() => setSnapDiff(null)} />
+      )}
+      {versionDiff && (
+        <S2VersionDiff diff={versionDiff} current={{ draft: drafts[versionDiff.key] || "", scaffold: scaffolds[versionDiff.key] }} refs={scaffolds}
+          onRestore={restoreVersion} onClose={() => { if (!versionDiff.restoring) setVersionDiff(null); }} />
       )}
       {importOpen && (
         <S2ImportPlanDialog value={importText} busy={importBusy} error={importError}

@@ -137,6 +137,14 @@ export function s2PreserveFeOnly(key, prev, next) {
 export function s2AdoptServerScaffold(scaffolds, key, next) {
   return s2SettlePlanning({ ...scaffolds, [key]: s2PreserveFeOnly(key, (scaffolds || {})[key], next) });
 }
+/* 历史时间线添几条到最前（entries 可以是一条或一组，按给的顺序排在最前）：最多留 80 条，只有最近 20 条带可回滚的
+   内容快照（控制本机缓存的体积）。记一笔、清空十步、回滚快照、从服务器恢复都按这一条规矩记账。 */
+export function s2PrependHistory(history, entries) {
+  return [...[].concat(entries || []), ...(Array.isArray(history) ? history : [])]
+    .slice(0, 80)
+    .map((h, i) => (i < 20 ? h : (h.snap ? { ...h, snap: null } : h)));
+}
+
 export function s2MergeChecks(stored) {
   const base = s2DefaultChecks();
   if (stored) Object.keys(base).forEach(k => { if (Array.isArray(stored[k]) && stored[k].length === base[k].length) base[k] = stored[k]; });

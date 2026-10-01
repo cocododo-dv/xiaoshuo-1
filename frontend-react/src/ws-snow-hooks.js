@@ -150,6 +150,23 @@ export function useSnowDocument(myKey, workId) {
     return t || null;
   };
 
+  /* 立刻落盘（不等 450ms 防抖）：从服务器恢复一步之前，先把此刻的内容写进本机缓存、交给上行，让它成为服务器上的上一版 */
+  const flushNow = () => {
+    try { setSavedAt(writeNow()); } catch (e) { markLocalFailure(e); }
+  };
+  /* 整份换掉并立刻落盘（从服务器恢复一步，R15a）：next = fn(此刻的五块内容)。不等防抖——排着的上行（上一次键入排下的
+     700ms 定时器）读的是本机缓存，落盘之后它读到的已经是恢复后的内容，不会把恢复之前的旧文字又推回服务器去。 */
+  const replaceNow = (fn) => {
+    const next = fn(latestRef.current);
+    latestRef.current = next;
+    flushNow();
+    setDrafts(next.drafts);
+    setScaffolds(next.scaffolds);
+    setChecks(next.checks);
+    setStates(next.states);
+    setHistory(next.history);
+  };
+
   /* persist to localStorage (debounced) */
   useEffect(() => {
     const id = setTimeout(() => {
@@ -188,7 +205,7 @@ export function useSnowDocument(myKey, workId) {
     },
   });
 
-  return { drafts, setDrafts, scaffolds, setScaffolds, checks, setChecks, states, setStates, history, setHistory, savedAt, latestRef };
+  return { drafts, setDrafts, scaffolds, setScaffolds, checks, setChecks, states, setStates, history, setHistory, savedAt, latestRef, flushNow, replaceNow };
 }
 
 /* ---- 同步层镜像：同步状态、后端 per-step 健康、物化后待同步的场、要点镜像的版本号 ----

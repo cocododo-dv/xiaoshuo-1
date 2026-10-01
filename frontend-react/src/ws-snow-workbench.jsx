@@ -2,11 +2,12 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
 import { useFocusTrap, isImeComposing } from "./ws-dialog.jsx";
 import {
-  S2_STEPS, S2_STATE_LABEL,
-  s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates, s2FindStepKey,
-  s2LandingStep, s2MergeScaffolds, s2SettlePlanning, s2StepMarkdown,
+  S2_BE_KEY, S2_STEPS, S2_STATE_LABEL,
+  s2AdoptServerScaffold, s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates,
+  s2FindStepKey, s2LandingStep, s2MergeScaffolds, s2PrependHistory, s2SettlePlanning, s2StepMarkdown,
 } from "./ws-snow-model.js";
 import {
   activeWorkId, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
@@ -22,7 +23,7 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    · useSnowWorkbenchApi —— AI 通道（生成 / 教练 / 分诊）调视图的那张显式接口；
    · useSnowLanding —— 落在哪一步、按步骤记住的页签、外部跳步 / 跳场（ws:snow-step / ws:snow-scene）；
    · useSnowContextRail —— 右栏：宽屏可收起的第三栏、窄屏抽屉（焦点陷阱与还焦点）、写作指引首访展开；
-   · useSnowStepFlow —— 确认 / 复核 / 上游对照 / 略过 / 快照回滚；
+   · useSnowStepFlow —— 确认 / 复核 / 上游对照 / 略过 / 快照回滚 / 服务器上保存的版本（预览与恢复）；
    · useSnowAiActions —— 整步生成、按方向生成、定向补全、分诊，以及交给编辑器的 AI 工具面；
    · useSnowMoreMenu —— 「更多」菜单：导入结构、导出大纲、清空十步构思；
    · useSnowKeyboard —— ⌘↵ 确认本步、←/→ 翻步。
@@ -196,13 +197,16 @@ export function useSnowContextRail(activeKey) {
   return { narrow, ctxOpen, setCtxOpen, railShown, toggleContext, ctxRef, ctxBtnRef, ctxExpanded, guideFirstVisit };
 }
 
-/* ---- 步骤流转：确认 / 复核 / 上游对照 / 略过 / 回滚 ---- */
+/* ---- 步骤流转：确认 / 复核 / 上游对照 / 略过 / 回滚 / 服务器上保存的版本 ----
+   flushDoc / replaceDoc 是十步内容的「立刻落盘」与「整份换掉并立刻落盘」（ws-snow-hooks.js 的 useSnowDocument）。 */
 export function useSnowStepFlow({
   activeKey, active, idx, states, setStates, staleMap, curBeStale, pushHist, snapNow, pushToast, showToast, catalogSyncRef,
-  selectStep, setTabFor, setDrafts, setScaffolds, setHistory,
+  selectStep, setTabFor, setDrafts, setScaffolds, setHistory, flushDoc, replaceDoc,
 }) {
   const [upDiff, setUpDiff] = useSS(null);     // 上游 diff 对话框 { key, loading, items, error, reason }
   const [snapDiff, setSnapDiff] = useSS(null); // 待预览的历史快照条目
+  const [versionDiff, setVersionDiff] = useSS(null); // 服务器版本预览 { key, item, loading, draft, error, restoring }
+  const [versionsTick, setVersionsTick] = useSS(0);  // 恢复之后让「服务器上保存的版本」重读一次
   const goStep = (i) => selectStep(S2_STEPS[Math.max(0, Math.min(S2_STEPS.length - 1, i))].key);
   const nextUnfinished = (from) => {
     for (let i = 1; i <= S2_STEPS.length; i++) {
@@ -297,6 +301,76 @@ export function useSnowStepFlow({
     showToast(`已略过 · ${active.name}（已在服务端留痕）`, "slate"); goStep(idx + 1);
     return true;
   };
+  /* ---- 服务器上保存的版本（R15a）：预览某一版（按版本取草稿），确认后恢复成这一步的最新一版 ---- */
+  const previewVersion = async (key, item) => {
+    if (!item || !item.step_run_id) return;
+    const runId = item.step_run_id;
+    const mine = (d) => !!(d && d.item && d.item.step_run_id === runId);
+    setVersionDiff({ key, item, loading: true, draft: null, error: "", restoring: false });
+    try {
+      const workId = activeWorkId();
+      if (!workId) throw new Error("作品尚未就绪");
+      const res = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace/steps/${S2_BE_KEY[key]}/history?step_run_id=${encodeURIComponent(runId)}&include_draft=true`);
+      const row = ((res && res.items) || []).find(it => it && it.step_run_id === runId) || null;
+      if (!row || !row.draft) throw new Error("服务器没有给出这一版的内容");
+      setVersionDiff(d => (mine(d) ? { ...d, loading: false, draft: row.draft } : d));
+    } catch (err) {
+      setVersionDiff(d => (mine(d) ? { ...d, loading: false, error: (err && err.message) || "稍后重试" } : d));
+    }
+  };
+  /* 恢复：先把本机此刻的内容存上服务器（它成为上一版，恢复之后也找得回），再请服务器把那一版另存为最新一版
+     （POST …/restore），回包的规范草稿经 SnowSync.applyServerStep 落成这一步的脚手架——与 AI 生成落地同一条路：
+     只活在前端的线索 / 错误信念接着用，第 10 步的形态 / 视角照旧以 09 为准。本机内容整份换掉并立刻落盘（replaceDoc），
+     排着的上行读到的就是恢复后的内容，不会把恢复前的旧文字推回去；恢复前的样子在「操作记录」里留一份快照可回滚。
+     恢复出来的是待确认的一版：确认过的步骤显示「已改动 · 待重新确认」（不会被自动补批），其余回到「进行中」。
+     失败（含严格模式下「前面的步骤还没确认」的 409）什么都不动，回执说清楚。 */
+  const restoreVersion = async () => {
+    const d = versionDiff;
+    if (!d || !d.draft || d.restoring) return;
+    const { key, item } = d;
+    const st = S2_STEPS.find(s => s.key === key);
+    if (!st) return;
+    setVersionDiff({ ...d, restoring: true });
+    const workId = activeWorkId();
+    try {
+      if (!workId) throw new Error("作品尚未就绪");
+      if (flushDoc) flushDoc();
+      try { await SnowSync.retry(workId); } catch (e) { /* 存不上就算了：恢复前的样子还在本机快照里 */ }
+      const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${S2_BE_KEY[key]}/restore`, { step_run_id: item.step_run_id });
+      if (!res || !res.step) throw new Error("恢复回包缺少 step");
+      let fe = null;
+      try { fe = SnowSync.applyServerStep(workId, key, res.step); } catch (e) { fe = null; }
+      try { if (res.workspace) SnowSync.captureBriefs(workId, res.workspace); } catch (e) { /* 要点镜像下次水合再跟上 */ }
+      const backup = snapNow(key);
+      const reconfirm = !!res.step.revised_after_approval;
+      replaceDoc(doc => {
+        const next = { ...doc };
+        if (fe && fe.scaffold) {
+          next.scaffolds = s2AdoptServerScaffold(doc.scaffolds, key, fe.scaffold);
+          next.drafts = { ...doc.drafts, [key]: "" };
+        } else if (fe && fe.text != null) {
+          next.drafts = { ...doc.drafts, [key]: fe.text };
+        }
+        next.states = { ...doc.states, [key]: doc.states[key] === "done" && reconfirm ? "done" : "active" };
+        next.history = s2PrependHistory(doc.history, {
+          t: Date.now(), who: "我", action: "从服务器恢复", note: `${st.num} ${st.name} ← 第 ${item.version} 版 · 恢复前留底`, key, snap: backup,
+        });
+        return next;
+      });
+      setVersionDiff(null);
+      setVersionsTick(t => t + 1);
+      selectStep(key);
+      setTabFor(key, "edit");
+      const notice = res.notice && String(res.notice.message || "").trim();
+      pushToast({
+        text: `已恢复 · ${st.name}回到第 ${item.version} 版${reconfirm ? " · 改动了确认过的一步，记得重新确认" : ""}${notice ? ` · ${notice}` : ""}`,
+        tone: notice ? "crimson" : "gold", timeout: notice ? 9000 : 6000,
+      });
+    } catch (err) {
+      setVersionDiff(null);
+      failToast("恢复没有完成", err);
+    }
+  };
   const restoreSnap = (h) => { if (h && h.snap) setSnapDiff(h); };
   const applySnap = (h) => {
     if (!h || !h.snap) return;
@@ -305,11 +379,14 @@ export function useSnowStepFlow({
     const backup = snapNow(h.key);
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
     if (h.snap.scaffold) setScaffolds(prev => s2SettlePlanning({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
-    setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
+    setHistory(prev => s2PrependHistory(prev, { t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }));
     selectStep(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
   };
-  return { goStep, confirmStep, reviewStep, showUpstreamDiff, skipStep, restoreSnap, applySnap, upDiff, setUpDiff, snapDiff, setSnapDiff };
+  return {
+    goStep, confirmStep, reviewStep, showUpstreamDiff, skipStep, restoreSnap, applySnap, upDiff, setUpDiff, snapDiff, setSnapDiff,
+    previewVersion, restoreVersion, versionDiff, setVersionDiff, versionsTick,
+  };
 }
 
 /* ---- AI：整步生成 / 按方向生成 / 定向补全 / 分诊（通道本身在 ws-snow-generation.js 的 useSnowGeneration） ---- */
@@ -459,9 +536,7 @@ export function useSnowMoreMenu({
     setScaffolds(s2MergeScaffolds(null));
     setChecks(s2DefaultChecks());
     setStates(s2DefaultStates());
-    setHistory(prev => [{ t: now, who: "我", action: "清空十步构思", note: `${backups.length} 步清空前留了快照`, key: activeKey, snap: null }, ...backups, ...prev]
-      .slice(0, 80)
-      .map((h, i) => (i < 20 ? h : (h.snap ? { ...h, snap: null } : h))));
+    setHistory(prev => s2PrependHistory(prev, [{ t: now, who: "我", action: "清空十步构思", note: `${backups.length} 步清空前留了快照`, key: activeKey, snap: null }, ...backups]));
     setResetOpen(false);
     showToast(backups.length ? `已清空十步构思 · 清空前的内容在「历史」里，可以逐步回滚` : "已清空十步构思", "slate");
   };

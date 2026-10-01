@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const catalog = vi.hoisted(() => ({
   get: vi.fn(() => []),
 }));
+// 视图里直接发请求的几处（历史页签的「服务器上保存的版本」、AI 分诊……）一律走假的 client：单测绝不碰真后端
+vi.mock("./lib/client.js", () => ({
+  apiGet: vi.fn(async () => ({})),
+  apiPost: vi.fn(async () => ({})),
+  apiPatch: vi.fn(async () => ({})),
+  apiPut: vi.fn(async () => ({})),
+  apiDelete: vi.fn(async () => ({})),
+}));
 
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: catalog }));
 vi.mock("./ws-works.jsx", () => ({
