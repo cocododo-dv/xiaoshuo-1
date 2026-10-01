@@ -133,3 +133,20 @@ def test_0098_exports_leftover_card_rows_next_to_the_database_before_dropping(
     assert [row["row_id"] for row in exported["tables"]["voice_profiles"]] == ["voice_profile_v1"]
     assert exported["tables"]["voice_profiles"][0]["content"] == "占位声线"
     assert [row["row_id"] for row in exported["tables"]["relation_profiles"]] == ["relation_profile_v1"]
+
+
+def test_0098_card_export_never_lands_in_the_public_repository() -> None:
+    """导出的卡片行可能带真实人物 id 与文字（旧预检拿人物 id 铸的占位卡）：库默认就在仓库的 backend/ 下，导出文件与库
+    文件一样必须被 .gitignore 挡住（复核 P09b-R3）。"""
+    from fnmatch import fnmatch
+
+    repo_root = Path(__file__).resolve().parents[2]
+    patterns = [
+        line.strip()
+        for line in (repo_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith(("#", "!")) and "/" not in line.strip()
+    ]
+    exported = _export_path(repo_root / "backend" / "novel_system.db").name
+    assert any(fnmatch(exported, pattern) for pattern in patterns), exported
+    # 备份清单（*.db.meta.json）按惯例入库，不能被同一条规则顺手挡掉
+    assert not any(fnmatch("novel_system_pre_0098.db.meta.json", pattern) for pattern in patterns)

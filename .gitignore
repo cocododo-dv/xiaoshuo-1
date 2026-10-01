@@ -10,6 +10,8 @@ __pycache__/
 *.db-wal
 # 迁移前留的运行库备份(如 novel_system.db.bak-0075-20260718),含真实数据,不入仓库
 *.db.bak-*
+# 迁移 0098 删声线卡 / 关系卡两张表前把残留行导出到库文件旁边(<库文件>.0098-voice-relation-cards.json),同样可能含真实人物与文字
+*.0098-voice-relation-cards.json
 *.egg-info/
 .pytest_cache/
 .venv/

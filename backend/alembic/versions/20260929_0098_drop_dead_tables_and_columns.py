@@ -10,7 +10,8 @@ Create Date: 2026-09-29
 - ``voice_profiles`` / ``relation_profiles``：声线卡 / 关系卡（批准 #15，重评 R8）。产品里没有任何地方能写它们；
   唯一的来源是 2026-09-20 以前的预检补建的占位卡。万一库里还有行，先把它们原样写进库文件旁边的
   ``<库文件>.0098-voice-relation-cards.json`` 再删表（不让 ``alembic upgrade head`` 卡住启动脚本）；
-  库不是文件（内存库）又有行时才拒绝升级。
+  库不是文件（内存库）又有行时才拒绝升级。卡片行可能带真实人物 id 与文字：这个文件与库文件一样不入仓库
+  （``.gitignore`` 的 ``*.0098-voice-relation-cards.json``）。
 - ``review_items.retry_count`` / ``max_retry`` / ``snooze_until``、``review_derived_snoozes.snooze_until``、
   ``snowflake_revision_links.resolved_at``、``snowflake_scene_plans.involved_foreshadowing_json`` /
   ``downstream_obligations_json``（规划器读的是字典键，不是这两列）、``style_reference_evidences.is_synthetic``、
