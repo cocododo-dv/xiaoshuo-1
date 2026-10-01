@@ -65,10 +65,12 @@ function sceneDesignModel(hit) {
     spine: chapter.spine || "",
     sceneCount: (chapter.scenes || []).length,
   } : null;
+  /* 事实行只读这一场自己的：章上的视角 / 时间 / 地点是没人能填、也没人写的死字段（重评 R10，批准 #17a），
+     不再拿来补空 */
   const facts = [
-    { k: "视角", v: scene.povName || (chapter && chapter.pov) || "" },
-    { k: "时间", v: design.storyTime || (chapter && chapter.time) || "" },
-    { k: "地点", v: design.location || (chapter && chapter.place) || "" },
+    { k: "视角", v: scene.povName || "" },
+    { k: "时间", v: design.storyTime || "" },
+    { k: "地点", v: design.location || "" },
     { k: "出场", v: cast.join("、") },
   ];
   const summary = sdText(scene.summary);
