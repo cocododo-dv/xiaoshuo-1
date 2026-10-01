@@ -493,16 +493,21 @@ def test_style_first_candidates_never_carry_the_house_taste_score(client, sessio
     assert set(blinded) <= {draft.row_id for draft in drafts}
 
 
-def test_style_first_run_result_candidate_summaries_carry_no_house_taste_score(session, monkeypatch) -> None:
-    """重评 R2 复核补充 5 的第三处——运行结果里的候选摘要（``style_candidates``）：作者手笔直起的场景只给像不像
-    读数，不附房风分，也不为它现算（两个终选视图 P09b 已经收了，这一处在 scene_run 里；I7 合并胶水 G4）。
-    排序审计里存着的 quality_score 是检查点产品的一部分，原样留着。"""
+def _forbid_house_taste_scoring(monkeypatch) -> None:
+    """运行结果装配候选摘要时一为房风分现算（``adversarial_rank_score``）就失败。"""
     from novel_system.services.scene_run import pipeline as pipeline_module
 
     def _no_house_taste_score(*_args, **_kwargs):
         raise AssertionError("作者手笔直起的候选摘要不该为房风分现算")
 
     monkeypatch.setattr(pipeline_module, "adversarial_rank_score", _no_house_taste_score)
+
+
+def test_style_first_run_result_candidate_summaries_carry_no_house_taste_score(session, monkeypatch) -> None:
+    """重评 R2 复核补充 5 的第三处——运行结果里的候选摘要（``style_candidates``）：作者手笔直起的场景只给像不像
+    读数，不附房风分，也不为它现算（两个终选视图 P09b 已经收了，这一处在 scene_run 里；I7 合并胶水 G4）。
+    排序审计里存着的 quality_score 是检查点产品的一部分，原样留着。"""
+    _forbid_house_taste_scoring(monkeypatch)
     _seed_scene(session, constraint_intensity=0.5)  # standard：两份候选，不停下终选，一路归档
     result = _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
     session.commit()
@@ -517,6 +522,51 @@ def test_style_first_run_result_candidate_summaries_carry_no_house_taste_score(s
     # 存进检查点的排序审计不变：仍带 quality_score
     rankings = session.get(SceneRunState, SCENE_ID).run_checkpoint_json["artifact_refs"]["style_candidate_rankings"]
     assert len(rankings) == 2 and all(isinstance(ranking.get("quality_score"), float) for ranking in rankings)
+
+
+def test_the_shipped_single_style_first_candidate_carries_no_house_taste_score(session, monkeypatch) -> None:
+    """出厂配置（复核 I7-R2）：Best-of-N 开关默认关，作者手笔直起的场景只起一稿，这一稿没有排序审计（只有多稿排序
+    才写）——以前运行结果正是为这一份现算并附上房风分。现在它与多稿一样只标 scores_withheld，不附分、不现算。"""
+    from novel_system.services.scene_run.style_candidates import StyleCandidatesMixin
+
+    # 撤掉本文件的三稿授权，回到产品自己的开关（默认关 → 一稿）
+    monkeypatch.delenv("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", raising=False)
+    monkeypatch.setattr(Orchestrator, "_best_of_n_count", StyleCandidatesMixin._best_of_n_count)
+    _forbid_house_taste_scoring(monkeypatch)
+    _seed_scene(session, constraint_intensity=0.5)  # 与上一条同一个标准场，只差开关
+    result = _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
+    session.commit()
+
+    assert result["scene_status"] == "archived"
+    refs = session.get(SceneRunState, SCENE_ID).run_checkpoint_json["artifact_refs"]
+    assert refs["style_initial_candidate_count"] == 1
+    assert refs["style_candidate_rankings"] == [None], "前提：这一稿没有排序审计，也就没有存着的分可用"
+    [summary] = result["style_candidates"]
+    assert summary["scores_withheld"] == "style_first"
+    assert "adversarial_score" not in summary
+    assert summary["selected"] is True
+
+
+def test_a_style_first_candidate_without_a_stored_score_is_not_scored_either(monkeypatch) -> None:
+    """复核 I7-R2：作者手笔直起、排序审计里没存分的候选（出厂配置下每一场都是这样）同样只标 scores_withheld——
+    不附房风分，也不为它现算。"""
+    from novel_system.services.scene_generation import StyleGenerationResult
+    from novel_system.services.scene_run.pipeline import PipelineMixin
+
+    _forbid_house_taste_scoring(monkeypatch)
+    single = StyleGenerationResult(
+        row_id="cand_single_style_first",
+        content="只起一稿、没有排序审计的一份。",
+        llm_call_id="call_cand_single_style_first",
+        bundle_id="bundle_w3",
+        bundle_hash="hash_w3",
+        ranking_audit=None,
+    )
+    [summary] = PipelineMixin._candidate_summaries([single], house_taste_withheld=True)
+
+    assert summary["scores_withheld"] == "style_first"
+    assert "adversarial_score" not in summary
+    assert summary["selected"] is True
 
 
 def test_candidate_summaries_elsewhere_keep_the_house_taste_score_and_reuse_a_stored_one(monkeypatch) -> None:
