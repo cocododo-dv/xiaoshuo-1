@@ -513,6 +513,21 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     expect(host.querySelector(".wr-dxd").textContent).toContain("AI：没有要改的");
   });
 
+  it("「AI 看这一段」看的是空段（409 WRITER_PASSAGE_REVIEW_NO_TEXT）：面板照说服务端那句，不给重试", async () => {
+    const noText = Object.assign(new Error("要看的那一段是空的，没有可看的字。"), { code: "WRITER_PASSAGE_REVIEW_NO_TEXT", status: 409, details: {} });
+    const { WriterRoom, WrDocs } = await loadWriter({ passage: noText });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+    await selectByOffsets(host.querySelector(".wr-editor"), 0, 5);
+    await click([...document.querySelector(".wr-irw-bar").querySelectorAll("button")].find((node) => node.textContent.includes("AI 看这一段")));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("要看的那一段是空的，没有可看的字。"), T);
+    const notice = [...host.querySelectorAll(".wr-dxd .wr-dxd-notice")].find((node) => node.textContent.includes("要看的那一段是空的"));
+    expect([...notice.querySelectorAll("button")]).toEqual([]);
+  });
+
   it("选中跨两段的字：「AI 看这几段」按范围看（POST paragraph_start / paragraph_end），面板说「看了第 1–2 段」", async () => {
     const note = { evaluation_id: "writer_passage_eval_3", paragraph_index: 0, focus_paragraphs: [0, 1], paragraph_start: 0, paragraph_end: 1, whole_scene: true, about_signal_id: null, about_signal_ids: [], verdict: "no_finding", verdict_label: "没有要改的", assessment: "两段之间没有矛盾。", rewrite_brief: "", question: "", findings_count: 0, status: "current" };
     const passage = () => diagnosisPayload([ECHO], { passage_reviews: [note], passage_review: note });

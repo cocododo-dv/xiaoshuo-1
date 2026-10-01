@@ -318,6 +318,11 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
         {lastPassage && (
           <DxPassageNote passage={lastPassage} onRewriteParagraph={onRewriteParagraph} />
         )}
+        {/* 独立看一段 / 几段（深改工具条「AI 看这一段」）没成：照实说（没配模型 → 去系统设置；那一段是空的 → 说没有字）。
+            复核某条发现的失败挂在那条发现下面（DxFindingDetail）；过去独立看一段的失败哪里都不显示 */}
+        {passageError && String(passageError.key || "").startsWith("para:") && (
+          <DxAiError error={passageError.error} onOpenSettings={onOpenSettings} />
+        )}
         {handoffMiss && (
           <Notice tone="warn" className="wr-dxd-notice">
             文学质量里指的那一处在当前作者稿里没有对应位置——它可能来自另一层文本（比如运行终稿），或已经改掉了。
