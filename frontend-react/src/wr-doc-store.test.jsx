@@ -1,11 +1,11 @@
 // WrDocs / WrDocVersions store 层单测：save(ensure+PATCH 带 base_revision_no) +
 // words_rollup 回流 + 409 冲突重水合 + 非409只留底 + 跨作品 sid 前缀防污染 + 修订映射 + 句级 diff。
 //
-// 依赖链：WrDocs 经 window.WsCatalog.__backendSceneId(slug)→scene_id、
+// 依赖链：WrDocs 经 window.WsCatalog.backendSceneId(slug)→scene_id、
 //        缓存键经 window.wsKey 加 ::<activeId> 后缀、docMeta 经 metaKeyOf 加作品前缀。
 // 故先 import ws-catalog（装 window.WsCatalog + 间接装 ws-works），settle 后再 import wr-doc-store。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_PROJECT } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -82,9 +82,9 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
       { content: "<p>正文</p>", base_revision_no: 1 }), T);
   });
 
-  it("save 成功把 words_rollup 经 WsCatalog.__applyWordsRollup 回流", async () => {
+  it("save 成功把 words_rollup 经 WsCatalog.applyWordsRollup 回流", async () => {
     const { mod } = await loadDocs();
-    const spy = vi.spyOn(window.WsCatalog, "__applyWordsRollup");
+    const spy = vi.spyOn(window.WsCatalog, "applyWordsRollup");
     await mod.WrDocs.save("ch01s1", "<p>x</p>");
     await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(
       "ch01s1", { chapter_words: 120, scene_words: 120 }), T);
@@ -645,6 +645,164 @@ describe("WrDocs 提升权威正文", () => {
   });
 });
 
+/* 复核 Q1c-R1：目录给乐观新建、回包丢了的场记别名（W1-R7B-1）时认错了场，写作台就把作者在那一场写下的头几句挪进别的场、
+   存上服务端，同步与恢复里什么也没有。这里是正文 store 一侧看到的结果：认对了跟过去，认不准照实进同步与恢复。 */
+describe("WrDocs × 目录：回包丢了的新建场里写下的字（复核 Q1c-R1 · W1-R7B-1）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /* 世界：目录里一章（c1 / s1）；作者稿服务端按 scene_id 各一份（ensure 建 d-<scene_id>，PATCH 按修订号比对）；
+     POST …/chapters/c1/scenes 由用例的 create(第几次) 回答。→ { WsCatalog, WsTrashStore, mod, client, drafts, chapter, creates() } */
+  async function loadWorld(create) {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { catalog: [chapter] });
+    const drafts = {};
+    let creates = 0;
+    client.apiPost.mockImplementation((url) => {
+      const ensure = /\/author-drafts\/scene\/([^/]+)\/ensure$/.exec(url);
+      if (ensure) {
+        const d = drafts[ensure[1]] || (drafts[ensure[1]] = { id: `d-${ensure[1]}`, revision: 1, content: "" });
+        return Promise.resolve({ draft: { draft_id: d.id, revision_no: d.revision, content: d.content } });
+      }
+      if (/\/catalog\/chapters\/c1\/scenes$/.test(url)) {
+        creates += 1;
+        return create(creates, chapter);
+      }
+      return Promise.resolve({});
+    });
+    client.apiPatch.mockImplementation((url, body) => {
+      const hit = /\/author-drafts\/(d-[^/?]+)$/.exec(url);
+      if (!hit) return Promise.resolve({});
+      const d = Object.values(drafts).find((x) => x.id === hit[1]);
+      if (Number(body.base_revision_no) !== d.revision) {
+        return Promise.reject(Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT", status: 409, details: { current_revision_no: d.revision } }));
+      }
+      d.revision += 1;
+      d.content = body.content;
+      return Promise.resolve({ draft: { draft_id: d.id, revision_no: d.revision, content: d.content } });
+    });
+    const { WsCatalog, WsTrashStore } = await import("./ws-catalog.jsx");
+    await settleActive("prj-main");
+    await vi.waitFor(() => expect(WsCatalog.get().length).toBeGreaterThan(0), T);
+    const mod = await import("./wr-doc-store.jsx");
+    return { WsCatalog, WsTrashStore, mod, client, drafts, chapter, creates: () => creates };
+  }
+  const sceneRow = (id) => ({ ...DEFAULT_CHAP.scenes[0], slug: id, scene_id: id, title: "新场景" });
+  const typedIn = (html) => String(html || "").includes("头几句");
+  const A_TEXT = "<p>A 场里作者写下的头几句。</p>";
+  /* 写作台随后窗口重新聚焦、网回来了：本机还没同步上的字都会在这时补发 */
+  const comeBack = () => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("online")); };
+
+  it("A 没建成、B 建成并落在 A 乐观时的位置：A 里写下的头几句从不进 B 的作者稿，照实进同步与恢复", async () => {
+    let rejectA = null;
+    const { WsCatalog, mod, drafts, creates } = await loadWorld((n, chapter) => {
+      if (n === 1) return new Promise((_ok, reject) => { rejectA = reject; });
+      chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return Promise.resolve({ scene: { scene_id: "s-b", slug: "s-b" } });
+    });
+
+    WsCatalog.addScene("ch01");                                                // A：建场请求在路上
+    const tmpA = WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates()).toBe(1), T);
+    mod.WrDocs.load(tmpA);
+    void mod.WrDocs.save(tmpA, A_TEXT).catch(() => {});                        // 它在等 A 的后端 id
+    WsCatalog.addScene("ch01");                                                // B：建成了，还没写字
+    await vi.waitFor(() => expect(creates()).toBe(2), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("database is locked"), { status: 500, code: "DATABASE_ERROR", retryable: true }));
+    await vi.waitFor(() => expect(WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    mod.WrDocs.load("s-b");                                                    // 写作台随后打开 B
+    comeBack();
+    await vi.waitFor(() => expect(mod.WrRecovery.list().some((entry) => typedIn(entry.html))).toBe(true), T);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(typedIn(drafts["s-b"] && drafts["s-b"].content)).toBe(false);
+    expect(typedIn(mod.WrDocs.cachedHTML("s-b"))).toBe(false);
+    expect(mod.WrRecovery.list().filter((entry) => typedIn(entry.html))).toEqual([
+      expect.objectContaining({ sid: tmpA, type: "unsynced" }),
+    ]);
+    expect(window.alert.mock.calls.some(([message]) => String(message).includes("新建这一场时写下"))).toBe(true);
+  });
+
+  it("A 其实建好了、只是回包丢了：头几句跟到建好的那一场、存上服务端，同步与恢复里没有它（W1-R7B-1）", async () => {
+    let rejectA = null;
+    const { WsCatalog, mod, drafts, creates } = await loadWorld((n, chapter) => new Promise((_ok, reject) => {
+      chapter.scenes = [...chapter.scenes, sceneRow("s-a")];                    // 服务端建好了
+      rejectA = reject;
+    }));
+
+    WsCatalog.addScene("ch01");
+    const tmpA = WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates()).toBe(1), T);
+    mod.WrDocs.load(tmpA);
+    void mod.WrDocs.save(tmpA, A_TEXT).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("连接断开"), { status: 0, code: "NETWORK_ERROR", retryable: true }));   // 回包在路上丢了
+    await vi.waitFor(() => expect(WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-a"]), T);
+    expect(WsCatalog.sceneById(tmpA)).toMatchObject({ scene: { sid: "s-a" } });
+    comeBack();
+    await vi.waitFor(() => expect(typedIn(drafts["s-a"] && drafts["s-a"].content)).toBe(true), T);
+    expect(mod.WrRecovery.list().filter((entry) => typedIn(entry.html))).toEqual([]);
+  });
+
+  it("A 没建成；写后那一次目录重读在路上时回收站恢复了一场同名的、落在 A 的位置：头几句不进恢复回来的那一场，照实进同步与恢复（复核 Q1c-R4）", async () => {
+    let rejectA = null;
+    const { WsCatalog, WsTrashStore, mod, client, drafts, chapter, creates } = await loadWorld(() => (
+      new Promise((_ok, reject) => { rejectA = reject; })
+    ));
+    // 回收站里的那一场有自己的作者稿
+    const RESTORED = "<p>恢复回来的那一场原有的正文。</p>";
+    drafts["s-restored"] = { id: "d-s-restored", revision: 3, content: RESTORED };
+    const postWorld = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body) => {
+      if (!/\/api\/v2\/trash\/[^/]+\/restore$/.test(url)) return postWorld(url, body);
+      chapter.scenes = [...chapter.scenes, sceneRow("s-restored")];             // 恢复回来，排在这一章末尾——正是 A 乐观时的位置
+      return Promise.resolve({});
+    });
+    // 写后那一次目录重读扣在路上：它在服务端读到的是此刻的那一章
+    const getWorld = client.apiGet.getMockImplementation();
+    let releaseRead = null;
+    client.apiGet.mockImplementation((url) => {
+      if (releaseRead || !/\/catalog$/.test(url)) return getWorld(url);
+      const snapshot = JSON.parse(JSON.stringify(chapter));
+      return new Promise((resolve) => { releaseRead = () => resolve({ chapters: [snapshot] }); });
+    });
+
+    WsCatalog.addScene("ch01");
+    const tmpA = WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates()).toBe(1), T);
+    mod.WrDocs.load(tmpA);
+    void mod.WrDocs.save(tmpA, A_TEXT).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("数据库正忙"), { status: 503, code: "DATABASE_BUSY" }));   // A 没建成
+    await vi.waitFor(() => expect(releaseRead).toBeTruthy(), T);
+    WsTrashStore.restore("scene:s-restored");                                   // 回收站恢复 → 在飞的那一次目录重读作废、再读一次
+    await vi.waitFor(() => expect(chapter.scenes.map((s) => s.scene_id)).toContain("s-restored"), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    releaseRead();
+    await vi.waitFor(() => expect(WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-restored"]), T);
+    mod.WrDocs.load("s-restored");                                              // 写作台随后打开恢复回来的那一场
+    comeBack();
+    await vi.waitFor(() => expect(mod.WrRecovery.list().some((entry) => typedIn(entry.html))).toBe(true), T);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(WsCatalog.sceneById(tmpA)).toBeNull();
+    expect(drafts["s-restored"]).toMatchObject({ revision: 3, content: RESTORED });
+    const kept = mod.WrRecovery.list().filter((entry) => typedIn(entry.html));
+    expect(kept).toEqual([expect.objectContaining({ sid: tmpA, type: "unsynced" })]);
+    expect(window.alert.mock.calls.some(([message]) => String(message).includes("新建这一场时写下"))).toBe(true);
+    expect(window.alert.mock.calls.some(([message]) => String(message).includes("在别处被修改过"))).toBe(false);
+    // 「恢复」不往恢复回来的那一场里存：照实说认不出是哪一场
+    await expect(mod.WrRecovery.restore(kept[0].id)).rejects.toMatchObject({ code: "RECOVERY_SCENE_UNAVAILABLE" });
+    expect(drafts["s-restored"]).toMatchObject({ revision: 3, content: RESTORED });
+  });
+});
+
 describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -653,20 +811,48 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("list 把 revision_no/created_at 映射为 revisionNo/at", async () => {
+  it("list 只读当前作者稿（GET current）、分页取版本：revision_no/created_at 映射为 revisionNo/at，带下一页的游标", async () => {
     const { mod, client } = await loadDocs();
+    stopWarmHydrate(mod);
+    client.apiPost.mockClear();
+    const gets = [];
     client.apiGet.mockImplementation((url) => {
+      gets.push(url);
       if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
-      if (/\/author-drafts\/d1\/revisions$/.test(url)) {
-        return Promise.resolve({ items: [{ revision_no: 2, words: 10, origin: "edited", created_at: "2026-06-01" }] });
+      if (url === "/api/v1/author-drafts/scene/s1/current") return Promise.resolve({ draft: { draft_id: "d1", revision_no: 3 } });
+      if (/\/author-drafts\/d1\/revisions\?/.test(url)) {
+        return Promise.resolve(url.includes("cursor=")
+          ? { items: [{ revision_no: 1, words: 5, origin: "edited", created_at: "2026-05-31" }], pagination: { has_next: false, next_cursor: null } }
+          : { items: [{ revision_no: 2, words: 10, origin: "edited", created_at: "2026-06-01" }], pagination: { has_next: true, next_cursor: "c-2" } });
       }
       return Promise.resolve({});
     });
-    const list = await mod.WrDocVersions.list("ch01s1");
-    expect(list).toEqual([{ revisionNo: 2, words: 10, origin: "edited", at: "2026-06-01" }]);
+    const first = await mod.WrDocVersions.list("ch01s1");
+    expect(first).toEqual({ items: [{ revisionNo: 2, words: 10, origin: "edited", at: "2026-06-01" }], nextCursor: "c-2" });
+    expect(gets).toContain("/api/v1/author-drafts/d1/revisions?limit=50");
+    const older = await mod.WrDocVersions.list("ch01s1", { cursor: "c-2" });
+    expect(older).toEqual({ items: [{ revisionNo: 1, words: 5, origin: "edited", at: "2026-05-31" }], nextCursor: null });
+    expect(gets).toContain("/api/v1/author-drafts/d1/revisions?limit=50&cursor=c-2");
+    // 只读：看版本历史不替这一场建作者稿
+    expect(client.apiPost.mock.calls.filter(([url]) => /\/author-drafts\//.test(url))).toEqual([]);
   });
 
-  it("同一场并发读版本 / 正文 / draftId 只发一次 ensure（开发模式 effect 连跑两遍）", async () => {
+  it("没有作者稿的一场打开「对比」：版本是空的，一个 POST 都不发（重评 R15a）", async () => {
+    const { mod, client } = await loadDocs();
+    stopWarmHydrate(mod);
+    client.apiPost.mockClear();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
+      if (url === "/api/v1/author-drafts/scene/s1/current") return Promise.resolve({ draft: null });
+      return Promise.resolve({});
+    });
+    await expect(mod.WrDocVersions.list("ch01s1")).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(mod.WrDocVersions.paras("ch01s1", 1)).resolves.toEqual([]);
+    expect(client.apiPost).not.toHaveBeenCalled();
+    expect(client.apiGet.mock.calls.some(([url]) => /\/revisions/.test(url))).toBe(false);
+  });
+
+  it("同一场并发读 draftId 只发一次 ensure（开发模式 effect 连跑两遍）；读版本 / 正文不再 ensure", async () => {
     const { mod, client } = await loadDocs();
     // 目录装载后的预热水合另有自己的一次读取（水合总是读服务端，W1 复核四 W1-R4B-6；前一个用例留下的旧实例在它退役之前
     // 也可能预热一次）：这里只数被测的版本 / 正文 / draftId 这几个调用发出的 ensure
@@ -682,7 +868,8 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     });
     client.apiGet.mockImplementation((url) => {
       if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
-      if (/\/author-drafts\/d1\/revisions$/.test(url)) return Promise.resolve({ items: [] });
+      if (url === "/api/v1/author-drafts/scene/s1/current") return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1 } });
+      if (/\/author-drafts\/d1\/revisions\?/.test(url)) return Promise.resolve({ items: [] });
       if (/\/author-drafts\/d1\/revisions\/\d+$/.test(url)) return Promise.resolve({ revision: { content: "<p>旧版一句。</p>" } });
       return Promise.resolve({});
     });
@@ -691,14 +878,15 @@ describe("WrDocVersions（修订列表映射 + 句级 diff 纯函数）", () => 
     const second = mod.WrDocVersions.list("ch01s1");
     const third = mod.WrDocVersions.paras("ch01s1", 1);
     const fourth = mod.WrDocs.draftId("ch01s1");
+    const fifth = mod.WrDocs.draftId("ch01s1");
     await vi.waitFor(() => expect(ensures).toBe(1), T);
-    ensure.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
-
-    await expect(first).resolves.toEqual([]);
-    await expect(second).resolves.toEqual([]);
+    await expect(first).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(second).resolves.toEqual({ items: [], nextCursor: null });
     await expect(third).resolves.toEqual(["旧版一句。"]);
+    ensure.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "" } });
     await expect(fourth).resolves.toBe("d1");
-    // 可证伪：去掉 in-flight 共享，四个调用各发一次 ensure
+    await expect(fifth).resolves.toBe("d1");
+    // 可证伪：去掉 in-flight 共享，两个 draftId 各发一次 ensure
     expect(ensures).toBe(1);
   });
 

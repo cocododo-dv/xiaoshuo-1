@@ -1,5 +1,5 @@
 import { WsWorks } from "./ws-works.jsx";
-import { apiGet, apiPost } from "./lib/client.js";
+import { apiGet } from "./lib/client.js";
 import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 import { createKeyedLoader } from "./lib/store-kit.js";
 import { catFromApiChapter, catNormalizeAct } from "./ws-catalog-adapt.js";
@@ -21,7 +21,6 @@ import { readyWorkId } from "./lib/ready-work.js";
    （这里照旧转出 WsTrashStore）。
    ========================================================== */
 
-const CAT_LS = "arr.chapters.v2";            // v2：目录收敛后的新键；旧键由旧版编排台自动写入的陈旧种子，不再读取
 /* 能发请求的当前作品（加载占位 / 空书架 / 新建作品还没拿到正式 id 时是 null） */
 const catActiveId = () => readyWorkId(WsWorks);
 
@@ -115,10 +114,8 @@ function catApplyRollupStats(rollup) {
      goal/obstacle/turn 槽位，附 kindFields 标签元数据。
    · set() 写穿点改为 diff 拆解：字段变化→PATCH，新增→POST，删除→v1 trash，
      排序→v1 scene-order（复用既有逻辑，不另起排序端点）。
-   · 一次性迁移：旧 localStorage 目录编辑（arr.chapters.v2::<id>）在后端目录
-     为空时经 POST catalog/import 上行，打 ws_catalog_migrated_v1::<id> 标记。 */
-
-const CAT_MIGRATED_LS = "ws_catalog_migrated_v1";
+   · 6 月原型时期的旧本机目录（arr.chapters.v2::<id>）不再上行（批准 #25，重评 R16）：那一次性迁移和它
+     调用的 POST catalog/import 都已删除，浏览器里的旧键原样留着、不再读。 */
 
 /* ---- 缓存与装载 ---- */
 const CAT_EMPTY = Object.freeze([]);
@@ -224,23 +221,21 @@ function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
 /* 读取器（lib/store-kit）：按作品合并在飞请求；本机写入进行中或写入之前发出的读取回来时不写缓存——
    否则写后补读会并进写入之前那一次，回来的是写入前的服务端状态，刚改的标题在屏上退回去（审计 F01-05）。 */
 const catLoader = createKeyedLoader({
-  async fetch(workId, options) {
-    // 旧本机目录的一次性上行只在启动 / 换作品那次装载里试（显式 { migrate: true }）；写后补读、重试都不试
-    const migrate = !!(options && options.migrate);
-    let data = await apiGet(catApiBase(workId));
-    let chapters = (data && data.chapters) || [];
-    if (migrate && !chapters.length) {
-      const imported = await catMigrateLegacy(workId);
-      if (imported) {
-        data = await apiGet(catApiBase(workId));
-        chapters = (data && data.chapters) || [];
-      }
-    }
-    return chapters.map(catFromApiChapter);
+  async fetch(workId) {
+    // 每一次读取带编号：回包丢了的新建场只等它记下之后的第一次读取，那一次读失败或作废就作罢（复核 Q1c-R1 / R4，见 ws-catalog-diff.js）
+    const readNo = catWriter.readStarted(workId);
+    const data = await apiGet(catApiBase(workId));
+    return { readNo, chapters: ((data && data.chapters) || []).map(catFromApiChapter) };
   },
-  apply(workId, mapped) {
+  apply(workId, { readNo, chapters: mapped }) {
+    // 2026-09-19 的场景编号迁移（位置式 sid → 稳定的 scene_id）照计划再留一轮（重评 R16）
     catMigrateSidKeys(workId, mapped);
     catTrackAliases(workId, catCache[workId], mapped);
+    // 新建一场的回包丢了（建好了、回包没回来）：这一次重读里认出它，临时 sid 记成它的别名（复核 W1-R7B-1）；
+    // 这一页已经认得的场（缓存里这一份有后端 id 的）不是它（复核 Q1c-R1）
+    catWriter.reconcileCreates(workId, mapped, catCache[workId], readNo).forEach(([from, to]) => {
+      (catAliasMap[workId] || (catAliasMap[workId] = {}))[from] = to;
+    });
     catCache[workId] = mapped;
     catReadyMap[workId] = true;
     delete catErrorMap[workId];
@@ -256,11 +251,11 @@ const catLoader = createKeyedLoader({
 });
 
 /* 装载（在飞就复用）。新作品开始装载时立即通知订阅者清掉上一部作品的场景选择，避免跨作品串稿。 */
-function catFetch(workId, options) {
+function catFetch(workId) {
   if (!isRealWorkId(workId)) return Promise.resolve(false);
   const fresh = !catLoader.inflight(workId);
   if (fresh) delete catErrorMap[workId];
-  const run = catLoader.load(workId, options);
+  const run = catLoader.load(workId);
   if (fresh) catNotify();
   return run;
 }
@@ -269,25 +264,6 @@ function catFetch(workId, options) {
 function catRefetch(workId) {
   if (!isRealWorkId(workId)) return Promise.resolve(false);
   return catLoader.invalidate(workId);
-}
-
-/* 旧 localStorage 目录编辑 → 一次性上行（仅后端目录为空时；import 端点 loopback 免 token） */
-async function catMigrateLegacy(workId) {
-  try {
-    if (localStorage.getItem(CAT_MIGRATED_LS + "::" + workId)) return false;
-    const raw = localStorage.getItem(CAT_LS + "::" + workId);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (!Array.isArray(parsed) || !parsed.length) {
-      localStorage.setItem(CAT_MIGRATED_LS + "::" + workId, new Date().toISOString());
-      return false;
-    }
-    await apiPost(catApiBase(workId) + "/import", { chapters: parsed });
-    localStorage.setItem(CAT_MIGRATED_LS + "::" + workId, new Date().toISOString());
-    return true;
-  } catch (e) {
-    console.warn("[WsCatalog] 旧目录迁移失败（保留旧键，下次再试）:", e);
-    return false;
-  }
 }
 
 /* 写失败统一提示；以服务端为准的重拉由 catLoader.write 收尾时统一做 */
@@ -442,7 +418,7 @@ const WsCatalog = {
      锚点 / 只建空壳章），雪花做得越完整反而掉进越差的那条。分章算法搬到后端、作者在预览
      面板里确认之后，两者都没有了调用方，留着只会让人以为还有第二条路。 */
   /* —— 字数（写作器自动保存时调用）：本地即时更新；
-     权威 rollup 由正文保存响应经 __applyWordsRollup 注入，统计走服务端 —— */
+     权威 rollup 由正文保存响应经 applyWordsRollup 注入，统计走服务端 —— */
   recordSceneWords(sid, count) {
     const hit = this.sceneById(sid);
     if (!hit) return;
@@ -472,9 +448,17 @@ const WsCatalog = {
   /* 反向依赖的登记口（见 catLoadedHooks）：返回注销函数 */
   onLoaded(fn) { return catRegister(catLoadedHooks, fn); },
   onPlanTitlesSynced(fn) { return catRegister(catPlanTitleHooks, fn); },
-  /* —— FE-ALIGN 内部接缝（非契约面）—— */
-  __backendSceneId: catBackendSceneId,
-  __applyWordsRollup(sid, rollup) {
+  /* 以服务端为准重读一部作品的目录（省略 = 当前作品）：在飞的那一次作废，结束后恰好再读一次。
+     服务端在别处改了目录（送审 / 批准、回流、章任务跑完、雪花物化）之后调它。 */
+  refresh(workId) { return catRefetch(workId || catActiveId()); },
+  /* 旧名：还有写作台 / AI 起草台 / 构思视图的几处在用（ws-writer-room、ws-chapter-run-state、ws-scene-api、
+     ws-snow-editors-story），它们的包换成 refresh 之后删掉 */
+  __refresh(workId) { return catRefetch(workId || catActiveId()); },
+  /* 场景 sid → 后端 scene_id（async：乐观新建的场等它建好）；没有后端 id（还没同步到后端、不在目录里）是 undefined。
+     写作台、AI 起草台、正文 store 按后端 id 发请求都经它（视图一侧的唯一入口是 ws-scene-id.js 的 sceneApiId） */
+  backendSceneId: catBackendSceneId,
+  /* 正文保存回包的 words_rollup → 这一场 / 这一章的字数与书架统计（服务端算的数为准） */
+  applyWordsRollup(sid, rollup) {
     if (!rollup) return;
     const hit = this.sceneById(sid);
     const id = catActiveId();
@@ -488,7 +472,6 @@ const WsCatalog = {
     }
     if (!catApplyRollupStats(rollup)) catPushTotalsSoon();
   },
-  __refresh(workId) { return catRefetch(workId || catActiveId()); },
 };
 
 /* hook：订阅目录 + 作品切换 */
@@ -505,10 +488,10 @@ function useCatalogChapters() {
    模块在 HMR / 测试 resetModules 后可能重新执行：先撤掉旧实例挂在 window 上的监听器（在文件末尾登记）。 */
 retireModuleListeners("ws-catalog");
 /* 统计由目录装载成功时推一次（catLoader.apply）；启动 / 换作品时不再在目录还空着的时候先推一次 */
-try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
+try { catFetch(catActiveId()); } catch (e) {}
 const catOnWorkChanged = () => {
   clearTimeout(catTotalsTimer); catTotalsTimer = null;
-  try { catFetch(catActiveId(), { migrate: true }); } catch (e) {}
+  try { catFetch(catActiveId()); } catch (e) {}
 };
 window.addEventListener("ws:work-changed", catOnWorkChanged);
 

@@ -108,7 +108,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
         : route(url)
     ));
 
-    await mod.WsCatalog.__refresh();
+    await mod.WsCatalog.refresh();
 
     expect(mod.WsCatalog.get()).toHaveLength(1);
     expect(mod.WsCatalog.loadError()).toBeInstanceOf(Error);
@@ -213,14 +213,12 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     const planned = {
       ...DEFAULT_CHAP,
       origin: "snowflake",
-      tension: null,
       structure: { owner: "plan", row_uid: "chrow_1", scene_range: { first: 6, last: 12 }, planned_scene_count: 7, title_auto: true },
       scenes: [{ ...DEFAULT_CHAP.scenes[0], design: { origin: "snowflake", owner: "plan", story_index: 6 } }],
     };
     const { mod, client } = await loadCatalog({ catalog: [planned] });
     const [chapter] = mod.WsCatalog.get();
     expect(chapter.structure).toEqual({ owner: "plan", rowUid: "chrow_1", sceneRange: { first: 6, last: 12 }, plannedSceneCount: 7, titleAuto: true });
-    expect(chapter.tensionSet).toBe(false);        // 没设过张力：镜头和体检不拿 0.3 的默认值当事实
     expect(chapter.scenes[0].design.storyIndex).toBe(6);
 
     const adopt = vi.fn(async () => true);
@@ -242,7 +240,342 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
   it("手建的章（旧载荷没有 structure）归台面：可拖、可改，章名不写穿", async () => {
     const { mod } = await loadCatalog();
     expect(mod.WsCatalog.get()[0].structure).toEqual({ owner: "desk", rowUid: "", sceneRange: null, plannedSceneCount: 0, titleAuto: false });
-    expect(mod.WsCatalog.get()[0].tensionSet).toBe(true);
+  });
+
+  /* 批准 #17a（重评 R10）：章级张力 / 线索 / 视角 / 时间 / 地点 / 入口出口 / 衔接是死字段——后端不再收（422），
+     旧载荷里还带着也不映射、不上行；章承诺 promise 照旧（戏剧卡 promise 的镜像） */
+  const RETIRED_CHAPTER_KEYS = ["tension", "threads", "time_label", "place", "entry", "exit", "align", "pov"];
+  it("退役的章级叙事字段：旧载荷带着也不进视图形状，改章时从不上行；章承诺照旧上行", async () => {
+    const legacy = {
+      ...DEFAULT_CHAP, tension: 0.8, threads: [{ name: "旧信", role: "新引" }], pov: "林昭", time_label: "雨夜",
+      place: "雨城", entry: "信到了", exit: "她出门", align: false, promise: "读者知道旧信是谁寄的",
+    };
+    const { mod, client } = await loadCatalog({ catalog: [legacy] });
+    const [chapter] = mod.WsCatalog.get();
+    for (const key of ["tension", "tensionSet", "threads", "pov", "time", "place", "entry", "exit", "align"]) {
+      expect(chapter, key).not.toHaveProperty(key);
+    }
+    expect(chapter.promise).toBe("读者知道旧信是谁寄的");
+
+    client.apiPatch.mockResolvedValue({ chapter: {}, changed: true });
+    // 视图里拼出来的章（例如节奏镜头按各场派生的视角 / 时间）即使带着这些键回写，也一个都不发
+    mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({
+      ...c, title: "旧案重开", promise: "新的承诺", tension: 0.2, pov: "顾行", time: "清晨", place: "码头",
+      entry: "新入口", exit: "新出口", align: true, threads: [{ name: "新线", role: "收" }],
+    })));
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalled(), T);
+    const [url, body] = client.apiPatch.mock.calls.find(([u]) => u === "/api/v2/projects/prj-main/catalog/chapters/c1");
+    expect(url).toBe("/api/v2/projects/prj-main/catalog/chapters/c1");
+    expect(body).toEqual({ title: "旧案重开", promise: "新的承诺" });
+    for (const key of RETIRED_CHAPTER_KEYS) expect(body, key).not.toHaveProperty(key);
+  });
+
+  it("旧的本机目录不再上行（批准 #25，重评 R16）：后端目录为空时不发 catalog/import，旧键原样留着", async () => {
+    window.localStorage.setItem("arr.chapters.v2::prj-main", JSON.stringify([{ id: "ch01", title: "六月的旧章", scenes: [] }]));
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { catalog: [] });
+    const mod = await import("./ws-catalog.jsx");
+    await settleActive();
+    await vi.waitFor(() => expect(mod.WsCatalog.ready()).toBe(true), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/catalog/import"))).toBe(false);
+    expect(mod.WsCatalog.get()).toEqual([]);
+    expect(window.localStorage.getItem("arr.chapters.v2::prj-main")).not.toBeNull();
+    expect(window.localStorage.getItem("ws_catalog_migrated_v1::prj-main")).toBeNull();
+  });
+
+  it("建章 / 建场失败：失败只交给写入收尾（提示 + 以服务端为准重拉），不再多出一条没人接的拒绝（复核 I3）", async () => {
+    const unhandled = [];
+    const onUnhandled = (reason) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { mod, client } = await loadCatalog();
+      client.apiPost.mockImplementation((url) => (
+        url.endsWith("/catalog/chapters") || /\/catalog\/chapters\/c1\/scenes$/.test(url)
+          ? Promise.reject(Object.assign(new Error("服务端出错"), { status: 500 }))
+          : Promise.resolve({})
+      ));
+      mod.WsCatalog.addScene("ch01", "新的一场");
+      await vi.waitFor(() => expect(window.alert).toHaveBeenCalledTimes(1), T);
+      mod.WsCatalog.addChapter({ title: "新章" });
+      await vi.waitFor(() => expect(window.alert).toHaveBeenCalledTimes(2), T);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+      // 以服务端为准：两次乐观新建都退回去了
+      await vi.waitFor(() => expect(mod.WsCatalog.get().map((c) => [c.id, c.scenes.length])).toEqual([["ch01", 1]]), T);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("建场的回包丢了（后端其实建好了）：写入收尾重读目录时认出这一场，临时 sid 记成它的别名（复核 W1-R7B-1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    client.apiPost.mockImplementation((url) => {
+      if (/\/catalog\/chapters\/c1\/scenes$/.test(url)) {
+        // 后端已经建好（下一次读目录就有它），回包却在路上丢了
+        chapter.scenes = [...chapter.scenes, { ...DEFAULT_CHAP.scenes[0], slug: "s-new", scene_id: "s-new", title: "新的一场" }];
+        return Promise.reject(Object.assign(new Error("连接断开"), { status: 0, code: "NETWORK_ERROR" }));
+      }
+      return Promise.resolve({});
+    });
+    mod.WsCatalog.addScene("ch01", "新的一场");
+    const tmp = mod.WsCatalog.get()[0].scenes[1].sid;
+    expect(tmp).toMatch(/^tmp_/);
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-new"]), T);
+    // 拿着临时 sid 的写作台（WrDocs.followCatalog）据此把头几句挪到建好的那一场
+    expect(mod.WsCatalog.sceneById(tmp)).toMatchObject({ scene: { sid: "s-new" } });
+    await expect(mod.WsCatalog.backendSceneId(tmp)).resolves.toBe("s-new");
+  });
+
+  it("建场没建成（重读目录时那一章没有多出一场）：不记别名；多出不止一场也不猜", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    client.apiPost.mockImplementation((url) => (
+      /\/catalog\/chapters\/c1\/scenes$/.test(url)
+        ? Promise.reject(Object.assign(new Error("服务端拒绝"), { status: 422 }))
+        : Promise.resolve({})
+    ));
+    mod.WsCatalog.addScene("ch01", "没建成的一场");
+    const tmp = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1"]), T);
+    expect(mod.WsCatalog.sceneById(tmp)).toBeNull();
+
+    // 回包丢了，同一时刻另一处（另一个标签页）也往这一章加了一场：重读时多出两场，认不准哪一场是这一份——不记
+    client.apiPost.mockImplementation((url) => {
+      if (/\/catalog\/chapters\/c1\/scenes$/.test(url)) {
+        chapter.scenes = [...chapter.scenes,
+          { ...DEFAULT_CHAP.scenes[0], slug: "s-other", scene_id: "s-other", title: "另一处加的一场" },
+          { ...DEFAULT_CHAP.scenes[0], slug: "s-mine", scene_id: "s-mine", title: "又一场" }];
+        return Promise.reject(Object.assign(new Error("连接断开"), { status: 0, code: "NETWORK_ERROR" }));
+      }
+      return Promise.resolve({});
+    });
+    mod.WsCatalog.addScene("ch01", "又一场");
+    const tmp2 = mod.WsCatalog.get()[0].scenes[1].sid;
+    expect(tmp2).toMatch(/^tmp_/);
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other", "s-mine"]), T);
+    expect(mod.WsCatalog.sceneById(tmp2)).toBeNull();
+  });
+
+  /* 复核 Q1c-R1：回包丢了的新建场只认得出「确实是它」的那一场——认错了，写作台会把这一场写下的头几句挪进别的场、存上服务端。
+     下面每一条，那一章重读时都恰好在它乐观时的位置上多出一场（新建配方的默认题名「新场景」，题名也一样），却都不是它。 */
+  const sceneRow = (id, title = "新场景") => ({ ...DEFAULT_CHAP.scenes[0], slug: id, scene_id: id, title });
+  const ownCreate = (url) => /\/catalog\/chapters\/c1\/scenes$/.test(url);
+  const lost = () => Object.assign(new Error("连接断开"), { status: 0, code: "NETWORK_ERROR", retryable: true });
+
+  it("并发建场：A 没建成（500）、B 建成并正好落在 A 乐观时的位置——A 的临时 sid 不认成 B（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let rejectA = null;
+    let creates = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      creates += 1;
+      if (creates === 1) return new Promise((_ok, reject) => { rejectA = reject; });
+      // B 建成了：服务端那一章此刻只有一场，B 落在第二位——正是 A 乐观时的位置；B 的回包带回了它的 scene_id
+      chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return Promise.resolve({ scene: { scene_id: "s-b", slug: "s-b" } });
+    });
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates).toBe(1), T);
+    mod.WsCatalog.addScene("ch01");
+    const tmpB = mod.WsCatalog.get()[0].scenes[2].sid;
+    await vi.waitFor(() => expect(creates).toBe(2), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("database is locked"), { status: 500 }));   // A 没建成
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    expect(mod.WsCatalog.sceneById(tmpB)).toMatchObject({ scene: { sid: "s-b" } });
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+    await expect(mod.WsCatalog.backendSceneId(tmpA)).resolves.toBeFalsy();
+  });
+
+  it("后端重启：A 建场失败、写后重读也失败；后端回来后作者再加一场——A 的临时 sid 不认成新加的那一场（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    const routeGet = client.apiGet.getMockImplementation();
+    let down = true;
+    client.apiGet.mockImplementation((url) => (down && /\/catalog$/.test(url) ? Promise.reject(lost()) : routeGet(url)));
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      if (down) return Promise.reject(lost());                                  // 没到服务端
+      chapter.scenes = [...chapter.scenes, sceneRow("s-again")];
+      return Promise.resolve({ scene: { scene_id: "s-again", slug: "s-again" } });
+    });
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.loadError()).toBeTruthy(), T);  // 写后那次重读也失败了
+    down = false;
+    mod.WsCatalog.addScene("ch01");
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-again"]), T);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
+  it("写后那一次重读失败了：这一次没认成就不再认——之后另一处在 A 的位置上加的一场不认成 A（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    const routeGet = client.apiGet.getMockImplementation();
+    let down = true;
+    client.apiGet.mockImplementation((url) => (down && /\/catalog$/.test(url) ? Promise.reject(lost()) : routeGet(url)));
+    client.apiPost.mockImplementation((url) => (ownCreate(url) ? Promise.reject(lost()) : Promise.resolve({})));
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.loadError()).toBeTruthy(), T);
+    // 后端回来了；另一个标签页往这一章末尾加了一场（同样的默认题名），这一页随后重读目录
+    down = false;
+    chapter.scenes = [...chapter.scenes, sceneRow("s-other")];
+    await expect(mod.WsCatalog.refresh()).resolves.toBe(true);
+    expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
+  it("服务端明确拒绝的建场（4xx）不记待认：同一时刻另一处在它的位置上加了一场同名的，也不认（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      chapter.scenes = [...chapter.scenes, sceneRow("s-other")];                 // 另一个标签页加的
+      return Promise.reject(Object.assign(new Error("这一章已批准定稿"), { status: 409, code: "CHAPTER_APPROVED_LOCKED" }));
+    });
+    mod.WsCatalog.addScene("ch01");
+    const tmp = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]), T);
+    expect(mod.WsCatalog.sceneById(tmp)).toBeNull();
+  });
+
+  it("同一章里两次建场的回包都丢了：认不准哪一场是哪一份，两个都不认（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let creates = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      creates += 1;
+      // A 没建成；B 建成了——服务端那一章此刻只有一场，B 落在第二位，正是 A 乐观时的位置；两次的回包都丢了
+      if (creates === 2) chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return Promise.reject(lost());
+    });
+    mod.WsCatalog.addScene("ch01");
+    mod.WsCatalog.addScene("ch01");
+    const [, tmpA, tmpB] = mod.WsCatalog.get()[0].scenes.map((s) => s.sid);
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    expect(creates).toBe(2);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+    expect(mod.WsCatalog.sceneById(tmpB)).toBeNull();
+  });
+
+  it("位置对上了、题名对不上：不是这一份（服务端照存这一页发的题名），不认（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      chapter.scenes = [...chapter.scenes, sceneRow("s-other", "另一处加的一场")];  // 这一页的没到服务端；另一处加的落在同一位置
+      return Promise.reject(lost());
+    });
+    mod.WsCatalog.addScene("ch01", "雨夜的信");
+    const tmp = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]), T);
+    expect(mod.WsCatalog.sceneById(tmp)).toBeNull();
+  });
+
+  /* 复核 Q1c-R4：待认只等它记下之后发出的第一次目录读取。那一次的结果作废了（回来时本机另一笔目录写入还没写完，或在路上时
+     目录被要求以服务端为准重读：回收站恢复、方案落地、物化、重新同步）也就此作罢——作废之后的那一次重读晚于这些事，多出来的
+     那一场可能正是它们带进来的。下面每一条，作废之后的重读里都恰好在 A 乐观时的位置上多出一场同名同形态的，却不是 A。 */
+  // 把下一次目录读取扣在路上：它在服务端读到的是此刻的那一章；release() 放它回来
+  function holdNextCatalogRead(client, chapter) {
+    const routeGet = client.apiGet.getMockImplementation();
+    const held = { release: null };
+    client.apiGet.mockImplementation((url) => {
+      if (!held.release && /\/catalog$/.test(url)) {
+        const snapshot = JSON.parse(JSON.stringify(chapter));
+        return new Promise((resolve) => { held.release = () => resolve({ chapters: [snapshot] }); });
+      }
+      return routeGet(url);
+    });
+    return held;
+  }
+  const busy = () => Object.assign(new Error("数据库正忙"), { status: 503, code: "DATABASE_BUSY" });
+
+  it("写后那一次重读回来时本机改章名还没写完（结果作废）：A 就此作罢——之后另一处在 A 的位置上加的一场不认成 A（复核 Q1c-R4）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let rejectA = null;
+    let releaseRename = null;
+    client.apiPost.mockImplementation((url) => (ownCreate(url) ? new Promise((_ok, reject) => { rejectA = reject; }) : Promise.resolve({})));
+    client.apiPatch.mockImplementation(() => new Promise((resolve) => { releaseRename = () => resolve({}); }));
+    const read = holdNextCatalogRead(client, chapter);
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(rejectA).toBeTruthy(), T);
+    rejectA(busy());                                                              // A 没建成（5xx：也许建成了，记待认）
+    await vi.waitFor(() => expect(read.release).toBeTruthy(), T);                 // 写后那一次重读在路上
+    mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, title: `${c.title}·改` })));   // 作者这时改了章名
+    await vi.waitFor(() => expect(releaseRename).toBeTruthy(), T);
+    read.release();                                                               // 回来时改名还没写完：结果作废
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    chapter.scenes = [...chapter.scenes, sceneRow("s-other")];                    // 另一个标签页在 A 的位置上加了一场
+    releaseRename();                                                              // 改名写完：以服务端为准再读一次
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]), T);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+    await expect(mod.WsCatalog.backendSceneId(tmpA)).resolves.toBeFalsy();
+  });
+
+  it("写后那一次重读在路上时回收站恢复了一场（同名、落在 A 的位置）：作废之后再读一次，恢复回来的那一场不认成 A（复核 Q1c-R4）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let rejectA = null;
+    client.apiPost.mockImplementation((url) => {
+      if (ownCreate(url)) return new Promise((_ok, reject) => { rejectA = reject; });
+      if (/\/api\/v2\/trash\/[^/]+\/restore$/.test(url)) chapter.scenes = [...chapter.scenes, sceneRow("s-restored")];
+      return Promise.resolve({});
+    });
+    const read = holdNextCatalogRead(client, chapter);
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(rejectA).toBeTruthy(), T);
+    rejectA(busy());
+    await vi.waitFor(() => expect(read.release).toBeTruthy(), T);                 // 写后那一次重读已在服务端读完，回包在路上
+    mod.WsTrashStore.restore("scene:s-restored");                                // 回收站恢复了一场 → 目录以服务端为准重读
+    await vi.waitFor(() => expect(chapter.scenes.map((s) => s.scene_id)).toContain("s-restored"), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));                      // 恢复的回包到了：在飞的那一次重读作废
+    read.release();
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-restored"]), T);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
+  it("写后那一次重读在路上时作者又加了一场 B（B 先落到服务端、回包后到）：A 的临时 sid 不认成 B（复核 Q1c-R4：不拿作废的读取去认）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let creates = 0;
+    let rejectA = null;
+    let answerB = null;
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      creates += 1;
+      if (creates === 1) return new Promise((_ok, reject) => { rejectA = reject; });
+      // B 落到服务端：那一章此刻只有一场，B 排第二——正是 A 乐观时的位置；B 的回包还在路上
+      chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return new Promise((resolve) => { answerB = () => resolve({ scene: { scene_id: "s-b", slug: "s-b" } }); });
+    });
+    const routeGet = client.apiGet.getMockImplementation();
+    let releaseRead = null;
+    client.apiGet.mockImplementation((url) => (
+      !releaseRead && /\/catalog$/.test(url) ? new Promise((resolve) => { releaseRead = resolve; }) : routeGet(url)
+    ));
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(rejectA).toBeTruthy(), T);
+    rejectA(busy());
+    await vi.waitFor(() => expect(releaseRead).toBeTruthy(), T);                  // A 写后那一次重读在路上
+    mod.WsCatalog.addScene("ch01");                                               // 作者又加了一场
+    const tmpB = mod.WsCatalog.get()[0].scenes[2].sid;
+    await vi.waitFor(() => expect(answerB).toBeTruthy(), T);
+    releaseRead({ chapters: [JSON.parse(JSON.stringify(chapter))] });             // 那一次在 B 落地之后才在服务端读：里面有 B
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    answerB();
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    expect(mod.WsCatalog.sceneById(tmpB)).toMatchObject({ scene: { sid: "s-b" } });
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
   });
 
   it("addChapter 是唯一的新建配方：不带张力 / 线索 / 占位 / 4000 字目标，接在指定章后面，只建一场空白场", async () => {
@@ -426,8 +759,8 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     await vi.waitFor(() => expect(window.WsWorks.active().wordsTotal).toBe(38000), T);
     const before = statsGets();
 
-    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
-    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
+    mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
+    mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
     expect(window.WsWorks.active().wordsTotal).toBe(38180);
     expect(mod.WsCatalog.sceneById("ch01s1").scene.words).toBe(180);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -435,7 +768,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(statsGets()).toBeLessThanOrEqual(before + 1);
     const afterBurst = statsGets();
 
-    mod.WsCatalog.__applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
+    mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
     expect(window.WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
     expect(statsGets()).toBe(afterBurst);
   });
@@ -453,7 +786,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
       // 第一次：改名之前发出的那次后台刷新（回来的是改名前的服务端状态）；之后：服务端已经是新标题
       return catalogGets === 1 ? stale : Promise.resolve(scene("第二次改名"));
     });
-    mod.WsCatalog.__refresh();
+    mod.WsCatalog.refresh();
     await vi.waitFor(() => expect(catalogGets).toBe(1), T);
 
     mod.WsCatalog.renameScene("ch01", "ch01s1", "第二次改名");

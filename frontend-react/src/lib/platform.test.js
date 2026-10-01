@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { isMacPlatform, modEnterShortcut, modKeyLabel, modShortcut } from "./platform.js";
-import { modCombo, modKey } from "../ws-writer-keys.js";
 
 const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -34,11 +33,6 @@ describe("lib/platform", () => {
   it("不传 nav 时读当前浏览器（jsdom 不是 Mac）", () => {
     expect(isMacPlatform()).toBe(isMacPlatform(globalThis.navigator));
     expect(modShortcut("J")).toBe(isMacPlatform() ? "⌘J" : "Ctrl+J");
-  });
-
-  it("写作台的 modKey / modCombo 就是这一份实现（不是第二份拷贝）", () => {
-    expect(modKey).toBe(modKeyLabel);
-    expect(modCombo).toBe(modShortcut);
   });
 
   it("除 lib/platform.js 外没有模块自己嗅探平台（过去写作台与外壳各有一份，格式还不一样）", () => {

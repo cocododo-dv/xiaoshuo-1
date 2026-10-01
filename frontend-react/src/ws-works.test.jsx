@@ -281,6 +281,37 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
     } finally { rec.stop(); }
   });
 
+  it("还不能发请求的作品 id（等后端正式 id 的新建作品、加载占位）：update / remove 不动、不发请求（Q5 转来）", async () => {
+    const { mod, client } = await loadStore([
+      { project_id: "p1", title: "First", stats: {} },
+      { project_id: "p2", title: "Second", stats: {} },
+    ]);
+    client.apiPost.mockImplementation((url) => (url === "/api/v2/projects" ? new Promise(() => {}) : Promise.resolve({})));
+    const temp = mod.WsWorks.create({ title: "还在建的一部" });
+    client.apiPatch.mockClear();
+    client.apiDelete.mockClear();
+    mod.WsWorks.update(temp.id, { title: "改个名" });
+    mod.WsWorks.remove(temp.id);
+    mod.WsWorks.update("__loading__", { title: "占位" });
+    mod.WsWorks.remove("__loading__");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(client.apiDelete).not.toHaveBeenCalled();
+    expect(mod.WsWorks.list().find((w) => w.id === temp.id).title).toBe("还在建的一部");
+    // 已就绪的作品照旧
+    mod.WsWorks.update("p2", { title: "第二部" });
+    expect(client.apiPatch).toHaveBeenCalledWith("/api/v2/projects/p2/profile", { title: "第二部" });
+  });
+
+  it("6 月原型时期的本机作品不再上行（批准 #25，重评 R16）：旧键原样留着，不建作品", async () => {
+    window.localStorage.setItem("ws_works_created_v1", JSON.stringify([{ id: "old-1", title: "六月的旧作品" }]));
+    const { mod, client } = await loadStore();
+    expect(mod.WsWorks.list().map((w) => w.id)).toEqual(["p1"]);
+    expect(client.apiPost).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("ws_works_created_v1")).not.toBeNull();
+    expect(window.localStorage.getItem("ws_migrated_v1")).toBeNull();
+  });
+
   it("删掉另一部作品（书架成员变化）也广播 ws:work-changed", async () => {
     const { mod } = await loadStore([
       { project_id: "p1", title: "First", stats: {} },

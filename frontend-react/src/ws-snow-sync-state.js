@@ -147,7 +147,7 @@ function afterApproveCatalogSync(workId, res) {
   if (!workId || !sync) return;
   if (res.workspace) captureResync(workId, res.workspace);
   if (sync.synced_count > 0) {
-    try { WsCatalog.__refresh(workId); } catch (e) {}
+    try { WsCatalog.refresh(workId); } catch (e) {}
   }
   if (sync.synced_count > 0 || sync.held_count > 0) {
     snowNotify("catalog-synced", { workId, ...sync });
@@ -173,6 +173,16 @@ function captureDirectionBriefs(workId, ws) {
   if (!workId || !ws || !ws.direction_briefs || typeof ws.direction_briefs !== "object") return false;
   snowBriefs[workId] = { ...ws.direction_briefs };
   emitBrief(workId);
+  return true;
+}
+
+/* 教练日志（后端 assistant_history，全步骤，服务端持久化）的镜像：workId -> 回合数组。水合收的就是同一份工作台，
+   教练页第一次打开时读它，不再自己另拉一整份工作台（审计 F02-11）；教练 / 生成的回包带着整条日志时由教练页记回来。
+   没记过 = 没有这个键（SnowSync.assistantHistory 返回 null），记过、日志是空的 = 空数组。 */
+const snowAssistantHistory = {};
+function captureAssistantHistory(workId, ws) {
+  if (!workId || !ws || !Array.isArray(ws.assistant_history)) return false;
+  snowAssistantHistory[workId] = ws.assistant_history.slice();
   return true;
 }
 
@@ -214,4 +224,5 @@ export {
   snowResync, snowSyncStates, snowErrorShape, setSnowSyncState, readSnowSyncState, shapeResync,
   SNOW_APPROVE_BODY, afterApproveCatalogSync, captureResync,
   snowTriage, snowSceneIds, snowBriefs, emitBrief, captureDirectionBriefs, captureTriage,
+  snowAssistantHistory, captureAssistantHistory,
 };

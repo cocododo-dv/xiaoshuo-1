@@ -13,7 +13,7 @@ vi.mock("./ws-catalog.jsx", () => ({
     loadError: vi.fn(() => catalogState.error),
     get: vi.fn(() => catalogState.chapters),
     set: vi.fn(),
-    __refresh: vi.fn(async () => {}),
+    refresh: vi.fn(async () => {}),
     addChapter: vi.fn(),
     removeChapters: vi.fn(),
     removeScenes: vi.fn(),
@@ -891,7 +891,7 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.textContent).not.toContain("还没有章节结构");
     const retry = [...host.querySelectorAll("button")].find((node) => node.textContent.includes("重试加载"));
     await act(async () => retry.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(WsCatalog.__refresh).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.refresh).toHaveBeenCalledTimes(1);
     expect(WsCatalog.set).not.toHaveBeenCalled();
   });
 });

@@ -1,12 +1,13 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { modEnterShortcut } from "./lib/platform.js";
 import { isImeComposing } from "./lib/keyboard.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId } from "./ws-snow-hooks.js";
-import { snowDraftOverride } from "./ws-snow-generation.js";
+import { snowAiFailureToast, snowDraftOverride } from "./ws-snow-generation.js";
 import { CoachInline, CoachReply } from "./ws-snow-reply.jsx";
 import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2AdoptServerScaffold, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
 
@@ -31,19 +32,33 @@ export function useSnowCoach(api, tab) {
   const [coachBusy, setCoachBusy] = useSS(false);
   const [briefBusy, setBriefBusy] = useSS(false);
 
-  /* 进教练页且本地还没有历史 → 从 workspace 懒加载（跨会话回合可见） */
+  /* 进教练页且本地还没有历史 → 读同步层的镜像（跨会话回合可见）。水合时同步层已经随工作台收下了教练日志，
+     不必再另拉一整份工作台（审计 F02-11）；这次会话还没水合成（镜像里没有）才退回自己读一次。
+     只在本地仍为空时采用：「先看 3 个方向」会先切到教练页再收到更新的历史，旧的那一份不能把它盖掉。 */
   useSE(() => {
     if (tab !== "coach" || coachHist.length) return;
+    const workId = activeWorkId();
+    if (!workId) return;
+    let mirror = null;
+    try { mirror = SnowSync.assistantHistory(workId); } catch (e) { mirror = null; }
+    if (Array.isArray(mirror)) {
+      if (mirror.length) setCoachHist(prev => (prev.length ? prev : mirror));
+      return;
+    }
     (async () => {
       try {
-        const workId = activeWorkId();
-        if (!workId) return;
         const ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
-        // 只在本地仍为空时采用：「先看 3 个方向」会先切到教练页再收到更新的历史，懒加载的旧回包不能把它盖掉
         if (ws && Array.isArray(ws.assistant_history) && ws.assistant_history.length) setCoachHist(prev => (prev.length ? prev : ws.assistant_history));
       } catch (e) {}
     })();
   }, [tab]);
+  /* 教练 / 方向 / 生成的回包带回整条日志：记回同步层的镜像，视图重挂载后第一次打开教练页读到的是这次会话的最新日志 */
+  useSE(() => {
+    if (!coachHist.length) return;
+    const workId = activeWorkId();
+    if (!workId) return;
+    try { SnowSync.rememberAssistantHistory(workId, coachHist); } catch (e) { /* 同步层不可用（单测桩）：下次照旧读 */ }
+  }, [coachHist]);
 
   const sendCoach = async (message) => {
     const msg = String(message || "").trim();
@@ -67,7 +82,7 @@ export function useSnowCoach(api, tab) {
       const parts = s2BriefDeltaParts(res && res.brief_delta);
       api.journal("教练问答", `${step.num} ${step.name}${body.focus_scene_id ? " · 聚焦 " + api.sceneLabel(body.focus_scene_id) : ""}${parts.length ? " · 要点 " + parts.join(" / ") : ""}`, "AI", null, key);
     } catch (err) {
-      api.toast("教练回复失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.notify(snowAiFailureToast("教练回复失败", err));
     } finally {
       setCoachBusy(false);
     }
@@ -188,9 +203,9 @@ function S2BriefCard({ brief, busy, onSave, usage, onRegen, structBusy }) {
     save([...visible(), { kind: adding.kind, scope: adding.scope, text, status: "active" }]);
     setAdding({ ...adding, text: "" });
   };
-  const clearAll = () => {
+  const clearAll = async () => {
     if (!active.length) return;
-    if (!window.confirm("撤下本步全部要点？（可在「已撤」里恢复）")) return;
+    if (!(await wsConfirm({ title: "撤下本步全部要点？", body: "撤下的要点可以在「已撤」里恢复。", confirmLabel: "全部撤下" }))) return;
     save([]);
   };
   const hasAnything = active.length || dismissed.length || inherited.length;

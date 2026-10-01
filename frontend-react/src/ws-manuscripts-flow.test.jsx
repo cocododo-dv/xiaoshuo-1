@@ -9,7 +9,6 @@ const flow = vi.hoisted(() => ({
   body: vi.fn(() => null),
   snapshot: vi.fn(),
   setReviewState: vi.fn().mockResolvedValue({}),
-  confirmRead: vi.fn().mockResolvedValue({ body_hash: "hash-1" }),
   approveFinal: vi.fn().mockResolvedValue({ approved_chapter_id: "c1" }),
   reopenFinal: vi.fn().mockResolvedValue({ reopened_chapter_id: "c1" }),
   decideCanonCandidate: vi.fn().mockResolvedValue({}),
@@ -27,7 +26,7 @@ vi.mock("./ws-catalog.jsx", () => ({
     loadError: () => fixture.catalogError,
     reset: vi.fn(),
     removeScenes: (...args) => fixture.removeScenes(...args),
-    __refresh: catalogRefresh,
+    refresh: catalogRefresh,
   },
   useCatalogChapters: () => fixture.catalog,
 }));
@@ -142,7 +141,6 @@ beforeEach(() => {
   flow.body.mockReturnValue(COMPLETE_BODY);
   flow.snapshot.mockReturnValue(readySnapshot());
   flow.setReviewState.mockResolvedValue({});
-  flow.confirmRead.mockResolvedValue({ body_hash: "hash-1" });
   flow.approveFinal.mockResolvedValue({ approved_chapter_id: "c1" });
   flow.reopenFinal.mockResolvedValue({ reopened_chapter_id: "c1" });
   flow.decideCanonCandidate.mockResolvedValue({});
@@ -151,7 +149,7 @@ beforeEach(() => {
   flow.extractSceneCanon.mockResolvedValue({});
   catalogRefresh.mockResolvedValue({});
   worksRefresh.mockResolvedValue({});
-  versionsFx.list.mockResolvedValue([]);
+  versionsFx.list.mockResolvedValue({ items: [], nextCursor: null });
   versionsFx.paras.mockResolvedValue([]);
   versionsFx.diff.mockReturnValue({ paras: [], adds: 0, dels: 0 });
   fidFx.project = null;
@@ -166,7 +164,7 @@ afterEach(async () => {
 });
 
 describe("成稿中心权威章节流", () => {
-  it("批准按钮先要求逐项通读确认，再按 read-confirm → approve-final 顺序提交", async () => {
+  it("批准按钮先要求逐项通读确认，「已通读」随「确认定稿」一次提交（批准 #10）", async () => {
     const host = await renderPage("review");
     await click(host.querySelector('[data-testid="approve-final-open"]'));
 
@@ -181,9 +179,8 @@ describe("成稿中心权威章节流", () => {
     expect(confirm.disabled).toBe(false);
     await click(confirm);
 
-    expect(flow.confirmRead).toHaveBeenCalledWith("p1", "c1", "");
-    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", "");
-    expect(flow.confirmRead.mock.invocationCallOrder[0]).toBeLessThan(flow.approveFinal.mock.invocationCallOrder[0]);
+    expect(flow.approveFinal).toHaveBeenCalledTimes(1);
+    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", { readNote: "", revisionNotes: "" });
     expect(catalogRefresh).toHaveBeenCalledWith("p1");
   });
 
@@ -327,10 +324,10 @@ describe("成稿中心权威章节流", () => {
   });
 
   it("刷新后直接进成稿中心（写作台还没加载过）「对比」也列得出这一场的版本，并逐句比对最新两版", async () => {
-    versionsFx.list.mockResolvedValue([
+    versionsFx.list.mockResolvedValue({ items: [
       { revisionNo: 3, at: "2026-09-21T14:05:00", words: 1200 },
       { revisionNo: 2, at: "2026-09-20T10:00:00", words: 1100 },
-    ]);
+    ], nextCursor: null });
     versionsFx.paras.mockImplementation(async (sid, rev) => [rev === 3 ? "新的一句。" : "旧的一句。"]);
     versionsFx.diff.mockReturnValue({ paras: [{ segs: [{ t: "del", text: "旧的一句。" }, { t: "add", text: "新的一句。" }] }], adds: 1, dels: 1 });
     const host = await renderPage("review");
@@ -344,12 +341,73 @@ describe("成稿中心权威章节流", () => {
     expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 2);
     expect(versionsFx.paras).toHaveBeenCalledWith("ch01s1", 3);
     expect(host.querySelector(".ms-diff-body .d-add").textContent).toBe("新的一句。");
+    expect(host.querySelector('[data-testid="manuscript-diff-more"]')).toBeNull();   // 一页就是全部：没有「更早的版本」
+  });
+
+  it("版本多时分页（批准 #8）：先列最新一页，「更早的版本」接着取下一页、接在旧版本下拉的后面", async () => {
+    versionsFx.list.mockImplementation(async (sid, opts) => ((opts && opts.cursor) === "cur-2"
+      ? { items: [{ revisionNo: 1, at: "2026-09-19T09:00:00", words: 900 }], nextCursor: null }
+      : { items: [
+        { revisionNo: 3, at: "2026-09-21T14:05:00", words: 1200 },
+        { revisionNo: 2, at: "2026-09-20T10:00:00", words: 1100 },
+      ], nextCursor: "cur-2" }));
+    const host = await renderPage("review");
+    await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const olderOptions = () => [...host.querySelectorAll('select[aria-label="旧版本"] option')].map((o) => o.value);
+    expect(olderOptions()).toEqual(["2"]);
+    const more = host.querySelector('[data-testid="manuscript-diff-more"]');
+    expect(more.textContent).toBe("更早的版本");
+    await click(more);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(versionsFx.list).toHaveBeenLastCalledWith("ch01s1", { cursor: "cur-2" });
+    expect(olderOptions()).toEqual(["2", "1"]);
+    expect(host.querySelector('select[aria-label="新版本"]').value).toBe("3");
+    expect(host.querySelector('[data-testid="manuscript-diff-more"]')).toBeNull();
+  });
+
+  it("「更早的版本」还在读时换了一场：新的那一场照常能点、取它自己的下一页，上一场读回来的那一页不混进来（复核 Q1c-R2）", async () => {
+    let releaseFirst = null;
+    versionsFx.list.mockImplementation(async (sid, opts) => {
+      if (opts && opts.cursor === "cur-ch01s1") {
+        return new Promise((ok) => { releaseFirst = () => ok({ items: [{ revisionNo: 1, at: "2026-09-19T09:00:00", words: 900 }], nextCursor: null }); });
+      }
+      if (opts && opts.cursor) return { items: [{ revisionNo: 40, at: "2026-09-18T09:00:00", words: 800 }], nextCursor: null };
+      const [newer, older] = sid === "ch01s1" ? [3, 2] : [42, 41];
+      return { items: [
+        { revisionNo: newer, at: "2026-09-21T14:05:00", words: 1200 },
+        { revisionNo: older, at: "2026-09-20T10:00:00", words: 1100 },
+      ], nextCursor: `cur-${sid}` };
+    });
+    const ch = chapter("review");
+    ch.scenes = [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "done" }, { sid: "ch01s2", backendId: "s2", title: "雨夜的信", state: "done" }];
+    const host = await renderPage([ch]);
+    await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await click(host.querySelector('[data-testid="manuscript-diff-more"]'));
+    expect(host.querySelector('[data-testid="manuscript-diff-more"]').disabled).toBe(true);   // 第一场的下一页还在读
+    const sceneSelect = host.querySelector('select[aria-label="选择场景"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(sceneSelect, "ch01s2");
+      sceneSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { releaseFirst(); await Promise.resolve(); await Promise.resolve(); });
+    const olderOptions = () => [...host.querySelectorAll('select[aria-label="旧版本"] option')].map((o) => o.value);
+    expect(olderOptions()).toEqual(["41"]);
+    const more = host.querySelector('[data-testid="manuscript-diff-more"]');
+    expect(more.disabled).toBe(false);
+    expect(more.textContent).toBe("更早的版本");
+    await click(more);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(versionsFx.list).toHaveBeenLastCalledWith("ch01s2", { cursor: "cur-ch01s2" });
+    expect(olderOptions()).toEqual(["41", "40"]);
   });
 
   it("版本历史请求失败会显示错误并可重试", async () => {
     versionsFx.list
       .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce({ items: [], nextCursor: null });
     const host = await renderPage("review");
     const diffTab = [...host.querySelectorAll("button")].find(node => node.textContent === "对比");
     await click(diffTab);
@@ -621,7 +679,7 @@ describe("成稿中心 · 拆分后的页头、状态行与对话框", () => {
     expect(dialog()).toBeNull();
 
     let resolveRead;
-    flow.confirmRead.mockReturnValueOnce(new Promise((resolve) => { resolveRead = resolve; }));
+    flow.approveFinal.mockReturnValueOnce(new Promise((resolve) => { resolveRead = resolve; }));
     await click(host.querySelector('[data-testid="approve-final-open"]'));
     await click(document.querySelector('[data-testid="approve-read-confirm"]'));
     await click(document.querySelector('[data-testid="approve-final-confirm"]'));
@@ -766,7 +824,7 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
   });
 
   it("批准失败后关掉再打开批准对话框，不先看到上一次的错误", async () => {
-    flow.confirmRead.mockRejectedValueOnce(new Error("通读确认没有通过"));
+    flow.approveFinal.mockRejectedValueOnce(new Error("通读确认没有通过"));
     const host = await renderPage("review");
     await click(host.querySelector('[data-testid="approve-final-open"]'));
     await click(document.querySelector('[data-testid="approve-read-confirm"]'));

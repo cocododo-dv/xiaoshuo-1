@@ -8,7 +8,9 @@
 
 import { S2_BE_KEY, S2_STEPS, s2FindStepKey } from "./ws-snow-guide.js";
 
-// 折叠草稿 / 脚手架为一段纯文本（导出、引用上下文、回滚预览用）
+/* 把草稿 / 脚手架里每一个字符串叶子按出现顺序拼成一段——只拿来比「这一步还空着吗」（与空白脚手架折出来的比，
+   空白脚手架里本来就有 sel=c1、role=主角 这类默认值）。不给作者看：里面混着行 id、角色键和枚举值；
+   导出、引用上下文、回滚预览用的是带栏名的分步文本（ws-snow-text.js 的 s2StepText / s2StepMarkdown）。 */
 export function s2Content(draft, scaffold) {
   let text = (draft || "").trim();
   if (!text && scaffold) {

@@ -463,9 +463,9 @@ describe("AI 起草台 · 出口与真话（对抗复查）", () => {
     await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockRejectedValue(NOT_FOUND());
     const { WsCatalog } = await import("./ws-catalog.jsx");
-    const realSceneId = WsCatalog.__backendSceneId;
+    const realSceneId = WsCatalog.backendSceneId;
     let synced = false;
-    vi.spyOn(WsCatalog, "__backendSceneId").mockImplementation((sid) => (
+    vi.spyOn(WsCatalog, "backendSceneId").mockImplementation((sid) => (
       synced ? realSceneId.call(WsCatalog, sid) : Promise.resolve(null)
     ));
     let created = false;

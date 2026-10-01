@@ -31,6 +31,22 @@ const isChapterMirror = (para) => {
   const lines = String(para || "").split("\n").map(x => x.trim()).filter(Boolean);
   return lines.length > 0 && lines.every(l => OUTLINE_LINE_RE.test(l));
 };
+/* 07 的章表是分章的只读镜像（重评 R11）：写入口只有分章面板（确认写入 / 只保存章表）和章节编排的改章名，都在服务端。
+   前端只从服务端规范草稿的 chapters 读它（feFromCanon / 水合 / adoptServerChapters）；07 上行的片段——规范字段
+   和 fe_scaffold 写穿缓存——一律不带章表。以前另一台电脑或一直开着的旧标签页里那份旧章表，随一次 07 正文的保存
+   就被当成作者的章表同步回去：删章、把场退回「未分章」、把台子上改过的章名改回去。 */
+function outlineChaptersFromCanon(chapters) {
+  return (Array.isArray(chapters) ? chapters : []).filter(c => c && typeof c === "object").map((c, i) => ({
+    row_uid: c.row_uid || "", id: String(i + 1).padStart(2, "0"), act: Math.min(Math.max(c.act || 1, 1), 3),
+    title: c.title || "", summary: c.summary || "", spine: c.spine || "", goal: c.chapter_goal || "",
+  }));
+}
+/* 脚手架去掉服务端才写得了的章表（07 上行的 fe_scaffold、空白步判定用） */
+function withoutChapters(scaffold) {
+  if (!scaffold || typeof scaffold !== "object" || Array.isArray(scaffold) || !("chapters" in scaffold)) return scaffold;
+  const { chapters: _serverOwned, ...rest } = scaffold;
+  return rest;
+}
 function canonFromFE(feKey, saved) {
   const sc = ((saved || {}).scaffolds || {})[feKey] || {};
   const draftText = txt(((saved || {}).drafts || {})[feKey]);
@@ -75,16 +91,11 @@ function canonFromFE(feKey, saved) {
     })) };
   }
   if (feKey === "outline") {
-    /* P2：章表是结构化字段 chapters，物化分章读的是它。
-       阶段 D：paragraphs 回到书里的第 6 步——五段展开（05 的每一段扩成约一页），
-       不再用章行的文本镜像去覆盖它。 */
+    /* 阶段 D：paragraphs 回到书里的第 6 步——五段展开（05 的每一段扩成约一页），不再用章行的文本镜像去覆盖它。
+       章表（chapters）不上行：它是分章的只读镜像，只有服务端写（见 outlineChaptersFromCanon 上的说明）。 */
     const ex = sc.expansions || {};
     return {
       paragraphs: [txt(ex.setup), txt(ex.d1), txt(ex.d2), txt(ex.d3), txt(ex.resolution)],
-      chapters: (sc.chapters || []).map((c, i) => ({
-        row_uid: txt(c.row_uid), chapter_seq: i + 1, act: c.act || 1,
-        title: txt(c.title), summary: txt(c.summary), spine: txt(c.spine), chapter_goal: txt(c.goal),
-      })),
     };
   }
   if (feKey === "profile") {
@@ -111,13 +122,15 @@ function canonFromFE(feKey, saved) {
     const plans = sc.plans || {};
     return { scenes: listScenes.map((s, i) => {
       const plan = plans[s.id] || {};
-      const form = (plan.mode || (s.type === "reactive" ? "reactive" : "proactive"));
+      /* 形态与视角只认 09 的场景行（F02-01）：plan 里残留的 mode / pov（旧缓存、旧版第 10 步写进去的渲染默认值）
+         不再盖过 09——否则在 09 把一场改成反应场或换了视角之后，第 10 步的下一次上行又把服务端改回去。 */
+      const form = s.type === "reactive" ? "reactive" : "proactive";
       return {
         row_uid: s.id || `S${String(i + 1).padStart(2, "0")}`, summary: txt(s.event),
         // 阶段 R：场景题名只在作者写了时上行——以前每次保存都拿 09 的事件文本覆盖服务端（模型）给的短题名
         ...(txt(plan.title) ? { title: txt(plan.title) } : {}),
         primary_form: form, location: txt(s.place), crucible: txt(s.crucible), scene_crucible: txt(s.crucible), spine: txt(s.spine),
-        pov_character_id: txt(plan.pov) || txt(s.pov),
+        pov_character_id: txt(s.pov),
         goal: txt(plan.goal), conflict: txt(plan.conflict), setback: txt(plan.setback),
         reaction: txt(plan.reaction), dilemma: txt(plan.dilemma), decision: txt(plan.decision),
         cost_requirement: txt(plan.cost_requirement),
@@ -197,23 +210,9 @@ function feFromCanon(feKey, draft) {
     const paras = Array.isArray(d.paragraphs) ? d.paragraphs : [];
     const slot = (i) => (isChapterMirror(paras[i]) ? "" : String(paras[i] || ""));
     const expansions = { setup: slot(0), d1: slot(1), d2: slot(2), d3: slot(3), resolution: slot(4) };
-    // 结构化 chapters 优先（P2 新契约，无损）；缺席时才回退解析文本行（历史草稿 / 旧 LLM 输出）
-    if (Array.isArray(d.chapters) && d.chapters.length) {
-      return { scaffold: { expansions, chapters: d.chapters.map((c, i) => ({
-        row_uid: c.row_uid || "", id: pad2(i + 1), act: Math.min(Math.max(c.act || 1, 1), 3),
-        title: c.title || "", summary: c.summary || "", spine: c.spine || "", goal: c.chapter_goal || "",
-      })) } };
-    }
-    // 回退只认真正的章行（与后端 parse_outline_chapters 同一纪律）：散文段落解析不出章，绝不造假章
-    const chapters = [];
-    paras.forEach((para, ai) => {
-      String(para || "").split("\n").map(x => x.trim()).filter(Boolean).forEach(line => {
-        const m = OUTLINE_LINE_RE.exec(line);
-        if (!m) return;
-        chapters.push({ id: m[1], act: Math.min(ai + 1, 3), title: m[2].trim(), summary: m[3].replace(/（.*?）$/, "").trim(), spine: /灾[一二三]/.test(line) ? (line.match(/灾[一二三]/) || [""])[0] : "" });
-      });
-    });
-    return { scaffold: { expansions, chapters } };
+    // 章表只取服务端规范的 chapters（重评 R11）。旧的「NN 章名：」章行解析回退删掉了：后端早已不从正文里解析章
+    // （B07-22），散文段落更不能被解析成假章
+    return { scaffold: { expansions, chapters: outlineChaptersFromCanon(d.chapters) } };
   }
   if (feKey === "scenes") {
     return { scaffold: { lines: [], list: (d.scenes || []).map((s, i) => ({
@@ -225,10 +224,10 @@ function feFromCanon(feKey, draft) {
     })) } };
   }
   if (feKey === "planning") {
+    // 形态（primary_form）与视角（pov_character_id）不进第 10 步的 plan：两者只有 09 场景行这一个家（F02-01）
     const plans = {};
     (d.scenes || []).forEach((s, i) => {
       plans[s.row_uid || "S" + pad2(i + 1)] = {
-        mode: s.primary_form === "reactive" ? "reactive" : "proactive", pov: s.pov_character_id || "",
         goal: s.goal || "", conflict: s.conflict || "", setback: s.setback || "",
         reaction: s.reaction || "", dilemma: s.dilemma || "", decision: s.decision || "",
         cost_requirement: s.cost_requirement || "",
@@ -327,14 +326,18 @@ function applyCanonPatch(base, patch) {
 function buildStepFragmentFrom(feKey, cache, serverCanon) {
   const c = cache || {};
   const canon = canonFromFE(feKey, c);
+  const scaffold = ((c.scaffolds || {})[feKey]) || null;
   const fragment = {
     ...(serverCanon ? mergeCanon(serverCanon, canon) : canon),
     fe_text: ((c.drafts || {})[feKey]) || "",
-    fe_scaffold: ((c.scaffolds || {})[feKey]) || null,
+    fe_scaffold: feKey === "outline" ? withoutChapters(scaffold) : scaffold,
     fe_checks: ((c.checks || {})[feKey]) || [],
     fe_state: ((c.states || {})[feKey]) || "todo",
     fe_t: c._t || Date.now(),
   };
+  // 07 的上行一张章表都不带（重评 R11）：服务端镜像里的那一份也不带——带着它，服务端就把它当显式章表去同步，
+  // 镜像落后于服务端时（另一处刚改过分章）等于把旧章表写回去。不带时服务端沿用它存着的章表
+  if (feKey === "outline") delete fragment.chapters;
   if (feKey === "audience") {
     // E3 第二步：fe_meta 只剩跨会话 journal；revs / confirmRevs 不再写穿（失效真相在后端）
     fragment.fe_meta = {
@@ -373,7 +376,37 @@ function stepIsPristine(feKey, cache) {
   const st = (c.states || {})[feKey];
   if (st && st !== "todo" && st !== "active") return false;
   const blank = blankLeavesFor(feKey);
-  return nonEmptyLeaves((c.scaffolds || {})[feKey], "", []).every(leaf => blank.has(leaf));
+  // 07 的章表是服务端分章的镜像、不是作者在这一步的编辑：只有章表的 07 仍算空白步
+  const scaffold = (c.scaffolds || {})[feKey];
+  return nonEmptyLeaves(feKey === "outline" ? withoutChapters(scaffold) : scaffold, "", []).every(leaf => blank.has(leaf));
+}
+
+/* 服务端的章表接进本机缓存（纯函数）：07 的章表整张换成服务端规范草稿的 chapters（重评 R11：它只有服务端写），
+   09 行上只读的章标签跟服务端的场景行走。服务端这次没给那一步的草稿就不动那一块。
+   返回 { cache, changed }——没有差别时 cache 就是传进来的那一个。 */
+function adoptServerChapterTable(local, outlineDraft, sceneDraft) {
+  const base = local || {};
+  const scaffolds = { ...(base.scaffolds || {}) };
+  let changed = false;
+  if (outlineDraft && typeof outlineDraft === "object") {
+    const fresh = outlineChaptersFromCanon(outlineDraft.chapters);
+    const outline = scaffolds.outline || {};
+    if (JSON.stringify(outline.chapters || []) !== JSON.stringify(fresh)) {
+      scaffolds.outline = { ...outline, chapters: fresh };
+      changed = true;
+    }
+  }
+  const list = scaffolds.scenes && Array.isArray(scaffolds.scenes.list) ? scaffolds.scenes.list : null;
+  if (sceneDraft && Array.isArray(sceneDraft.scenes) && list) {
+    const titleByRow = {};
+    sceneDraft.scenes.forEach(s => { if (s && s.row_uid) titleByRow[s.row_uid] = (s.chapter_title && s.chapter_title !== s.chapter_id) ? s.chapter_title : ""; });
+    const next = list.map(row => ((row && row.id in titleByRow && (row.chapter || "") !== titleByRow[row.id]) ? { ...row, chapter: titleByRow[row.id] } : row));
+    if (next.some((row, i) => row !== list[i])) {
+      scaffolds.scenes = { ...scaffolds.scenes, list: next };
+      changed = true;
+    }
+  }
+  return { cache: changed ? { ...base, scaffolds } : local, changed };
 }
 
 /* 规范草稿 → 可读文本（与视图 s2Content 同一折叠法：脚手架里的字符串按出现顺序拼接，跳过空串） */
@@ -392,5 +425,5 @@ function canonText(feKey, draft) {
 
 export {
   txt, canonFromFE, feFromCanon, canonHasContent, BE_STATE_TO_FE, stripFe, mergeCanon, applyCanonPatch,
-  buildStepFragmentFrom, stepSig, stepIsPristine, canonText,
+  buildStepFragmentFrom, stepSig, stepIsPristine, canonText, outlineChaptersFromCanon, adoptServerChapterTable,
 };

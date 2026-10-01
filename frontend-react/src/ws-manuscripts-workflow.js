@@ -28,32 +28,29 @@ export function manuSnapshotOf(chapter) {
   return WsManuStore.snapshot(chapter.backendId);
 }
 
-/* 选中章的权威快照：换章时拉一次，store 一变（WsManuStore.subscribe）就重渲（store 是同步缓存）。
+/* 读过不到 30 秒、目录之后也没变过的快照直接用（WsManuStore.refresh 的 maxAgeMs）：左栏来回点章、打开导出面板、
+   切换导出范围都不再逐章重读服务端聚合（审计 F04-08）。动作之后与真正生成导出时照旧强制重读。 */
+const MANU_REUSE_MS = 30_000;
+
+/* 选中章的权威快照：换章时读一次（新鲜的快照直接用），store 一变（WsManuStore.subscribe）就重渲（store 是同步缓存）。
    bump 给动作用——动作改了服务端之后强制重读一遍快照。 */
 export function useManuCanonical(chapter) {
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick((n) => n + 1), []);
   const backendId = chapter && chapter.backendId;
   useEffect(() => {
-    if (backendId) WsManuStore.refresh(backendId).then(() => bump());
+    if (backendId) WsManuStore.refresh(backendId, { maxAgeMs: MANU_REUSE_MS }).then(() => bump());
   }, [backendId, bump]);
   useEffect(() => WsManuStore.subscribe(bump), [bump]);
   return { snapshot: manuSnapshotOf(chapter), bump };
 }
 
 /* 导出前把范围内各章的服务端聚合拉齐（编译同步读 store 缓存）。
-   打开导出面板、切换范围时只补拉「没有、失败或超过 30 秒」的章；真正生成时 force 全部重拉——
+   打开导出面板、切换范围时只补拉「没有、失败或不新鲜」的章（maxAgeMs）；真正生成时 force 全部重拉——
    以前每次打开 / 切换都把范围内每一章重拉一遍，全书范围就是 2×N 个请求。 */
-const MANU_REUSE_MS = 30_000;
-const manuFetchedAt = {};
 export async function manuRefreshChapters(chapters, scopeIds, { force = true } = {}) {
-  const now = Date.now();
-  const targets = (chapters || []).filter((c) => scopeIds.includes(c.id) && c.backendId)
-    .filter((c) => force || manuSnapshotOf(c).status !== "ready" || !(now - (manuFetchedAt[c.backendId] || 0) < MANU_REUSE_MS));
-  await Promise.all(targets.map(async (c) => {
-    await WsManuStore.refresh(c.backendId);
-    manuFetchedAt[c.backendId] = Date.now();
-  }));
+  const targets = (chapters || []).filter((c) => scopeIds.includes(c.id) && c.backendId);
+  await Promise.all(targets.map((c) => WsManuStore.refresh(c.backendId, force ? {} : { maxAgeMs: MANU_REUSE_MS })));
 }
 
 export function manuDownload(name, content, mime) {
@@ -122,7 +119,7 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
   useEffect(() => { setDialog(null); }, [pickedId]);
 
   const refreshSources = async () => {
-    await WsCatalog.__refresh(projectId);
+    await WsCatalog.refresh(projectId);
     await WsWorks.retry("projects");
     if (backendId) await WsManuStore.refresh(backendId);
     bump();
@@ -182,8 +179,8 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
     }
     const run = begin("workflow");
     try {
-      await WsManuStore.confirmRead(projectId, backendId, readNote);
-      await WsManuStore.approveFinal(projectId, backendId, revisionNotes);
+      // 「已通读」随「确认定稿」一次提交，绑定作者读到的那一份正文（批准 #10）
+      await WsManuStore.approveFinal(projectId, backendId, { readNote, revisionNotes });
       await refreshSources();
       setDialog(null);
       run.finish("ok", "终稿已由服务端批准并锁定。");

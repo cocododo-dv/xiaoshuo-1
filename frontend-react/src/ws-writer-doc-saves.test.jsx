@@ -1780,7 +1780,7 @@ describe("复核三 · 章在别处批准锁定（NB-6 · NV3-2 · W1-R3B-2 · W
     srv.locked = true;
     await r.type("<p>起点正文，一，最后敲下的半句</p>");                             // 还没交出去（900 ms）
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     expect(r.editor().getAttribute("contenteditable")).toBe("false");
     await wait(1300);                                                             // 自动保存的计时到了
@@ -1805,7 +1805,7 @@ describe("复核三 · 章在别处批准锁定（NB-6 · NV3-2 · W1-R3B-2 · W
     await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
     await r.type("<p>起点正文，离开前刚敲的半句</p>");
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     await openScene("ch01s2");                                                    // 计时还没到就走了
     await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
@@ -1831,7 +1831,7 @@ describe("复核三 · 章在别处批准锁定（NB-6 · NV3-2 · W1-R3B-2 · W
     expect(r.status()).not.toContain("失败");
     expect(alertTexts().some((message) => message.includes("已批准锁定"))).toBe(true);
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     await openScene("ch01s2");
     await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
@@ -2108,7 +2108,7 @@ describe("复核四 · 章锁定那一刻自动保存还在路上（R4-V5 · W1-
     await r.type("<p>起点正文，一，二</p>");                                  // 回包慢的时候又写了一句
     srv.locked = true;                                                        // 在另一台设备上批准了
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     await wait(1300);                                                        // 自动保存的计时到了：那一句交给了 WrDocs
     expect(r.recoveryHas("起点正文，一，二")).toBe(true);
@@ -2236,13 +2236,13 @@ describe("复核五 · 章锁定那一刻自动保存还在路上，回包之前
     await r.type("<p>起点正文，一，二</p>");                                  // 回包之前又写了一句（还没交出去）
     srv.locked = true;                                                       // 另一台设备批准了本章
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     await wait(1300);                                                        // 自动保存到点：「二」交给 WrDocs → 章已锁定、那一次还在路上
     expect(r.recoveryHas("起点正文，一，二")).toBe(true);
     srv.locked = false;                                                      // 章又在别处重新打开了
     chap.state = "writing";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(false), T);
     return { ctx, srv, r, slow };
   }
@@ -2291,13 +2291,13 @@ describe("复核五 · 章锁定那一刻自动保存还在路上，回包之前
     await wait(1400);                                                        // 自动保存 → 409 → 核对（读不到）
     await r.type("<p>起点正文，一，二，三</p>");
     chap.state = "approved";                                                 // 章在别处批准了
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     await wait(1300);                                                        // 到点：「三」交给 WrDocs → 同步与恢复
     expect(r.recoveryHas("起点正文，一，二，三")).toBe(true);
     const atLock = patchesTo(ctx.client, "d1").length;
     chap.state = "writing";                                                  // 联网之前又重新打开了
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(false), T);
     srv.hooks.ensure = null;
     await act(async () => { window.dispatchEvent(new Event("online")); });
@@ -2331,7 +2331,7 @@ describe("复核五 · 章锁定是在这一场第一次水合路上知道的，
     await r.type("<p>起点正文，锁定前敲的一句，又一句</p>");
     srv.locked = true;                                                       // 另一台设备批准了本章
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     await wait(1300);                                                        // 到点：「又一句」交给 WrDocs → lockPending
     expect(r.status()).toBe("终稿已锁定");
@@ -2428,7 +2428,7 @@ describe("复核六 · 保存 500 停着、章在别处批准、后端仍不稳�
     srv.locked = true;
     chap.state = "approved";
     srv.hooks.ensure = (sid, current) => (sid === "s1" ? Promise.reject(busy5()) : current());
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     const sent = patchesTo(ctx.client, "d1").length;
     await openScene("ch01s1");
@@ -2461,7 +2461,7 @@ describe("复核七 · 自己那一稿回包丢了（其实存上了），章在
     await vi.waitFor(() => expect(r.status()).toBe("草稿保存失败"), T);
     srv.locked = true;                                                        // 另一台设备上读过、批准了本章（批准的正文里有「一」）
     chap.state = "approved";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
     const hold = deferred();
     srv.hooks.ensure = (sid, current) => (sid === "s1" ? hold.promise.then(current) : current()); // 后台读取慢
@@ -2471,7 +2471,7 @@ describe("复核七 · 自己那一稿回包丢了（其实存上了），章在
     expect(noticeTexts()).not.toMatch(/改动不会保存/);
     srv.locked = false;                                                       // 本章又在别处重新打开
     chap.state = "writing";
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(false), T);
     await r.append("，二");                                                   // 作者接着写（还没到自动保存）
     await wait(200);

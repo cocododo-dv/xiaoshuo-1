@@ -3,7 +3,7 @@
    快捷键提示按平台写：Mac 上是 ⌘，Windows / Linux 上是 Ctrl。
    键盘处理本来就同时接受 metaKey 与 ctrlKey；只是提示过去一直印着 ⌘，
    而这个产品主要在 Windows 上启动（start-dev.cmd）。
-   写作台（ws-writer-keys.js）和外壳（侧栏、命令面板）过去各有一份判断，
+   写作台和外壳（侧栏、命令面板）过去各有一份判断，
    连格式都不一样（Ctrl+J 与 Ctrl K）——现在只有这一份，格式统一为 Windows 的惯例「Ctrl+K」。
    nav 参数只给测试用：不传就读当前浏览器的 navigator；显式传 null 当作非 Mac。
    ========================================================== */

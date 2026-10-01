@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { S2AutoText, S2PovPick } from "./ws-snow-fields.jsx";
 import {
-  S2_SPINE_OPTS, s2NextSceneRowId, s2ReorderScenes, s2RosterList, s2SceneLines, s2SceneListStats, s2SceneNo,
+  S2_LINE_KIND_LABEL, S2_SPINE_OPTS, s2NextSceneRowId, s2ReorderScenes, s2RosterList, s2SceneLines, s2SceneListStats, s2SceneNo,
 } from "./ws-snow-model.js";
 
 /* ==========================================================
@@ -15,7 +15,6 @@ import {
 const { useState: useSS, useMemo: useSM, useRef: useSR } = React;
 
 const S2_LINE_TONES = ["gold", "slate", "sage"];  // 非主线循环配色
-const S2_KIND_LABEL = { main: "主线", thread: "线索", sub: "支线" };
 
 /* 一行一场。memo：键入只让被改的那一行重渲染——以前每敲一个字整张表（150 场约一千个表单控件）
    连同每行的内联回调一起重建，150 场时每个键 130 ms 以上。行的回调由表格一次建好、身份不变（act），
@@ -210,7 +209,7 @@ export function S2SceneList({ scaffold, onScaffold, refs, onOpenChapterPlan }) {
                     <button type="button" className="sf-wl-hi" aria-pressed={hiLine === ln.id} onClick={() => setHiLine(hiLine === ln.id ? null : ln.id)}
                       aria-label={`只看「${ln.name}」这条线的场景`} title="高亮这条线的场景"><span className="sf-wl-dot" /></button>
                     <input className="sf-wl-name" aria-label="线名" value={ln.name} onChange={(e) => setLine(ln.id, "name", e.target.value)} />
-                    <span className="sf-wl-kind">{S2_KIND_LABEL[ln.kind] || "支线"}</span>
+                    <span className="sf-wl-kind">{S2_LINE_KIND_LABEL[ln.kind] || "支线"}</span>
                   </div>
                   <div className="sf-wl-track" aria-hidden="true">
                     {list.map((s, i) => <span key={s.id || i} className={`sf-wl-cell ${(s.line || "main") === ln.id ? "is-on" : ""}`} title={s2SceneNo(s.id, i)} />)}

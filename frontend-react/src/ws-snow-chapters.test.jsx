@@ -67,13 +67,14 @@ const draft = () => ({
 });
 
 describe("分章面板 · 提交载荷", () => {
-  it("章内顺序即 scene_seq，且逐章从 1 重新计数", () => {
+  it("归属只说哪一场归哪一章（按屏幕上的先后）；不带 scene_seq——章内顺序由后端按场景列表的故事序重算（B07-07）", () => {
     const payload = buildChapterPlanPayload(draft());
     expect(payload.assignments).toEqual([
-      { scene_plan_id: "sp1", chapter_row_uid: "c1", scene_seq: 1 },
-      { scene_plan_id: "sp2", chapter_row_uid: "c1", scene_seq: 2 },
-      { scene_plan_id: "sp3", chapter_row_uid: "c2", scene_seq: 1 },
+      { scene_plan_id: "sp1", chapter_row_uid: "c1" },
+      { scene_plan_id: "sp2", chapter_row_uid: "c1" },
+      { scene_plan_id: "sp3", chapter_row_uid: "c2" },
     ]);
+    expect(payload.assignments.some(a => "scene_seq" in a)).toBe(false);
   });
 
   it("未分配的场不进 assignments —— 它们不该被静默塞进某一章", () => {
@@ -183,6 +184,15 @@ describe("分章面板 · 拆章 / 并章 / 归位", () => {
     expect(next.chapters.map(c => c.title)).toEqual(["第 1 章", "第 2 章", "磁带"]);
     next = mergeChapterIntoPrevious(next, 1);
     expect(next.chapters.map(c => c.title)).toEqual(["第 1 章", "磁带"]);
+  });
+
+  it("带「待补」「未命名」占位标记的章名也按章序重编——与后端落库时同一条规则（isAutoChapterTitle，B07-14）", () => {
+    const d = ordered();
+    d.chapters[0].title = "待补的章名";
+    d.chapters[1].title = "未命名章节";
+    const next = splitChapterAt(d, 0, 1);
+    const no = (n) => `第 ${n} 章`;   // 章号拼出来写：真实书稿的章名就是这几个字，公开仓库的扫描按字面数
+    expect(next.chapters.map(c => c.title)).toEqual([no(1), no(2), no(3)]);
   });
 
   it("从首场「另起一章」没有意义：不动", () => {
@@ -474,8 +484,12 @@ describe("分章面板 · 物化闸门衔接", () => {
     expect(scale.textContent).toContain("参考书一章约 1.8 万字 ≈ 12 场");
     expect(scale.textContent).toContain("至少 4 章");
     expect(scale.textContent).toContain("替换现有的 2 章章表");
-    // 07 里只有占位章：「倒进 07 章表」两种分法点不动；没有分过章：「已保存的分章」点不动
+    // 只有占位章（或空着）：「倒进现有章表」两种分法点不动；没有分过章：「已保存的分章」点不动。
+    // 07 的章表只读之后，分法的名字不再说「07 章表」（重评 R11）
     expect(host.querySelector('[data-testid="chapter-plan-strategy-spine_anchor"]').disabled).toBe(true);
+    expect(host.querySelector('[data-testid="chapter-plan-strategy-spine_anchor"]').textContent).toBe("倒进现有章表");
+    expect(host.querySelector('[data-testid="chapter-plan-strategy-even"]').textContent).toBe("现有章表 · 均分");
+    expect(host.querySelector(".sf-chapterplan-strategies").textContent).not.toContain("07");
     expect(host.querySelector('[data-testid="chapter-plan-strategy-keep_current"]').disabled).toBe(true);
     // 四种分法是一组单选：选中的那种是 aria-checked 的分段项，不是和「确认写入」一样的红色实心按钮
     const picked = host.querySelector('[data-testid="chapter-plan-strategy-from_scenes"]');
@@ -771,5 +785,201 @@ describe("分章面板 · 物化闸门衔接", () => {
     expect(host.textContent).toContain("雪花同步模块尚未就绪，请刷新页面后重试。");
     expect(host.textContent).not.toContain("Cannot read properties of undefined");
     expect(host.querySelector('[role="alert"]')).toBeTruthy();
+  });
+});
+
+/* 重评 R11：07 的章表改成只读镜像之后，分章面板是改章表的地方——「只保存章表」让作者在「确认写入」被前面的步骤
+   挡住时也能存下章名 / 章摘要 / 章界（PATCH …/chapter-plan，不物化）；07 每章的「改名」开面板并把焦点放在那一章。 */
+describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）", () => {
+  const scene = (i) => ({ scene_plan_id: `sp${i}`, scene_id: `S0${i}`, story_index: i, title: `第 ${i} 场`, primary_form: "proactive", planned: true });
+  const twoChapters = (gate) => ({
+    ...panelPreview(gate),
+    strategy: "keep_current",
+    chapters: [
+      { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [1, 2, 3].map(scene) },
+      { row_uid: "c2", chapter_seq: 2, act: 1, title: "合成二章", spine: "", chapter_goal: "", scenes: [scene(4)] },
+    ],
+    chapter_table: { count: 2, authored: true, saved: true },
+  });
+  const blockedGate = {
+    status: "blocked", blockers: ["场景细化需要先确认。"], warnings: [],
+    items: [{ id: "blocker:unapproved_required_step:scene_details", severity: "blocker", kind: "unapproved_required_step",
+      message: "场景细化需要先确认，才能整理章节结构。", step_key: "scene_details" }],
+  };
+  const setTitle = (host, index, text) => act(async () => {
+    const input = host.querySelector(`[data-testid="chapter-plan-chapter-${index}"] .sf-chapterplan-title`);
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  it("「确认写入」被前面的步骤挡住时也能存：整张章表交 SnowSync.saveChapterPlan、不物化；面板留着并按已保存的分章重拉，回执不说目录已经换了", async () => {
+    const saveChapterPlan = vi.fn(async () => ({ assigned_scene_count: 4, healed_scene_plan_ids: [], workspace: {} }));
+    const materialize = vi.fn();
+    window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(blockedGate)), saveChapterPlan, materialize };
+    const onDone = vi.fn();
+    const onClose = vi.fn();
+    const host = await renderPanel({ onDone, onClose });
+    expect(host.querySelector('[data-testid="chapter-plan-confirm"]').disabled).toBe(true);
+    await setTitle(host, 0, "改过的章名");
+    await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
+    const save = host.querySelector('[data-testid="chapter-plan-save-table"]');
+    expect(save.disabled).toBe(false);
+    await act(async () => { save.click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+
+    expect(saveChapterPlan).toHaveBeenCalledTimes(1);
+    const payload = saveChapterPlan.mock.calls[0][0];
+    expect(payload.replace_chapters).toBe(true);
+    expect(payload.chapters.map(c => (c.row_uid.startsWith("new:") ? "new" : c.row_uid))).toEqual(["c1", "new", "c2"]);
+    expect(payload.chapters[0].title).toBe("改过的章名");
+    expect(payload.assignments.map(a => a.scene_plan_id)).toEqual(["sp1", "sp2", "sp3", "sp4"]);
+    expect(payload.assignments.some(a => "scene_seq" in a)).toBe(false);
+    expect(materialize).not.toHaveBeenCalled();
+    // 面板不关、不报「已写入」：按已保存的分章重拉（新章此刻有了真身份），调整都已落库
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("keep_current", {});
+    expect(host.textContent).not.toContain("有还没确认的调整");
+    const note = host.querySelector('[data-testid="chapter-plan-save-note"]');
+    expect(note.getAttribute("role")).toBe("status");
+    expect(note.textContent).toContain("还没写入目录");
+    expect(note.textContent).toContain("等「确认写入」");
+    expect(note.textContent).not.toMatch(/已写入目录|目录已经/);
+    // 回执随下一次调整消失
+    await setTitle(host, 1, "又改了一次");
+    expect(host.querySelector('[data-testid="chapter-plan-save-note"]')).toBeNull();
+  });
+
+  it("还有场没分到章时不能只保存章表（与确认写入同一条）；保存失败如实报错，面板里的调整留着", async () => {
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => ({ ...twoChapters(null), unassigned: [scene(5)] })),
+      saveChapterPlan: vi.fn(),
+    };
+    let host = await renderPanel();
+    expect(host.querySelector('[data-testid="chapter-plan-save-table"]').disabled).toBe(true);
+    await act(async () => host.querySelector('[data-testid="chapter-plan-save-table"]').click());
+    expect(window.SnowSync.saveChapterPlan).not.toHaveBeenCalled();
+
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => twoChapters(null)),
+      saveChapterPlan: vi.fn(async () => { throw Object.assign(new Error("分章里引用了不存在的章。"), { code: "SNOWFLAKE_CHAPTER_PLAN_NOT_FOUND" }); }),
+    };
+    host = await renderPanel();
+    await setTitle(host, 0, "改过的章名");
+    await act(async () => { host.querySelector('[data-testid="chapter-plan-save-table"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector('[role="alert"]').textContent).toContain("分章里引用了不存在的章。");
+    expect(host.querySelector('[data-testid="chapter-plan-save-note"]')).toBeNull();
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-0"] .sf-chapterplan-title').value).toBe("改过的章名");
+    expect(host.textContent).toContain("有还没确认的调整");
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("存过章表之后面板换成了没存的东西（AI 建议、AI 起的章名）：「章表已保存」的回执随之撤下，不挂在没存的内容头上（复核 Q2b-R4）", async () => {
+    const chapters = (cut) => [
+      { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [1, 2, 3].slice(0, cut).map(scene) },
+      { row_uid: "c2", chapter_seq: 2, act: 1, title: "第 2 章", spine: "", chapter_goal: "", scenes: [1, 2, 3, 4].slice(cut).map(scene) },
+    ];
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => ({ ...twoChapters(null), chapters: chapters(3) })),
+      saveChapterPlan: vi.fn(async () => ({ assigned_scene_count: 4, healed_scene_plan_ids: [] })),
+      chapterSuggest: vi.fn(async () => ({ ...twoChapters(null), strategy: "llm_suggested", chapters: chapters(2) })),
+      chapterTitles: vi.fn(async () => ({ titles: [{ row_uid: "c2", title: "雨城旧案", summary: "" }], notice: null })),
+    };
+    const host = await renderPanel();
+    const click = (testId) => act(async () => { host.querySelector(`[data-testid="${testId}"]`).click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const receipt = () => host.querySelector('[data-testid="chapter-plan-save-note"]');
+
+    await click("chapter-plan-save-table");
+    expect(receipt().textContent).toContain("章表已保存");
+    // AI 建议：面板换成一份还没存的分章（第 3 场挪到了第二章）
+    await click("chapter-plan-suggest");
+    expect(window.SnowSync.chapterSuggest).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-1"]').textContent).toContain("第 3 场");
+    expect(receipt()).toBeNull();
+
+    await click("chapter-plan-save-table");
+    expect(receipt().textContent).toContain("章表已保存");
+    // AI 起章名：起出来的名字落进面板、还没存
+    await click("chapter-plan-name");
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-1"] .sf-chapterplan-title').value).toBe("雨城旧案");
+    expect(receipt()).toBeNull();
+    expect(host.textContent).toContain("有还没确认的调整");
+  });
+
+  it("换一种分法：AI 起名的回执跟着被换掉的那一份走，不留在新的预览上", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);   // 提示层没挂：换分法前那一问退回原生 confirm
+    const preview = (strategy) => ({ ...twoChapters(null), strategy, chapters: [
+      { row_uid: "c1", chapter_seq: 1, act: 1, title: "第 1 章", spine: "", chapter_goal: "", scenes: [1, 2, 3, 4].map(scene) },
+    ] });
+    window.SnowSync = {
+      chapterPreview: vi.fn(async (strategy) => preview(strategy === "auto" ? "keep_current" : strategy)),
+      chapterTitles: vi.fn(async () => ({ titles: [{ row_uid: "c1", title: "雨城旧案", summary: "" }], notice: null })),
+    };
+    const host = await renderPanel();
+    await act(async () => { host.querySelector('[data-testid="chapter-plan-name"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector('[data-testid="chapter-plan-name-note"]').textContent).toContain("AI 起了 1 个章名");
+    await act(async () => { host.querySelector('[data-testid="chapter-plan-strategy-from_scenes"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-0"] .sf-chapterplan-title').value).toBe("第 1 章");
+    expect(host.querySelector('[data-testid="chapter-plan-name-note"]')).toBeNull();
+  });
+
+  it("从 07 某一章的「改名」进来：按 row_uid 认章，焦点落在它的章名框上", async () => {
+    window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(null)) };
+    const host = await renderPanel({ focusChapter: { rowUid: "c2", index: 1 } });
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="chapter-plan-chapter-1"] .sf-chapterplan-title'));
+  });
+
+  it("认不出要改名的那一章（行身份对不上）：不按位置去猜、不抢焦点", async () => {
+    window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(null)) };
+    await renderPanel({ focusChapter: { rowUid: "gone", index: 0 } });
+    expect(document.activeElement && document.activeElement.classList.contains("sf-chapterplan-title")).toBe(false);
+  });
+});
+
+/* 批准 #18c：面板里的追问走应用内的确认框（wsConfirm），不再弹浏览器原生的 confirm。WsDialog 能等异步的
+   onBeforeClose，所以连「关面板」那一问也换掉了；确认框叠在面板上面，它的 Esc 只关它自己。 */
+describe("分章面板 · 追问用应用内的确认框（批准 #18c）", () => {
+  it("有调整时 Esc 关面板：先弹应用内确认框（不调 window.confirm）；「回到面板」或在确认框里按 Esc 都留着面板，「关掉面板」才关", async () => {
+    const { WsToastHost } = await import("./ws-notify.jsx");
+    window.SnowSync = { chapterPreview: vi.fn(async () => ({
+      ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
+      strategy: "keep_current",
+      chapters: [{ row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "",
+        scenes: [1, 2, 3].map(i => ({ scene_plan_id: `sp${i}`, story_index: i, title: `第 ${i} 场`, primary_form: "proactive", planned: true })) }],
+      chapter_table: { count: 1, authored: true, saved: true },
+    })) };
+    const native = vi.spyOn(window, "confirm");
+    const onClose = vi.fn();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => root.render(<><WsToastHost /><WsChapterPlanPanel onClose={onClose} onDone={vi.fn()} /></>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
+    const esc = () => act(async () => {
+      document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    const dialog = () => document.querySelector('[data-testid="ws-confirm"]');
+
+    await esc();
+    expect(dialog()).toBeTruthy();
+    expect(dialog().textContent).toContain("关掉分章面板？");
+    expect(dialog().textContent).toContain("没确认的调整");
+    await act(async () => document.querySelector('[data-testid="ws-confirm-cancel"]').click());
+    expect(dialog()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await esc();
+    expect(dialog()).toBeTruthy();
+    await esc();   // 确认框在最上面：这一下 Esc 只关确认框（= 不关面板）
+    expect(dialog()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeTruthy();
+
+    await esc();
+    await act(async () => document.querySelector('[data-testid="ws-confirm-ok"]').click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(native).not.toHaveBeenCalled();
   });
 });

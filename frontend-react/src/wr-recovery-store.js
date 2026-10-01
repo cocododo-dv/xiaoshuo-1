@@ -7,10 +7,31 @@ import { WsWorks } from "./ws-works.jsx";
    同步与恢复 · 本机的恢复记录（2026-09-29 从 wr-doc-store.jsx 原样搬出）
    冲突副本、未同步稿、覆盖前备份、AI 候选：存 localStorage 的 wr-recovery:v1:<id>，配额不足时退到会话内存。
    旧版「wr-doc:<sid>::<work>:conflict-<t>」键照旧列出。每次变化广播 ws:recovery-changed。
+   恢复记录是作者的安全网：这里从不替作者删（没有自动淘汰）。一场的记录多到软上限时，同步与恢复中心提示
+   作者导出或清理（recoveryCrowdedScenes，审计 F03-23）——它们和写作台的本机缓存共用一份浏览器存储空间。
    ========================================================== */
 
 const WR_RECOVERY_PREFIX = "wr-recovery:v1:";
+/* 一场的恢复记录超过这么多份，同步与恢复中心就提示「导出或清理」（只提示，不删） */
+const RECOVERY_SCENE_SOFT_CAP = 20;
 const volatileRecoveries = new Map();
+
+/* 已解析过的记录：localStorage 键 → { raw, entry }。列出时照旧逐个核对键（别的标签页、别的模块实例写进来的
+   也认得），但内容没变的那几条不再重新 JSON.parse（审计 F03-23：以前每次列出 / 比较 / 删除都把每一条全文重解析一遍）。 */
+const parsedRecoveries = new Map();
+function readRecoveryEntry(key) {
+  let raw = null;
+  try { raw = localStorage.getItem(key); } catch (e) { raw = null; }
+  if (raw == null) { parsedRecoveries.delete(key); return null; }
+  const hit = parsedRecoveries.get(key);
+  if (!hit || hit.raw !== raw) {
+    let value = null;
+    try { value = JSON.parse(raw); } catch (e) { value = null; }
+    parsedRecoveries.set(key, { raw, entry: value && value.id ? { ...value, durable: true } : null });
+  }
+  const entry = parsedRecoveries.get(key).entry;
+  return entry ? { ...entry } : null;
+}
 
 /* 当前作品 id（本机键 / 内存表的命名空间，加载占位也照用）。try 是有用的：不少单测 mock 的 WsWorks 没有 activeId */
 function activeWorkId() {
@@ -97,27 +118,50 @@ function parseLegacyRecovery(key) {
 
 function recoveryList() {
   const entries = new Map();
+  const seenKeys = new Set();
   try {
     for (let i = 0; i < localStorage.length; i += 1) {
       const key = localStorage.key(i);
       if (!key) continue;
       if (key.startsWith(WR_RECOVERY_PREFIX)) {
-        try {
-          const value = JSON.parse(localStorage.getItem(key) || "null");
-          if (value && value.id) entries.set(value.id, { ...value, durable: true });
-        } catch (e) {}
+        seenKeys.add(key);
+        const entry = readRecoveryEntry(key);
+        if (entry) entries.set(entry.id, entry);
       } else {
         const legacy = parseLegacyRecovery(key);
         if (legacy) entries.set(legacy.id, legacy);
       }
     }
   } catch (e) {}
+  parsedRecoveries.forEach((_hit, key) => { if (!seenKeys.has(key)) parsedRecoveries.delete(key); });
   volatileRecoveries.forEach((entry, id) => entries.set(id, entry));
   return [...entries.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
+/* 按 id 取一份记录（没有就是 null）：直接找它那一个键，不必把全部记录列一遍 */
+function recoveryFind(id) {
+  if (!id) return null;
+  if (volatileRecoveries.has(id)) return volatileRecoveries.get(id);
+  if (String(id).startsWith("legacy:")) return parseLegacyRecovery(String(id).slice("legacy:".length));
+  const entry = readRecoveryEntry(WR_RECOVERY_PREFIX + id);
+  return entry && entry.id === id ? entry : null;
+}
+
+/* 记录多到软上限的场：[{ workId, sid, count }]（多的在前）。只用来提示作者导出或清理，从不自动删 */
+function recoveryCrowdedScenes(list = recoveryList(), cap = RECOVERY_SCENE_SOFT_CAP) {
+  const counts = new Map();
+  (list || []).forEach((entry) => {
+    if (!entry || !entry.sid) return;
+    const key = `${entry.workId || ""}::${entry.sid}`;
+    const hit = counts.get(key) || { workId: entry.workId || "", sid: entry.sid, count: 0 };
+    hit.count += 1;
+    counts.set(key, hit);
+  });
+  return [...counts.values()].filter((hit) => hit.count > cap).sort((a, b) => b.count - a.count);
+}
+
 function recoveryRemove(id) {
-  const entry = recoveryList().find(item => item.id === id);
+  const entry = recoveryFind(id);
   if (!entry) return false;
   try {
     if (entry.storageKey) localStorage.removeItem(entry.storageKey);
@@ -159,5 +203,6 @@ function recoveryRename(workId, from, to) {
 }
 
 export {
-  activeWorkId, isStorageQuotaError, storageFailure, notifyRecoveryChanged, recoveryCreate, recoveryList, recoveryRemove, recoveryRename,
+  RECOVERY_SCENE_SOFT_CAP, activeWorkId, isStorageQuotaError, storageFailure, notifyRecoveryChanged, recoveryCreate, recoveryList,
+  recoveryFind, recoveryCrowdedScenes, recoveryRemove, recoveryRename,
 };

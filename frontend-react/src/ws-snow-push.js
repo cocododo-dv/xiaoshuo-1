@@ -61,13 +61,15 @@ async function snowPushKey(cacheKey) {
     const fragment = buildStepFragment(feKey, saved, workId);
     const sig = stepSig(fragment);
     const prev = mine[feKey] || {};
+    // 阶段 G：已确认的步骤被改动（后端 revised_after_approval）→ 待作者显式重新确认，
+    // 不再在停止输入一秒后自动补批准——下游失效级联在作者点「确认本步」那一刻才发生。
+    let revisedAfterApproval = false;
     if (prev.sig !== sig) {
       try {
-        const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
+        // 自动保存只读回包里的这一步（B06-05）：不要整份工作台
+        const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}?include_workspace=false`, { draft: fragment, force: true });
         const patchedStatus = patched && patched.step && patched.step.status;
-        // 阶段 G：已确认的步骤被改动（后端 revised_after_approval）→ 待作者显式重新确认，
-        // 不再在停止输入一秒后自动补批准——下游失效级联在作者点「确认本步」那一刻才发生。
-        const revisedAfterApproval = !!(patched && patched.step && patched.step.revised_after_approval);
+        revisedAfterApproval = !!(patched && patched.step && patched.step.revised_after_approval);
         const approvalPending = fragment.fe_state === "done"
           && patchedStatus !== "approved"
           && patchedStatus !== "skipped"
@@ -101,8 +103,10 @@ async function snowPushKey(cacheKey) {
     // PATCH 回包的服务端状态优先：本机首次载入时已经是 done，也必须把 pending_review
     // 补批准；不能只依赖“本会话观察到 active → done”，否则离线/刷新后的完成态会永久卡住。
     // 批准失败会写 approvalPending，重试时即使 PATCH 已成功也会再次批准。
+    // 回包说这一步「确认过又改了」就不在这里批：那只等作者点「确认本步」（SnowSync.approveStep）——
+    // 以前账上的 state 是从服务端「待审」反推的「进行中」时，这里会把它当成作者刚确认、自动补批（复核 PRE-02）。
     const currentLedger = mine[feKey] || prev;
-    const shouldApprove = fragment.fe_state === "done"
+    const shouldApprove = fragment.fe_state === "done" && !revisedAfterApproval
       && (currentLedger.approvalPending === true || (prev.state && prev.state !== "done"));
     if (!shouldApprove) continue;
     try {

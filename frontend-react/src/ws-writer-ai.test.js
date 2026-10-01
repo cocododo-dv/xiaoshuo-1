@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   wrAiError, wrAiLocalError, wrContinueCandidates, wrContinueChips, wrContinueDirection, wrToneInstr,
 } from "./ws-writer-ai.js";
-import { modCombo, modKey } from "./ws-writer-keys.js";
+import { modKeyLabel as modKey, modShortcut as modCombo } from "./lib/platform.js";
 
 const apiError = (code, extra = {}) => Object.assign(new Error("raw english message"), { code, details: {}, ...extra });
 

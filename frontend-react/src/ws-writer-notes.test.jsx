@@ -35,7 +35,7 @@ async function changeTextarea(node, value) {
 async function loadNotes() {
   const client = await import("./lib/client.js");
   const { WsCatalog } = await import("./ws-catalog.jsx");
-  vi.spyOn(WsCatalog, "__backendSceneId").mockImplementation(async (scene) => `backend-${scene}`);
+  vi.spyOn(WsCatalog, "backendSceneId").mockImplementation(async (scene) => `backend-${scene}`);
   const { WrCtxNotes } = await import("./ws-writer.jsx");
   return { client, WrCtxNotes };
 }

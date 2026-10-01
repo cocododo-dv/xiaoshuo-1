@@ -49,15 +49,11 @@ async function withBusy(key, fn, refreshAfter) {
   }
 }
 
+/* 管理令牌只读 sessionStorage。旧版存在 localStorage 里的那一份不再搬过来（批准 #25，重评 R16），
+   但照旧随手抹掉：管理口令不能留在 localStorage 里（幂等，与 setAdminToken 同一条） */
 function adminToken() {
-  try {
-    const current = (sessionStorage.getItem(ADMIN_TOKEN_KEY) || "").trim();
-    const legacy = (localStorage.getItem(ADMIN_TOKEN_KEY) || "").trim();
-    localStorage.removeItem(ADMIN_TOKEN_KEY);
-    if (current) return current;
-    if (legacy) sessionStorage.setItem(ADMIN_TOKEN_KEY, legacy);
-    return legacy;
-  } catch (e) { return ""; }
+  try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (e) { /* 存储被禁用：没有可抹的 */ }
+  try { return (sessionStorage.getItem(ADMIN_TOKEN_KEY) || "").trim(); } catch (e) { return ""; }
 }
 
 const WsAiProviders = {

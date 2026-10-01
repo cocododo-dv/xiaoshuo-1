@@ -459,7 +459,7 @@ describe("写作台 · 目录只改了字数（F03-10）", () => {
     client.apiGet.mockImplementation((url) => (/\/api\/v2\/projects\/[^/]+\/catalog(\?|$)/.test(url)
       ? Promise.resolve({ chapters: [{ ...DEFAULT_CHAP, scenes: [{ ...scene, brief: { ...scene.brief, goal: "替父亲去码头点名" } }] }] })
       : base(url)));
-    await act(async () => { await window.WsCatalog.__refresh(); });
+    await act(async () => { await window.WsCatalog.refresh(); });
     await vi.waitFor(() => expect(card().textContent).toContain("替父亲去码头点名"), T);
   }, LONG);
 });

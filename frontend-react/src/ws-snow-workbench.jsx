@@ -2,11 +2,12 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
 import { useFocusTrap, isImeComposing } from "./ws-dialog.jsx";
 import {
-  S2_STEPS, S2_STATE_LABEL,
-  s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates, s2FindStepKey,
-  s2LandingStep, s2MergeScaffolds, s2SettlePlanning,
+  S2_BE_KEY, S2_STEPS, S2_STATE_LABEL,
+  s2AdoptServerScaffold, s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates,
+  s2FindStepKey, s2KeepServerOwned, s2LandingStep, s2MergeScaffolds, s2PrependHistory, s2SettlePlanning, s2StepMarkdown,
 } from "./ws-snow-model.js";
 import {
   activeWorkId, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
@@ -22,7 +23,7 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    · useSnowWorkbenchApi —— AI 通道（生成 / 教练 / 分诊）调视图的那张显式接口；
    · useSnowLanding —— 落在哪一步、按步骤记住的页签、外部跳步 / 跳场（ws:snow-step / ws:snow-scene）；
    · useSnowContextRail —— 右栏：宽屏可收起的第三栏、窄屏抽屉（焦点陷阱与还焦点）、写作指引首访展开；
-   · useSnowStepFlow —— 确认 / 复核 / 上游对照 / 略过 / 快照回滚；
+   · useSnowStepFlow —— 确认 / 复核 / 上游对照 / 略过 / 快照回滚 / 服务器上保存的版本（预览与恢复）；
    · useSnowAiActions —— 整步生成、按方向生成、定向补全、分诊，以及交给编辑器的 AI 工具面；
    · useSnowMoreMenu —— 「更多」菜单：导入结构、导出大纲、清空十步构思；
    · useSnowKeyboard —— ⌘↵ 确认本步、←/→ 翻步。
@@ -36,7 +37,7 @@ const { useState: useSS, useEffect: useSE, useRef: useSR, useMemo: useSM } = Rea
    视图的状态、setter、回调全装在里面，教练的历史 setter 也是塞进去给生成通道用的——谁读了什么、能改什么，
    只能挨个翻。这里挂载时建一次、身份不变；方法在调用那一刻读视图的最新值（通道在 await 之后写回时仍用发起那一刻
    取到的步骤键，与以前一样），通道只能调这些方法，碰不到视图的其余状态。live 是这一次渲染视图交出来的值：
-   { workId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel }。 */
+   { workId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, pushToast, sceneLabel }。 */
 export function useSnowWorkbenchApi(live) {
   const liveRef = useSR(live);
   liveRef.current = live;
@@ -57,6 +58,8 @@ export function useSnowWorkbenchApi(live) {
       journal: (action, note, who, snap, key) => v().pushHist(action, note, who, snap, key),
       snapshot: (key) => v().snapNow(key),
       toast: (text, tone) => v().showToast(text, tone),
+      /* 带一扇门的回执：{ text, tone, timeout, actionLabel, onAction }（如 AI 没接好时「去系统配置」） */
+      notify: (opts) => v().pushToast(opts),
       /* 场景的显示号（S01…），不把 row_<uuid> 摆给作者 */
       sceneLabel: (rowUid) => v().sceneLabel(rowUid),
     };
@@ -64,9 +67,9 @@ export function useSnowWorkbenchApi(live) {
 }
 
 /* 右栏：09 / 10 是两张宽表，默认收起、把宽度让给表格；其余步骤默认展开。作者的选择按两组记住。
-   窄屏（≤1180）右栏本来就折成抽屉，这个偏好不参与。 */
+   窄屏（≤1280，与 ws-snow.css 的抽屉断点同一个数）右栏本来就折成抽屉，这个偏好不参与。 */
 const s2RailGroup = (key) => (key === "scenes" || key === "planning" ? "table" : "form");
-const S2_NARROW_QUERY = "(max-width: 1180px)";
+const S2_NARROW_QUERY = "(max-width: 1280px)";
 
 /* ---- 落在哪一步 · 页签 · 外部跳转 ---- */
 export function useSnowLanding({ workId: snowWorkId, myKey, initialStep, states, health: beHealth, latestRef, setScaffolds }) {
@@ -196,13 +199,16 @@ export function useSnowContextRail(activeKey) {
   return { narrow, ctxOpen, setCtxOpen, railShown, toggleContext, ctxRef, ctxBtnRef, ctxExpanded, guideFirstVisit };
 }
 
-/* ---- 步骤流转：确认 / 复核 / 上游对照 / 略过 / 回滚 ---- */
+/* ---- 步骤流转：确认 / 复核 / 上游对照 / 略过 / 回滚 / 服务器上保存的版本 ----
+   flushDoc / replaceDoc 是十步内容的「立刻落盘」与「整份换掉并立刻落盘」（ws-snow-hooks.js 的 useSnowDocument）。 */
 export function useSnowStepFlow({
   activeKey, active, idx, states, setStates, staleMap, curBeStale, pushHist, snapNow, pushToast, showToast, catalogSyncRef,
-  selectStep, setTabFor, setDrafts, setScaffolds, setHistory,
+  selectStep, setTabFor, setDrafts, setScaffolds, setHistory, flushDoc, replaceDoc,
 }) {
   const [upDiff, setUpDiff] = useSS(null);     // 上游 diff 对话框 { key, loading, items, error, reason }
   const [snapDiff, setSnapDiff] = useSS(null); // 待预览的历史快照条目
+  const [versionDiff, setVersionDiff] = useSS(null); // 服务器版本预览 { key, item, loading, draft, error, restoring }
+  const [versionsTick, setVersionsTick] = useSS(0);  // 恢复之后让「服务器上保存的版本」重读一次
   const goStep = (i) => selectStep(S2_STEPS[Math.max(0, Math.min(S2_STEPS.length - 1, i))].key);
   const nextUnfinished = (from) => {
     for (let i = 1; i <= S2_STEPS.length; i++) {
@@ -297,19 +303,95 @@ export function useSnowStepFlow({
     showToast(`已略过 · ${active.name}（已在服务端留痕）`, "slate"); goStep(idx + 1);
     return true;
   };
+  /* ---- 服务器上保存的版本（R15a）：预览某一版（按版本取草稿），确认后恢复成这一步的最新一版 ---- */
+  const previewVersion = async (key, item) => {
+    if (!item || !item.step_run_id) return;
+    const runId = item.step_run_id;
+    const mine = (d) => !!(d && d.item && d.item.step_run_id === runId);
+    setVersionDiff({ key, item, loading: true, draft: null, error: "", restoring: false });
+    try {
+      const workId = activeWorkId();
+      if (!workId) throw new Error("作品尚未就绪");
+      const res = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace/steps/${S2_BE_KEY[key]}/history?step_run_id=${encodeURIComponent(runId)}&include_draft=true`);
+      const row = ((res && res.items) || []).find(it => it && it.step_run_id === runId) || null;
+      if (!row || !row.draft) throw new Error("服务器没有给出这一版的内容");
+      setVersionDiff(d => (mine(d) ? { ...d, loading: false, draft: row.draft } : d));
+    } catch (err) {
+      setVersionDiff(d => (mine(d) ? { ...d, loading: false, error: (err && err.message) || "稍后重试" } : d));
+    }
+  };
+  /* 恢复：先把本机此刻的内容存上服务器（它成为上一版，恢复之后也找得回），再请服务器把那一版另存为最新一版
+     （POST …/restore），回包的规范草稿经 SnowSync.applyServerStep 落成这一步的脚手架——与 AI 生成落地同一条路：
+     只活在前端的线索 / 错误信念接着用，第 10 步的形态 / 视角照旧以 09 为准。本机内容整份换掉并立刻落盘（replaceDoc），
+     排着的上行读到的就是恢复后的内容，不会把恢复前的旧文字推回去；恢复前的样子在「操作记录」里留一份快照可回滚。
+     恢复出来的是待确认的一版：确认过的步骤显示「已改动 · 待重新确认」（不会被自动补批），其余回到「进行中」。
+     失败（含严格模式下「前面的步骤还没确认」的 409）什么都不动，回执说清楚。 */
+  const restoreVersion = async () => {
+    const d = versionDiff;
+    if (!d || !d.draft || d.restoring) return;
+    const { key, item } = d;
+    const st = S2_STEPS.find(s => s.key === key);
+    if (!st) return;
+    setVersionDiff({ ...d, restoring: true });
+    const workId = activeWorkId();
+    try {
+      if (!workId) throw new Error("作品尚未就绪");
+      if (flushDoc) flushDoc();
+      try { await SnowSync.retry(workId); } catch (e) { /* 存不上就算了：恢复前的样子还在本机快照里 */ }
+      const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${S2_BE_KEY[key]}/restore`, { step_run_id: item.step_run_id });
+      if (!res || !res.step) throw new Error("恢复回包缺少 step");
+      let fe = null;
+      try { fe = SnowSync.applyServerStep(workId, key, res.step); } catch (e) { fe = null; }
+      try { if (res.workspace) SnowSync.captureBriefs(workId, res.workspace); } catch (e) { /* 要点镜像下次水合再跟上 */ }
+      const backup = snapNow(key);
+      const reconfirm = !!res.step.revised_after_approval;
+      replaceDoc(doc => {
+        const next = { ...doc };
+        if (fe && fe.scaffold) {
+          next.scaffolds = s2AdoptServerScaffold(doc.scaffolds, key, fe.scaffold);
+          next.drafts = { ...doc.drafts, [key]: "" };
+        } else if (fe && fe.text != null) {
+          next.drafts = { ...doc.drafts, [key]: fe.text };
+        }
+        next.states = { ...doc.states, [key]: doc.states[key] === "done" && reconfirm ? "done" : "active" };
+        next.history = s2PrependHistory(doc.history, {
+          t: Date.now(), who: "我", action: "从服务器恢复", note: `${st.num} ${st.name} ← 第 ${item.version} 版 · 恢复前留底`, key, snap: backup,
+        });
+        return next;
+      });
+      setVersionDiff(null);
+      setVersionsTick(t => t + 1);
+      selectStep(key);
+      setTabFor(key, "edit");
+      const notice = res.notice && String(res.notice.message || "").trim();
+      pushToast({
+        text: `已恢复 · ${st.name}回到第 ${item.version} 版${reconfirm ? " · 改动了确认过的一步，记得重新确认" : ""}${notice ? ` · ${notice}` : ""}`,
+        tone: notice ? "crimson" : "gold", timeout: notice ? 9000 : 6000,
+      });
+    } catch (err) {
+      setVersionDiff(null);
+      failToast("恢复没有完成", err);
+    }
+  };
   const restoreSnap = (h) => { if (h && h.snap) setSnapDiff(h); };
+  /* 回滚一份本机快照。07 的章表、09 的「所在章」只有服务端写得了（重评 R11），上行也不带它们：回滚不换它们，
+     留着现在的（s2KeepServerOwned）——以前快照里那张旧章表会回到只读镜像里，改名的目标、导出、引用上下文都跟着
+     旧章表走，直到下一次水合。回滚预览（S2SnapDiff）按同一条规矩摆两栏。 */
   const applySnap = (h) => {
     if (!h || !h.snap) return;
     const st = S2_STEPS.find(s => s.key === h.key); if (!st) return;
     // 回滚前先给当前状态留底，回滚本身也可被撤销
     const backup = snapNow(h.key);
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
-    if (h.snap.scaffold) setScaffolds(prev => s2SettlePlanning({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
-    setHistory(prev => [{ t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }, ...prev].slice(0, 80));
+    if (h.snap.scaffold) setScaffolds(prev => s2SettlePlanning({ ...prev, [h.key]: s2KeepServerOwned(h.key, JSON.parse(JSON.stringify(h.snap.scaffold)), prev) }));
+    setHistory(prev => s2PrependHistory(prev, { t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }));
     selectStep(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
   };
-  return { goStep, confirmStep, reviewStep, showUpstreamDiff, skipStep, restoreSnap, applySnap, upDiff, setUpDiff, snapDiff, setSnapDiff };
+  return {
+    goStep, confirmStep, reviewStep, showUpstreamDiff, skipStep, restoreSnap, applySnap, upDiff, setUpDiff, snapDiff, setSnapDiff,
+    previewVersion, restoreVersion, versionDiff, setVersionDiff, versionsTick,
+  };
 }
 
 /* ---- AI：整步生成 / 按方向生成 / 定向补全 / 分诊（通道本身在 ws-snow-generation.js 的 useSnowGeneration） ---- */
@@ -447,21 +529,24 @@ export function useSnowMoreMenu({
   const [resetOpen, setResetOpen] = useSS(false);
   /* 清空十步构思（原「重置」）。它不只是清本机：视图清空后 SnowSync 会把每一步的空稿上行到服务器
      （同步过的步骤都在账上，清空是作者的编辑）。所以它住在「更多」菜单的危险区，先开一个说清后果的对话框；
-     清空前给每一步留一份快照进「历史」，可以逐步回滚。 */
+     清空前给每一步留一份快照进「历史」，可以逐步回滚。07 的章表不清：它是服务端分章的只读镜像，07 的上行不带它，
+     服务端的分章也不随这一下清掉（s2KeepServerOwned）——清了本机就是一张「章表空着」的假象，直到下一次水合。 */
   const resetAll = () => {
     const now = Date.now();
-    // 只给真写过东西的步骤留底：空白脚手架里也有「c1 / 主角」这类默认值，不能算内容
+    // 只给真写过东西的步骤留底：空白脚手架里也有「c1 / 主角」这类默认值，不能算内容；07 只剩章表时也不算（章表不清）
     const blank = s2BlankScaffolds();
+    const mine = (key, scaffold) => s2KeepServerOwned(key, scaffold, blank);
     const backups = S2_STEPS
       .map(st => ({ t: now, who: "我", action: "清空前留底", note: `${st.num} ${st.name}`, key: st.key, snap: snapNow(st.key) }))
-      .filter(h => h.snap && s2Content(h.snap.draft, h.snap.scaffold).trim() !== s2Content("", blank[h.key]).trim());
+      .filter(h => h.snap && s2Content(h.snap.draft, mine(h.key, h.snap.scaffold)).trim() !== s2Content("", blank[h.key]).trim());
     setDrafts(s2DefaultDrafts());
-    setScaffolds(s2MergeScaffolds(null));
+    setScaffolds(prev => {
+      const fresh = s2MergeScaffolds(null);
+      return { ...fresh, outline: s2KeepServerOwned("outline", fresh.outline, prev) };
+    });
     setChecks(s2DefaultChecks());
     setStates(s2DefaultStates());
-    setHistory(prev => [{ t: now, who: "我", action: "清空十步构思", note: `${backups.length} 步清空前留了快照`, key: activeKey, snap: null }, ...backups, ...prev]
-      .slice(0, 80)
-      .map((h, i) => (i < 20 ? h : (h.snap ? { ...h, snap: null } : h))));
+    setHistory(prev => s2PrependHistory(prev, [{ t: now, who: "我", action: "清空十步构思", note: `${backups.length} 步清空前留了快照`, key: activeKey, snap: null }, ...backups]));
     setResetOpen(false);
     showToast(backups.length ? `已清空十步构思 · 清空前的内容在「历史」里，可以逐步回滚` : "已清空十步构思", "slate");
   };
@@ -483,11 +568,12 @@ export function useSnowMoreMenu({
     } finally { setImportBusy(false); }
   };
   const workTitle = () => { try { return (WsWorks && WsWorks.active && WsWorks.active().title) || ""; } catch (e) { return ""; } };
-  /* export the whole snowflake as a Markdown outline (real download) */
+  /* 整份雪花导出成 Markdown（真下载）。每一步是带栏名的分步文本（s2StepMarkdown：一栏一行，角色 / 场景 / 章各成一组）——
+     以前把脚手架里的字符串叶子原样拼起来，行 id、角色键、proactive / main 这些内部值都印进了大纲（批准 #18b） */
   const exportOutline = useStableCallback(() => {
     const lines = [`# 雪花大纲 · ${workTitle() || "未命名作品"}`, "", `> 导出于 ${new Date().toLocaleString("zh-CN")} · 已确认 ${doneCount}/10${staleCount ? ` · ${staleCount} 需复核` : ""}`, ""];
     S2_STEPS.forEach(s => {
-      const text = s2Content(drafts[s.key], scaffolds[s.key]).trim();
+      const text = s2StepMarkdown(s.key, drafts[s.key], scaffolds[s.key], scaffolds).trim();
       const st = states[s.key];
       const tag = staleMap[s.key] ? "需复核" : (S2_STATE_LABEL[st] || st);
       lines.push(`## ${s.num} ${s.name}　[${tag}]`);
@@ -506,7 +592,7 @@ export function useSnowMoreMenu({
   const moreItems = useSM(() => [
     { label: "导入结构", hint: "粘贴十步规范 JSON，逐步保存并批准", icon: <I.Download size={14} />, testId: "snow-import-open",
       onSelect: () => { setImportError(""); setImportOpen(true); } },
-    { label: "导出大纲", hint: "全书十步导出为 Markdown", icon: <I.UploadCloud size={14} />, onSelect: exportOutline },
+    { label: "导出大纲", hint: "全书十步导出为 Markdown", icon: <I.UploadCloud size={14} />, testId: "snow-export-outline", onSelect: exportOutline },
     { separator: true },
     { label: "清空十步构思…", hint: "服务器会记一版空稿，清空前的内容留在「历史」里", icon: <I.Trash size={14} />, danger: true, testId: "snow-reset-open",
       onSelect: () => setResetOpen(true) },

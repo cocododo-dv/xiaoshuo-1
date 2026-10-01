@@ -110,25 +110,18 @@ export function catFromApiChapter(c) {
     spine: c.spine || "",
     structure: catStructureFromApi(c),
     state: c.state,
-    tension: typeof c.tension === "number" ? c.tension : 0.3,
-    /* 张力没有任何编辑入口（旧数据 / 夹具才有）：没设过就别让镜头和体检拿 0.3 的默认值当事实 */
-    tensionSet: typeof c.tension === "number",
-    pov: c.pov || "",
-    time: c.time_label || "",
-    place: c.place || "",
+    /* 章级的张力 / 线索 / 视角 / 时间 / 地点 / 入口出口 / 衔接不再映射（批准 #17a，重评 R10）：没有任何地方能填，
+       后端也不再给、不再收；章节编排里的视角、时间、地点、入口出口一律从各场派生（ws-author-derive.js）。
+       章承诺 promise 留着：它是戏剧卡 promise 的镜像，戏剧卡与 AI 编排都写它。 */
     current: !!c.current,
     words: { cur: (c.words && c.words.cur) || 0, target: (c.words && c.words.target) || 0 },
-    entry: c.entry || "",
-    exit: c.exit || "",
-    align: c.align !== false,
     promise: c.promise || "",
     drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "", ...(c.drama || {}) },
-    threads: c.threads || [],
     scenes: (c.scenes || []).map(catFromApiScene),
   };
 }
 
-/* 章对象 diff → PATCH 载荷（只含变化字段） */
+/* 章对象 diff → PATCH 载荷（只含变化字段；退役的章级叙事字段不发，见 catFromApiChapter） */
 export function catChapterPatch(prev, next) {
   const patch = {};
   if (next.title !== prev.title) patch.title = next.title;
@@ -137,16 +130,8 @@ export function catChapterPatch(prev, next) {
   const nextTarget = (next.words && next.words.target) || 0;
   if (nextTarget !== prevTarget) patch.words_target = nextTarget || null;
   if (next.act !== prev.act) patch.act = next.act;
-  if (next.tension !== prev.tension) patch.tension = next.tension;
-  if (next.pov !== prev.pov) patch.pov = next.pov;
-  if (next.time !== prev.time) patch.time_label = next.time;
-  if (next.place !== prev.place) patch.place = next.place;
-  if (next.entry !== prev.entry) patch.entry = next.entry;
-  if (next.exit !== prev.exit) patch.exit = next.exit;
-  if (next.align !== prev.align) patch.align = next.align;
   if (next.promise !== prev.promise) patch.promise = next.promise;
   if (JSON.stringify(next.drama || {}) !== JSON.stringify(prev.drama || {})) patch.drama = next.drama || {};
-  if (JSON.stringify(next.threads || []) !== JSON.stringify(prev.threads || [])) patch.threads = next.threads || [];
   if (next.current && !prev.current) patch.current = true;
   return patch;
 }

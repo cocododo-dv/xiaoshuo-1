@@ -292,7 +292,7 @@ textarea.sc-in { min-height: 28px; }
 .sf-syn-meta.is-ok { color: var(--sage-ink); }
 .sf-syn-meta.is-warn { color: var(--gold-ink); }
 
-/* 07 chapter outline —— 按数组顺序显示（= 保存顺序），幕只是分段标签 */
+/* 07 chapter outline —— 分章结果的只读镜像（重评 R11）：按数组顺序显示（= 章序），幕只是分段标签 */
 .sf-chapters-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
 .sf-chapters-title { margin: 0; font-family: var(--font-serif); font-size: var(--fs-xl); font-weight: 600; color: var(--ink-1); }
 .sf-chapters-rule { flex: 1; min-width: 260px; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
@@ -305,19 +305,19 @@ textarea.sc-in { min-height: 28px; }
 .sf-act-label { font-family: var(--font-serif); font-size: 15px; font-weight: 600; color: var(--ink-1); }
 .sf-act-desc { font-size: var(--fs-xs); color: var(--ink-3); }
 .sf-act-count { margin-left: auto; font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
-.sf-ch-list { display: flex; flex-direction: column; padding: 6px; gap: 4px; }
-.sf-ch-row { display: grid; grid-template-columns: 4.2em 1fr 5em auto; gap: 8px; align-items: center; padding: 5px 7px; border-radius: 8px; }
+.sf-ch-list { display: flex; flex-direction: column; margin: 0; padding: 6px; gap: 4px; list-style: none; }
+.sf-ch-row { display: grid; grid-template-columns: 4.2em 1fr 5em auto; gap: 8px; align-items: center; padding: 6px 7px; border-radius: 8px; }
 .sf-ch-row:hover { background: var(--paper-1); }
 .sf-ch-row.is-spine { background: var(--gold-wash); }
-.sf-ch-row.is-ph { opacity: 0.72; }
 .sf-ch-no { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); text-align: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.sf-ch-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.sf-ch-title { font-weight: 600; font-size: var(--fs-sm); }
-.sf-ch-sum { color: var(--ink-2); }
-.sf-ch-spine { width: 100%; }
-.sf-ch-add { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; margin-top: 2px; padding: 5px 11px; border-radius: 7px; border: 1px dashed var(--line-2); background: transparent; color: var(--ink-2); font: inherit; font-size: var(--fs-xs); font-weight: 600; cursor: pointer; transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast); }
-.sf-ch-add:hover { border-color: var(--crimson); color: var(--crimson-ink); background: var(--crimson-wash); }
-.sf-ch-addbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.sf-ch-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sf-ch-title { font-weight: 600; font-size: var(--fs-sm); color: var(--ink-1); overflow-wrap: anywhere; }
+.sf-ch-title.is-unnamed { font-weight: 500; color: var(--ink-3); }
+.sf-ch-sum { font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); overflow-wrap: anywhere; }
+.sf-ch-sum.is-empty { color: var(--ink-3); }
+.sf-ch-spine { justify-self: center; font-size: 11px; font-weight: 600; color: var(--gold-ink); padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--paper-0); white-space: nowrap; }
+.sf-ch-spine.is-none { border: 0; background: none; padding: 0; }
+.sf-ch-rename { white-space: nowrap; }
 @media (max-width: 1100px) { .sf-syn-row { grid-template-columns: 1fr; } }
 .sf-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .sf-field { display: flex; flex-direction: column; gap: 5px; }

@@ -1,13 +1,17 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
+import { CloseButton, Notice, Tag } from "./ws-ui.jsx";
+import { apiGet } from "./lib/client.js";
 import { recentOrDayTimeLabel } from "./lib/format.js";
-import { S2_STEPS, s2Ancestors, s2Content } from "./ws-snow-model.js";
+import { S2_BE_KEY, S2_STEPS, s2AdoptServerScaffold, s2Ancestors, s2KeepServerOwned, s2StepText } from "./ws-snow-model.js";
+import { feFromCanon, stripFe } from "./ws-snow-canon.js";
 import { countChars } from "./lib/text.js";
 
 /* ==========================================================
-   版本与来路：「历史」页签（操作时间线，带快照的节点可回滚）、「引用上下文」页签（本步展开自哪几层上游），
-   以及两个对照对话框——回滚预览（快照 vs 当前）与「上游改了什么」（本步确认时消费的上游版本 vs 现在）。
+   版本与来路：「历史」页签——上面是「服务器上保存的版本」（这一步在服务器上的每一版，可以预览、恢复），下面是本机的
+   操作时间线（带快照的节点可回滚）；「引用上下文」页签（本步展开自哪几层上游）；以及三个对照对话框——回滚预览
+   （快照 vs 当前）、服务器版本预览（那一版 vs 现在）与「上游改了什么」（本步确认时消费的上游版本 vs 现在）。
    对话框统一走 WsDialog（焦点移入、Tab 困在框内、关闭后焦点回到打开它的按钮、Esc / 遮罩走同一条关闭路径）。
    ========================================================== */
 
@@ -55,7 +59,8 @@ export function S2Ref({ active, drafts, scaffolds }) {
       </div>
       {ancs.map(k => {
         const s = S2_STEPS.find(x => x.key === k);
-        const text = clip(s2Content(drafts[k], scaffolds[k]), 160);
+        // 带栏名的分步文本（批准 #18b）：不再把 09 的行 id、角色键、proactive 这些内部值印进引用卡片
+        const text = clip(s2StepText(k, drafts[k], scaffolds[k], scaffolds), 160);
         return (
           <div key={k} className="card-flat ref-card">
             <div className="ref-card-h"><span className={`sf-trk-tag trk-${s.track}`}>{s.num}</span><span className="fw-600">{s.name}</span></div>
@@ -73,11 +78,14 @@ export function S2Ref({ active, drafts, scaffolds }) {
   );
 }
 
-/* ---- 回滚预览：快照 vs 当前，看清再恢复 ---- */
-export function S2SnapDiff({ h, current, onApply, onClose }) {
+/* ---- 回滚预览：快照 vs 当前，看清再恢复 ----
+   两边都是带栏名的分步文本（s2StepText）；视角名、04 名册、第 10 步的场序取 refs（现在的整份脚手架）。
+   07 的章表、09 的「所在章」只有服务端写得了，回滚不动它们（s2KeepServerOwned，与 applySnap 同一条），
+   快照那一栏也就写现在的——差别只摆回滚真会换掉的内容。 */
+export function S2SnapDiff({ h, current, refs, onApply, onClose }) {
   const st = S2_STEPS.find(s => s.key === h.key) || {};
-  const oldText = s2Content(h.snap.draft, h.snap.scaffold).trim();
-  const curText = s2Content(current.draft, current.scaffold).trim();
+  const oldText = s2StepText(h.key, h.snap.draft, s2KeepServerOwned(h.key, h.snap.scaffold, refs), refs).trim();
+  const curText = s2StepText(h.key, current.draft, current.scaffold, refs).trim();
   const same = oldText === curText;
   return (
     <WsDialog onClose={onClose} labelledBy="sf-snap-title" describedBy="sf-snap-desc" size="lg" className="sf-diff-dialog">
@@ -86,7 +94,7 @@ export function S2SnapDiff({ h, current, onApply, onClose }) {
           <h2 className="ws-dialog-title" id="sf-snap-title">回滚预览：{st.num} {st.name}</h2>
           <p className="ws-dialog-desc" id="sf-snap-desc">快照留于 {new Date(h.t).toLocaleString("zh-CN")}（{h.action}）</p>
         </div>
-        <button className="ws-dialog-x" onClick={onClose} aria-label="关闭" title="关闭（Esc）"><I.X size={16} /></button>
+        <CloseButton className="ws-dialog-x" title="关闭（Esc）" onClick={onClose} />
       </header>
       <div className="ws-dialog-body">
         {same ? (
@@ -124,7 +132,7 @@ export function S2UpstreamDiff({ diff, onClose }) {
           <h2 className="ws-dialog-title" id="sf-updiff-title">上游改了什么：{st.num} {st.name}</h2>
           <p className="ws-dialog-desc" id="sf-updiff-desc">{diff.reason ? `后端判定失效的原因：${diff.reason}` : "左边是本步确认时用的上游版本，右边是现在的版本"}</p>
         </div>
-        <button className="ws-dialog-x" onClick={onClose} aria-label="关闭" title="关闭（Esc）"><I.X size={16} /></button>
+        <CloseButton className="ws-dialog-x" title="关闭（Esc）" onClick={onClose} />
       </header>
       <div className="ws-dialog-body">
         {diff.loading ? (
@@ -159,6 +167,217 @@ export function S2UpstreamDiff({ diff, onClose }) {
       <footer className="ws-dialog-foot">
         <span className="sf-dialog-hint">看清差异后，回本步「按新上游重新展开」，或改完点「已复核」。</span>
         <button className="btn btn-quiet btn-sm" onClick={onClose}>关闭</button>
+      </footer>
+    </WsDialog>
+  );
+}
+
+/* ==========================================================
+   服务器上保存的版本（R15a）
+   ----------------------------------------------------------
+   每次确认、AI 生成、整步清空（抹空保护另起一版）、从历史恢复，服务器都为这一步留一版；以前只能请开发者调
+   POST …/restore 取回。这里按版本列出（GET …/history 不带草稿），「预览」再按版本取草稿（step_run_id +
+   include_draft），对话框里看清那一版与现在的差别再恢复。恢复本身在工作台（ws-snow-workbench.jsx 的 useSnowStepFlow）。
+   ========================================================== */
+const VERSION_STATUS = {
+  pending_review: { label: "待确认", tone: "warn" },
+  approved: { label: "已确认", tone: "ok" },
+  stale: { label: "需复核", tone: "warn" },
+  skipped: { label: "已略过", tone: "neutral" },
+  superseded: { label: "已被新版取代", tone: "neutral" },
+};
+/* 旧版本的状态说的是它自己的来历，不是要作者去做什么：一版被标「需复核」之后又有了新版，它就停在 stale 上——
+   在旧版本行上写「需复核」像是还欠着一件事。 */
+const OLD_VERSION_STATUS = {
+  pending_review: { label: "没确认过", tone: "neutral" },
+  stale: { label: "确认过的旧版", tone: "neutral" },
+};
+const VERSION_SOURCE = { llm: "AI 生成", author: "你写的", history_restore: "从历史恢复", skip: "略过", fallback: "旧版规则稿" };
+
+/* 一版的状态与来历（列表行与预览对话框共用）。latest = 这一步现在的那一版 */
+export function s2VersionStatus(item, { latest = false } = {}) {
+  const it = item || {};
+  if (latest && it.status === "stale" && it.stale_accepted_at) return { label: "已复核 · 仍有效", tone: "ok" };
+  return (!latest && OLD_VERSION_STATUS[it.status]) || VERSION_STATUS[it.status] || { label: "旧版本", tone: "neutral" };
+}
+export function s2VersionSource(item) {
+  const it = item || {};
+  if (it.wipe_guard_preserved_step_run_id) return "整步清空时另起的一版";
+  return VERSION_SOURCE[it.generation_source] || "";
+}
+/* 这一版是什么时候来的（建版时间：待确认的稿子原位改写、旧版被标失效都会改 updated_at，按它排看起来就乱了） */
+function versionTime(item) {
+  const t = Date.parse((item && (item.created_at || item.updated_at)) || "");
+  return Number.isFinite(t) ? recentOrDayTimeLabel(t) : "";
+}
+
+/* 这一步作者自己写的内容（带栏名的分步文本）：07 不算章表——那是分章结果的只读镜像，不是这一步写的。
+   空串 = 这一步还空着（服务器版本预览判「这一版是空的」、抹空保护的提示判「现在还空着」都用它）。 */
+export function s2StepOwnText(key, draft, scaffold, refs) {
+  const own = key === "outline" && scaffold && typeof scaffold === "object" ? { ...scaffold, chapters: [] } : scaffold;
+  return s2StepText(key, draft, own, refs).trim();
+}
+
+/* 一版服务端草稿恢复到本机会是什么样（与回滚预览同一份写法），返回 { text, own }：
+   · text ——「会恢复成这样」那一栏。与恢复走同一条路：规范草稿反推脚手架（feFromCanon），再按 s2AdoptServerScaffold
+     落进现在的整份脚手架——只活在前端的 09 线索、03 错误信念恢复后接着用，预览里也就还在；07 的章表、09 的「所在章」
+     留着现在的（s2KeepServerOwned：恢复只换这一步的内容，不动分章——服务端 keep_live_chapter_table 同一条）。
+     第 10 步只换那一版里有的场：服务端恢复时只改那一版带着的场，之后才加的场规划不动；场序与题名按现在的 09。
+   · own —— 只算那一版自己的内容（不含接着用的前端内容、不含现在的章表）。空串 = 这一版是空的，恢复它等于清空这一步。
+   以前两样是同一个串：07 一分过章，旧版本那一栏就总有现在的章表，空版本也给恢复——一键清空 07 的五段展开。 */
+export function s2VersionPreview(key, draft, scaffolds) {
+  const all = scaffolds || {};
+  const canon = stripFe(draft || {});
+  const fe = feFromCanon(key, canon);
+  if (!fe.scaffold) {
+    const text = s2StepText(key, fe.text != null ? fe.text : "", null, all).trim();
+    return { text, own: text };
+  }
+  const incoming = key === "planning"
+    ? { ...fe.scaffold, plans: { ...((all.planning || {}).plans || {}), ...(fe.scaffold.plans || {}) } }
+    : fe.scaffold;
+  const adopted = s2AdoptServerScaffold(all, key, s2KeepServerOwned(key, incoming, all));
+  // 那一版自己的第 10 步按它自己的场景行读（之后删掉的场的规划也算这一版的内容）
+  const ownRefs = key === "planning" ? { ...all, scenes: feFromCanon("scenes", canon).scaffold || {} } : all;
+  return { text: s2StepText(key, "", adopted[key], adopted).trim(), own: s2StepOwnText(key, "", fe.scaffold, ownRefs) };
+}
+
+/* 恢复前要说清的后果：07 只恢复文字（章表是分章结果，不跟着回去）；09 / 10 会动场景与整理之后的场景卡 */
+const RESTORE_WARNING = {
+  outline: "只恢复五段展开的文字。章节表（章名、章界、每章有哪几场）保持现在的分章——章表只在分章面板里改。",
+  scenes: "场景列表会回到这一版：这一版里没有的场会从场景列表删去（已经建了场景卡的场留在目录里，等你在分章面板里决定保留还是删除），之后加的场、改过的形态与视角也一并回到这一版的样子。",
+  planning: "这一版里有的每一场，三拍、钩子、离场变化等规划会回到这一版，之后改过的会被替换；场本身（事件、地点、坩埚、形态、视角）仍以 09 为准，这一版之后才加的场不动。场景卡等你重新确认第 10 步之后才跟着更新。",
+};
+
+/* currentBlank：这一步现在是不是还空着（视图按 s2StepOwnText 算）。抹空保护另起的那一版之后还会被自动保存原位改写
+   （待确认的稿子原位改），它身上的 wipe_guard_preserved_step_run_id 却一直在——作者重新写了内容之后，再说「最近一次保存
+   把内容整个清空了」就不对了：那时只把它当一条关于这一版来历的事实说。 */
+export function S2ServerVersions({ workId, step, refreshKey, onPreview, currentBlank = false }) {
+  const beKey = step ? S2_BE_KEY[step.key] : "";
+  const [state, setState] = React.useState({ loading: true, error: "", items: [] });
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!workId || !beKey) { setState({ loading: false, error: "", items: [] }); return undefined; }
+    let alive = true;
+    setState(prev => ({ ...prev, loading: true, error: "" }));
+    (async () => {
+      try {
+        const res = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/history`);
+        if (alive) setState({ loading: false, error: "", items: Array.isArray(res && res.items) ? res.items : [] });
+      } catch (err) {
+        if (alive) setState({ loading: false, error: (err && err.message) || "稍后重试", items: [] });
+      }
+    })();
+    return () => { alive = false; };
+  }, [workId, beKey, refreshKey, tick]);
+  const items = state.items;
+  const latest = items[0] || null;
+  const preserved = latest && latest.wipe_guard_preserved_step_run_id
+    ? items.find(it => it.step_run_id === latest.wipe_guard_preserved_step_run_id) || null
+    : null;
+  return (
+    <section className="sf-versions" data-testid="snow-server-versions" aria-labelledby="sf-versions-title">
+      <div className="sf-versions-head">
+        <h3 className="sf-history-title" id="sf-versions-title">服务器上保存的版本</h3>
+        <span className="sf-versions-step">{step.num} {step.name}</span>
+      </div>
+      <p className="sf-versions-lead">确认、AI 生成、整步清空、从历史恢复，服务器都会给这一步另存一版——换了浏览器也能从这里找回。</p>
+      {preserved && (
+        <Notice tone={currentBlank ? "warn" : "info"} testId="snow-version-wipe"
+          actions={<button type="button" className="btn btn-quiet btn-sm" onClick={() => onPreview(preserved)} data-testid="snow-version-wipe-open">看清空前的第 {preserved.version} 版</button>}>
+          {currentBlank
+            ? <>这一步最近一次保存把内容整个清空了，服务器另起了现在这一版；清空前的第 {preserved.version} 版还在，可以预览后恢复。</>
+            : <>第 {latest.version} 版是整步清空时另起的；清空前的第 {preserved.version} 版还在，可以预览后恢复。</>}
+        </Notice>
+      )}
+      {state.loading && !items.length ? (
+        <div className="sf-versions-empty" role="status">正在读取服务器上的版本…</div>
+      ) : state.error ? (
+        <Notice tone="danger" testId="snow-versions-error"
+          actions={<button type="button" className="btn btn-quiet btn-sm" onClick={() => setTick(t => t + 1)}>重试</button>}>
+          读不到服务器上的版本：{state.error}
+        </Notice>
+      ) : !items.length ? (
+        <div className="sf-versions-empty">服务器上还没有这一步的版本——写下内容、自动保存之后就有了。</div>
+      ) : (
+        <ul className="sf-versions-list">
+          {items.map((it, i) => {
+            const status = s2VersionStatus(it, { latest: i === 0 });
+            const source = s2VersionSource(it);
+            return (
+              <li key={it.step_run_id} className="sf-version-row" data-testid="snow-version-row">
+                <span className="sf-version-no">第 {it.version} 版</span>
+                <Tag tone={status.tone}>{status.label}</Tag>
+                {source && <span className="sf-version-src">{source}</span>}
+                <span className="sf-version-time">{versionTime(it)}</span>
+                {i === 0
+                  ? <span className="sf-version-current">现在的版本</span>
+                  : <button type="button" className="btn btn-quiet btn-sm" onClick={() => onPreview(it)} data-testid="snow-version-preview"
+                      aria-label={`预览第 ${it.version} 版`} title="看清这一版与现在的差别，再决定要不要恢复">预览</button>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/* 服务器版本预览：那一版（会恢复成这样）vs 现在（本机此刻的内容）。restore 由工作台做；09 / 10 / 07 先把后果说清楚。
+   「一样」比的是恢复之后本机会是的样子（s2VersionPreview 的 text）；「空」只看那一版自己的内容（own）。 */
+export function S2VersionDiff({ diff, current, refs, onRestore, onClose }) {
+  const st = S2_STEPS.find(s => s.key === diff.key) || {};
+  const item = diff.item || {};
+  const status = s2VersionStatus(item);   // 预览的总是旧版本（现在的那一版没有「预览」）
+  const source = s2VersionSource(item);
+  const preview = diff.draft ? s2VersionPreview(diff.key, diff.draft, refs) : { text: "", own: "" };
+  const oldText = preview.text;
+  const curText = s2StepText(diff.key, current.draft, current.scaffold, refs).trim();
+  const same = !!diff.draft && oldText === curText;
+  const empty = !!diff.draft && !preview.own;
+  const skipped = item.status === "skipped";
+  const warning = RESTORE_WARNING[diff.key] || "";
+  const canRestore = !!diff.draft && !diff.loading && !diff.restoring && !same && !empty && !skipped;
+  return (
+    <WsDialog onClose={onClose} labelledBy="sf-version-title" describedBy="sf-version-desc" size="lg" className="sf-diff-dialog" testId="snow-version-dialog">
+      <header className="ws-dialog-head">
+        <div>
+          <h2 className="ws-dialog-title" id="sf-version-title">服务器上的第 {item.version} 版：{st.num} {st.name}</h2>
+          <p className="ws-dialog-desc" id="sf-version-desc">{[status.label, source, versionTime(item)].filter(Boolean).join(" · ")}</p>
+        </div>
+        <CloseButton className="ws-dialog-x" title="关闭（Esc）" onClick={onClose} disabled={!!diff.restoring} />
+      </header>
+      <div className="ws-dialog-body">
+        {warning && <Notice tone="warn" testId="snow-version-warning">{warning}</Notice>}
+        {diff.loading ? (
+          <div className="sf-sd-same is-muted" role="status"><I.Refresh size={14} className="sf-spin" /> 正在读取这一版…</div>
+        ) : diff.error ? (
+          <div className="sf-sd-same is-warn" role="alert"><I.AlertTriangle size={14} /> 读不到这一版：{diff.error}</div>
+        ) : skipped ? (
+          <div className="sf-sd-same is-muted"><I.Info size={14} /> 这一版是「略过此步」时记下的，没有内容可恢复。</div>
+        ) : empty ? (
+          <div className="sf-sd-same is-warn"><I.Info size={14} /> 这一版是空的——恢复它等于清空这一步，所以不提供恢复。</div>
+        ) : same ? (
+          <div className="sf-sd-same"><I.Check size={14} /> 这一版与现在的内容一样，不需要恢复。</div>
+        ) : (
+          <div className="sf-sd-cols">
+            <div className="sf-sd-col is-old">
+              <div className="sf-sd-coltag"><I.Clock size={11} /> 第 {item.version} 版（会恢复成这样） · {countChars(oldText)} 字</div>
+              <pre className="sf-sd-text text-serif" data-testid="snow-version-old">{oldText}</pre>
+            </div>
+            <div className="sf-sd-col is-cur">
+              <div className="sf-sd-coltag"><I.Pen size={11} /> 现在（恢复前另留一份快照） · {countChars(curText)} 字</div>
+              <pre className="sf-sd-text text-serif" data-testid="snow-version-cur">{curText || "（空）"}</pre>
+            </div>
+          </div>
+        )}
+      </div>
+      <footer className="ws-dialog-foot">
+        <span className="sf-dialog-hint">恢复会在服务器上另存一版（现在的内容仍是上一版），恢复后这一步要重新确认；本机的「操作记录」里也留一份快照，可以回滚。</span>
+        <button className="btn btn-quiet btn-sm" onClick={onClose} disabled={!!diff.restoring}>取消</button>
+        <button className="btn btn-accent btn-sm" onClick={onRestore} disabled={!canRestore} data-testid="snow-version-restore">
+          {diff.restoring ? "恢复中…" : <><I.Refresh size={13} /> 恢复第 {item.version} 版</>}
+        </button>
       </footer>
     </WsDialog>
   );

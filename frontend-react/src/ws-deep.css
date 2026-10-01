@@ -2,7 +2,7 @@
    ws-deep.css — 写作台深改姿态（2026-09-22 诊断统一：发现按严重度上色，来源筛选、AI 深评块、已忽略）
    ========================================================== */
 
-/* 姿态切换（写作房间顶栏）现在是共享的分段控件 .seg（ws-ui.jsx Segmented），位置规则在 wr-redesign.css */
+/* 姿态切换（写作房间顶栏）现在是共享的分段控件 .seg（ws-ui.jsx Segmented），位置规则在 wr-room.css */
 
 /* ---- 深改姿态：正文只读提示 + 发现标注（四档严重度，与面板标签同色） ---- */
 .wr-root[data-posture="deep"] .wr-editor { caret-color: transparent; }

@@ -107,25 +107,64 @@ function readSnowCache(key) {
   const entry = s2PovSettleEntry(s.scaffolds, s.drafts);
   return entry ? { ...s, history: [entry, ...(Array.isArray(s.history) ? s.history : [])] } : s;
 }
+/* 缓存 → 视图里的五块内容（挂载与水合之后重读用同一份配方：落盘时拿它比「改没改过」） */
+function snowDocOf(s) {
+  return {
+    drafts: { ...s2DefaultDrafts(), ...(s.drafts || {}) },
+    scaffolds: s2MergeScaffolds(s.scaffolds),
+    checks: s2MergeChecks(s.checks),
+    states: { ...s2DefaultStates(), ...(s.states || {}) },
+    history: s.history || [], // 跨会话 journal（无 snap 条目天然只读）
+  };
+}
 export function useSnowDocument(myKey, workId) {
   const initialRef = useRef(null);
-  if (initialRef.current == null) initialRef.current = readSnowCache(myKey);
-  const saved = initialRef.current;
-  const [drafts, setDrafts] = useState(() => ({ ...s2DefaultDrafts(), ...(saved.drafts || {}) }));
-  const [scaffolds, setScaffolds] = useState(() => s2MergeScaffolds(saved.scaffolds));
-  const [checks, setChecks] = useState(() => s2MergeChecks(saved.checks));
-  const [states, setStates] = useState(() => ({ ...s2DefaultStates(), ...(saved.states || {}) }));
-  const [history, setHistory] = useState(() => saved.history || []);
-  const [savedAt, setSavedAt] = useState(saved._t || null);
+  if (initialRef.current == null) {
+    const saved = readSnowCache(myKey);
+    initialRef.current = { t: saved._t || 0, doc: snowDocOf(saved) };
+  }
+  const initial = initialRef.current;
+  const [drafts, setDrafts] = useState(() => initial.doc.drafts);
+  const [scaffolds, setScaffolds] = useState(() => initial.doc.scaffolds);
+  const [checks, setChecks] = useState(() => initial.doc.checks);
+  const [states, setStates] = useState(() => initial.doc.states);
+  const [history, setHistory] = useState(() => initial.doc.history);
+  const [savedAt, setSavedAt] = useState(initial.t || null);
   const latestRef = useRef(null);
   latestRef.current = { drafts, scaffolds, checks, states, history };
 
+  /* 落盘的 _t 是「作者最后一次改动」的时刻，不是「最后一次落盘」的时刻（复核 PRE-03）。水合拿它和服务端比新旧
+     （本机不旧于服务端就以本机为准）；视图挂载 450ms 后、离开时、下一跳握手时都会落盘，以前每次都盖上此刻——
+     一份几天前的本机缓存，开一下构思页就「比服务端新」，另一台电脑后来的修改随后被它的上行盖掉。
+     现在内容和读进来的那一份（挂载时 / 水合之后重读的）一样，就沿用读进来的 _t；改过才盖上此刻。 */
+  const baselineRef = useRef(null);
+  if (baselineRef.current == null) baselineRef.current = { t: initial.t, sig: JSON.stringify(initial.doc) };
   const markLocalFailure = (error) => { try { SnowSync.markLocalFailure(error, workId); } catch (ignored) {} };
   const writeNow = () => {
-    const now = Date.now();
-    localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: now }));
+    const doc = latestRef.current;
+    const sig = JSON.stringify(doc);
+    if (sig !== baselineRef.current.sig) baselineRef.current = { t: Date.now(), sig };
+    const t = baselineRef.current.t;
+    localStorage.setItem(myKey, JSON.stringify(t ? { ...doc, _t: t } : doc));
     emit("ws:snow-saved", myKey);
-    return now;
+    return t || null;
+  };
+
+  /* 立刻落盘（不等 450ms 防抖）：从服务器恢复一步之前，先把此刻的内容写进本机缓存、交给上行，让它成为服务器上的上一版 */
+  const flushNow = () => {
+    try { setSavedAt(writeNow()); } catch (e) { markLocalFailure(e); }
+  };
+  /* 整份换掉并立刻落盘（从服务器恢复一步，R15a）：next = fn(此刻的五块内容)。不等防抖——排着的上行（上一次键入排下的
+     700ms 定时器）读的是本机缓存，落盘之后它读到的已经是恢复后的内容，不会把恢复之前的旧文字又推回服务器去。 */
+  const replaceNow = (fn) => {
+    const next = fn(latestRef.current);
+    latestRef.current = next;
+    flushNow();
+    setDrafts(next.drafts);
+    setScaffolds(next.scaffolds);
+    setChecks(next.checks);
+    setStates(next.states);
+    setHistory(next.history);
   };
 
   /* persist to localStorage (debounced) */
@@ -155,15 +194,18 @@ export function useSnowDocument(myKey, workId) {
     hydrated: (hydratedWorkId) => {
       if (!hydratedWorkId || myKey !== s2KeyFor(hydratedWorkId)) return;
       const s = readSnowCache(myKey);
-      setDrafts({ ...s2DefaultDrafts(), ...(s.drafts || {}) });
-      setScaffolds(s2MergeScaffolds(s.scaffolds));
-      setChecks(s2MergeChecks(s.checks));
-      setStates({ ...s2DefaultStates(), ...(s.states || {}) });
-      setHistory(s.history || []); // 跨会话 journal（无 snap 条目天然只读）
+      const doc = snowDocOf(s);
+      // 重读进来的就是新的比较基准：接下来那次落盘（内容没变）沿用缓存里的 _t
+      baselineRef.current = { t: s._t || 0, sig: JSON.stringify(doc) };
+      setDrafts(doc.drafts);
+      setScaffolds(doc.scaffolds);
+      setChecks(doc.checks);
+      setStates(doc.states);
+      setHistory(doc.history);
     },
   });
 
-  return { drafts, setDrafts, scaffolds, setScaffolds, checks, setChecks, states, setStates, history, setHistory, savedAt, latestRef };
+  return { drafts, setDrafts, scaffolds, setScaffolds, checks, setChecks, states, setStates, history, setHistory, savedAt, latestRef, flushNow, replaceNow };
 }
 
 /* ---- 同步层镜像：同步状态、后端 per-step 健康、物化后待同步的场、要点镜像的版本号 ----

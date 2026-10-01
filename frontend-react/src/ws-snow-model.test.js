@@ -3,15 +3,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { PLACEHOLDER_CHAPTER_TITLE_MARKERS, chapterNoInTitle, isAutoChapterTitle, isPlaceholderChapterRow } from "./labels/catalog.js";
+import { PLACEHOLDER_CHAPTER_TITLE_MARKERS, chapterNoInTitle, isAutoChapterTitle } from "./labels/catalog.js";
 import { isAutoChapterTitle as panelIsAutoChapterTitle } from "./ws-snow-chapters-model.js";
 import { SNOW_STEPS, snowStepByBackendKey } from "./snow-steps.js";
 import { WS_SNOW_STEPS } from "./ws-nav.js";
 import {
   S2_BE_KEY, S2_BE_STEPS, S2_STEPS, S2_STEP_DATA,
   s2AdoptServerScaffold, s2Ancestors, s2BlankScaffolds, s2BlockedStep, s2FindStepKey, s2InferSpine, s2LandingStep, s2LineStats,
-  s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanPovChanges, s2PlanSlots, s2PlanState, s2PovSettleEntry, s2PreserveFeOnly,
+  s2KeepServerOwned, s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanPovChanges, s2PlanSlots, s2PlanState, s2PovSettleEntry, s2PreserveFeOnly,
   S2_DEFAULT_LINES, s2ReorderScenes, s2SceneAuto, s2SceneLines, s2SceneListStats, s2SettlePlanning, s2StaleMap, s2UpstreamDrift,
+  s2StepLines, s2StepMarkdown, s2StepText,
 } from "./ws-snow-model.js";
 
 describe("步骤目录只有一份", () => {
@@ -276,6 +277,31 @@ describe("缓存归一与服务端脚手架的落地（F02-01 / F02-02）", () =
     expect(listed.scenes.list[0].line).toBe("L1");
     expect(listed.scenes.lines).toEqual([{ id: "L1", kind: "sub" }]);
   });
+
+  it("s2KeepServerOwned（复核 Q2b-R5）：07 的章表、09 的「所在章」换回现在的；别的照旧，不改传进来的对象", () => {
+    const current = {
+      outline: { expansions: { setup: "现在" }, chapters: [{ row_uid: "c1", title: "雨城来信" }] },
+      scenes: { lines: [], list: [{ id: "S01", chapter: "雨城来信" }, { id: "S02", chapter: "" }] },
+    };
+    const oldOutline = { expansions: { setup: "快照" }, chapters: [{ row_uid: "old1", title: "旧章表里的一章" }] };
+    const outline = s2KeepServerOwned("outline", oldOutline, current);
+    expect(outline).toEqual({ expansions: { setup: "快照" }, chapters: [{ row_uid: "c1", title: "雨城来信" }] });
+    expect(oldOutline.chapters[0].title).toBe("旧章表里的一章");
+    // 现在还没有章表：换上去的也没有
+    expect(s2KeepServerOwned("outline", oldOutline, {}).chapters).toEqual([]);
+    // 09：按 id 对位；现在没有的场标签留空（归哪一章由服务端的分章定）
+    const oldScenes = { lines: [{ id: "L1" }], list: [{ id: "S02", event: "旧事", chapter: "旧章名" }, { id: "S01", chapter: "" }, { id: "S09", chapter: "旧章名" }] };
+    const scenes = s2KeepServerOwned("scenes", oldScenes, current);
+    expect(scenes.list.map(r => [r.id, r.chapter])).toEqual([["S02", ""], ["S01", "雨城来信"], ["S09", ""]]);
+    expect(scenes.list[0].event).toBe("旧事");
+    expect(scenes.lines).toBe(oldScenes.lines);
+    expect(oldScenes.list[0].chapter).toBe("旧章名");
+    // 别的步骤、形状不对的值原样返回
+    const para = { setup: "x" };
+    expect(s2KeepServerOwned("paragraph", para, current)).toBe(para);
+    expect(s2KeepServerOwned("outline", null, current)).toBeNull();
+    expect(s2KeepServerOwned("scenes", { lines: [] }, current)).toEqual({ lines: [] });
+  });
 });
 
 describe("章名规则只有一份，与后端同一张标记表（F02-06）", () => {
@@ -295,18 +321,118 @@ describe("章名规则只有一份，与后端同一张标记表（F02-06）", (
     expect(panelIsAutoChapterTitle).toBe(isAutoChapterTitle);
   });
 
-  it("isPlaceholderChapterRow：章名空或带占位标记、且摘要 / 章目标 / 脊柱全空", () => {
-    expect(isPlaceholderChapterRow({ title: "（占位）" })).toBe(true);
-    expect(isPlaceholderChapterRow({ title: "未命名章节", summary: "" })).toBe(true);
-    expect(isPlaceholderChapterRow({ title: "", goal: "信件迫使主角回乡" })).toBe(false);
-    expect(isPlaceholderChapterRow({ title: "（占位）", spine: "灾一" })).toBe(false);
-    expect(isPlaceholderChapterRow({ title: "雨夜来信" })).toBe(false);
-  });
-
   it("chapterNoInTitle：章名空着或就是对得上的「第 N 章」时，章号已经在框里", () => {
     expect(chapterNoInTitle("", 0)).toBe(true);
     expect(chapterNoInTitle("第 8 章", 7)).toBe(true);
     expect(chapterNoInTitle("第 8 章", 8)).toBe(false);
     expect(chapterNoInTitle("雨夜来信", 0)).toBe(false);
+  });
+});
+
+/* 批准 #18b（审计 F02-12）：导出大纲、引用上下文、回滚预览给作者看的是带栏名的分步文本——
+   不再把行 id、角色键与 proactive / main / full / sel 这些内部值印出来 */
+describe("一步的分步文本（导出 / 引用上下文 / 回滚预览）", () => {
+  const ROW1 = "row_0123456789abcdef";
+  const ROW2 = "row_fedcba9876543210";
+  const refs = () => ({
+    ...s2BlankScaffolds(),
+    characters: { sel: "c1", protagonist: "c1", chars: {
+      c1: { name: "林昭", role: "主角", goal: "找回旧信", ambition: "", values: "真相\n家人", conflict: "", epiphany: "", storyline: "", storyline_para: "" },
+      c2: { name: "", role: "主角", goal: "", ambition: "", values: "", conflict: "", epiphany: "", storyline: "", storyline_para: "" },
+    } },
+    scenes: { lines: [{ id: "L1", name: "旧案", kind: "sub", tone: "gold", refract: "沉默也是一种撒谎" }], list: [
+      { id: ROW1, type: "proactive", line: "main", pov: "c1", place: "雨城码头", event: "她去码头取旧信", crucible: "船要开了", fn: "起势", spine: "", chapter: "" },
+      { id: ROW2, type: "reactive", line: "L1", pov: "c1", place: "", event: "她读完信", crucible: "", fn: "灾难一", spine: "灾一", chapter: "第一章 旧信" },
+    ] },
+    planning: { sel: ROW1, plans: {
+      [ROW1]: { goal: "拿到旧信", conflict: "船员拦着", setback: "信被雨打湿", rendering: "full", length: "medium", onstage: ["c1"], title: "" },
+      [ROW2]: { reaction: "", dilemma: "", decision: "", rendering: "full" },
+    } },
+  });
+  const junk = /row_[0-9a-f]|proactive|reactive|\bmain\b|\bsub\b|\bc1\b|\bc2\b|\bfull\b|\bmedium\b|\bsel\b/;
+
+  it("09：一场一组「S01 · 主动 · 视角 某人 · 地点」，栏带名字；主线之外的线索与它的折射单列；没有行 id 与枚举值", () => {
+    const r = refs();
+    const text = s2StepText("scenes", "", r.scenes, r);
+    expect(text).not.toMatch(junk);
+    expect(text.split("\n")).toEqual([
+      "线索",
+      "  支线「旧案」：折射道德前提——沉默也是一种撒谎",
+      "S01 · 主动 · 视角 林昭 · 雨城码头",
+      "  事件：她去码头取旧信",
+      "  坩埚：船要开了",
+      "  功能：起势",
+      "S02 · 反应 · 视角 林昭 · 灾一",
+      "  事件：她读完信",
+      "  功能：灾难一",
+      "  线索：旧案",
+      "  所在章：第一章 旧信",
+    ]);
+  });
+
+  it("10：按 09 的场序只列规划过的场；三拍、在场人物写名字，「篇幅」写中文；默认的「完整场」与选中哪一场不出现", () => {
+    const r = refs();
+    const text = s2StepText("planning", "", r.planning, r);
+    expect(text).not.toMatch(junk);
+    expect(text.split("\n")).toEqual([
+      "S01 · 主动 · 她去码头取旧信",
+      "  目标：拿到旧信",
+      "  冲突：船员拦着",
+      "  挫败：信被雨打湿",
+      "  在场人物：林昭",
+      "  篇幅：中",
+    ]);
+  });
+
+  it("04：一个角色一组，价值观按书里的句式；全书主角单列；只有默认定位的空白角色不算内容", () => {
+    const r = refs();
+    const text = s2StepText("characters", "", r.characters, r);
+    expect(text).not.toMatch(junk);
+    expect(text.split("\n")).toEqual([
+      "全书主角：林昭",
+      "林昭（主角）",
+      "  目标（具体）：找回旧信",
+      "  价值观：没有什么比真相更重要；没有什么比家人更重要",
+    ]);
+  });
+
+  it("07：五段展开带节拍名；章节表一章一行「第 N 章 · 章名（灾一）：章摘要」，章名是占位时只写章号", () => {
+    const no = (n) => `第 ${n} 章`;   // 章号拼出来写：真实书稿的章名就是这几个字，公开仓库的扫描按字面数
+    const outline = { expansions: { setup: "雨城的春天", d1: "", d2: "", d3: "", resolution: "" }, chapters: [
+      { row_uid: "cr1", id: "01", act: 1, title: "雨夜来信", summary: "信把她拉回雨城", spine: "灾一" },
+      { row_uid: "cr2", id: "02", act: 1, title: no(2), summary: "", spine: "" },
+    ] };
+    expect(s2StepText("outline", "", outline, refs()).split("\n")).toEqual([
+      "铺垫：雨城的春天",
+      "章节表",
+      `  ${no(1)} · 雨夜来信（灾一）：信把她拉回雨城`,
+      `  ${no(2)}`,
+    ]);
+  });
+
+  it("03 与 01：栏名取编辑器那一份；道德前提写成「错误信念 → 正确信念」", () => {
+    const text = s2StepText("paragraph", "", { ...s2BlankScaffolds().paragraph, setup: "她回到雨城", premiseF: "守口如瓶", premiseT: "说出真相" });
+    expect(text.split("\n")).toEqual(["铺垫：她回到雨城", "道德前提：守口如瓶 → 说出真相"]);
+    expect(s2StepText("audience", "", { ...s2BlankScaffolds().audience, genre: "文学悬疑", pleasure: "真相落地" })).toBe("类型：文学悬疑\n核心快感：真相落地");
+  });
+
+  it("空白的十步都是空串；02 是自由文本；结构化步骤的脚手架空着、却有一段旧的自由草稿时给出那段草稿", () => {
+    const blank = s2BlankScaffolds();
+    S2_STEPS.forEach(st => expect(s2StepText(st.key, "", blank[st.key], blank), st.key).toBe(""));
+    expect(s2StepText("logline", "  她必须在船开前找回旧信。 ", undefined, blank)).toBe("她必须在船开前找回旧信。");
+    expect(s2StepText("synopsis", "旧的自由草稿", blank.synopsis, blank)).toBe("旧的自由草稿");
+  });
+
+  it("Markdown：一栏一个列表项、栏名与组抬头加粗、组里的栏缩一级；一栏里的换行留在列表项里", () => {
+    const r = refs();
+    const md = s2StepMarkdown("scenes", "", r.scenes, r).split("\n");
+    expect(md.slice(0, 4)).toEqual([
+      "- **线索**",
+      "  - 支线「旧案」：折射道德前提——沉默也是一种撒谎",
+      "- **S01 · 主动 · 视角 林昭 · 雨城码头**",
+      "  - **事件**：她去码头取旧信",
+    ]);
+    expect(s2StepMarkdown("synopsis", "", { paras: { setup: "第一段\n第二段" } })).toBe("- **铺垫**：第一段\n  第二段");
+    expect(s2StepLines("synopsis", "", { paras: {} })).toEqual([]);
   });
 });

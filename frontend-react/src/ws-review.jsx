@@ -6,7 +6,7 @@ import { wsToast } from "./ws-notify.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import {
   RV_KINDS, rvOpenItems, rvSnoozedList, rvReady, rvLoadErrorOf, rvDoneToday, rvFetch, rvPush,
-  rvMarkResolved, rvMarkSnoozed, rvUnsnooze, rvResolveAction, rvMigrateLegacy, rvSubscribe, useReviewOpenItems,
+  rvMarkResolved, rvMarkSnoozed, rvUnsnooze, rvResolveAction, rvSubscribe, useReviewOpenItems,
 } from "./ws-review-store.js";
 import { RV_TONE, RV_BAND, rvNeedsChoice, RvBand, RvItem, RvEmpty } from "./ws-review-parts.jsx";
 import { RV_UNDO_MS, useRvKeyboard, useRvUndo } from "./ws-review-hooks.js";
@@ -256,6 +256,6 @@ Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush,
 
 /* ESM 导出（window.* 赋值过渡期保留，冒烟脚本仍读 window.rvOpenItems） */
 export {
-  WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvMigrateLegacy,
+  WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush,
   rvResolveAction, rvReady, useReviewOpenItems,
 };

@@ -259,7 +259,7 @@ export const WsAuthorAi = {
       };
       bucket.fill = null;        // 已消费的补丁不再展示
       bucket.candidates = null;
-      try { if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(); } catch (e) {}
+      try { await WsCatalog.refresh(); } catch (e) {}
       return bucket.applied;
     });
   },

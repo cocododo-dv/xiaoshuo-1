@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const catalog = vi.hoisted(() => ({
   get: vi.fn(() => []),
 }));
+// 视图里直接发请求的几处（历史页签的「服务器上保存的版本」、AI 分诊……）一律走假的 client：单测绝不碰真后端
+vi.mock("./lib/client.js", () => ({
+  apiGet: vi.fn(async () => ({})),
+  apiPost: vi.fn(async () => ({})),
+  apiPatch: vi.fn(async () => ({})),
+  apiPut: vi.fn(async () => ({})),
+  apiDelete: vi.fn(async () => ({})),
+}));
 
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: catalog }));
 vi.mock("./ws-works.jsx", () => ({
@@ -361,6 +369,89 @@ describe("真实新项目的雪花顶部主操作", () => {
     expect(rows.filter(r => r.includes("清空前留底")).length).toBe(2);
     expect(host.querySelectorAll(".hist-restore").length).toBe(2);
   });
+
+  /* 复核 Q2b-R5：07 的章表是服务端分章的只读镜像（重评 R11），07 的上行一张章表都不带。本机的清空 / 回滚要是把它
+     换掉，只读镜像里就是一张服务端根本没有的章表——改名的目标、导出、引用上下文跟着它走，直到下一次水合。 */
+  const CHAPTERS = [
+    { row_uid: "c1", id: "01", act: 1, title: "雨夜来信", summary: "信件迫使主角回乡", spine: "灾一" },
+    { row_uid: "c2", id: "02", act: 1, title: "旧屋回声", summary: "旧证词出现裂缝", spine: "" },
+  ];
+  const expansion = (setup) => ({ setup, d1: "", d2: "", d3: "", resolution: "" });
+  const outlineSetup = (host) => host.querySelector('[data-testid="snow-outline-expansions"] .sf-syn-text').value;
+  const outlineChapterTitles = (host) => [...host.querySelectorAll('[data-testid^="snow-outline-chapter-"] .sf-ch-title')].map(el => el.textContent);
+  const cached = () => JSON.parse(window.localStorage.getItem("ws_snow_state_v2::new-book"));
+
+  it("清空十步构思不清 07 的章表：五段展开清空、可以逐步回滚，章表还是服务端那一张（复核 Q2b-R5）", async () => {
+    window.localStorage.setItem("ws_snow_state_v2::new-book", JSON.stringify({
+      scaffolds: { outline: { expansions: expansion("林昭回到雨城的那一夜"), chapters: CHAPTERS } },
+    }));
+    const host = await renderSnow();
+    await act(async () => host.querySelector('[data-testid="snow-step-outline"]').click());
+    expect(outlineSetup(host)).toBe("林昭回到雨城的那一夜");
+    await act(async () => host.querySelector('[data-testid="snow-more"]').click());
+    await act(async () => document.querySelector('[data-testid="snow-reset-open"]').click());
+    await act(async () => document.querySelector('[data-testid="snow-reset-confirm"]').click());
+    expect(outlineSetup(host)).toBe("");
+    expect(host.querySelector('[data-testid="snow-outline-empty"]')).toBeNull();
+    expect(outlineChapterTitles(host)).toEqual(["雨夜来信", "旧屋回声"]);
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });   // 落盘（450ms 防抖）
+    expect(cached().scaffolds.outline.chapters.map(c => c.title)).toEqual(["雨夜来信", "旧屋回声"]);
+    // 07 清空前的五段展开留了快照，回滚回来的是展开，章表不动
+    const tab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("历史"));
+    await act(async () => tab.click());
+    const backup = [...host.querySelectorAll(".hist-row")].find(r => r.textContent.includes("清空前留底") && r.textContent.includes("长篇大纲"));
+    expect(backup).toBeTruthy();
+    expect([...host.querySelectorAll(".hist-row")].filter(r => r.textContent.includes("清空前留底"))).toHaveLength(1);
+    await act(async () => backup.querySelector(".hist-restore").click());
+    const apply = [...document.querySelectorAll(".ws-dialog-foot button")].find(b => b.textContent.includes("确认回滚"));
+    await act(async () => apply.click());
+    expect(outlineSetup(host)).toBe("林昭回到雨城的那一夜");
+    expect(outlineChapterTitles(host)).toEqual(["雨夜来信", "旧屋回声"]);
+  });
+
+  it("07 只剩章表时清空十步构思不给它留快照：章表不清，那份快照回滚了什么也不换（复核 Q2b-R5）", async () => {
+    window.localStorage.setItem("ws_snow_state_v2::new-book", JSON.stringify({
+      drafts: { logline: "一句合成的一句话概括" },
+      scaffolds: { outline: { expansions: expansion(""), chapters: CHAPTERS } },
+    }));
+    const host = await renderSnow();
+    await act(async () => host.querySelector('[data-testid="snow-more"]').click());
+    await act(async () => document.querySelector('[data-testid="snow-reset-open"]').click());
+    await act(async () => document.querySelector('[data-testid="snow-reset-confirm"]').click());
+    const tab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("历史"));
+    await act(async () => tab.click());
+    const backups = [...host.querySelectorAll(".hist-row")].filter(r => r.textContent.includes("清空前留底"));
+    expect(backups.map(r => r.textContent.includes("一句话概括"))).toEqual([true]);
+  });
+
+  it("回滚一份分章之前的 07 快照：只换五段展开，章表留着现在的分章；预览两栏也不把旧章表当成会回滚的内容（复核 Q2b-R5）", async () => {
+    window.localStorage.setItem("ws_snow_state_v2::new-book", JSON.stringify({
+      scaffolds: { outline: { expansions: expansion("现在的铺垫展开"), chapters: CHAPTERS } },
+      history: [{
+        t: Date.now() - 60000, who: "我", action: "AI 生成本步", note: "07 五段展开 · 生成前留底", key: "outline",
+        snap: { draft: "", scaffold: {
+          expansions: expansion("快照里的铺垫展开"),
+          chapters: [{ row_uid: "old1", id: "01", act: 1, title: "旧章表里的一章", summary: "旧的章摘要", spine: "" }],
+        } },
+      }],
+    }));
+    const host = await renderSnow();
+    const tab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("历史"));
+    await act(async () => tab.click());
+    const row = [...host.querySelectorAll(".hist-row")].find(r => r.textContent.includes("AI 生成本步"));
+    await act(async () => row.querySelector(".hist-restore").click());
+    const snapCol = document.querySelector(".sf-sd-col.is-old .sf-sd-text").textContent;
+    expect(snapCol).toContain("铺垫：快照里的铺垫展开");
+    expect(snapCol).toContain("雨夜来信");
+    expect(snapCol).not.toContain("旧章表里的一章");
+    const apply = [...document.querySelectorAll(".ws-dialog-foot button")].find(b => b.textContent.includes("确认回滚"));
+    await act(async () => apply.click());
+    expect(outlineSetup(host)).toBe("快照里的铺垫展开");
+    expect(outlineChapterTitles(host)).toEqual(["雨夜来信", "旧屋回声"]);
+    await act(async () => { await new Promise(r => setTimeout(r, 500)); });
+    expect(cached().scaffolds.outline.chapters.map(c => c.title)).toEqual(["雨夜来信", "旧屋回声"]);
+    expect(cached().scaffolds.outline.expansions.setup).toBe("快照里的铺垫展开");
+  });
 });
 
 
@@ -543,33 +634,140 @@ describe("阶段 M · 09/10 交互", () => {
     expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
   });
 
-  it("07 章节表按数组顺序显示；第二幕已有章时「添加第一幕章节」插在第一幕最后一章之后，而不是存成最后一章", async () => {
+  it("07 章表是分章的只读镜像（重评 R11）：一章一行——章号 · 章名 · 章摘要 · 灾难标记，按数组顺序、幕分段；没有输入框、添加、删除", async () => {
+    const no = (n) => `第 ${n} 章`;   // 章号拼出来写：真实书稿的章名就是这几个字，公开仓库的扫描按字面数
     window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [
-      { id: "01", act: 1, title: "合成一章", summary: "a", spine: "" },
-      { id: "02", act: 2, title: "合成二章", summary: "b", spine: "" },
+      { row_uid: "cr1", id: "01", act: 1, title: "合成一章", summary: "合成一章的摘要", spine: "灾一" },
+      { row_uid: "cr2", id: "02", act: 1, title: "", summary: "", spine: "" },
+      { row_uid: "cr3", id: "03", act: 2, title: no(3), summary: "合成三章的摘要", spine: "" },
     ] } } }));
     const host = await renderAt("outline");
-    const titles = () => [...host.querySelectorAll(".sf-ch-title")].map(el => el.value);
-    expect(titles()).toEqual(["合成一章", "合成二章"]);
-    const addAct1 = [...host.querySelectorAll(".sf-ch-add")].find(b => b.textContent.includes("第一幕"));
-    await act(async () => addAct1.click());
-    expect(titles()).toEqual(["合成一章", "（待补）", "合成二章"]);
-    expect([...host.querySelectorAll(".sf-ch-no")].map(el => el.textContent)).toEqual(["第 1 章", "第 2 章", "第 3 章"]);
+    const rows = [...host.querySelectorAll('[data-testid^="snow-outline-chapter-"]')];
+    expect(rows.map(r => r.querySelector(".sf-ch-title").textContent)).toEqual(["合成一章", `${no(2)}（未命名）`, no(3)]);
     // 章名就是「第 N 章」占位（或空着）时，左边不再并排写一遍章号——与分章面板同一条规则
-    const setTitle = async (i, text) => act(async () => {
-      const input = host.querySelectorAll(".sf-ch-title")[i];
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await setTitle(0, "第 1 章");
-    await setTitle(1, "");
-    expect([...host.querySelectorAll(".sf-ch-no")].map(el => el.textContent)).toEqual(["", "", "第 3 章"]);
-    expect(host.querySelectorAll(".sf-ch-title")[1].placeholder).toBe("第 2 章（未命名）");
-    // 章序是只读的：不再有能改章 id 的输入框（改一个字就换 key、丢焦点）
-    expect(host.querySelector(".sf-ch-id")).toBeNull();
+    expect(rows.map(r => r.querySelector(".sf-ch-no").textContent)).toEqual([no(1), "", ""]);
+    expect(rows.map(r => r.querySelector(".sf-ch-sum").textContent)).toEqual(["合成一章的摘要", "还没有章摘要", "合成三章的摘要"]);
+    expect(rows[0].querySelector(".sf-ch-spine").textContent).toBe("灾一");
+    // 幕只是分段标签：第一幕两章、第二幕一章
+    expect([...host.querySelectorAll(".sf-act .sf-act-count")].map(el => el.textContent)).toEqual(["2 章", "1 章"]);
+    // 只读：章表里没有一个输入框 / 下拉，也没有「添加…章节」与删除
+    expect([...host.querySelectorAll(".sf-act")].some(block => block.querySelector("input, select, textarea"))).toBe(false);
+    expect([...host.querySelectorAll("button")].some(b => /添加.*章节/.test(b.textContent))).toBe(false);
+    expect(host.querySelector('[aria-label^="删除第"]')).toBeNull();
+    // 还用着系统章名（空 / 「第 N 章」）的章有几章
+    expect(host.querySelector('[data-testid="snow-outline-unnamed"]').textContent).toBe("2 章还没起名");
     // 07 的门开的是同一张分章面板
     await act(async () => host.querySelector('[data-testid="snow-materialize"]').click());
     expect(host.querySelectorAll('[data-testid="chapter-plan-panel"]').length).toBe(1);
+  });
+
+  it("07 章表空着：「章表空着，列完场再分章」，门照旧（在分章面板里整理）", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [] } } }));
+    const host = await renderAt("outline");
+    expect(host.querySelector('[data-testid="snow-outline-empty"]').textContent).toBe("章表空着，列完场再分章");
+    expect(host.querySelector('[data-testid^="snow-outline-chapter-"]')).toBeNull();
+    expect(host.querySelector('[data-testid="snow-materialize"]').textContent).toContain("在分章面板里整理");
+  });
+
+  it("07 每一章的「改名」：打开分章面板，按 row_uid 认出那一章，焦点落在它的章名框上（原名选中）", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [
+      { row_uid: "cr1", id: "01", act: 1, title: "合成一章", summary: "", spine: "" },
+      { row_uid: "cr2", id: "02", act: 1, title: "合成二章", summary: "", spine: "" },
+    ] } } }));
+    const scene = (n) => ({ scene_plan_id: `sp${n}`, scene_id: `S0${n}`, story_index: n, title: `合成第 ${n} 场`, primary_form: "proactive", planned: true });
+    window.SnowSync.chapterPreview = vi.fn(async () => ({
+      strategy: "keep_current",
+      chapters: [
+        { row_uid: "cr1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [scene(1)] },
+        { row_uid: "cr2", chapter_seq: 2, act: 1, title: "合成二章", spine: "", chapter_goal: "", scenes: [scene(2)] },
+      ],
+      unassigned: [], warnings: [], chapter_table: { count: 2, authored: true, saved: true },
+    }));
+    const host = await renderAt("outline");
+    await act(async () => host.querySelector('[data-testid="snow-outline-rename-1"]').click());
+    await vi.waitFor(() => expect(document.activeElement && document.activeElement.classList.contains("sf-chapterplan-title")).toBe(true));
+    const input = document.activeElement;
+    expect(input.closest('[data-testid="chapter-plan-chapter-1"]')).toBeTruthy();
+    expect(input.value).toBe("合成二章");
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, "合成二章".length]);
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("批准 #18b：导出大纲与「引用上下文」是带栏名的分步文本——不印行 id、角色键与 proactive / main / full 这些内部值", async () => {
+    const row = "row_00112233445566aa";
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: {
+      characters: { sel: "c1", chars: { c1: { name: "林岑", role: "主角", goal: "拿到账本", ambition: "", values: "", conflict: "", epiphany: "" } } },
+      scenes: { lines: [], list: [{ id: row, type: "proactive", line: "main", pov: "c1", place: "码头", event: "取账本", crucible: "船要开了", fn: "起势", spine: "" }] },
+      planning: { sel: row, plans: { [row]: { goal: "拿到账本", conflict: "", setback: "", rendering: "full" } } },
+    } }));
+    const blobs = [];
+    const create = URL.createObjectURL;
+    const revoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((blob) => { blobs.push(blob); return "blob:snow-export"; });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      const host = await renderAt("planning");
+      const refTab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("引用上下文"));
+      await act(async () => refTab.click());
+      const cards = [...host.querySelectorAll(".ref-card-body")].map(el => el.textContent).join("\n");
+      expect(cards).toContain("S01 · 主动 · 视角 林岑 · 码头");
+      expect(cards).toContain("林岑（主角）");
+      expect(cards).not.toMatch(/row_|proactive|\bmain\b|\bc1\b/);
+      await act(async () => host.querySelector('[data-testid="snow-more"]').click());
+      await act(async () => document.querySelector('[data-testid="snow-export-outline"]').click());
+      expect(blobs).toHaveLength(1);
+      // jsdom 的 Blob 没有 text()：用 FileReader 读回导出的 Markdown
+      const md = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsText(blobs[0]);
+      });
+      expect(md).toContain("## 09 场景列表");
+      expect(md).toContain("- **S01 · 主动 · 视角 林岑 · 码头**\n  - **事件**：取账本");
+      expect(md).toContain("## 10 场景规划");
+      expect(md).toContain("  - **目标**：拿到账本");
+      expect(md).not.toMatch(/row_|proactive|reactive|\bmain\b|\bc1\b|\bfull\b/);
+    } finally {
+      // jsdom 没有这两个函数：导出 1.5 秒后还会调一次 revokeObjectURL，换回 undefined 会在用例之后抛错——换成空函数
+      URL.createObjectURL = create || (() => "");
+      URL.revokeObjectURL = revoke || (() => {});
+    }
+  });
+
+  it("批准 #18c：04 删角色走应用内的确认框；只剩一个角色时给一条提示——不弹浏览器的 confirm / alert", async () => {
+    const { WsToastHost } = await import("./ws-notify.jsx");
+    const blankChar = { goal: "", ambition: "", values: "", conflict: "", epiphany: "", storyline: "", storyline_para: "" };
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { characters: { sel: "c2", chars: {
+      c1: { ...blankChar, name: "合成主角", role: "主角" }, c2: { ...blankChar, name: "合成对手", role: "对立面" },
+    } } } }));
+    const nativeConfirm = vi.spyOn(window, "confirm");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => root.render(<><WsToastHost /><WsSnowflake initialStep="characters" /></>));
+    const tabs = () => [...host.querySelectorAll(".sf-char-tab-name")].map(el => el.textContent);
+    const delBtn = () => [...host.querySelectorAll("button")].find(b => b.textContent.includes("删除角色"));
+    const dialog = () => document.querySelector('[data-testid="ws-confirm"]');
+    expect(tabs()).toEqual(["合成主角", "合成对手"]);
+
+    await act(async () => delBtn().click());
+    expect(dialog().textContent).toContain("删除角色「合成对手」？");
+    await act(async () => document.querySelector('[data-testid="ws-confirm-cancel"]').click());
+    expect(tabs()).toEqual(["合成主角", "合成对手"]);
+
+    await act(async () => delBtn().click());
+    await act(async () => document.querySelector('[data-testid="ws-confirm-ok"]').click());
+    expect(tabs()).toEqual(["合成主角"]);
+
+    await act(async () => delBtn().click());
+    expect(dialog()).toBeNull();
+    expect(document.querySelector('[data-testid="ws-toast-stack"]').textContent).toContain("至少保留一个角色。");
+    expect(tabs()).toEqual(["合成主角"]);
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    expect(window.alert).not.toHaveBeenCalled();
   });
 
   it("09 灾难标记：没有显式标记时按「功能」一栏推断，只显示、不写回", async () => {

@@ -18,7 +18,8 @@ export const DEFAULT_PROJECT = {
   stats: { words_total: 38000, words_today: 0, streak_days: 3 },
 };
 
-/** 默认目录：一章一场，形状对齐后端 catalog 端点（slug/chapter_id/scene_id/brief）。 */
+/** 默认目录：一章一场，形状对齐后端 catalog 端点（slug/chapter_id/scene_id/brief）。
+ *  章级的张力 / 视角等叙事字段已退役（批准 #17a，重评 R10），后端的章载荷不再带它们。 */
 export const DEFAULT_CHAP = {
   slug: "ch01",
   chapter_id: "c1",
@@ -26,8 +27,6 @@ export const DEFAULT_CHAP = {
   title: "盐场的早班",
   state: "writing",
   act: "act1",
-  tension: 0.3,
-  pov: "示例POV",
   current: true,
   words: { cur: 0, target: 4000 },
   scenes: [

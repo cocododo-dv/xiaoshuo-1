@@ -134,15 +134,6 @@ export function isAutoChapterTitle(title) {
   return !text || AUTO_CHAPTER_TITLE_RE.test(text) || PLACEHOLDER_CHAPTER_TITLE_MARKERS.some(m => text.includes(m));
 }
 
-/* 07 章表里「添加章节」点出来、还什么都没写的行（章名空或带占位标记，摘要 / 章目标 / 脊柱全空）——
-   与后端 snowflake_chaptering.is_placeholder_chapter 同一口径。行上的章目标前端叫 goal、后端叫 chapter_goal。 */
-export function isPlaceholderChapterRow(chapter) {
-  const c = chapter || {};
-  const title = String(c.title || "").trim();
-  const blankTitle = !title || PLACEHOLDER_CHAPTER_TITLE_MARKERS.some(m => title.includes(m));
-  return blankTitle && ![c.summary, c.goal, c.chapter_goal, c.spine].some(v => String(v || "").trim());
-}
-
 /* 章名框里已经带着这一章的章号吗（index 从 0 起）：章名就是「第 N 章」这种占位且 N 对得上，或者空着
    （占位提示「第 N 章（未命名）」里有章号）。这时章名框左边不再并排写一遍「第 N 章」。 */
 export function chapterNoInTitle(title, index) {
