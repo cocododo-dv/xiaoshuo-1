@@ -586,6 +586,19 @@ def test_a_process_started_behind_the_schema_runs_the_deferred_startup_once_the_
     from novel_system.db.session import SessionLocal
     from novel_system.services.style_reference import check_job, jobs
 
+    def new_check_job() -> str:
+        with SessionLocal() as session:
+            job = jobs.StyleJobService(session).create(
+                jobs.JOB_KIND_CHECK, params={"text": "雨城的旧信"}, allow_parallel=True
+            )
+            session.commit()
+            return job.job_id
+
+    def finished(job_id: str) -> StyleReferenceJob | None:
+        with SessionLocal() as session:
+            job = session.get(StyleReferenceJob, job_id)
+            return job if job is not None and job.state in {"failed", "succeeded", "cancelled"} else None
+
     started: list[str] = []
     monkeypatch.setattr(
         "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
@@ -598,19 +611,10 @@ def test_a_process_started_behind_the_schema_runs_the_deferred_startup_once_the_
         assert client.get("/api/v2/projects").status_code == 503
         assert started == [] and _background_threads() == set()
         assert set(jobs._HANDLERS) == set(jobs.JOB_KINDS)
-        with SessionLocal() as session:
-            job_id = (
-                jobs.StyleJobService(session)
-                .create(jobs.JOB_KIND_CHECK, params={"text": "雨城的旧信"}, allow_parallel=True)
-                .job_id
-            )
-            session.commit()
-        jobs.run_job_inline(job_id)
-        with SessionLocal() as session:
-            failed = session.get(StyleReferenceJob, job_id)
-            # 对照检查的处理器真的跑了（没有绑定参考就按它自己的规则失败），不是「no handler」
-            assert failed.state == "failed"
-            assert failed.error_json["code"] == check_job.CHECK_NOT_BOUND_CODE
+        before = new_check_job()
+        jobs.run_job_inline(before)
+        # 对照检查的处理器真的跑了（没有绑定参考就按它自己的规则失败），不是「no handler」
+        assert finished(before).error_json["code"] == check_job.CHECK_NOT_BOUND_CODE
 
         _stamp_database_revision()
         assert client.get("/api/v2/projects").status_code == 200
@@ -619,6 +623,11 @@ def test_a_process_started_behind_the_schema_runs_the_deferred_startup_once_the_
         assert client.get("/api/v2/projects").status_code == 200
         assert client.get("/ready").status_code == 200
         assert started == ["recovery"]
+        # 放行之后照路由提交后的派发（after_commit → dispatch_job）走一遍：工人线程池里同样找得到处理器
+        after = new_check_job()
+        jobs.dispatch_job(after, kind=jobs.JOB_KIND_CHECK)
+        assert _wait_until(lambda: finished(after) is not None), "派发的作业没有跑完"
+        assert finished(after).error_json["code"] == check_job.CHECK_NOT_BOUND_CODE
 
     assert _wait_until(lambda: _background_threads() == set()), _background_threads()
 
