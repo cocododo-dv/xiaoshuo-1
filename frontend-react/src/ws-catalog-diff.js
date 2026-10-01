@@ -11,8 +11,17 @@ import { catChapterPatch, catSceneCreateBody, catScenePatch } from "./ws-catalog
      catWrite(workId, run)        = catLoader.write：写入期间回来的读取不写缓存，写完重读
      catRecover(error)            写失败的提示
      catPlanTitleHooks            章名写穿到章计划后要 await 的登记（雪花缓存接章表）
-   返回 { dispatchDiff, backendChapterId, backendSceneId, reconcileCreates }。
+   返回 { dispatchDiff, backendChapterId, backendSceneId, readStarted, readFailed, reconcileCreates }
+   （后三个是目录读取器的收尾：认回包丢了的新建场，见 unconfirmedCreates）。
    ========================================================== */
+
+/* 建场请求失败了，场景却也许建好了：断网 / 超时（没有状态码）、5xx、服务端说可以重试的（同一个幂等键的原请求还在跑）。
+   与 wr-doc-sync.js 的 mayHaveLanded 同一口径；其余 4xx 是服务端明确拒绝的，没建成 */
+function createMayHaveLanded(e) {
+  const status = Number(e && e.status);
+  return !status || status >= 500 || !!(e && e.retryable);
+}
+
 export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, catApiBase, catWrite, catRecover, catPlanTitleHooks }) {
   const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
   /* 创建中的 Promise 登记在 catPendingCreates 里，建完就摘掉。摘的那条链只管摘，吞掉它自己的拒绝：失败照旧交给
@@ -23,11 +32,23 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
     p.finally(() => { delete catPendingCreates[key]; }).catch(() => {});
     return p;
   };
-  /* 新建一场没拿到回包（后端建好了、回包在路上丢了：后端重启、连接断开）：乐观缓存里那一场一直是临时 sid、没有后端 id，
-     正文 store 找不到它建好之后的样子，作者的头几句就留在临时 sid 下。这里记下这一场建之前那一章已有哪些场，
-     写入收尾重读目录时（reconcileCreates）那一章恰好多出一场、又正好在它乐观时的位置上，就是它——记成它的别名
-     （复核 W1-R7B-1）。认不准（没有多出来、多出不止一场、位置对不上）就不记，宁可不认也不认错。 */
-  let unconfirmedCreates = [];
+  /* 新建一场没拿到回包（后端建好了、回包在路上丢了：后端重启、连接断开、超时）：乐观缓存里那一场一直是临时 sid、没有后端 id，
+     正文 store 找不到它建好之后的样子，作者的头几句就留在临时 sid 下。这里把它记成「待认」，写入收尾重读目录时（reconcileCreates）
+     认出它来就记成它的别名，写作台跟着把那几句挪过去（复核 W1-R7B-1）。认错了比认不出糟得多：写作台会把这一场写下的字挪进
+     别的场、存上服务端，同步与恢复里什么也没有（复核 Q1c-R1）。所以只认「确实是它」的那一场：
+       · 只记也许建成了的失败（createMayHaveLanded，或回包里没有 scene）；服务端明确拒绝的没建成，不记；
+       · 只等它记下之后发出的第一次目录读取：那一次读失败了就作罢（后端重启时多半如此），不拿一份过时的「建之前」去比
+         之后别处、别的建场加进来的场；
+       · 那一章重读时多出来的场里，除掉建之前就有的、这一页已经认得的（别的建场拿到了回包、缓存里已有后端 id 的）——剩下恰好一场；
+       · 它就在乐观时的位置上，题名与形态正是这一页发出去的那样（服务端照存题名，空题名存成「新场景」）；
+       · 同一章里不止一次待认：认不准哪一场是哪一份，都不认。
+     认不准就不记：写作台照旧把那几句留进同步与恢复，照实说是新建这一场时写下的字。 */
+  let unconfirmedCreates = [];   // { workId, sid, chapterId, at, before, title, kind, readNo }
+  const catReadNos = {};         // workId → 目录读取已发出几次（readStarted 计数；待认记下时的读数在 readNo）
+  const catAnsweredSceneIds = {}; // workId → 这一页从建场回包里认得的 scene_id（目录被 reset 清掉缓存时也还认得）
+  const noteAnswered = (workId, sceneId) => {
+    (catAnsweredSceneIds[workId] || (catAnsweredSceneIds[workId] = new Set())).add(sceneId);
+  };
 
   /* 后端 id 解析（含等待乐观创建完成）。
      插在中间的新章用的是临时 id（ch-new-*）；前一次写入收尾时目录已经重拉，缓存里就只剩后端给的位置式 slug 了——
@@ -83,6 +104,7 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
           catSceneCreateBody(s, i)
         );
         const mineScene = mine && (mine.scenes || []).find(x => x.sid === s.sid);
+        if (sres && sres.scene && sres.scene.scene_id) noteAnswered(workId, sres.scene.scene_id);
         if (mineScene && sres && sres.scene) mineScene.backendId = sres.scene.scene_id;
       }
     })();
@@ -101,32 +123,62 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
       const known = catLoad(workId).find(x => x.id === chId);
       ((known && known.scenes) || []).forEach((x) => { if (x.backendId) before.add(x.backendId); });
       let res = null;
+      let failure = null;
       try {
         res = await apiPost(`${catApiBase(workId)}/chapters/${chapterId}/scenes`, catSceneCreateBody(s, at));
+      } catch (e) {
+        failure = e;
+        throw e;
       } finally {
-        const mine = sceneMine();
-        if (mine && res && res.scene) mine.backendId = res.scene.scene_id;
-        else unconfirmedCreates.push({ workId, sid: s.sid, chapterId, at, before });
+        const sceneId = res && res.scene && res.scene.scene_id;
+        if (sceneId) {
+          noteAnswered(workId, sceneId);
+          const mine = sceneMine();
+          if (mine) mine.backendId = sceneId;
+        } else if (!failure || createMayHaveLanded(failure)) {
+          unconfirmedCreates.push({
+            workId, sid: s.sid, chapterId, at, before,
+            title: String(s.title || "").trim() || "新场景",
+            kind: s.kind === "反应" ? "反应" : "主动",
+            readNo: catReadNos[workId] || 0,
+          });
+        }
       }
     })();
     return trackCreate(s.sid, p);
   }
 
-  /* 目录重读之后（ws-catalog.jsx 的装载收尾）：没拿到回包的新建场认不认得出来——认得出来的给 [临时 sid, 现在的 sid]。
-     每条只认这一次重读：这一次没多出来就是没建成。 */
-  function reconcileCreates(workId, chapters) {
-    const mine = unconfirmedCreates.filter((c) => c.workId === workId);
-    if (!mine.length) return [];
-    unconfirmedCreates = unconfirmedCreates.filter((c) => c.workId !== workId);
+  /* 目录读取器（ws-catalog.jsx）每发出一次读取先调 readStarted，拿到这一次的编号；读取失败调 readFailed：
+     在这一次之前记下的待认就此作罢（见 unconfirmedCreates）。 */
+  function readStarted(workId) {
+    catReadNos[workId] = (catReadNos[workId] || 0) + 1;
+    return catReadNos[workId];
+  }
+  function readFailed(workId, readNo) {
+    unconfirmedCreates = unconfirmedCreates.filter((c) => c.workId !== workId || c.readNo >= readNo);
+  }
+
+  /* 目录重读之后（ws-catalog.jsx 的装载收尾，第 readNo 次读取；known = 这一次写进缓存之前的那一份）：没拿到回包的新建场
+     认不认得出来——认得出来的给 [临时 sid, 现在的 sid]。在这一次读取之前记下的每一条只认这一次：认不出就是没建成，
+     或者建成了却认不准。规则见 unconfirmedCreates。 */
+  function reconcileCreates(workId, chapters, known, readNo) {
+    const ours = unconfirmedCreates.filter((c) => c.workId === workId);
+    const due = ours.filter((c) => c.readNo < readNo);
+    if (!due.length) return [];
+    unconfirmedCreates = unconfirmedCreates.filter((c) => !due.includes(c));
+    const knownIds = new Set(catAnsweredSceneIds[workId] || []);
+    (known || []).forEach((c) => (c.scenes || []).forEach((x) => { if (x.backendId) knownIds.add(x.backendId); }));
     const aliases = [];
-    mine.forEach((c) => {
+    due.forEach((c) => {
+      if (ours.filter((x) => x.chapterId === c.chapterId).length > 1) return;
       const chapter = (chapters || []).find((x) => x.backendId === c.chapterId);
       if (!chapter) return;
       const scenes = chapter.scenes || [];
-      const added = scenes.filter((x) => x.backendId && !c.before.has(x.backendId));
-      if (added.length === 1 && scenes.indexOf(added[0]) === c.at && added[0].sid && added[0].sid !== c.sid) {
-        aliases.push([c.sid, added[0].sid]);
-      }
+      const added = scenes.filter((x) => x.backendId && !c.before.has(x.backendId) && !knownIds.has(x.backendId));
+      if (added.length !== 1) return;
+      const hit = added[0];
+      if (scenes.indexOf(hit) !== c.at || hit.title !== c.title || hit.kind !== c.kind) return;
+      if (hit.sid && hit.sid !== c.sid) aliases.push([c.sid, hit.sid]);
     });
     return aliases;
   }
@@ -264,5 +316,8 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
     return true;
   }
 
-  return { dispatchDiff: catDispatchDiff, backendChapterId: catBackendChapterId, backendSceneId: catBackendSceneId, reconcileCreates };
+  return {
+    dispatchDiff: catDispatchDiff, backendChapterId: catBackendChapterId, backendSceneId: catBackendSceneId,
+    readStarted, readFailed, reconcileCreates,
+  };
 }

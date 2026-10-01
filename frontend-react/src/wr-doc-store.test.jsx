@@ -5,7 +5,7 @@
 //        缓存键经 window.wsKey 加 ::<activeId> 后缀、docMeta 经 metaKeyOf 加作品前缀。
 // 故先 import ws-catalog（装 window.WsCatalog + 间接装 ws-works），settle 后再 import wr-doc-store。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_PROJECT } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -642,6 +642,112 @@ describe("WrDocs 提升权威正文", () => {
         ],
       }),
     );
+  });
+});
+
+/* 复核 Q1c-R1：目录给乐观新建、回包丢了的场记别名（W1-R7B-1）时认错了场，写作台就把作者在那一场写下的头几句挪进别的场、
+   存上服务端，同步与恢复里什么也没有。这里是正文 store 一侧看到的结果：认对了跟过去，认不准照实进同步与恢复。 */
+describe("WrDocs × 目录：回包丢了的新建场里写下的字（复核 Q1c-R1 · W1-R7B-1）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /* 世界：目录里一章（c1 / s1）；作者稿服务端按 scene_id 各一份（ensure 建 d-<scene_id>，PATCH 按修订号比对）；
+     POST …/chapters/c1/scenes 由用例的 create(第几次) 回答。→ { WsCatalog, mod, drafts, chapter, creates() } */
+  async function loadWorld(create) {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const client = await import("./lib/client.js");
+    installApiRouter(client, { catalog: [chapter] });
+    const drafts = {};
+    let creates = 0;
+    client.apiPost.mockImplementation((url) => {
+      const ensure = /\/author-drafts\/scene\/([^/]+)\/ensure$/.exec(url);
+      if (ensure) {
+        const d = drafts[ensure[1]] || (drafts[ensure[1]] = { id: `d-${ensure[1]}`, revision: 1, content: "" });
+        return Promise.resolve({ draft: { draft_id: d.id, revision_no: d.revision, content: d.content } });
+      }
+      if (/\/catalog\/chapters\/c1\/scenes$/.test(url)) {
+        creates += 1;
+        return create(creates, chapter);
+      }
+      return Promise.resolve({});
+    });
+    client.apiPatch.mockImplementation((url, body) => {
+      const hit = /\/author-drafts\/(d-[^/?]+)$/.exec(url);
+      if (!hit) return Promise.resolve({});
+      const d = Object.values(drafts).find((x) => x.id === hit[1]);
+      if (Number(body.base_revision_no) !== d.revision) {
+        return Promise.reject(Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT", status: 409, details: { current_revision_no: d.revision } }));
+      }
+      d.revision += 1;
+      d.content = body.content;
+      return Promise.resolve({ draft: { draft_id: d.id, revision_no: d.revision, content: d.content } });
+    });
+    const { WsCatalog } = await import("./ws-catalog.jsx");
+    await settleActive("prj-main");
+    await vi.waitFor(() => expect(WsCatalog.get().length).toBeGreaterThan(0), T);
+    const mod = await import("./wr-doc-store.jsx");
+    return { WsCatalog, mod, drafts, chapter, creates: () => creates };
+  }
+  const sceneRow = (id) => ({ ...DEFAULT_CHAP.scenes[0], slug: id, scene_id: id, title: "新场景" });
+  const typedIn = (html) => String(html || "").includes("头几句");
+  const A_TEXT = "<p>A 场里作者写下的头几句。</p>";
+  /* 写作台随后窗口重新聚焦、网回来了：本机还没同步上的字都会在这时补发 */
+  const comeBack = () => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("online")); };
+
+  it("A 没建成、B 建成并落在 A 乐观时的位置：A 里写下的头几句从不进 B 的作者稿，照实进同步与恢复", async () => {
+    let rejectA = null;
+    const { WsCatalog, mod, drafts, creates } = await loadWorld((n, chapter) => {
+      if (n === 1) return new Promise((_ok, reject) => { rejectA = reject; });
+      chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return Promise.resolve({ scene: { scene_id: "s-b", slug: "s-b" } });
+    });
+
+    WsCatalog.addScene("ch01");                                                // A：建场请求在路上
+    const tmpA = WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates()).toBe(1), T);
+    mod.WrDocs.load(tmpA);
+    void mod.WrDocs.save(tmpA, A_TEXT).catch(() => {});                        // 它在等 A 的后端 id
+    WsCatalog.addScene("ch01");                                                // B：建成了，还没写字
+    await vi.waitFor(() => expect(creates()).toBe(2), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("database is locked"), { status: 500, code: "DATABASE_ERROR", retryable: true }));
+    await vi.waitFor(() => expect(WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    mod.WrDocs.load("s-b");                                                    // 写作台随后打开 B
+    comeBack();
+    await vi.waitFor(() => expect(mod.WrRecovery.list().some((entry) => typedIn(entry.html))).toBe(true), T);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(typedIn(drafts["s-b"] && drafts["s-b"].content)).toBe(false);
+    expect(typedIn(mod.WrDocs.cachedHTML("s-b"))).toBe(false);
+    expect(mod.WrRecovery.list().filter((entry) => typedIn(entry.html))).toEqual([
+      expect.objectContaining({ sid: tmpA, type: "unsynced" }),
+    ]);
+    expect(window.alert.mock.calls.some(([message]) => String(message).includes("新建这一场时写下"))).toBe(true);
+  });
+
+  it("A 其实建好了、只是回包丢了：头几句跟到建好的那一场、存上服务端，同步与恢复里没有它（W1-R7B-1）", async () => {
+    let rejectA = null;
+    const { WsCatalog, mod, drafts, creates } = await loadWorld((n, chapter) => new Promise((_ok, reject) => {
+      chapter.scenes = [...chapter.scenes, sceneRow("s-a")];                    // 服务端建好了
+      rejectA = reject;
+    }));
+
+    WsCatalog.addScene("ch01");
+    const tmpA = WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates()).toBe(1), T);
+    mod.WrDocs.load(tmpA);
+    void mod.WrDocs.save(tmpA, A_TEXT).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("连接断开"), { status: 0, code: "NETWORK_ERROR", retryable: true }));   // 回包在路上丢了
+    await vi.waitFor(() => expect(WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-a"]), T);
+    expect(WsCatalog.sceneById(tmpA)).toMatchObject({ scene: { sid: "s-a" } });
+    comeBack();
+    await vi.waitFor(() => expect(typedIn(drafts["s-a"] && drafts["s-a"].content)).toBe(true), T);
+    expect(mod.WrRecovery.list().filter((entry) => typedIn(entry.html))).toEqual([]);
   });
 });
 

@@ -222,15 +222,23 @@ function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
    否则写后补读会并进写入之前那一次，回来的是写入前的服务端状态，刚改的标题在屏上退回去（审计 F01-05）。 */
 const catLoader = createKeyedLoader({
   async fetch(workId) {
-    const data = await apiGet(catApiBase(workId));
-    return ((data && data.chapters) || []).map(catFromApiChapter);
+    // 每一次读取带编号：回包丢了的新建场只等它记下之后的第一次读取，那一次读失败就作罢（复核 Q1c-R1，见 ws-catalog-diff.js）
+    const readNo = catWriter.readStarted(workId);
+    try {
+      const data = await apiGet(catApiBase(workId));
+      return { readNo, chapters: ((data && data.chapters) || []).map(catFromApiChapter) };
+    } catch (e) {
+      catWriter.readFailed(workId, readNo);
+      throw e;
+    }
   },
-  apply(workId, mapped) {
+  apply(workId, { readNo, chapters: mapped }) {
     // 2026-09-19 的场景编号迁移（位置式 sid → 稳定的 scene_id）照计划再留一轮（重评 R16）
     catMigrateSidKeys(workId, mapped);
     catTrackAliases(workId, catCache[workId], mapped);
-    // 新建一场的回包丢了（建好了、回包没回来）：这一次重读里认出它，临时 sid 记成它的别名（复核 W1-R7B-1）
-    catWriter.reconcileCreates(workId, mapped).forEach(([from, to]) => {
+    // 新建一场的回包丢了（建好了、回包没回来）：这一次重读里认出它，临时 sid 记成它的别名（复核 W1-R7B-1）；
+    // 这一页已经认得的场（缓存里这一份有后端 id 的）不是它（复核 Q1c-R1）
+    catWriter.reconcileCreates(workId, mapped, catCache[workId], readNo).forEach(([from, to]) => {
       (catAliasMap[workId] || (catAliasMap[workId] = {}))[from] = to;
     });
     catCache[workId] = mapped;

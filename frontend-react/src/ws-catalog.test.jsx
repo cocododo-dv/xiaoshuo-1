@@ -358,6 +358,126 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(mod.WsCatalog.sceneById(tmp2)).toBeNull();
   });
 
+  /* 复核 Q1c-R1：回包丢了的新建场只认得出「确实是它」的那一场——认错了，写作台会把这一场写下的头几句挪进别的场、存上服务端。
+     下面每一条，那一章重读时都恰好在它乐观时的位置上多出一场（新建配方的默认题名「新场景」，题名也一样），却都不是它。 */
+  const sceneRow = (id, title = "新场景") => ({ ...DEFAULT_CHAP.scenes[0], slug: id, scene_id: id, title });
+  const ownCreate = (url) => /\/catalog\/chapters\/c1\/scenes$/.test(url);
+  const lost = () => Object.assign(new Error("连接断开"), { status: 0, code: "NETWORK_ERROR", retryable: true });
+
+  it("并发建场：A 没建成（500）、B 建成并正好落在 A 乐观时的位置——A 的临时 sid 不认成 B（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let rejectA = null;
+    let creates = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      creates += 1;
+      if (creates === 1) return new Promise((_ok, reject) => { rejectA = reject; });
+      // B 建成了：服务端那一章此刻只有一场，B 落在第二位——正是 A 乐观时的位置；B 的回包带回了它的 scene_id
+      chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return Promise.resolve({ scene: { scene_id: "s-b", slug: "s-b" } });
+    });
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates).toBe(1), T);
+    mod.WsCatalog.addScene("ch01");
+    const tmpB = mod.WsCatalog.get()[0].scenes[2].sid;
+    await vi.waitFor(() => expect(creates).toBe(2), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("database is locked"), { status: 500 }));   // A 没建成
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    expect(mod.WsCatalog.sceneById(tmpB)).toMatchObject({ scene: { sid: "s-b" } });
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+    await expect(mod.WsCatalog.backendSceneId(tmpA)).resolves.toBeFalsy();
+  });
+
+  it("后端重启：A 建场失败、写后重读也失败；后端回来后作者再加一场——A 的临时 sid 不认成新加的那一场（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    const routeGet = client.apiGet.getMockImplementation();
+    let down = true;
+    client.apiGet.mockImplementation((url) => (down && /\/catalog$/.test(url) ? Promise.reject(lost()) : routeGet(url)));
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      if (down) return Promise.reject(lost());                                  // 没到服务端
+      chapter.scenes = [...chapter.scenes, sceneRow("s-again")];
+      return Promise.resolve({ scene: { scene_id: "s-again", slug: "s-again" } });
+    });
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.loadError()).toBeTruthy(), T);  // 写后那次重读也失败了
+    down = false;
+    mod.WsCatalog.addScene("ch01");
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-again"]), T);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
+  it("写后那一次重读失败了：这一次没认成就不再认——之后另一处在 A 的位置上加的一场不认成 A（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    const routeGet = client.apiGet.getMockImplementation();
+    let down = true;
+    client.apiGet.mockImplementation((url) => (down && /\/catalog$/.test(url) ? Promise.reject(lost()) : routeGet(url)));
+    client.apiPost.mockImplementation((url) => (ownCreate(url) ? Promise.reject(lost()) : Promise.resolve({})));
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.loadError()).toBeTruthy(), T);
+    // 后端回来了；另一个标签页往这一章末尾加了一场（同样的默认题名），这一页随后重读目录
+    down = false;
+    chapter.scenes = [...chapter.scenes, sceneRow("s-other")];
+    await expect(mod.WsCatalog.refresh()).resolves.toBe(true);
+    expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
+  it("服务端明确拒绝的建场（4xx）不记待认：同一时刻另一处在它的位置上加了一场同名的，也不认（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      chapter.scenes = [...chapter.scenes, sceneRow("s-other")];                 // 另一个标签页加的
+      return Promise.reject(Object.assign(new Error("这一章已批准定稿"), { status: 409, code: "CHAPTER_APPROVED_LOCKED" }));
+    });
+    mod.WsCatalog.addScene("ch01");
+    const tmp = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]), T);
+    expect(mod.WsCatalog.sceneById(tmp)).toBeNull();
+  });
+
+  it("同一章里两次建场的回包都丢了：认不准哪一场是哪一份，两个都不认（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let creates = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      creates += 1;
+      // A 没建成；B 建成了——服务端那一章此刻只有一场，B 落在第二位，正是 A 乐观时的位置；两次的回包都丢了
+      if (creates === 2) chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return Promise.reject(lost());
+    });
+    mod.WsCatalog.addScene("ch01");
+    mod.WsCatalog.addScene("ch01");
+    const [, tmpA, tmpB] = mod.WsCatalog.get()[0].scenes.map((s) => s.sid);
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    expect(creates).toBe(2);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+    expect(mod.WsCatalog.sceneById(tmpB)).toBeNull();
+  });
+
+  it("位置对上了、题名对不上：不是这一份（服务端照存这一页发的题名），不认（复核 Q1c-R1）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      chapter.scenes = [...chapter.scenes, sceneRow("s-other", "另一处加的一场")];  // 这一页的没到服务端；另一处加的落在同一位置
+      return Promise.reject(lost());
+    });
+    mod.WsCatalog.addScene("ch01", "雨夜的信");
+    const tmp = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]), T);
+    expect(mod.WsCatalog.sceneById(tmp)).toBeNull();
+  });
+
   it("addChapter 是唯一的新建配方：不带张力 / 线索 / 占位 / 4000 字目标，接在指定章后面，只建一场空白场", async () => {
     const second = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", title: "第二章", current: false, act: "act2",
       scenes: [{ ...DEFAULT_CHAP.scenes[0], slug: "ch02s1", scene_id: "s2" }] };
