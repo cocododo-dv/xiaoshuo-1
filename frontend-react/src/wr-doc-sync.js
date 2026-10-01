@@ -94,8 +94,10 @@ import {
      （多半就是采纳撞的）先按住，采纳成了就作废、都没成（endAdoption；同一场同时几次采纳时等最后一次）再照常核对 / 冲突——
      不为作者自己的采纳提示「在别处被修改」（复核三 W1-R3A-4 · W1-R3B-6）。采纳请求没等到回包：adoptionLanded 读一次服务端，
      存下的正是采纳的那一稿就照成了收尾（复核四 W1-R4A-4 · W1-R4B-5）；这一次也读不到（断网连着吞了回包和读取）：结果不明
-     （adoptionUnsure）——之后按采纳之前的修订号撞上的 409 先核对是不是它，是就照采纳成了收尾，读不到时不提示，不说「在别处
-     被修改」；起草台照实说没能确认（复核五 W1-R5B-4）。采纳前的预检 prepareAdoption：水合、读到冲突的
+     （adoptionsUnsure，记最近几次：一次结果不明之后又采纳了一次，前一次也许才是落了地的那一次，复核 I3-4）——之后按采纳之前的
+     修订号撞上的 409 先核对是不是其中之一，是就照采纳成了收尾，读不到时不提示，不说「在别处被修改」；起草台照实说没能确认（复核五
+     W1-R5B-4）。在路上 / 结果不明的采纳还记进这个标签页的 sessionStorage（只记字的指纹）：采纳正好在页面刷新那一刻落了地，刷新之后
+     水合读到的就是它——照采纳成了收尾、说的是采纳，不说「在别处被修改过」（复核 I3-4）。采纳前的预检 prepareAdoption：水合、读到冲突的
      服务端版本、把失败后停着的最新一稿再发一次（回包丢了的那一稿其实存上了时由核对接上修订号）、已水合的干净一场再读一次
      服务端，采纳带的修订号、预览和覆盖前的备份才是服务端眼下的（复核三 W1-R3B-4，复核四 W1-R4B-4）。作者确认覆盖的是
      预检交给他看过差异的那一稿（起草台 scnAdoptToDoc 比对；复核五 W1-R5A-1）。采纳被服务端按修订号拒绝、这期间草稿往前走的
@@ -284,7 +286,7 @@ function newMeta(workId, sid) {
     adoptedSeq: 0,            // 这一场落了地的采纳数（提升途中有采纳落了地 = 提升是被作者自己的采纳赶在了前面）
     lastLoadReason: null,     // 读缓存上一次换稿的原因（loaded 的 reason）
     adoptHeld: [],            // 采纳在路上时那一次保存撞上的 409 { flight, error }：采纳有了结果再定
-    adoptionUnsure: null,     // 采纳没等到回包、读服务端也没读到：{ html, base }——结果不明，按那个修订号撞上的 409 先核对是不是它
+    adoptionsUnsure: [],      // 采纳没等到回包、读服务端也没读到的几次：[{ html, base }]——结果不明，按那个修订号撞上的 409 先核对是不是其中之一
     lockPending: null,        // 章已批准锁定时这一场还有结果没回来：{ kept, latest }（那一刻留下的字、交进来的最新一稿），有了结果再定（见 lockLocal）
     volatileWarned: false,    // 这一段「只留在本次会话里」的提示已经给过了（本机存储满了、又存不上服务端时只提示一次）
     waiters: [],
@@ -413,6 +415,9 @@ const NOTICE = {
   // 水合之前在上次会话留下的本机稿上接着写了，服务端版本和它对不上：照实说是上次会话的本机稿，不说「在别处被修改过」
   pendingConflict: "上次会话（或另一个标签页）有没保存到服务端的本地正文，编辑器已换成服务端上的版本。你的本地稿和刚写的几句都放进了「同步与恢复」，可以比较差异、恢复或导出。",
   pendingConflictVolatile: "上次会话（或另一个标签页）有没保存到服务端的本地正文，编辑器已换成服务端上的版本。浏览器存储空间不足，你的本地稿和刚写的几句只留在本次会话的「同步与恢复」里——刷新或关掉页面前请打开它导出或恢复。",
+  // 这台电脑上的另一页（另一个标签页，或刷新之后的这一页）已经存上 / 换成了服务端眼下这一版：不是「在别处被修改过」（复核 I3-4）
+  otherPage: "这一场在另一个标签页（或刷新之后的这一页）里已经换成了更新的版本，编辑器也换成了它。这一页没存上的几句放进了「同步与恢复」，可以比较差异、恢复或导出。",
+  otherPageVolatile: "这一场在另一个标签页（或刷新之后的这一页）里已经换成了更新的版本，编辑器也换成了它。这一页没存上的几句因为浏览器存储空间不足，只留在本次会话的「同步与恢复」里——刷新或关掉页面前请打开它导出或恢复。",
   locked: "这一章已批准锁定，改动不会保存：你刚写的几句放进了「同步与恢复」，编辑器换回了已存上的正文。要改写请先到成稿中心重新打开本章。",
   // 那一刻最后那一次保存的回包没回来、读服务端也没读到：说不准它存上了没有，照实说（复核七 W1-R7A-2）
   lockedUnconfirmed: "这一章已批准锁定，改动不会保存。你最后写的几句那一次保存的回包没回来，还没能确认存上了没有：它们放进了「同步与恢复」，编辑器先换回这台电脑上次确认存上的正文，连上服务器之后会换成服务端上的正文。要改写请先到成稿中心重新打开本章。",
@@ -900,7 +905,7 @@ function hydrateMeta(m) {
       notifyState(m);
     }
     if (!data || !data.draft || m.draftId == null) return m; // 目录里还没有这一场的后端 id：下次再水合
-    settleHydrate(m);
+    settleHydrate(m, data);
     pump(m); // 水合期间章被锁定了（lockPending）：换回已存上的正文
     return m;
   })();
@@ -920,8 +925,8 @@ function parkLockHydrate(m, error) {
   notifyState(m);
 }
 
-/* 服务端草稿到手之后决定读缓存怎么办 */
-function settleHydrate(m) {
+/* 服务端草稿到手之后决定读缓存怎么办（data：这一次读到的草稿，认采纳时要它的提升记录） */
+function settleHydrate(m, data = null) {
   const serverHTML = toDocHTML(m.serverContent || "");
   // 修订号 1 的空稿是 ensure 刚建的：本机缓存里的字就是工作稿。更高修订号上的空稿是在别处清空的，照常算服务端版本
   const freshBlank = !serverHTML && !(m.revision > 1);
@@ -944,10 +949,21 @@ function settleHydrate(m) {
       m.hydrated = true;
       return;
     }
+    // 服务端眼下是这个标签页（刷新之前的那一页）在起草台采纳、正好在刷新那一刻落了地的那一稿：照采纳成了收尾——本机没存上的
+    // 留进同步与恢复、编辑器换成采纳的稿，提示照实说是采纳，不说「在别处被修改过」（复核 I3-4）
+    const draft = data && data.draft;
+    if (draft && promotedAtRevision(draft) && ownAdoptionText(m, serverHTML)) {
+      acceptCanonicalMeta(m, serverHTML, landedAdoption(draft, data));
+      return;
+    }
     const texts = [m.inFlight && m.inFlight.html, m.queued && m.queued.html];
     if (pendingAtLoad) texts.push(base);
-    // 作者是在上次会话留下的本机稿上写的：提示照实说「上次会话有没保存到服务端的本地正文」，不说「在别处被修改过」
-    openConflict(m, staleBaseError(), texts, { serverKnown: true, kind: pendingAtLoad ? "pending" : "conflict" });
+    // 作者是在上次会话留下的本机稿上写的：提示照实说「上次会话有没保存到服务端的本地正文」，不说「在别处被修改过」。
+    // 本机共用读缓存里已经是服务端这一版、也没有未同步标记：这台电脑上的另一页（另一个标签页，或刷新之后的这一页）已经存上 / 换成了它——
+    // 提示照实说是另一页，不说「在别处被修改过」（复核 I3-4）
+    const slot = readSlot(m);
+    const otherPage = !pendingAtLoad && pendingRead(m) == null && slot != null && sameManuscriptText(slot, serverHTML);
+    openConflict(m, staleBaseError(), texts, { serverKnown: true, kind: pendingAtLoad ? "pending" : (otherPage ? "otherPage" : "conflict") });
     return;
   }
 
@@ -1001,7 +1017,7 @@ function settleHydrate(m) {
     writeServerVersion(m, serverHTML);
     m.hydrated = true;
     // 读到的正是作者自己在起草台正在采纳的那一稿（采纳的回包还没回来）：换稿的是那次采纳，不是「在别处有更新」（复核七 W1-R7B-6）
-    if (serverHTML !== (current || "")) notifyLoadedMeta(m, adoptionInFlight(m, serverHTML) ? "adopt" : "server");
+    if (serverHTML !== (current || "")) notifyLoadedMeta(m, ownAdoptionText(m, serverHTML) ? "adopt" : "server");
     return;
   }
   m.hydrated = true;
@@ -1088,6 +1104,59 @@ function adoptionInFlight(m, html) {
   return m.adoptions.some((token) => token.html != null && sameManuscriptText(token.html, html));
 }
 
+/* 结果不明的采纳最多记几次：第一次一直留着，其余记最近的（同 unsure.htmls） */
+const ADOPTIONS_UNSURE_KEEP = 8;
+function rememberAdoptionUnsure(m, html, base) {
+  const kept = m.adoptionsUnsure.filter((item) => !sameManuscriptText(item.html, html));
+  const next = [...kept, { html, base }];
+  m.adoptionsUnsure = next.length <= ADOPTIONS_UNSURE_KEEP ? next : [next[0], ...next.slice(1 - ADOPTIONS_UNSURE_KEEP)];
+}
+/* 读到的服务端正文是结果不明的那几次采纳之一：返回它并从清单里拿掉（它有了结果） */
+function takeAdoptionUnsure(m, html) {
+  const hit = m.adoptionsUnsure.find((item) => sameManuscriptText(item.html, html));
+  if (hit) m.adoptionsUnsure = m.adoptionsUnsure.filter((item) => item !== hit);
+  return hit || null;
+}
+
+/* 这个标签页在路上 / 结果不明的采纳（复核 I3-4）：记进 sessionStorage（同一个标签页刷新之后还在、别的标签页看不到；只记字的指纹）。
+   页面在采纳路上刷新了、采纳落了地：新的一页水合读到的服务端正文就是它——说的是作者自己的采纳，不是「在别处被修改过」 */
+const ADOPTING_PREFIX = "wr-doc-adopting:";
+const ADOPTING_KEEP = 8;
+const ADOPTING_TTL_MS = 6 * 60 * 60 * 1000;
+function adoptingKey(m) { return `${ADOPTING_PREFIX}${m.sid}::${m.workId}`; }
+function readAdopting(m) {
+  try {
+    const list = JSON.parse(sessionStorage.getItem(adoptingKey(m)) || "[]");
+    const now = Date.now();
+    return Array.isArray(list) ? list.filter((item) => item && item.fp && now - Number(item.at || 0) < ADOPTING_TTL_MS) : [];
+  } catch (e) {
+    return [];
+  }
+}
+function writeAdopting(m, list) {
+  try {
+    if (list.length) sessionStorage.setItem(adoptingKey(m), JSON.stringify(list.slice(-ADOPTING_KEEP)));
+    else sessionStorage.removeItem(adoptingKey(m));
+  } catch (e) { /* 会话存储被禁：只在这一页的内存里认它 */ }
+}
+function rememberAdopting(m, html) {
+  if (html == null) return;
+  const fp = textFingerprint(html);
+  writeAdopting(m, [...readAdopting(m).filter((item) => item.fp !== fp), { fp, at: Date.now() }]);
+}
+function forgetAdopting(m, html) {
+  if (html == null) return;
+  const fp = textFingerprint(html);
+  writeAdopting(m, readAdopting(m).filter((item) => item.fp !== fp));
+}
+/* 服务端眼下的正文是这个标签页（这一页，或刷新之前的那一页）在起草台采纳的那一稿吗 */
+function ownAdoptionText(m, html) {
+  if (html == null) return false;
+  if (adoptionInFlight(m, html) || m.adoptionsUnsure.some((item) => sameManuscriptText(item.html, html))) return true;
+  const fp = textFingerprint(html);
+  return readAdopting(m).some((item) => item.fp === fp);
+}
+
 /* 这一页有一稿写在眼下这个修订号上、发出去却没等到回包（unsure）：服务端眼下也许就是它 */
 function unsureHere(m) {
   return !!(m.hydrated && m.draftId && m.unsure && m.unsure.base === m.revision && m.unsure.htmls.length);
@@ -1129,11 +1198,10 @@ function applyRefresh(m, data) {
       if (entry && entry.durable === false) durable = false;
     }
     if (differs || serverHTML !== (readSlot(m) || "")) writeServerVersion(m, serverHTML, { durable });
-    // 读到的正是那一次结果不明的采纳（adoptionUnsure）或还在路上的那一次采纳：换上的是作者自己在起草台采纳的稿，不是「在别处有更新」
-    // （复核五 W1-R5B-4 · 复核七 W1-R7B-6）
-    const unsureAdoption = !!m.adoptionUnsure && sameManuscriptText(serverHTML, m.adoptionUnsure.html);
-    if (unsureAdoption) m.adoptionUnsure = null;
-    const adopted = unsureAdoption || adoptionInFlight(m, serverHTML);
+    // 读到的正是结果不明的那几次采纳之一（adoptionsUnsure）、还在路上的那一次采纳，或这个标签页刷新之前的那一页正在采纳的那一稿：
+    // 换上的是作者自己在起草台采纳的稿，不是「在别处有更新」（复核五 W1-R5B-4 · 复核七 W1-R7B-6 · 复核 I3-4）
+    const unsureAdoption = !!takeAdoptionUnsure(m, serverHTML);
+    const adopted = unsureAdoption || ownAdoptionText(m, serverHTML);
     if (differs) {
       notifyState(m);
       const locked = own && approvedLocked(m);
@@ -1659,7 +1727,7 @@ function rememberUnsure(m, flight) {
 /* 撞上 409 的这一次和没等到回包的那几稿用的是同一个修订号：可能撞上的是自己（服务端回的当前修订号若在，得正好往前一步） */
 function mayBeOwnSave(m, flight, e) {
   const unsure = m.unsure && m.unsure.base === flight.base;
-  const adoption = m.adoptionUnsure && m.adoptionUnsure.base === flight.base; // 结果不明的采纳也是这一页自己的（复核五 W1-R5B-4）
+  const adoption = m.adoptionsUnsure.some((item) => item.base === flight.base); // 结果不明的采纳也是这一页自己的（复核五 W1-R5B-4）
   if (!unsure && !adoption) return false;
   const current = e && e.details && e.details.current_revision_no;
   return !Number.isInteger(current) || current === flight.base + 1;
@@ -1707,8 +1775,8 @@ function startOwnCheck(m, flight, error) {
     html: flight.html,
     base: flight.base,
     candidates: m.unsure && m.unsure.base === flight.base ? m.unsure.htmls.slice() : [],
-    // 结果不明的那一次采纳（adoptionLanded 没读到服务端）：服务端眼下正是它，就是作者自己的采纳落了地
-    adoption: m.adoptionUnsure && m.adoptionUnsure.base === flight.base ? m.adoptionUnsure : null,
+    // 结果不明的那几次采纳（adoptionLanded 没读到服务端）：服务端眼下正是其中之一，就是作者自己的采纳落了地
+    adoptions: m.adoptionsUnsure.filter((item) => item.base === flight.base),
     floor: conflictFloor(flight, error),
     minSeq: ensureSeq + 1,
     attempts: 0,
@@ -1736,7 +1804,7 @@ function verifyUnsure(m, then) {
     html: null,
     base: m.revision,
     candidates: m.unsure.htmls.slice(),
-    adoption: null,
+    adoptions: [],
     floor: m.revision,
     minSeq: ensureSeq + 1,
     attempts: 0,
@@ -1793,12 +1861,16 @@ function finishOwnCheck(m, check, data) {
   const draft = data.draft;
   const sameDraft = !m.draftId || draft.draft_id === m.draftId;
   const next = sameDraft && draft.revision_no === check.base + 1;
-  if (check.adoption) {
-    if (m.adoptionUnsure === check.adoption) m.adoptionUnsure = null;
-    if (next && promotedAtRevision(draft) && sameManuscriptText(check.adoption.html, toDocHTML(draft.content || ""))) {
+  if (check.adoptions.length) {
+    m.adoptionsUnsure = m.adoptionsUnsure.filter((item) => !check.adoptions.includes(item));
+    const landed = next && promotedAtRevision(draft)
+      ? check.adoptions.find((item) => sameManuscriptText(item.html, toDocHTML(draft.content || "")))
+      : null;
+    if (landed) {
       // 撞上 409 的是作者自己在起草台的采纳（它的回包、之后那一次核对都没收到）：照采纳成了收尾——本机没存上的留进
-      // 同步与恢复、编辑器换成采纳的稿，提示照实说是采纳，不说「在别处被修改」（复核五 W1-R5B-4）
-      acceptCanonicalMeta(m, check.adoption.html, landedAdoption(draft, data));
+      // 同步与恢复、编辑器换成采纳的稿，提示照实说是采纳，不说「在别处被修改」（复核五 W1-R5B-4）。结果不明的采纳记了几次，
+      // 落了地的不一定是最后那一次（复核 I3-4）
+      acceptCanonicalMeta(m, landed.html, landedAdoption(draft, data));
       return;
     }
   }
@@ -1846,7 +1918,8 @@ function ownCheckFailed(m, check, e) {
    kind："conflict"（在别处被修改过）| "pending"（作者是在上次会话没同步上的本机稿上写的，提示照实说是它） */
 function openConflict(m, error, texts, { serverKnown = false, minRevision = 0, kind = "conflict" } = {}) {
   const newest = m.queued ? m.queued.html : texts.find((html) => html != null);
-  const reason = kind === "pending" ? "上次会话（或另一个标签页）没同步上的本机稿，和服务端版本对不上" : "服务端在别处更新（409 冲突）";
+  const reason = kind === "pending" ? "上次会话（或另一个标签页）没同步上的本机稿，和服务端版本对不上"
+    : kind === "otherPage" ? "另一个标签页（或刷新之后的这一页）已经换成了更新的版本" : "服务端在别处更新（409 冲突）";
   const kept = new Set();
   const created = []; // 这一次新放进同步与恢复的记录：读到的服务端版本和它们是同一段字时收回（见 resolveConflict）
   let durable = true;
@@ -1953,6 +2026,8 @@ function resolveConflict(m, episode) {
   }
   if (episode.kind === "pending") {
     recoveryNotice(m, episode.durable ? NOTICE.pendingConflict : NOTICE.pendingConflictVolatile, episode.durable ? "warn" : "danger");
+  } else if (episode.kind === "otherPage") {
+    recoveryNotice(m, episode.durable ? NOTICE.otherPage : NOTICE.otherPageVolatile, episode.durable ? "warn" : "danger");
   } else if (!episode.durable) recoveryNotice(m, NOTICE.conflictVolatile, "danger");
   else recoveryNotice(m, episode.keptAny ? NOTICE.conflict : NOTICE.conflictNothingKept);
 }
@@ -2155,7 +2230,8 @@ function acceptCanonicalMeta(m, html, data) {
     throw Object.assign(new Error("归档响应属于另一份作者稿"), { code: "AUTHOR_DRAFT_ADOPTION_MISMATCH" });
   }
   const finalRowId = data.final_scene_row_id || null;
-  m.adoptionUnsure = null; // 这一场的采纳有了结果
+  m.adoptionsUnsure = []; // 这一场的采纳有了结果
+  writeAdopting(m, []);
   const reached = m.hydrated && !m.conflict && !m.checking && !m.inFlight && !m.adoptHeld.length
     && m.draftId === serverDraft.draft_id
     && (m.revision > serverDraft.revision_no
@@ -2291,6 +2367,7 @@ const WrDocs = {
     // html：采纳的那一稿（起草台给出时记下）——后台复核 / 水合在采纳的回包之前读到了它，说的是采纳，不是「在别处有更新」（复核七 W1-R7B-6）
     const token = { m, base: m.revision, html: options.html != null ? sanitizeManuscriptHTML(options.html) : null };
     m.adoptions.push(token);
+    rememberAdopting(m, token.html); // 这一页在采纳路上刷新了：新的一页认得出它（复核 I3-4）
     return token;
   },
   endAdoption(sid, token) {
@@ -2299,6 +2376,7 @@ const WrDocs = {
     const at = m.adoptions.indexOf(token);
     if (at < 0) return; // acceptCanonical 已经收了尾
     m.adoptions.splice(at, 1);
+    if (!token.unknown) forgetAdopting(m, token.html); // 没成（结果不明的留着：之后读到它还认得，复核 I3-4）
     if (m.adoptions.length) return; // 还有别的采纳在路上：等它们
     m.adoptHeld.splice(0).forEach(({ flight, error }) => onFailed(m, flight, error));
     notifyState(m);
@@ -2309,7 +2387,7 @@ const WrDocs = {
      那一版或它的下一版上、提升到的也是它——采纳成了：交回一份和 adopt-current 回包一样形状的结果（recovered），调用方照
      采纳成了收尾（acceptCanonical）。不是 → null，照常当采纳没成（endAdoption）。只读，不动这一场的状态。
      过去这时起草台报「后端归档未通过」，写作台接着写的第一句 409，提示「在别处被修改过」（复核四 W1-R4A-4 · W1-R4B-5）。
-     这一次也读不到服务端（一次断网连着把回包和这次读取都吞了）：结果不明——记下它（adoptionUnsure，token.unknown = true），
+     这一次也读不到服务端（一次断网连着把回包和这次读取都吞了）：结果不明——记下它（adoptionsUnsure，token.unknown = true），
      返回 null；之后这一页按采纳之前的修订号撞上的 409 先核对是不是它（startOwnCheck），是就照采纳成了收尾，不说「在别处被
      修改」；起草台照实说没能确认（复核五 W1-R5B-4）。上一次结果不明、这一次采纳（同一稿）被按修订号拒绝：多半就是上一次落了地，
      同样读一次认它。 */
@@ -2317,15 +2395,18 @@ const WrDocs = {
     if (!token || !token.m) return null;
     const m = token.m;
     const normalized = sanitizeManuscriptHTML(html || "");
-    const retried = !!(error && error.code === "AUTHOR_DRAFT_CONFLICT" && m.adoptionUnsure
-      && sameManuscriptText(m.adoptionUnsure.html, normalized));
+    const earlier = error && error.code === "AUTHOR_DRAFT_CONFLICT"
+      ? m.adoptionsUnsure.find((item) => sameManuscriptText(item.html, normalized)) || null
+      : null;
+    const retried = !!earlier;
     if (!mayHaveLanded(error) && !retried) return null;
-    const base = retried ? Math.min(token.base, m.adoptionUnsure.base) : token.base;
+    const base = retried ? Math.min(token.base, earlier.base) : token.base;
     let data = null;
     try {
       data = await requestDraft(m, ensureSeq + 1);
     } catch (e) {
-      m.adoptionUnsure = { html: normalized, base };
+      rememberAdoptionUnsure(m, normalized, base);
+      rememberAdopting(m, normalized);
       token.unknown = true;
       return null;
     }

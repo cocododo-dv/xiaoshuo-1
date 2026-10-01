@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  WR_LEGACY_PLACEHOLDER, wrBlockSlice, wrCountText, wrPrepareLoadedHTML, wrRangeForOffsets, wrRangeForText, wrSerializeManuscript,
+  WR_LEGACY_PLACEHOLDER, wrBlockSlice, wrCountText, wrPositionAt, wrPrepareLoadedHTML, wrRangeForOffsets, wrRangeForText,
+  wrSelectionSegments, wrSerializeManuscript,
 } from "./ws-writer-manuscript.js";
 
 function editor(html) {
@@ -106,5 +107,101 @@ describe("写作台辅助", () => {
     inside.setStart(first.firstChild, 1);
     inside.setEnd(first.firstChild, 3);
     expect(wrBlockSlice(first, inside)).toEqual({ start: 1, end: 3, text: "停了" });
+  });
+});
+
+/* 选区按段切（重评 R12 / #20b）：送去改写的是选中的那几段、一段一行，替换时按段换回 */
+function rangeIn(root, [startBlock, startOffset], [endBlock, endOffset]) {
+  const blocks = root.children;
+  const range = document.createRange();
+  const at = (block, offset) => {
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let seen = 0;
+    let node;
+    while ((node = walker.nextNode())) {
+      if (offset <= seen + node.nodeValue.length) return [node, offset - seen];
+      seen += node.nodeValue.length;
+    }
+    return [block, block.childNodes.length];
+  };
+  range.setStart(...at(blocks[startBlock], startOffset));
+  range.setEnd(...at(blocks[endBlock], endOffset));
+  return range;
+}
+
+describe("选区按段切（wrSelectionSegments）", () => {
+  it("一段之内：一段，偏移按段内拼接文字算；head / tail 指着选区两头", () => {
+    const root = editor("<p>雨城入夜。林昭读信。</p><p>窗外有人。</p>");
+    const seg = wrSelectionSegments(root, rangeIn(root, [0, 5], [0, 10]));
+    expect(seg.paragraphs).toEqual(["林昭读信。"]);
+    expect(seg.text).toBe("林昭读信。");
+    expect(seg.blocks).toEqual([root.children[0]]);
+    expect(seg.head).toEqual({ block: root.children[0], offset: 5 });
+    expect(seg.tail).toEqual({ block: root.children[0], offset: 10 });
+    expect(seg.segments[0]).toMatchObject({ index: 0, start: 5, end: 10, text: "林昭读信。" });
+  });
+
+  it("跨三段：中间整段选中的空段在 blocks 里（一起换掉），不在送去改写的段落里；段号是诊断的段号", () => {
+    const root = editor("<p>第一段开头。第一段后半。</p><p><br></p><p>第三段前半。第三段结尾。</p>");
+    const seg = wrSelectionSegments(root, rangeIn(root, [0, 6], [2, 6]));
+    expect(seg.blocks).toHaveLength(3);
+    expect(seg.paragraphs).toEqual(["第一段后半。", "第三段前半。"]);
+    expect(seg.text).toBe("第一段后半。\n第三段前半。");
+    expect(seg.segments.map((item) => item.index)).toEqual([0, 1, 2]);
+    expect(seg.tail).toEqual({ block: root.children[2], offset: 6 });
+  });
+
+  it("选区停在下一段的开头 / 从上一段的末尾起：那一段不算", () => {
+    const root = editor("<p>第一段。</p><p>第二段。</p><p>第三段。</p>");
+    const range = document.createRange();
+    range.setStart(root.children[0].firstChild, 4);       // 第一段的末尾
+    range.setEnd(root.children[2].firstChild, 0);         // 第三段的开头
+    const seg = wrSelectionSegments(root, range);
+    expect(seg.blocks).toEqual([root.children[1]]);
+    expect(seg.paragraphs).toEqual(["第二段。"]);
+  });
+
+  it("碰到不在段落里的散字、或套着列表的结构：unsupported（没法按段换回）；选区不在编辑器里 / 没选中字：null", () => {
+    const loose = editor("<p>第一段。</p>散在根上的字<p>第三段。</p>");
+    expect(wrSelectionSegments(loose, rangeIn(loose, [0, 1], [1, 2]))).toEqual({ unsupported: true });
+    const list = editor("<p>第一段。</p><ul><li>一条</li></ul>");
+    const range = document.createRange();
+    range.setStart(list.children[0].firstChild, 1);
+    range.setEnd(list.querySelector("li").firstChild, 1);
+    expect(wrSelectionSegments(list, range)).toEqual({ unsupported: true });
+    // 中间没有字的顶层元素（零散的 <br>）一起换掉，不算「切不开」
+    const stray = editor("<p>第一段。</p><br><p>第三段。</p>");
+    const range2 = document.createRange();
+    range2.setStart(stray.children[0].firstChild, 1);
+    range2.setEnd(stray.children[2].firstChild, 2);
+    expect(wrSelectionSegments(stray, range2)).toMatchObject({ paragraphs: ["一段。", "第三"] });
+    expect(wrSelectionSegments(stray, range2).blocks).toHaveLength(3);
+    const other = editor("<p>别处。</p>");
+    expect(wrSelectionSegments(loose, rangeIn(other, [0, 0], [0, 2]))).toBeNull();
+    const collapsed = document.createRange();
+    collapsed.setStart(loose.children[0].firstChild, 1);
+    expect(wrSelectionSegments(loose, collapsed)).toBeNull();
+  });
+
+  it("段里的软换行（<br>）是一行的结束：送去改写的是两行、两段（与服务端按换行数的段数一样），不粘成一行（复核 Q3b-R3）", () => {
+    const root = editor("<p>雨城入夜，<br>林昭读完旧信。</p><p>窗外有人。</p>");
+    const seg = wrSelectionSegments(root, rangeIn(root, [0, 0], [0, 12]));
+    expect(seg.blocks).toEqual([root.children[0]]);
+    expect(seg.paragraphs).toEqual(["雨城入夜，", "林昭读完旧信。"]);
+    expect(seg.text).toBe("雨城入夜，\n林昭读完旧信。");
+    expect(seg.segments[0]).toMatchObject({ start: 0, end: 12, text: "雨城入夜，林昭读完旧信。", lines: ["雨城入夜，", "林昭读完旧信。"] });
+    // 段尾的 <br> 不多出空行；套在格式标签里的 <br> 照样断行
+    const nested = editor("<p>雨城入夜。<br></p><p>林昭<strong>读<br></strong>信。</p>");
+    expect(wrSelectionSegments(nested, rangeIn(nested, [0, 0], [1, 5])).paragraphs).toEqual(["雨城入夜。", "林昭读", "信。"]);
+  });
+
+  it("wrPositionAt：落在两个文本节点之间时，preferNext 取后一个的开头，否则取前一个的末尾；空段落在段落本身", () => {
+    const p = editor('<p>雨城<span class="wr-entity">林昭</span>读信。</p>').firstChild;
+    const [rain, nameText] = [p.firstChild, p.querySelector("span").firstChild];
+    expect(wrPositionAt(p, 2, false)).toEqual({ node: rain, offset: 2 });
+    expect(wrPositionAt(p, 2, true)).toEqual({ node: nameText, offset: 0 });
+    expect(wrPositionAt(p, 99, false)).toBeNull();
+    const empty = editor("<p><br></p>").firstChild;
+    expect(wrPositionAt(empty, 0, false)).toEqual({ node: empty, offset: 0 });
   });
 });

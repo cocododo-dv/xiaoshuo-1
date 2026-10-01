@@ -216,6 +216,15 @@ describe("场景设计卡（写作台与 AI 起草台共用的同一张）", () 
     expect(full.querySelectorAll(".sdc-beat").length).toBeGreaterThan(0);
   });
 
+  it("事实行只读这一场自己的视角 / 时间 / 地点：章上的旧字段不拿来补空（重评 R10）", async () => {
+    const { sceneDesignModel } = await import("./ws-scene-design.jsx");
+    const chapter = { n: "1", title: "雨夜来信", pov: "沈越", time: "第一夜", place: "雨城", scenes: [] };
+    const model = sceneDesignModel({ chapter, index: 0, scene: { sid: "ch01s1", kind: "主动", design: {} } });
+    expect(model.facts).toEqual([
+      { k: "视角", v: "" }, { k: "时间", v: "" }, { k: "地点", v: "" }, { k: "出场", v: "" },
+    ]);
+  });
+
   it("这张卡落后于已确认的构思：给一条提示和「同步这一场」", async () => {
     const { WsCatalog } = await loadCatalog();
     const { SceneDesignCard, sceneDesignModel } = await import("./ws-scene-design.jsx");

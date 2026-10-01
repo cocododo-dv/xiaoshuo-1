@@ -124,7 +124,7 @@ describe("AI 起草台 · 慢到的取回不盖掉更新的运行记录（F03-13
     await act(async () => { releaseSlow(workbench); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
     expect(cached().authorNote).toBe("只改对白");
-  }, 15000);
+  });
 });
 
 describe("AI 起草台 · 运行队列移出", () => {

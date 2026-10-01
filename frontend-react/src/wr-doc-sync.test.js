@@ -3767,3 +3767,89 @@ describe("复核七 · 提升与作者自己在起草台的采纳赛跑（W1-R7B
     expect(promoted).toBe("AUTHOR_DRAFT_ADOPTED");
   });
 });
+
+/* ==========================================================
+   复核 I3-4：「在别处被修改过」只说给真的别处——三种其实是作者自己的情形（lens A 的三条重放：model s54 r26、
+   life s15 r20、life lock s17 r50 / s21 r19），改成断言照实结果的永久用例。服务端同复核二起（routeServer）。
+   ========================================================== */
+describe("复核 I3-4 · 采纳结果不明记几次、刷新那一刻落了地的采纳、另一页已经存上的版本：都不说「在别处被修改过」", () => {
+  const LOCAL = "<p>起点正文，写作台接着写的一句</p>";
+  const A1 = "<p>雨城的夜里，第一次采纳的稿。</p>";
+  const A2 = "<p>雨城的夜里，第二次采纳的稿。</p>";
+
+  it("两次采纳的结果都不明，落了地的是前一次：之后保存撞上 409，认出是那一次采纳——照采纳成了收尾，本机的字在同步与恢复", async () => {
+    const shared = sharedServer("<p>起点正文</p>");
+    const { mod, client, events } = await openTab(shared);
+    mod.WrDocs.load("ch01s1");
+    await mod.WrDocs.hydrate("ch01s1");
+    const seen = events.length;
+    shared.hooks.ensure = () => Promise.reject(offlineError());              // 断网：采纳的回包和之后那一次读取都丢了
+    const first = mod.WrDocs.beginAdoption("ch01s1", { html: A1 });
+    shared.revision = 2;                                                    // 第一次采纳其实到了：服务端存下并提升了它
+    shared.content = A1;
+    expect(await mod.WrDocs.adoptionLanded("ch01s1", first, A1, offlineError())).toBeNull();
+    mod.WrDocs.endAdoption("ch01s1", first);
+    const second = mod.WrDocs.beginAdoption("ch01s1", { html: A2 });        // 第二次没到服务端
+    expect(await mod.WrDocs.adoptionLanded("ch01s1", second, A2, offlineError())).toBeNull();
+    mod.WrDocs.endAdoption("ch01s1", second);
+    shared.hooks.ensure = null;                                             // 连上了
+
+    await expect(mod.WrDocs.save("ch01s1", LOCAL)).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe(A1), T);
+    expect(events.slice(seen).filter((event) => event.kind === "loaded").map((event) => [event.reason, event.html])).toEqual([["adopt", A1]]);
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+    expect(elsewhereAlerts()).toEqual([]);
+    expect(recoveryHtml(mod)).toContain(LOCAL);
+    expect(shared).toMatchObject({ revision: 2, content: A1 });
+    expect(draftPatches(client).filter((body) => body.content === LOCAL)).toHaveLength(1);   // 没有带着新修订号再发、盖掉采纳
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, conflictPending: false, revision: 2 });
+  });
+
+  it("采纳在路上时页面刷新、采纳正好落了地：新的一页先写了一句、水合读到它——照采纳成了收尾，写的那一句在同步与恢复", async () => {
+    const shared = sharedServer("<p>起点正文</p>");
+    const page = await openTab(shared);
+    page.mod.WrDocs.load("ch01s1");
+    await page.mod.WrDocs.hydrate("ch01s1");
+    page.mod.WrDocs.beginAdoption("ch01s1", { html: A1 });                  // 采纳请求发出去了，页面随即刷新（这一页从此不再动作）
+    shared.revision = 2;                                                    // 服务端存下并提升了采纳的那一稿
+    shared.content = A1;
+    vi.resetModules();
+    const { mod, events } = await openTab(shared);
+    const hold = deferred();
+    shared.hooks.ensure = (current) => hold.promise.then(current);
+    mod.WrDocs.load("ch01s1");
+    const typed = mod.WrDocs.save("ch01s1", LOCAL).then(() => "saved", (e) => e && e.code);   // 水合回来之前写了一句
+    hold.resolve();
+    await vi.waitFor(() => expect(mod.WrDocs.cachedHTML("ch01s1")).toBe(A1), T);
+    expect(await typed).not.toBe("saved");
+    expect(events.filter((event) => event.kind === "loaded").map((event) => event.reason)).toContain("adopt");
+    expect(events.some((event) => event.kind === "conflict-resolved")).toBe(false);
+    expect(elsewhereAlerts()).toEqual([]);
+    expect(recoveryHtml(mod)).toContain(LOCAL);
+    expect(shared).toMatchObject({ revision: 2, content: A1 });
+  });
+
+  it("这台电脑上的另一页（刷新之后的这一页）已经存上了更新的版本，前一页迟到的水合读到它：照实说是另一页，不说「在别处被修改过」", async () => {
+    const shared = sharedServer("", 1);
+    let held = null;
+    shared.hooks.ensure = (current) => {
+      if (held) return current();
+      held = deferred();
+      return held.promise.then(current);                                   // 前一页那一次水合迟迟没回来
+    };
+    const before = await openTab(shared);
+    before.mod.WrDocs.load("ch01s1");
+    void before.mod.WrDocs.save("ch01s1", "<p>前一页交出的一句</p>").catch(() => {});
+    await tick(50);
+    vi.resetModules();                                                     // 刷新：新的一页接手
+    const after = await openTab(shared);
+    after.mod.WrDocs.load("ch01s1");
+    await after.mod.WrDocs.hydrate("ch01s1");
+    await after.mod.WrDocs.save("ch01s1", "<p>前一页交出的一句，新的一页接着写</p>");
+    expect(shared).toMatchObject({ revision: 2, content: "<p>前一页交出的一句，新的一页接着写</p>" });
+    held.resolve();                                                         // 前一页那一次水合这才回来，读到的是新的一页存上的一版
+    await vi.waitFor(() => expect(alertTexts().some((message) => message.includes("刷新之后的这一页"))).toBe(true), T);
+    expect(elsewhereAlerts()).toEqual([]);
+    expect(shared).toMatchObject({ revision: 2, content: "<p>前一页交出的一句，新的一页接着写</p>" });
+  });
+});

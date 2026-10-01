@@ -1,6 +1,6 @@
 import { chapterLabelById, sceneLabelById } from "./labels/catalog.js";
 import {
-  FINDING_SEVERITY_ORDER, RULE_DIMENSION_LABELS, findingSeverityLabel, findingSeverityTone, ruleDimensionLabel,
+  FINDING_SEVERITY_ORDER, RULE_DIMENSION_LABELS, ruleDimensionLabel,
 } from "./labels/finding.js";
 
 /* ==========================================================
@@ -23,10 +23,6 @@ export function qDimensionOptions(serverDimensions) {
   if (list.length) return list.map((d) => ({ key: d.dimension, label: d.label || ruleDimensionLabel(d.dimension) }));
   return QUALITY_DIM_KEYS.map((key) => ({ key, label: ruleDimensionLabel(key) }));
 }
-
-/* 严重程度的中文名与 ws-ui 语气（labels/finding.js）；写作台深改抽屉还从这里拿这两个名字 */
-export const qSevLabel = findingSeverityLabel;
-export const qSevTone = findingSeverityTone;
 
 /* text_layer 下拉（后端另支持 runtime） */
 export const QUALITY_TEXT_LAYERS = [

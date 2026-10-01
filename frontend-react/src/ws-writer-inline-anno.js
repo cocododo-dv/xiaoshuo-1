@@ -4,7 +4,7 @@ import {
   WR_ANNO_MAX_ITEMS, WR_ANNO_MAX_QUOTE,
   wrAnnoAnchor, wrAnnoId, wrAnnoLoad, wrAnnoMark, wrAnnoRetitle, wrAnnoSave, wrAnnoUnmark,
 } from "./ws-writer-annotations.js";
-import { wrCaretAfter } from "./ws-writer-inline-parts.jsx";
+import { wrCaretAfter } from "./ws-writer-rev.js";
 
 /* ==========================================================
    选区工具条 · 批注（2026-09-30 从 ws-writer-inline.jsx 拆出，审计 F03-18）

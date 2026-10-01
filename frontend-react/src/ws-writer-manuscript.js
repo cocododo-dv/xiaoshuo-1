@@ -1,4 +1,6 @@
-import { LEGACY_DRAFT_PLACEHOLDER, sanitizeManuscriptHTML, stripLeadingPlaceholder, unwrapInline } from "./manuscript-html.js";
+import {
+  LEGACY_DRAFT_PLACEHOLDER, MANUSCRIPT_BLOCK_SELECTOR, sanitizeManuscriptHTML, stripLeadingPlaceholder, unwrapInline,
+} from "./manuscript-html.js";
 import { countChars } from "./lib/text.js";
 
 /* ==========================================================
@@ -94,6 +96,27 @@ export function wrRangeForText(block, text) {
   return wrRangeForOffsets(block, at, at + text.length);
 }
 
+function locateIn(nodes, offset, preferNext) {
+  for (let i = 0; i < nodes.length; i += 1) {
+    const { node: current, start: from } = nodes[i];
+    const stop = from + current.nodeValue.length;
+    if (offset < stop || (offset === stop && !preferNext) || i === nodes.length - 1) {
+      return { node: current, offset: Math.min(offset - from, current.nodeValue.length) };
+    }
+  }
+  return null;
+}
+
+/* 一段里按拼接文字的偏移找 DOM 位置 { node, offset }：preferNext 为真时，正好落在两个文本节点之间的偏移取后一个的开头
+   （否则取前一个的末尾）。这一段一个字都没有时落在段落本身的开头；越界返回 null。 */
+export function wrPositionAt(block, offset, preferNext = false) {
+  if (!block || !block.ownerDocument || offset < 0) return null;
+  const { nodes, joined } = blockText(block);
+  if (offset > joined.length) return null;
+  if (!nodes.length) return { node: block, offset: 0 };
+  return locateIn(nodes, offset, preferNext);
+}
+
 /* 一段里按拼接文字的偏移 [start, end) 取 Range；越界返回 null。
    偏移与标记怎么包无关（深改高亮、实体高亮拆开的文本节点拼回去是同一串字）。 */
 export function wrRangeForOffsets(block, start, end) {
@@ -101,18 +124,8 @@ export function wrRangeForOffsets(block, start, end) {
   const { nodes, joined } = blockText(block);
   if (!nodes.length || end > joined.length) return null;
   const range = block.ownerDocument.createRange();
-  const locate = (offset, preferNext) => {
-    for (let i = 0; i < nodes.length; i += 1) {
-      const { node: current, start: from } = nodes[i];
-      const stop = from + current.nodeValue.length;
-      if (offset < stop || (offset === stop && !preferNext) || i === nodes.length - 1) {
-        return { node: current, offset: Math.min(offset - from, current.nodeValue.length) };
-      }
-    }
-    return null;
-  };
-  const from = locate(start, true);
-  const to = locate(end, false);
+  const from = locateIn(nodes, start, true);
+  const to = locateIn(nodes, end, false);
   if (!from || !to) return null;
   range.setStart(from.node, from.offset);
   range.setEnd(to.node, to.offset);
@@ -137,10 +150,88 @@ export function wrBlockSlice(block, range) {
   return { start, end: start + text.length, text };
 }
 
-/* 本场字数：去掉空白后的字符数，按码点计（与服务端 count_words 同口径：一个生僻字 / 表情算一个）。
+/* ---- 选区按段切（重评 R12 / 批准 #20b：跨段的选区按段改写、按段换回） ----
+   编辑器里的「一段」是顶层的 p / blockquote / div（里面不再套段落）；诊断的段号仍按 MANUSCRIPT_BLOCK_SELECTOR 数。 */
+const LEAF_BLOCK_TAGS = new Set(["P", "BLOCKQUOTE", "DIV"]);
+const NESTED_BLOCK_SELECTOR = "p, div, blockquote, ul, ol, li, pre, h1, h2, h3, h4, h5, h6, table";
+
+function isLeafBlock(node) {
+  return !!node && node.nodeType === 1 && LEAF_BLOCK_TAGS.has(node.tagName) && !node.querySelector(NESTED_BLOCK_SELECTOR);
+}
+
+/* 与服务端 str.splitlines 同一套行结束符：送去的段数和服务端数出来的对得上 */
+const LINE_BREAK_RE = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/;
+
+/* 一段里被选中的那一截按行切（空白行不算）：软换行（Shift+Enter 的 <br>）也是一行的结束。
+   Range.toString() 不认 <br>，按它送去的两行字会粘成一行（复核 Q3b-R3）。 */
+function sliceLines(block, range) {
+  const doc = block.ownerDocument;
+  const inside = doc.createRange();
+  inside.selectNodeContents(block);
+  if (block.contains(range.startContainer)) inside.setStart(range.startContainer, range.startOffset);
+  if (block.contains(range.endContainer)) inside.setEnd(range.endContainer, range.endOffset);
+  const walker = doc.createTreeWalker(inside.cloneContents(), 1 /* SHOW_ELEMENT */ | 4 /* SHOW_TEXT */);
+  let text = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === 3) text += node.nodeValue;
+    else if (node.tagName === "BR") text += "\n";
+  }
+  return text.split(LINE_BREAK_RE).filter((line) => line.trim());
+}
+
+/* 选区落在编辑器的哪几段：
+   { blocks, segments: [{ block, index, start, end, text, lines }], paragraphs, text, head, tail }
+   · blocks：从选区起始段到结束段（含中间整段选中的空段），替换时这几段整体换掉；
+   · segments：每段里被选中的那一截（偏移按这一段的拼接文字算，text 是那一截的字、不含换行；index 是诊断的段号，
+     不是段落元素时为 -1；lines 是那一截按行切开的样子——段里的软换行 <br> 也断行，空白行不算）；
+   · paragraphs：选中的字按行分开（各段的 lines 连起来）——送去改写的就是它们，一行一段（text = paragraphs.join("\n")），
+     段数与服务端按换行数出来的一样；换回来时每一行各成一段；
+   · head / tail：起始段里选区之前、结束段里选区之后留着不动的那两截的位置（{ block, offset }）。
+   开头 / 结尾那一段里只选中了空白（选区停在下一段的开头、或从上一段的末尾起）不算那一段；中间没有字的顶层元素（空段、
+   零散的 <br>）一起换掉。
+   选区碰到了不在任何段落里的散字、或套着段落 / 列表、里面有字的结构：返回 { unsupported: true }——没法按段换回。
+   选区不在编辑器里、或一个字都没选中：返回 null。 */
+export function wrSelectionSegments(editor, range) {
+  if (!editor || !range || range.collapsed || !editor.contains(range.commonAncestorContainer)) return null;
+  const doc = editor.ownerDocument;
+  const touched = [];
+  for (const node of Array.from(editor.childNodes)) {
+    if (!range.intersectsNode(node)) continue;
+    if (node.nodeType === 3) {
+      const part = doc.createRange();
+      part.selectNodeContents(node);
+      if (node === range.startContainer) part.setStart(node, range.startOffset);
+      if (node === range.endContainer) part.setEnd(node, range.endOffset);
+      if (part.toString().trim()) return { unsupported: true };
+      continue;
+    }
+    if (node.nodeType !== 1) continue;
+    touched.push({ block: node, ...wrBlockSlice(node, range) });
+  }
+  while (touched.length && !touched[0].text.trim()) touched.shift();
+  while (touched.length && !touched[touched.length - 1].text.trim()) touched.pop();
+  if (!touched.length) return null;
+  if (touched.some((item) => !isLeafBlock(item.block) && item.block.textContent.trim())) return { unsupported: true };
+  const indexed = Array.from(editor.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR));
+  const segments = touched.map((item) => ({ ...item, index: indexed.indexOf(item.block), lines: sliceLines(item.block, range) }));
+  const paragraphs = segments.flatMap((item) => item.lines);
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  return {
+    blocks: segments.map((item) => item.block),
+    segments,
+    paragraphs,
+    text: paragraphs.join("\n"),
+    head: { block: first.block, offset: first.start },
+    tail: { block: last.block, offset: last.end },
+  };
+}
+
+/* 本场字数：lib/text 的 countChars（去掉空白、按码点计，与服务端 count_words 同口径：一个生僻字 / 表情算一个；
+   AI 起草台采纳时记的字数也是它，两边对得上）。
    读 textContent 而不是 innerText：innerText 每敲一个字都要对整篇稿子做一次样式和布局计算，
    空白反正要去掉，编辑器里也没有隐藏的子节点。占位不在 DOM 里了，不必再特判。 */
 export function wrCountText(el) {
   if (!el) return 0;
-  return Array.from(String(el.textContent || "").replace(/\s/g, "")).length;
+  return countChars(el.textContent);
 }

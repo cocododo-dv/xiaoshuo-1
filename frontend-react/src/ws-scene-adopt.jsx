@@ -5,7 +5,9 @@ import { WsDialog } from "./ws-dialog.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { CloseButton, IconButton, Notice, Tag } from "./ws-ui.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError, exactCodesMatch } from "./wr-content-safety-review.jsx";
-import { scnAdoptToDoc, scnPrepareAdoption } from "./ws-scene-api.js";
+import { WrDocs } from "./wr-doc-store.jsx";
+import { sameManuscriptText } from "./wr-doc-cache.js";
+import { scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption } from "./ws-scene-api.js";
 import { scnRunSave } from "./ws-scene-store.js";
 
 const { useEffect, useRef, useState } = React;
@@ -14,9 +16,15 @@ const { useEffect, useRef, useState } = React;
    AI 起草台 — 采用（归档或存为候选）
    · useSceneAdoption：「采纳并归档」先核对服务器上的作者稿：写作器里已有作者正文就先看差异（默认存为候选），
      没有就直接归档；内容安全复核、防双击锁、切场后不弹旧场的决策都在这里
+     「确认覆盖并归档」只覆盖作者看过差异的那一稿（expectedExisting = 对话框里的作者稿，W1-R5A-1 的界面一半）：对话框开着时
+     作者稿换了一版（WrDocs 读到别处存下的新版本，或确认时预检才读到），差异按最新的一版重算、确认框复位、照实说一句——
+     不再让作者关掉重开；没能确认采纳有没有归档（unknown）用提醒的口气说，不说「采用未完成」
    · AdoptionProtectDialog：作者稿保护对话框（差异 + 存为候选 / 替换并归档）
    · SceneAdoptionNote：采用结果的一句话（可打开「同步与恢复」）
    ========================================================== */
+
+/* 对话框开着时作者稿换了一版：差异已按最新的一版重算（W1-R5A-1 的界面一半） */
+const DRAFT_MOVED_NOTICE = "服务器上的作者稿在你看差异之后又更新了一版：这次没有覆盖、也没有归档。下面的差异已按最新的一版重算，看过之后再决定。";
 
 /* 「同步与恢复」在侧栏底部；外壳听这个事件打开它（detail {id} 定位到一份候选，{sid} 定位到这一场）。 */
 function openRecoveryCenter(detail) {
@@ -37,6 +45,19 @@ function useSceneAdoption({ items, runs, setRuns, pickedId, pickedIdRef, mounted
   const sceneOf = (id) => items.find(x => x.id === id) || null;
 
   useEffect(() => () => { epochRef.current += 1; }, []);
+  /* 对话框开着：作者稿换了一版（后台读到别处存下的新版本、冲突换稿……）就按最新的一版重算差异，确认框随之复位 */
+  const decisionSceneId = decision ? decision.sc.id : null;
+  useEffect(() => {
+    if (!decision) return undefined;
+    const { sc, r } = decision;
+    return WrDocs.subscribe((kind, detail) => {
+      if ((kind !== "loaded" && kind !== "conflict-resolved") || !detail || detail.sid !== sc.sid) return;
+      const next = scnAdoptionPreview(sc.sid, r.draft);
+      setDecision((cur) => (cur && cur.sc.id === sc.id && !sameManuscriptText(cur.preview.existing, next.existing)
+        ? { ...cur, preview: next, notice: DRAFT_MOVED_NOTICE }
+        : cur));
+    });
+  }, [decisionSceneId]); // eslint-disable-line react-hooks/exhaustive-deps
   /* 换场：旧场的对话框、提示和忙碌态一概不带过来；还在进行的采用由锁挡住重复点击 */
   useEffect(() => {
     epochRef.current += 1;
@@ -77,7 +98,23 @@ function useSceneAdoption({ items, runs, setRuns, pickedId, pickedIdRef, mounted
           });
           return null;
         }
-        if (isCurrentTarget()) setNote({ tone: "danger", text: `采用未完成：${res.reason || "请稍后重试"}` });
+        // 作者看过差异的那一稿已经不是服务器上的了：没覆盖、没归档——对话框按最新的一版重算差异、确认框复位（内容风险复核那一轮
+        // 遇到这种情况时回到保护对话框），不再让作者关掉重开
+        if (res.confirmationRequired && res.moved && res.preview) {
+          if (isCurrentTarget()) {
+            setSafetyReview(null);
+            setSafetyError("");
+            setNote(null);
+            setDecision({ sc, r, preview: res.preview, notice: DRAFT_MOVED_NOTICE });
+          }
+          return null;
+        }
+        if (isCurrentTarget()) {
+          // 回包丢了、也没读到服务端：没能确认采纳有没有归档——照实说，不说「采用未完成」
+          setNote(res.unknown
+            ? { tone: "warn", recovery: !!res.authorBackup, text: res.reason }
+            : { tone: "danger", text: `采用未完成：${res.reason || "请稍后重试"}` });
+        }
         return null;
       }
       if (res.archived === false) {
@@ -212,7 +249,8 @@ function SceneAdoptionNote({ note, sid, onClose }) {
   );
 }
 
-/* 作者稿保护：写作器里已有作者正文时，AI 稿不直接覆盖——先看差异，默认存为候选。 */
+/* 作者稿保护：写作器里已有作者正文时，AI 稿不直接覆盖——先看差异，默认存为候选。
+   差异换了一版（作者稿在对话框开着时又更新了）：确认框复位，作者得对着新的差异重新确认。 */
 function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, onOverwrite }) {
   const [confirmed, setConfirmed] = useState(false);
   const safeRef = useRef(null);
@@ -221,6 +259,7 @@ function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, 
   const preview = decision.preview || {};
   const diff = preview.diff || { paras: [], adds: 0, dels: 0 };
   const sc = decision.sc || {};
+  useEffect(() => { setConfirmed(false); }, [preview.existing]);
 
   return (
     <WsDialog
@@ -273,7 +312,7 @@ function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, 
             </button>
           </section>
         </div>
-        <div className="scn2-adopt-live" role="status" aria-live="polite">{message || "默认的安全选项是存为候选。"}</div>
+        <div className="scn2-adopt-live" role="status" aria-live="polite">{message || decision.notice || "默认的安全选项是存为候选。"}</div>
       </div>
     </WsDialog>
   );
@@ -291,7 +330,7 @@ function SceneAdoptionDialogs({ adoption }) {
           message={adoption.note && adoption.note.text}
           onClose={adoption.closeDecision}
           onCandidate={() => adoption.commit(decision.sc, decision.r, "candidate")}
-          onOverwrite={() => adoption.commit(decision.sc, decision.r, "overwrite", { confirmed: true })}
+          onOverwrite={() => adoption.commit(decision.sc, decision.r, "overwrite", { confirmed: true, expectedExisting: decision.preview.existing })}
         />
       )}
       {safetyReview && (

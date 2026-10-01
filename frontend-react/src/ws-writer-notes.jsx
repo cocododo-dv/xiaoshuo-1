@@ -1,6 +1,7 @@
 import React from "react";
 import { apiGet, apiPatch } from "./lib/client.js";
 import { createRevisionedDocs, useRevisionedDoc } from "./lib/revisioned-doc.js";
+import { WsCatalog } from "./ws-catalog.jsx";
 import { sceneApiId } from "./ws-scene-id.js";
 import { wsKey } from "./ws-works.jsx";
 
@@ -10,8 +11,23 @@ import { wsKey } from "./ws-works.jsx";
    带修订号；冲突时停下来让作者决定），本机留一份缓存（wr-notes:*）和「还没同步」的标记
    （wr-notes-pending:*）。写穿、串行保存、离场冲刷、回来先等离场那条链落地，都在
    lib/revisioned-doc.js：换场时旧场景排队中的保存照旧存回旧场景（带旧场景自己的修订号），
-   不会落到新场景上；防抖还没到点的改动在离开时立刻存。ESM 模块，不写 window。
+   不会落到新场景上；防抖还没到点的改动在离开时立刻存。
+   乐观新建的场换了名字（临时 sid → 稳定的 scene_id）：本机缓存与未同步标记跟到新名字下——开着的这一份换名时由
+   useRevisionedDoc 的 renamedFrom 搬（先等旧名字那一份没存完的保存落地），没开着的由目录重读时
+   ws-writer-scene-keys.js 调 wrNotesFollowRename 搬。过去它们留在临时 sid 的键下，新建那几秒写的笔记从此没人读。
+   ESM 模块，不写 window。
    ========================================================== */
+
+/* 目录给这一场换了名字吗（prev 经目录的别名解析到的就是 scene） */
+function renamedTo(prev, scene) {
+  if (!prev || !scene || prev === scene) return false;
+  try {
+    const hit = WsCatalog.sceneById(prev);
+    return !!(hit && hit.scene && hit.scene.sid === scene);
+  } catch (e) {
+    return false;
+  }
+}
 
 /* 目录 sid → 后端 scene id。解析到了就记住（同一场连着存几次，不必每次再等目录），解析不到不记。 */
 const backendIds = new Map();
@@ -55,8 +71,16 @@ const STATUS_TEXT = {
   error: "保存失败，请复制留底",
 };
 
+/* 没开着的那一份换了名字：本机这一层搬到新名字下（开着的返回 false，由它自己换名时搬） */
+export function wrNotesFollowRename(from, to) {
+  return sceneNotes.rename(from, to);
+}
+
 export function WrCtxNotes({ scene }) {
-  const notes = useRevisionedDoc(sceneNotes, scene);
+  const prevRef = React.useRef(scene);
+  const renamedFrom = renamedTo(prevRef.current, scene) ? prevRef.current : null;
+  React.useEffect(() => { prevRef.current = scene; }, [scene]);
+  const notes = useRevisionedDoc(sceneNotes, scene, { renamedFrom });
   const { status } = notes;
   const statusText = STATUS_TEXT[status] || "保存状态未知";
   const healthy = status === "saved";

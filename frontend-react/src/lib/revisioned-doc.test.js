@@ -142,3 +142,78 @@ describe("createRevisionedDocs", () => {
     expect(doc.status()).toBe("loading");
   });
 });
+
+/* 换了名字（乐观新建的场：临时 sid → 稳定的 scene_id）：本机这一层跟到新名字下，不丢没同步上的字，也不盖新名字下自己的那一份 */
+describe("createRevisionedDocs · 换了名字", () => {
+  it("open(新名字, { renamedFrom })：先给旧名字那一份；旧那一份离开时的保存没成（还是未同步）就搬过去，显示它、状态是未同步", async () => {
+    const saving = deferred();
+    const server = { value: "", revision: 1, save: vi.fn(() => saving.promise) };
+    const { docs, calls } = makeDocs(server);
+    const old = docs.open("tmp_1");
+    await settle();
+    old.edit("新建时写的笔记");
+    old.close();                                   // 换名：没到点的那一稿立刻存（在路上）
+    const renamed = docs.open("s9", null, { renamedFrom: "tmp_1" });
+    expect(renamed.value()).toBe("新建时写的笔记");
+    expect(renamed.status()).toBe("local");
+    await settle();
+    expect(calls.load).toBe(1);                    // 旧名字那一次保存没回来：新名字先不读服务器
+    saving.reject(Object.assign(new Error("offline"), { code: "NETWORK_ERROR" }));
+    await settle();
+    await settle();
+    expect(window.localStorage.getItem("note:s9")).toBe("新建时写的笔记");
+    expect(window.localStorage.getItem("note-pending:s9")).not.toBeNull();
+    expect(window.localStorage.getItem("note:tmp_1")).toBeNull();
+    expect(window.localStorage.getItem("note-pending:tmp_1")).toBeNull();
+    expect(renamed.value()).toBe("新建时写的笔记");
+    expect(renamed.status()).toBe("local");
+  });
+
+  it("旧那一份离开时的保存成了：只搬读缓存，新名字读到服务器的、状态是已存", async () => {
+    const saving = deferred();
+    const server = { value: "", revision: 1, save: vi.fn(() => saving.promise) };
+    const { docs } = makeDocs(server);
+    const old = docs.open("tmp_1");
+    await settle();
+    old.edit("新建时写的笔记");
+    old.close();
+    const renamed = docs.open("s9", null, { renamedFrom: "tmp_1" });
+    server.value = "新建时写的笔记";
+    server.revision = 2;
+    saving.resolve({ revision: 2 });
+    await settle();
+    await settle();
+    expect(renamed.status()).toBe("saved");
+    expect(renamed.value()).toBe("新建时写的笔记");
+    expect(window.localStorage.getItem("note-pending:s9")).toBeNull();
+    expect(window.localStorage.getItem("note:tmp_1")).toBeNull();
+  });
+
+  it("rename：旧名字那一份正开着时不动（它换名时自己搬）；没开着就搬；新名字下已有自己的一份时不盖它", async () => {
+    const server = { value: "", revision: 1, save: async () => ({ revision: 2 }) };
+    const { docs } = makeDocs(server);
+    window.localStorage.setItem("note:tmp_1", "没同步上的");
+    window.localStorage.setItem("note-pending:tmp_1", "1");
+    const open = docs.open("tmp_1");
+    expect(docs.rename("tmp_1", "s9")).toBe(false);
+    expect(window.localStorage.getItem("note:s9")).toBeNull();
+    open.close();
+    await settle();
+    expect(docs.rename("tmp_1", "s9")).toBe(true);
+    await settle();
+    expect(window.localStorage.getItem("note:s9")).toBe("没同步上的");
+    expect(window.localStorage.getItem("note-pending:s9")).toBe("1");
+    expect(window.localStorage.getItem("note:tmp_1")).toBeNull();
+
+    // 新名字下已有自己的一份：标着未同步的旧稿原样留着；只是读缓存的旧稿扔掉
+    window.localStorage.setItem("note:tmp_2", "旧名字下没同步上的");
+    window.localStorage.setItem("note-pending:tmp_2", "1");
+    window.localStorage.setItem("note:tmp_3", "旧名字下的读缓存");
+    expect(docs.rename("tmp_2", "s9")).toBe(true);
+    expect(docs.rename("tmp_3", "s9")).toBe(true);
+    expect(window.localStorage.getItem("note:s9")).toBe("没同步上的");
+    expect(window.localStorage.getItem("note:tmp_2")).toBe("旧名字下没同步上的");
+    expect(window.localStorage.getItem("note:tmp_3")).toBeNull();
+  });
+});
+

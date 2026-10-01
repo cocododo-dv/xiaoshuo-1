@@ -365,6 +365,8 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   /* 「选中这一句去改写」：深改只诊断、不代笔。回到起草姿态，把那一句（段落级问题就是整段）选中，
      选区工具条随之出现——润色 / 更凝练 / 自定义…都在那里，走的是同一条改写接口。
      target 是一条发现（带 evidence）或工具条给的原始选区 { pid, find, start, end }。
+     发现的 evidence 带 paragraph_end（比 paragraph_index 大）时选中这一段范围（从起始段开头到结束段末尾）：
+     局部深评看了几段之后「按这个改法改写这几段」，改写按段送、按段换回（重评 R12）。
      带发现时把它交给工具条（rewriteFinding）：改写请求会带上发现的 id / 维度 / 改法；
      autoRun：「按诊断改写」——选中之后工具条直接按发现的改法出候选，不必再点一次。
      偏移对不上（字变了）才按文字找第一处。叠放的抽屉先收起（onLeave），选区不能压在遮罩底下。 */
@@ -374,6 +376,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     const ev = isFinding ? target.evidence : null;
     if (isFinding && !ev) return;
     const pid = isFinding ? ev.paragraph_index : target.pid;
+    const pidEnd = isFinding && Number.isInteger(ev.paragraph_end) && ev.paragraph_end > pid ? ev.paragraph_end : pid;
     const find = isFinding ? (ev.excerpt || "") : (target.find || "");
     const start = isFinding ? ev.start : target.start;
     const end = isFinding ? ev.end : target.end;
@@ -386,7 +389,13 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
       const blocks = el.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR);
       let block = blocks[pid];
       let range = null;
-      if (block) {
+      if (block && pidEnd > pid && blocks[pidEnd]) {
+        /* 一段范围：从起始段开头选到结束段末尾 */
+        locatePara(pid, "instant");
+        range = wrRangeForText(block, "");
+        const tail = wrRangeForText(blocks[pidEnd], "");
+        if (range && tail) range.setEnd(tail.endContainer, tail.endOffset);
+      } else if (block) {
         /* 先定位（瞬时滚动）再选中：选区工具条按选中那一刻的位置摆，之后再滚它就悬在别处 */
         locatePara(pid, "instant");
         if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
@@ -420,17 +429,19 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     instruction ? { ...finding, recommendation: instruction } : finding,
     { autoRun: true },
   ));
-  /* 独立看一段之后「按这个改法改写这一段」：整段选中，工具条按 AI 的改法出候选（改写请求记作局部深评的改法） */
-  const rewriteParagraph = useWrEvent((paragraphIndex, instruction, passage) => {
+  /* 独立看一段（或一段范围）之后「按这个改法改写这一段 / 这几段」：整段（整个范围）选中，工具条按 AI 的改法出候选
+     （改写请求记作局部深评的改法）。paragraphEnd 给了且比起始段大：选中这几段，改写按段送、按段换回 */
+  const rewriteParagraph = useWrEvent((paragraphIndex, instruction, passage, paragraphEnd = null) => {
     if (!Number.isInteger(paragraphIndex) || !instruction) return;
+    const isRange = Number.isInteger(paragraphEnd) && paragraphEnd > paragraphIndex;
     selectForRewrite({
       signal_id: `passage:${(passage && passage.evaluation_id) || paragraphIndex}`,
       source: "ai",
       dimension: "author_instruction",
-      label: "AI 看这一段",
+      label: isRange ? "AI 看这几段" : "AI 看这一段",
       issue: (passage && passage.assessment) || "",
       recommendation: instruction,
-      evidence: { paragraph_index: paragraphIndex, excerpt: "", start: null, end: null },
+      evidence: { paragraph_index: paragraphIndex, paragraph_end: isRange ? paragraphEnd : null, excerpt: "", start: null, end: null },
       patch: { candidate_category: "local_patch", revision_strategy: instruction },
     }, { autoRun: true });
   });

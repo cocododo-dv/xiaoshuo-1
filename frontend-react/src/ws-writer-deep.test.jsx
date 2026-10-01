@@ -310,6 +310,22 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     expect(go).toHaveBeenCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
   });
 
+  it("「AI 深评」对着空正文（409 WRITER_DEEP_REVIEW_NO_TEXT，不带 author_action）：照说服务端那句，不给「重试」也不叫去配置模型", async () => {
+    const noText = Object.assign(new Error("这一场还没有正文，没有可评的字。先写一段（或起草一稿）再跑 AI 深评。"), { code: "WRITER_DEEP_REVIEW_NO_TEXT", status: 409, details: {} });
+    const { WriterRoom, WrDocs } = await loadWriter({ aiRun: noText });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
+    await click(drawerButton(host, "AI 深评"));
+    await vi.waitFor(() => expect(drawer.textContent).toContain("这一场还没有正文，没有可评的字。"), T);
+    const notice = drawer.querySelector(".wr-dxd-ai .wr-dxd-notice");
+    expect([...notice.querySelectorAll("button")].map((node) => node.textContent.trim())).toEqual([]);
+    expect(notice.textContent).not.toContain("系统设置");
+  });
+
   it("「按诊断改写」：选中那一句回到起草，工具条按发现的改法直接出候选，改写请求带着发现的 id / 维度 / 改法", async () => {
     const { WriterRoom, WrDocs, client } = await loadWriter();
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
@@ -497,6 +513,21 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     expect(host.querySelector(".wr-dxd").textContent).toContain("AI：没有要改的");
   });
 
+  it("「AI 看这一段」看的是空段（409 WRITER_PASSAGE_REVIEW_NO_TEXT）：面板照说服务端那句，不给重试", async () => {
+    const noText = Object.assign(new Error("要看的那一段是空的，没有可看的字。"), { code: "WRITER_PASSAGE_REVIEW_NO_TEXT", status: 409, details: {} });
+    const { WriterRoom, WrDocs } = await loadWriter({ passage: noText });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+    await selectByOffsets(host.querySelector(".wr-editor"), 0, 5);
+    await click([...document.querySelector(".wr-irw-bar").querySelectorAll("button")].find((node) => node.textContent.includes("AI 看这一段")));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("要看的那一段是空的，没有可看的字。"), T);
+    const notice = [...host.querySelectorAll(".wr-dxd .wr-dxd-notice")].find((node) => node.textContent.includes("要看的那一段是空的"));
+    expect([...notice.querySelectorAll("button")]).toEqual([]);
+  });
+
   it("选中跨两段的字：「AI 看这几段」按范围看（POST paragraph_start / paragraph_end），面板说「看了第 1–2 段」", async () => {
     const note = { evaluation_id: "writer_passage_eval_3", paragraph_index: 0, focus_paragraphs: [0, 1], paragraph_start: 0, paragraph_end: 1, whole_scene: true, about_signal_id: null, about_signal_ids: [], verdict: "no_finding", verdict_label: "没有要改的", assessment: "两段之间没有矛盾。", rewrite_brief: "", question: "", findings_count: 0, status: "current" };
     const passage = () => diagnosisPayload([ECHO], { passage_reviews: [note], passage_review: note });
@@ -517,8 +548,46 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/deep-review/passage", { paragraph_start: 0, paragraph_end: 1 }), T);
     await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("AI 看了第 1–2 段"), T);
     expect(host.querySelector(".wr-dxd").textContent).toContain("两段之间没有矛盾。");
-    /* 范围的判断没有「按这个改法改写这一段」（改写只能选一段） */
+    /* 范围的判断没给改法：既没有「改写这一段」，也没有「改写这几段」 */
     expect(drawerButton(host, "按这个改法改写这一段")).toBeUndefined();
+    expect(drawerButton(host, "按这个改法改写这几段")).toBeUndefined();
+  });
+
+  it("看了第 1–2 段、给了改法：「按这个改法改写这几段」回到起草、选中这两段，按段送去改写（重评 R12）", async () => {
+    const note = { evaluation_id: "writer_passage_eval_4", paragraph_index: 0, focus_paragraphs: [0, 1], paragraph_start: 0, paragraph_end: 1, whole_scene: true, about_signal_id: null, about_signal_ids: [], verdict: "partly", verdict_label: "部分成立", assessment: "两段的节奏贴得太近。", rewrite_brief: "把两段的节奏拉开。", question: "", findings_count: 0, status: "current" };
+    const passage = () => diagnosisPayload([ECHO], { passage_reviews: [note], passage_review: note });
+    const patch = { candidate: { patch_id: "p9", replacement_options: [{ option_id: "o1", paragraphs: ["门外安静了。", "许望没有回答，钟响了三声。"] }] } };
+    const { WriterRoom, WrDocs, client } = await loadWriter({ passage, patch });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p><p>许望没有回答。录音里传来三声钟响。</p>");
+    vi.spyOn(WrDocs, "save").mockResolvedValue({});
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("三声钟响"), T);
+    await click(deepRadio(host));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+    await selectByOffsets(host.querySelector(".wr-editor"), 10, 20);
+    await click([...document.querySelector(".wr-irw-bar").querySelectorAll("button")].find((node) => node.textContent.includes("AI 看这几段")));
+    await vi.waitFor(() => expect(drawerButton(host, "按这个改法改写这几段")).toBeTruthy(), T);
+    expect(drawerButton(host, "按这个改法改写这一段")).toBeUndefined();
+
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      await click(drawerButton(host, "按这个改法改写这几段"));
+      await act(async () => { vi.advanceTimersByTime(120); });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(host.querySelector(".wr-root").getAttribute("data-posture")).toBe("draft");
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/passages/patch-candidates", expect.objectContaining({
+      source_excerpt: "门外很安静，安静到能听见潮水。\n许望没有回答。录音里传来三声钟响。",
+      instruction: "把两段的节奏拉开。",
+      quality_signal_id: "passage:writer_passage_eval_4",
+      issue_dimension: "author_instruction",
+    })), T);
+    await vi.waitFor(() => expect(document.querySelector(".wr-irw-pop").textContent).toContain("替换为第 1 版"), T);
+    expect(document.querySelector(".wr-irw-pop").textContent).toContain("按诊断：AI 看这几段");
+    await click([...document.querySelectorAll(".wr-irw-pop button")].find((node) => node.textContent.trim().startsWith("替换为第 1 版")));
+    const editor = host.querySelector(".wr-editor");
+    expect([...editor.children].map((node) => node.textContent)).toEqual(["门外安静了。", "许望没有回答，钟响了三声。"]);
   });
 
   it("跨段的发现：行上标「与第 2 段矛盾」，展开给另一段的原话与「看第 2 段」；忽略后计数本地先记一笔", async () => {

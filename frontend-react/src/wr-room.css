@@ -969,6 +969,8 @@
   background: var(--paper-1);
   border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); overflow: hidden;
 }
+/* 选了几段 / 选得长 / 候选是几段：放宽，段落读得开（定位在 ws-writer-inline.jsx 按同一个宽度夹在视口里） */
+.wr-irw-pop.is-wide { width: 560px; }
 .wr-irw-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--line-1); font-size: 12.5px; font-weight: 700; color: var(--ink-1); flex: 0 0 auto; }
 .wr-irw-head .sp { margin-left: auto; font-weight: 500; color: var(--ink-3); font-size: var(--fs-xs); }
 .wr-irw-body { padding: 12px 14px; overflow-y: auto; flex: 1 1 auto; }
@@ -991,6 +993,10 @@
 .wr-irw-cand-k { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; background: var(--paper-2); color: var(--ink-2); font-family: var(--font-sans); font-size: 11px; font-weight: 600; margin-top: 2px; }
 .wr-irw-cand.is-sel .wr-irw-cand-k { background: var(--accent); color: var(--on-accent); }
 .wr-irw-cand-t { flex: 1; min-width: 0; font-family: var(--font-serif); font-size: 13.5px; line-height: 1.7; color: var(--ink-1); }
+/* 几段字按段画：段与段之间留一点段距（候选、原文、改写标记的对照） */
+.wr-irw-paras, .wr-irw-para { display: block; }
+.wr-irw-para + .wr-irw-para { margin-top: 6px; }
+.wr-irw-cand-note { display: block; margin-top: 6px; font-family: var(--font-sans); font-size: var(--fs-xs); color: var(--warn-ink); }
 .wr-irw-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 14px; border-top: 1px solid var(--line-1); background: var(--paper-2); }
 .wr-irw-load { display: flex; align-items: center; gap: 10px; padding: 20px 16px; color: var(--ink-3); font-size: var(--fs-sm); }
 .wr-irw-custom { display: flex; gap: 8px; padding: 12px 14px; }

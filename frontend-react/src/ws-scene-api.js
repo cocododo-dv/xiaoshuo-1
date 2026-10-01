@@ -261,7 +261,7 @@ async function scnBackendRunSids() {
   const items = (data && data.items) || [];
   if (!items.length) return [];
   try {
-    if (!WsCatalog.get().length) await WsCatalog.__refresh(workId);
+    if (!WsCatalog.get().length) await WsCatalog.refresh(workId);
   } catch (e) {}
   const bySceneId = {};
   try {

@@ -16,7 +16,7 @@ vi.mock("./ws-diagnosis-summary.jsx", () => ({
 }));
 vi.mock("./ws-catalog.jsx", () => ({
   WsCatalog: {
-    __refresh: vi.fn(() => Promise.resolve()),
+    refresh: vi.fn(() => Promise.resolve()),
     get: vi.fn(() => []),
     sidForBackendId: vi.fn(() => null),
   },
@@ -89,7 +89,7 @@ beforeEach(() => {
   // 运行本章前有一道确认（外壳提示层没挂载时 wsConfirm 退回 window.confirm）
   vi.spyOn(window, "confirm").mockReturnValue(true);
   WsWorks.activeId.mockReturnValue("project-1");
-  WsCatalog.__refresh.mockResolvedValue();
+  WsCatalog.refresh.mockResolvedValue();
   WsCatalog.get.mockReturnValue([]);
   apiGet.mockResolvedValue(runPayload("idle", { job_id: null, scene_count: 3 }));
 });
@@ -158,8 +158,8 @@ describe("章节编排 · 运行本章真实接线", () => {
     });
     expect(view.host.textContent).toContain("本章已完成");
     expect(view.host.textContent).toContain("去成稿中心审阅");
-    expect(WsCatalog.__refresh).toHaveBeenCalledTimes(1);
-    expect(WsCatalog.__refresh).toHaveBeenCalledWith("project-1");
+    expect(WsCatalog.refresh).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.refresh).toHaveBeenCalledWith("project-1");
     expect(onCatalogRefresh).toHaveBeenCalledWith([]);
     expect(WsDiagnosis.refreshChapter).toHaveBeenCalledTimes(2);
 
@@ -180,7 +180,7 @@ describe("章节编排 · 运行本章真实接线", () => {
     expect(view.host.textContent).toContain("请配置模型");
     expect(view.host.textContent).not.toContain("本章已完成");
     expect(apiGet).toHaveBeenCalledTimes(1);
-    expect(WsCatalog.__refresh).not.toHaveBeenCalled();
+    expect(WsCatalog.refresh).not.toHaveBeenCalled();
 
     const configure = [...view.host.querySelectorAll("button")].find((node) => node.textContent.includes("请配置模型"));
     await click(configure);
@@ -322,7 +322,7 @@ describe("章节编排 · 运行本章真实接线", () => {
     expect(view.host.querySelector(".arr-run-card")).toBeNull();
     const chip = view.host.querySelector(".arr-run-chip");
     expect(chip.textContent).toBe("上次运行：已完成");
-    expect(WsCatalog.__refresh).not.toHaveBeenCalled();
+    expect(WsCatalog.refresh).not.toHaveBeenCalled();
 
     await click(chip);
     expect(view.host.querySelector(".arr-run-card").textContent).toContain("本章已完成");
@@ -341,7 +341,7 @@ describe("章节编排 · 运行本章真实接线", () => {
     await click(view.button());
     await act(async () => { await vi.advanceTimersByTimeAsync(25); await Promise.resolve(); });
     expect(view.host.querySelector(".arr-run-card").textContent).toContain("本章已完成");
-    expect(WsCatalog.__refresh).toHaveBeenCalledTimes(1);
+    expect(WsCatalog.refresh).toHaveBeenCalledTimes(1);
 
     await click(view.host.querySelector(".arr-run-close"));
     expect(view.host.querySelector(".arr-run-card")).toBeNull();

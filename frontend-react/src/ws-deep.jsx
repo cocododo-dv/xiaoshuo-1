@@ -8,13 +8,13 @@ import {
   wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips, wrDxSnapshot, wrDxWithIgnored,
 } from "./ws-deep-prefs.js";
 import { useWrInert } from "./ws-writer-hooks.js";
-import { qSevLabel, qSevTone } from "./ws-quality-model.js";
+import { findingLabel, findingSeverityLabel, findingSeverityTone } from "./labels/finding.js";
 import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    ws-deep — 写作台深改面板（2026-09-22 场景诊断统一）
    ----------------------------------------------------------
-   诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把 21 维规则体检、段落节奏
+   诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把规则维度体检（QUALITY_DIMENSIONS）、段落节奏
    （贴邻叠句 / 段落偏长 / 句首重复——原先是这里三条本地正则）、起草台的准定稿评审和 AI 深评
    合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
    evidence{paragraph_index,start,end,excerpt}），文学质量视图读的也是这份，所以一条发现从那边
@@ -49,16 +49,18 @@ const WR_DX_VERDICT = {
 /* ==========================================================
    WrDeepDrawer — 写作台右栏 · 深改面板
    ========================================================== */
-/* 深评失败：无模型（后端 409 + author_action）给「去系统设置」，其余给重试（与写作台其他 AI 入口同一套翻译） */
+/* 深评失败：无模型（后端 409 + author_action）给「去系统设置」，其余给重试（与写作台其他 AI 入口同一套翻译）；
+   没有字可看（WRITER_*_NO_TEXT）只说一句、不给重试——再点一次结果也一样 */
 function DxAiError({ error, onRetry, onOpenSettings }) {
   const info = wrAiError(error);
   const configOnly = info.kind === "config";
-  const retry = !configOnly && onRetry
+  const quiet = configOnly || info.kind === "no-text";
+  const retry = !configOnly && onRetry && info.actionLabel
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry}>{info.actionLabel}</button> : null;
   const settings = info.offersSettings && onOpenSettings
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去系统设置</button> : null;
   return (
-    <Notice tone={configOnly ? "warn" : "danger"} className="wr-dxd-notice" actions={retry || settings ? <>{retry}{settings}</> : null}>
+    <Notice tone={quiet ? "warn" : "danger"} className="wr-dxd-notice" actions={retry || settings ? <>{retry}{settings}</> : null}>
       {info.message}
     </Notice>
   );
@@ -108,7 +110,7 @@ function DxFindingRow({ finding, active, onPick }) {
   const calibrated = !!(finding.calibrated && finding.calibrated.kind);
   return (
     <button type="button" className={`wr-dxd-row ${active ? "is-active" : ""}`} aria-pressed={active} onClick={() => onPick(finding.signal_id)}>
-      <span className={`wr-dxd-mark ${sevClass(finding.severity)}`} title={`严重程度：${qSevLabel(finding.severity)}`}>{finding.label || finding.dimension}</span>
+      <span className={`wr-dxd-mark ${sevClass(finding.severity)}`} title={`严重程度：${findingSeverityLabel(finding.severity)}`}>{findingLabel(finding)}</span>
       <span className="wr-dxd-body">
         <span className="wr-dxd-t">{finding.issue}</span>
         <span className="wr-dxd-h">
@@ -201,7 +203,8 @@ function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageRevi
 }
 
 /* 独立看一段 / 一段范围（没有复核某条发现）的结果：判定 + 评语 + 这一处的改法；新发现已并进清单。
-   模型看的是整场（焦点段标出），所以「看了第 2–3 段」也可能指出与别处的矛盾。 */
+   模型看的是整场（焦点段标出），所以「看了第 2–3 段」也可能指出与别处的矛盾。
+   给了改法时：一段给「按这个改法改写这一段」，几段给「按这个改法改写这几段」（改写按段送、按段换回，重评 R12）。 */
 function DxPassageNote({ passage, onRewriteParagraph }) {
   if (!passage || passage.about_signal_id) return null;
   const meta = WR_DX_VERDICT[passage.verdict] || WR_DX_VERDICT.no_finding;
@@ -209,6 +212,8 @@ function DxPassageNote({ passage, onRewriteParagraph }) {
     ? passage.focus_paragraphs
     : (Number.isInteger(passage.paragraph_index) ? [passage.paragraph_index] : []);
   const pid = focus.length === 1 ? focus[0] : null;
+  const first = focus.length ? Math.min(...focus) : null;
+  const last = focus.length ? Math.max(...focus) : null;
   const where = focus.length > 1 ? `第 ${focus[0] + 1}–${focus[focus.length - 1] + 1} 段` : (pid != null ? `第 ${pid + 1} 段` : "这一段");
   return (
     <section className="wr-dxd-passage" aria-label="AI 看这一段">
@@ -224,6 +229,13 @@ function DxPassageNote({ passage, onRewriteParagraph }) {
         <div className="wr-dxd-row-acts">
           <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewriteParagraph(pid, passage.rewrite_brief, passage)}>
             <I.Sparkles size={13} /> 按这个改法改写这一段
+          </button>
+        </div>
+      )}
+      {passage.rewrite_brief && focus.length > 1 && onRewriteParagraph && (
+        <div className="wr-dxd-row-acts">
+          <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewriteParagraph(first, passage.rewrite_brief, passage, last)}>
+            <I.Sparkles size={13} /> 按这个改法改写这几段
           </button>
         </div>
       )}
@@ -306,6 +318,11 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
         {lastPassage && (
           <DxPassageNote passage={lastPassage} onRewriteParagraph={onRewriteParagraph} />
         )}
+        {/* 独立看一段 / 几段（深改工具条「AI 看这一段」）没成：照实说（没配模型 → 去系统设置；那一段是空的 → 说没有字）。
+            复核某条发现的失败挂在那条发现下面（DxFindingDetail）；过去独立看一段的失败哪里都不显示 */}
+        {passageError && String(passageError.key || "").startsWith("para:") && (
+          <DxAiError error={passageError.error} onOpenSettings={onOpenSettings} />
+        )}
         {handoffMiss && (
           <Notice tone="warn" className="wr-dxd-notice">
             文学质量里指的那一处在当前作者稿里没有对应位置——它可能来自另一层文本（比如运行终稿），或已经改掉了。
@@ -364,7 +381,7 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
               <ul className="wr-dxd-ignored-list">
                 {ignoredList.map((f) => (
                   <li key={f.signal_id}>
-                    <Tag tone={qSevTone(f.severity)}>{f.label || f.dimension}</Tag>
+                    <Tag tone={findingSeverityTone(f.severity)}>{findingLabel(f)}</Tag>
                     <span className="wr-dxd-ignored-t">{f.issue}</span>
                     <button type="button" className="btn btn-quiet btn-sm" onClick={() => onRestore(f)}>恢复</button>
                   </li>

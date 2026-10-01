@@ -56,7 +56,7 @@ export function useChapterRun({ chapter, onCatalogRefresh, pollIntervalMs = 1200
     if (completedRef.current === completionKey) return;
     completedRef.current = completionKey;
     try {
-      await WsCatalog.__refresh(projectId);
+      await WsCatalog.refresh(projectId);
       if (!isCurrent(token)) return;
       if (onCatalogRefresh) onCatalogRefresh(WsCatalog.get());
     } catch (error) {
