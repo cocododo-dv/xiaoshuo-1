@@ -7,7 +7,8 @@
 #
 # Node resolution (dev_use_frontend_node in lib/dev-lifecycle.sh) — first hit wins:
 #   1. $NOVEL_SYSTEM_NODE_BIN   directory holding node/npm (explicit override)
-#   2. nvm ($NVM_DIR, ~/.nvm)   sourced; its default alias puts node on PATH
+#   2. nvm ($NVM_DIR, ~/.nvm)   sourced; a hit when its default alias (or an
+#                               already active version) puts an nvm node on PATH
 #   3. ~/.local/node/bin        a plain tarball install (the Ubuntu dev host)
 #   4. whatever `node` is already on PATH
 # The frontend needs Node >= 18.18 (package.json "engines"); Node 22 is what CI tests.

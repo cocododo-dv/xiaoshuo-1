@@ -61,28 +61,46 @@ DEV_NODE_FLOOR_MINOR=18
 
 # Put a Node toolchain for the React frontend on PATH — first hit wins:
 #   1. $NOVEL_SYSTEM_NODE_BIN   directory holding node/npm (explicit override)
-#   2. nvm ($NVM_DIR, ~/.nvm)   sourced; its default alias puts node on PATH
+#   2. nvm ($NVM_DIR, ~/.nvm)   sourced; a hit only when that leaves one of nvm's own
+#                               nodes on PATH (its default alias, or a version that
+#                               is already active) — without one, go on to 3 / 4
 #   3. ~/.local/node/bin        a plain tarball install (the Ubuntu dev host)
 #   4. whatever `node` is already on PATH
 dev_use_frontend_node() {
   if [ -n "${NOVEL_SYSTEM_NODE_BIN:-}" ]; then
     export PATH="$NOVEL_SYSTEM_NODE_BIN:$PATH"
-  elif [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
+    return 0
+  fi
+  if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
     # shellcheck disable=SC1091
     . "$NVM_DIR/nvm.sh"
-  elif [ -x "$HOME/.local/node/bin/node" ]; then
+    case "$(command -v node 2>/dev/null)" in
+      "${NVM_DIR%/}"/*) return 0 ;;
+    esac
+  fi
+  if [ -x "$HOME/.local/node/bin/node" ]; then
     export PATH="$HOME/.local/node/bin:$PATH"
   fi
 }
 
+# What to do about a missing or too-old Node. Names only the remedies the lookup
+# above actually reaches: NOVEL_SYSTEM_NODE_BIN overrides every other Node, and
+# nvm's default alias wins over ~/.local/node.
 dev_node_install_hint() {
-  cat >&2 <<'MSG'
-   Install Node 22 (the version CI tests) and point NOVEL_SYSTEM_NODE_BIN at its bin/
-   directory, unpack it at ~/.local/node, or make it nvm's default (nvm alias default 22).
-   CentOS 7 / glibc 2.17: use Node 22's glibc-217 build from
-   https://unofficial-builds.nodejs.org/download/release/
-MSG
+  if [ -n "${NOVEL_SYSTEM_NODE_BIN:-}" ]; then
+    echo "   NOVEL_SYSTEM_NODE_BIN=${NOVEL_SYSTEM_NODE_BIN} overrides every other Node: point it at" >&2
+    echo '   the bin/ directory of Node 22 (the version CI tests), or unset it.' >&2
+  elif [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
+    echo '   nvm is installed and its default alias wins over ~/.local/node: run' >&2
+    echo '   `nvm install 22 && nvm alias default 22` (22 is the version CI tests), or point' >&2
+    echo '   NOVEL_SYSTEM_NODE_BIN at the bin/ directory of a Node 22 install.' >&2
+  else
+    echo '   Install Node 22 (the version CI tests): unpack it at ~/.local/node, or point' >&2
+    echo '   NOVEL_SYSTEM_NODE_BIN at its bin/ directory.' >&2
+  fi
+  echo "   CentOS 7 / glibc 2.17: use Node 22's glibc-217 build from" >&2
+  echo '   https://unofficial-builds.nodejs.org/download/release/' >&2
 }
 
 # Check — without stopping or starting anything — that the React frontend in
