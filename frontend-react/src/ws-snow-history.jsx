@@ -212,7 +212,7 @@ function versionTime(item) {
 }
 
 /* 这一步作者自己写的内容（带栏名的分步文本）：07 不算章表——那是分章结果的只读镜像，不是这一步写的。
-   空串 = 这一步还空着（服务器版本预览判「这一版是空的」用它）。 */
+   空串 = 这一步还空着（服务器版本预览判「这一版是空的」、抹空保护的提示判「现在还空着」都用它）。 */
 export function s2StepOwnText(key, draft, scaffold, refs) {
   const own = key === "outline" && scaffold && typeof scaffold === "object" ? { ...scaffold, chapters: [] } : scaffold;
   return s2StepText(key, draft, own, refs).trim();
@@ -249,7 +249,10 @@ const RESTORE_WARNING = {
   planning: "这一版里有的每一场，三拍、坩埚、钩子等规划会回到这一版，之后改过的会被替换（形态与视角仍以 09 为准；这一版之后才加的场不动）。场景卡等你重新确认第 10 步之后才跟着更新。",
 };
 
-export function S2ServerVersions({ workId, step, refreshKey, onPreview }) {
+/* currentBlank：这一步现在是不是还空着（视图按 s2StepOwnText 算）。抹空保护另起的那一版之后还会被自动保存原位改写
+   （待确认的稿子原位改），它身上的 wipe_guard_preserved_step_run_id 却一直在——作者重新写了内容之后，再说「最近一次保存
+   把内容整个清空了」就不对了：那时只把它当一条关于这一版来历的事实说。 */
+export function S2ServerVersions({ workId, step, refreshKey, onPreview, currentBlank = false }) {
   const beKey = step ? S2_BE_KEY[step.key] : "";
   const [state, setState] = React.useState({ loading: true, error: "", items: [] });
   const [tick, setTick] = React.useState(0);
@@ -280,9 +283,11 @@ export function S2ServerVersions({ workId, step, refreshKey, onPreview }) {
       </div>
       <p className="sf-versions-lead">确认、AI 生成、整步清空、从历史恢复，服务器都会给这一步另存一版——换了浏览器也能从这里找回。</p>
       {preserved && (
-        <Notice tone="warn" testId="snow-version-wipe"
+        <Notice tone={currentBlank ? "warn" : "info"} testId="snow-version-wipe"
           actions={<button type="button" className="btn btn-quiet btn-sm" onClick={() => onPreview(preserved)} data-testid="snow-version-wipe-open">看清空前的第 {preserved.version} 版</button>}>
-          这一步最近一次保存把内容整个清空了，服务器另起了现在这一版；清空前的第 {preserved.version} 版还在，可以预览后恢复。
+          {currentBlank
+            ? <>这一步最近一次保存把内容整个清空了，服务器另起了现在这一版；清空前的第 {preserved.version} 版还在，可以预览后恢复。</>
+            : <>第 {latest.version} 版是整步清空时另起的；清空前的第 {preserved.version} 版还在，可以预览后恢复。</>}
         </Notice>
       )}
       {state.loading && !items.length ? (

@@ -290,16 +290,38 @@ describe("构思 · 历史 · 服务器上保存的版本（R15a）", () => {
     expect(host.querySelector(".snow-canvas-title").textContent).toBe("读者定位");
   });
 
-  it("这一步最近一次保存把内容整个清空了（抹空保护另起的一版）：上面一条提示，一键看清空前的那一版", async () => {
-    const versions = [
-      { step_run_id: "run_log_3", version: 3, status: "pending_review", generation_source: "author", wipe_guard_preserved_step_run_id: "run_log_2", updated_at: "2026-09-30T08:00:00+00:00" },
-      { step_run_id: "run_log_2", version: 2, status: "pending_review", generation_source: "author", updated_at: "2026-09-29T08:00:00+00:00" },
-    ];
-    const { host } = await boot({ versions });
+  const WIPED = [
+    { step_run_id: "run_log_3", version: 3, status: "pending_review", generation_source: "author", wipe_guard_preserved_step_run_id: "run_log_2", updated_at: "2026-09-30T08:00:00+00:00" },
+    { step_run_id: "run_log_2", version: 2, status: "pending_review", generation_source: "author", updated_at: "2026-09-29T08:00:00+00:00" },
+  ];
+
+  it("这一步最近一次保存把内容整个清空了（抹空保护另起的一版）、现在还空着：上面一条提醒，一键看清空前的那一版", async () => {
+    const workspace = { ...WORKSPACE, steps: [
+      WORKSPACE.steps[0],
+      step("one_sentence_summary", { version: 3, status: "pending_review", draft: { summary: "" }, artifact: { step_run_id: "run_log_3", input_refs: {} } }),
+    ] };
+    const { host } = await boot({ versions: WIPED, workspace });
+    expect(textarea(host).value).toBe("");
     await openHistory(host);
     const banner = host.querySelector('[data-testid="snow-version-wipe"]');
+    expect(banner.getAttribute("data-tone")).toBe("warn");
+    expect(banner.textContent).toContain("这一步最近一次保存把内容整个清空了");
     expect(banner.textContent).toContain("清空前的第 2 版还在");
     expect(host.querySelector('[data-testid="snow-version-row"]').textContent).toContain("整步清空时另起的一版");
+    await act(async () => host.querySelector('[data-testid="snow-version-wipe-open"]').click());
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="snow-version-old"]')).toBeTruthy(), T);
+    expect(document.querySelector('[data-testid="snow-version-old"]').textContent).toBe(OLD);
+  });
+
+  it("清空之后又写了内容（那一版被自动保存原位改写）：不再说「最近一次保存把内容整个清空了」，只把它当这一版的来历说（复核 Q2b-R6）", async () => {
+    const { host } = await boot({ versions: WIPED });
+    expect(textarea(host).value).toBe(NOW);
+    await openHistory(host);
+    const banner = host.querySelector('[data-testid="snow-version-wipe"]');
+    expect(banner.getAttribute("data-tone")).toBe("info");
+    expect(banner.textContent).not.toContain("最近一次保存把内容整个清空了");
+    expect(banner.textContent).toContain("第 3 版是整步清空时另起的；清空前的第 2 版还在");
+    // 门还在：照样一键看清空前的那一版
     await act(async () => host.querySelector('[data-testid="snow-version-wipe-open"]').click());
     await vi.waitFor(() => expect(document.querySelector('[data-testid="snow-version-old"]')).toBeTruthy(), T);
     expect(document.querySelector('[data-testid="snow-version-old"]').textContent).toBe(OLD);

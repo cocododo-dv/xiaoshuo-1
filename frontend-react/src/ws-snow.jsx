@@ -22,7 +22,7 @@ import { S2StepEditor } from "./ws-snow-scaffolds.jsx";
 import { S2SceneAiActions, useSnowTriage } from "./ws-snow-scenes.jsx";
 import { S2AiBar, S2Coach, useSnowCoach } from "./ws-snow-coach.jsx";
 import { S2Rail } from "./ws-snow-rail.jsx";
-import { S2History, S2Ref, S2ServerVersions, S2SnapDiff, S2UpstreamDiff, S2VersionDiff } from "./ws-snow-history.jsx";
+import { S2History, S2Ref, S2ServerVersions, S2SnapDiff, S2UpstreamDiff, S2VersionDiff, s2StepOwnText } from "./ws-snow-history.jsx";
 import {
   S2DeliveredBanner, S2Footer, S2ImportPlanDialog, S2ResetDialog, S2ResyncBanner, S2StaleBanner,
   S2StepList, S2Strip, S2SyncNotice, S2Tab,
@@ -387,7 +387,8 @@ function WsSnowflake({ initialStep }) {
             {tab === "history" && (
               <div className="sf-history">
                 {/* 上面是这一步在服务器上的每一版（R15a：换了浏览器、整步被清空也找得回），下面是这台电脑上的操作记录 */}
-                <S2ServerVersions workId={snowWorkId} step={active} refreshKey={versionsTick} onPreview={(item) => previewVersion(activeKey, item)} />
+                <S2ServerVersions workId={snowWorkId} step={active} refreshKey={versionsTick} onPreview={(item) => previewVersion(activeKey, item)}
+                  currentBlank={!s2StepOwnText(activeKey, draft, scaffolds[activeKey], scaffolds)} />
                 <section className="sf-history-local" aria-labelledby="sf-history-local-title">
                   <h3 className="sf-history-title" id="sf-history-local-title">本机的操作记录</h3>
                   <S2History history={history} go={selectStep} onRestore={restoreSnap} />
