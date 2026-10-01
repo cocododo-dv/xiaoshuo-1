@@ -55,6 +55,7 @@ from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.scene_design_ownership import plan_owned_scene_ids
 from novel_system.services.scene_lookup import require_project, require_project_chapter
 from novel_system.services.scene_planning_staleness import design_changed_since
+from novel_system.services.story_slots import planned_chapter_goal
 from novel_system.services.structured_llm_call import run_structured_call
 
 _PATCH_DRAMA_FIELDS = (
@@ -669,7 +670,9 @@ def empty_slot_gap_items(
                 {
                     "scope": "scene",
                     "scene_id": scene.scene_id,
-                    "scene_label": f"第 {position} 场 · {scene_display_title(scene)}",
+                    # 题名同目录（没起题名拿场目标；旧物化补的本章样板目标不算，S2 1）
+                    "scene_label": f"第 {position} 场 · "
+                    f"{scene_display_title(scene, goal=planned_chapter_goal(scene.scene_goal, chapter))}",
                     "fields": [{"key": key, "label": SCENE_SLOT_LABELS.get(key, key)} for key in missing],
                     "fill_in": "snowflake_step_10" if scene.scene_id in owned else None,
                 }
@@ -702,7 +705,8 @@ def empty_slot_gaps(
         missing = _missing_scene_slots(scene)
         if missing:
             where = "——在构思第 10 步补" if scene.scene_id in owned else ""
-            gaps.append(f"{scene_title(scene)}（{scene.scene_id}）：待补 {', '.join(missing)}{where}")
+            title = scene_title(scene, goal=planned_chapter_goal(scene.scene_goal, chapter))
+            gaps.append(f"{title}（{scene.scene_id}）：待补 {', '.join(missing)}{where}")
     return gaps
 
 

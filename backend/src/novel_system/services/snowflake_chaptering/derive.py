@@ -26,6 +26,7 @@ from novel_system.services.snowflake_chapter_table import (
 )
 from novel_system.services.snowflake_chaptering.spine import scene_spine
 from novel_system.services.snowflake_scene_order import live_scene_plans_in_story_order
+from novel_system.services.story_slots import planned_chapter_goal
 
 
 def derived_chapter_rows(
@@ -131,7 +132,8 @@ def _derive_from_catalog(session: Session, project_id: str, scenes: list[Snowfla
     for index, chapter in enumerate(rows, start=1):
         narrative = dict(chapter.narrative_json or {})
         brief = dict(chapter.writer_brief_json or {})
-        goal = str(chapter.chapter_goal or "").strip()
+        # 旧物化给没目标的章补的「推进本章：<章名>」不是作者的章目标 / 章摘要（S2 1）
+        goal = planned_chapter_goal(chapter.chapter_goal, chapter).strip()
         title = (
             str(narrative.get("title") or "").strip()
             or str(brief.get("chapter_title") or "").strip()

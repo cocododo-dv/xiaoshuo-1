@@ -15,6 +15,9 @@ PROJECT_STATUS_COMPLETED = "completed"
 PLAN_STATUS_PENDING_REVIEW = "pending_review"
 PLAN_STATUS_APPROVED = "approved"
 
+#: 防抄袭的政策提醒（v1 看板的终审材料里照旧附上）。2026-10-01 之前物化还把这份清单抄进每一章、每一场的写作简报
+#: （``writer_brief_json["reference_safety"]``）——没有人写过它，也没有哪一处读它；物化不再写（S2 2），旧行上的
+#: 清单原样留着，下一次确认写入整张换掉简报时随之消失。
 REFERENCE_SAFETY_RULES = [
     "参考书只进入抽象风格画像，不复制原文表达。",
     "不得复刻参考书人物、设定、桥段、特殊意象或标志性句式。",

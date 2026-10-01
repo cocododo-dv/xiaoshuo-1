@@ -21,6 +21,8 @@ from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
     normalize_story_slot,
     normalize_story_slot_mapping,
+    planned_beats,
+    planned_chapter_goal,
 )
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.style_policy import style_policy_live
@@ -167,6 +169,11 @@ class SceneExecutionContractService:
         blueprint_json = dict(blueprint.blueprint_json or {}) if blueprint is not None else {}
         scene_mode = _infer_scene_mode(scene, brief)
         explicit_scene_contract = _is_explicit_structured_scene(scene, brief)
+        # 场目标 / 节拍 / 章的主线推进只在作者规划过时才兜底：旧物化给没写摘要的场、没写目标的章补的
+        # 「推进本章：<章名>」不是作者的（story_slots.planned_chapter_goal，S2 1）
+        scene_goal = planned_chapter_goal(scene.scene_goal, chapter)
+        main_plot_push = planned_chapter_goal(chapter.main_plot_push, chapter)
+        beats = planned_beats(scene.beats_json, chapter)
         common_payload = {
             "scene_mode": scene_mode,
             "pov_character_id": _first_text(scene.pov_character_id),
@@ -178,8 +185,8 @@ class SceneExecutionContractService:
                 blueprint_json.get("choice_under_pressure") if not explicit_scene_contract else None,
                 blueprint_json.get("concrete_obstacle"),
                 brief.get("obstacle"),
-                scene.scene_goal if not explicit_scene_contract else None,
-                chapter.main_plot_push if not explicit_scene_contract else None,
+                scene_goal if not explicit_scene_contract else None,
+                main_plot_push if not explicit_scene_contract else None,
             ),
             "timebox": _first_text(brief.get("timebox"), scene.target_length_band, "single_scene"),
             "expected_reader_emotion": _first_text(
@@ -251,8 +258,8 @@ class SceneExecutionContractService:
                     brief.get("reaction"),
                     brief.get("emotional_turn"),
                     blueprint_json.get("emotional_turn"),
-                    _beat_text(scene, 0) if not explicit_scene_contract else None,
-                    scene.scene_goal if not explicit_scene_contract else None,
+                    _beat_text(beats, 0) if not explicit_scene_contract else None,
+                    scene_goal if not explicit_scene_contract else None,
                 ),
                 "dilemma": _first_text(
                     brief.get("dilemma"),
@@ -260,14 +267,14 @@ class SceneExecutionContractService:
                     blueprint_json.get("choice_under_pressure"),
                     blueprint_json.get("concrete_obstacle"),
                     brief.get("obstacle"),
-                    _beat_text(scene, 1) if not explicit_scene_contract else None,
+                    _beat_text(beats, 1) if not explicit_scene_contract else None,
                 ),
                 "decision": _first_text(
                     brief.get("decision"),
                     brief.get("irreversible_change") if not explicit_scene_contract else None,
                     blueprint_json.get("irreversible_consequence"),
                     scene.exit_change if not explicit_scene_contract else None,
-                    _last_beat(scene) if not explicit_scene_contract else None,
+                    _last_beat(beats) if not explicit_scene_contract else None,
                     brief.get("reader_question"),
                 ),
             }
@@ -276,13 +283,13 @@ class SceneExecutionContractService:
                 "goal": _first_text(
                     brief.get("goal"),
                     blueprint_json.get("character_current_desire"),
-                    scene.scene_goal,
+                    scene_goal,
                 ),
                 "conflict": _first_text(
                     brief.get("conflict"),
                     blueprint_json.get("concrete_obstacle"),
                     brief.get("obstacle"),
-                    _beat_text(scene, 1) if not explicit_scene_contract else None,
+                    _beat_text(beats, 1) if not explicit_scene_contract else None,
                     scene.hook if not explicit_scene_contract else None,
                 ),
                 "setback_or_victory": _first_text(
@@ -293,7 +300,7 @@ class SceneExecutionContractService:
                     blueprint_json.get("information_release"),
                     blueprint_json.get("irreversible_consequence"),
                     scene.exit_change if not explicit_scene_contract else None,
-                    _last_beat(scene) if not explicit_scene_contract else None,
+                    _last_beat(beats) if not explicit_scene_contract else None,
                     scene.hook if not explicit_scene_contract else None,
                 ),
             }
@@ -338,11 +345,12 @@ class SceneExecutionContractService:
         blueprint: SceneBlueprint | None,
         reference_rules: dict[str, list[str]],
     ) -> dict[str, Any]:
+        # 来源快照与 payload 同一口径：旧物化补的样板目标算没规划——快照随之变，带样板的旧契约在下一次运行时重建
         return {
             "scene": {
                 "scene_id": scene.scene_id,
                 "scene_type": scene.scene_type,
-                "scene_goal": normalize_story_slot(scene.scene_goal),
+                "scene_goal": normalize_story_slot(planned_chapter_goal(scene.scene_goal, chapter)),
                 "location": normalize_story_slot(scene.location),
                 "exit_change": normalize_story_slot(scene.exit_change),
                 "hook": normalize_story_slot(scene.hook),
@@ -352,8 +360,8 @@ class SceneExecutionContractService:
             },
             "chapter": {
                 "chapter_id": chapter.chapter_id,
-                "chapter_goal": normalize_story_slot(chapter.chapter_goal),
-                "main_plot_push": normalize_story_slot(chapter.main_plot_push),
+                "chapter_goal": normalize_story_slot(planned_chapter_goal(chapter.chapter_goal, chapter)),
+                "main_plot_push": normalize_story_slot(planned_chapter_goal(chapter.main_plot_push, chapter)),
                 "emotional_target": normalize_story_slot(chapter.emotional_target),
                 "writer_brief_json": normalize_story_slot_mapping(
                     chapter.writer_brief_json or {}
@@ -410,15 +418,15 @@ def _has_text(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _beat_text(scene: SceneCard, index: int) -> str:
-    beats = [str(item).strip() for item in list(scene.beats_json or []) if str(item).strip()]
-    if index < 0 or index >= len(beats):
+def _beat_text(beats: list[Any], index: int) -> str:
+    texts = [str(item).strip() for item in beats if str(item).strip()]
+    if index < 0 or index >= len(texts):
         return ""
-    return beats[index]
+    return texts[index]
 
 
-def _last_beat(scene: SceneCard) -> str:
-    beats = [str(item).strip() for item in list(scene.beats_json or []) if str(item).strip()]
-    return beats[-1] if beats else ""
+def _last_beat(beats: list[Any]) -> str:
+    texts = [str(item).strip() for item in beats if str(item).strip()]
+    return texts[-1] if texts else ""
 
 

@@ -59,7 +59,10 @@ def build_chaptered_outline_plan(
             continue  # 空章不落库：预览里已经就此告警过，作者选择保留就是不要它
         # 阶段 Y：目录里的章 id 钉在章计划行上（不再按章序算）——这一章以前物化过，就还是目录里的那一行
         chapter_id = catalog_chapter_id(session, chapter)
-        goal = (chapter.chapter_goal or chapter.summary or "").strip() or f"推进本章：{chapter.title or chapter_id}"
+        # 分章里没有作者写的章目标（也没有章摘要）就空着（「没规划」）。以前这里补一句「推进本章：<章名>」，它成了
+        # 目录的章目标、主线推进和没写摘要的场的目标，起草提示把它当作者定的目标印出来（S2 1，阶段 F 的「不拿样板
+        # 当事实」）；带着它的旧行，各处读的时候也算没规划（story_slots.planned_chapter_goal）。
+        goal = (chapter.chapter_goal or chapter.summary or "").strip()
         scenes_payload: list[dict[str, Any]] = []
         for seq, scene in enumerate(members, start=1):
             detail = scene_plan_payload(scene)
@@ -143,16 +146,13 @@ def build_chaptered_outline_plan(
             }
         )
 
+    # 不再带一份固定的「参考书安全规则」清单（S2 2）：物化把它抄进每一章、每一场的写作简报，没有人写过它，也没有
+    # 哪一处读它——防抄袭由参考书查重闸（reference_copy_gate）与风格注入的红线段负责。
     return {
         "source": "snowflake_method",
         "project_id": project.project_id,
         "project_title": project.title,
         "outline_text": project.outline_text,
-        "reference_safety": [
-            "参考书只进入抽象风格画像，不复制原文表达。",
-            "不得复刻参考书人物、设定、桥段、特殊意象或标志性句式。",
-            "运行时只使用节奏、句法、叙事手法、结构技巧和禁复刻规则。",
-        ],
         "chapters": chapter_payloads,
     }
 

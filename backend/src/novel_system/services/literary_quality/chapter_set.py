@@ -21,7 +21,7 @@ from novel_system.services.literary_quality.text import (
     _first_present_term,
 )
 from novel_system.services.source_safety import find_protected_term_spans
-from novel_system.services.story_slots import normalize_story_slot
+from novel_system.services.story_slots import normalize_story_slot, planned_chapter_goal
 
 if TYPE_CHECKING:
     from novel_system.db.models import ChapterGoal
@@ -39,9 +39,10 @@ def _chapter_set_payoff_reveal_checks(chapters: list[ChapterGoal], source_rows: 
         fallback_text = _compact_ws(
             "\n".join(
                 [
-                    chapter.chapter_goal or "",
-                    chapter.main_plot_push or "",
-                    # 旧的物化样板句（「……代价……」「……选择……」）不是作者的规划，不能替没写正文的章冒充证据
+                    # 旧物化补的「推进本章：<章名>」（S2 1）与样板句（「……代价……」「……选择……」，S1 9）不是作者的
+                    # 规划，不能替没写正文的章冒充证据（章名里带「选择」时，那句样板就带着「选择」）
+                    planned_chapter_goal(chapter.chapter_goal, chapter),
+                    planned_chapter_goal(chapter.main_plot_push, chapter),
                     normalize_story_slot(chapter.emotional_target),
                     normalize_story_slot(chapter.ending_effect),
                     by_chapter.get(chapter.chapter_id, ""),
@@ -303,8 +304,8 @@ def _evaluate_cross_chapter_arc(
     for ch in chapters:
         raw = by_chapter.get(ch.chapter_id, "")
         fallback = "\n".join([
-            ch.chapter_goal or "",
-            ch.main_plot_push or "",
+            planned_chapter_goal(ch.chapter_goal, ch),
+            planned_chapter_goal(ch.main_plot_push, ch),
             normalize_story_slot(ch.emotional_target),
             normalize_story_slot(ch.ending_effect),
             raw,
@@ -450,7 +451,7 @@ def _tension_dynamics_score(chapters: list[ChapterGoal]) -> float:
     # Proxy: length of ending_effect + main_plot_push as tension indicator
     values: list[float] = []
     for ch in chapters:
-        tension_proxy = len(normalize_story_slot(ch.ending_effect)) + len(ch.main_plot_push or "")
+        tension_proxy = len(normalize_story_slot(ch.ending_effect)) + len(planned_chapter_goal(ch.main_plot_push, ch))
         values.append(float(tension_proxy))
 
     if not values:

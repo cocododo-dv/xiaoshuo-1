@@ -37,6 +37,7 @@ from novel_system.services.planning_queries import latest_active_planning_artifa
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import active_chapter_scenes, require_chapter, require_scene
 from novel_system.services.scene_sections import attach_scene_sections
+from novel_system.services.story_slots import planned_beats, planned_chapter_goal
 from novel_system.services.style_reference.planning_context import (
     build_planning_style_reference,
     register_planning_style_reference,
@@ -347,16 +348,17 @@ class NearFinalPlanningService:
             {"slot": "scene_writer_brief", "ref_id": scene.scene_id, "digest_key": "scene_writer_brief"},
         ]
         inline_digests: dict[str, str] = {
-            "chapter_goal": chapter.chapter_goal or "",
+            # 章目标 / 场目标 / 节拍只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
+            "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
             "scene_card": json.dumps(
                 {
-                    "scene_goal": scene.scene_goal or "",
+                    "scene_goal": planned_chapter_goal(scene.scene_goal, chapter),
                     "location": scene.location or "",
-                    "beats": scene.beats_json or [],
+                    "beats": planned_beats(scene.beats_json, chapter),
                     "must_include_text": scene.must_include_text or "",
                     "exit_change": scene.exit_change or "",
                     "hook": scene.hook or "",
-                    "all_chapter_scene_cards": self._chapter_scene_digest(chapter.chapter_id),
+                    "all_chapter_scene_cards": self._chapter_scene_digest(chapter),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -440,13 +442,13 @@ class NearFinalPlanningService:
         policy = style_policy_live(self.session, scene)
         return dict(policy.contract) if policy.bound and policy.contract is not None else None
 
-    def _chapter_scene_digest(self, chapter_id: str) -> list[dict[str, Any]]:
-        rows = active_chapter_scenes(self.session, chapter_id)
+    def _chapter_scene_digest(self, chapter: ChapterGoal) -> list[dict[str, Any]]:
+        rows = active_chapter_scenes(self.session, chapter.chapter_id)
         return [
             {
                 "scene_id": row.scene_id,
                 "scene_seq": row.scene_seq,
-                "scene_goal": row.scene_goal,
+                "scene_goal": planned_chapter_goal(row.scene_goal, chapter),
                 "exit_change": row.exit_change,
                 "hook": row.hook,
             }

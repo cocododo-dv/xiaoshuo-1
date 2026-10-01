@@ -39,6 +39,7 @@ from novel_system.db.models import (
 from novel_system.services.scene_form import text as _text
 from novel_system.services.snowflake_scene_order import sort_in_story_order
 from novel_system.services.snowflake_triage import latest_triage_plan_ids
+from novel_system.services.story_slots import planned_chapter_goal
 from novel_system.settings import get_settings
 
 SCENE_DESIGN_SECTION_KEY = "scene_design_context"
@@ -255,7 +256,8 @@ def _chapter_line(session: Session, scene: SceneCard, plan: SnowflakeScenePlan |
         title = _text(narrative.get("title"))
         act = _coerce_int(narrative.get("act"))
         spine = _text(narrative.get("spine"))
-        goal = _text(chapter.chapter_goal)
+        # 目录章的章目标只在作者规划过时才写：旧物化给没目标的章补的「推进本章：<章名>」不算（S2 1）
+        goal = _text(planned_chapter_goal(chapter.chapter_goal, chapter))
         seq = _coerce_int(getattr(chapter, "display_order", None))
     parts: list[str] = []
     head = ""

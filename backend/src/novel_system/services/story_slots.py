@@ -22,6 +22,15 @@ RETIRED_CHAPTER_BOILERPLATE = frozenset(
     }
 )
 
+# The goal the snowflake outline builder gave a chapter that had neither a goal
+# nor a summary, until 2026-10-01: 「推进本章：<the chapter's title, or its
+# id>」. The same sentence became that chapter's main_plot_push, and the
+# scene_goal (and only beat) of a scene that had neither a summary nor a
+# title. Nobody wrote it; rows materialized before then keep it until the next
+# 确认写入. It names its chapter, so it is recognized per chapter
+# (planned_chapter_goal) — never by the prefix alone.
+RETIRED_CHAPTER_GOAL_PREFIX = "推进本章："
+
 # Historical UI scaffolds and canned text that were once persisted as if they
 # were authored story facts. Matching is exact after trim: prose that merely
 # contains one of these words is never altered.
@@ -55,6 +64,70 @@ def planned_text(value: Any) -> str | None:
     if value is None:
         return None
     return value if normalize_story_slot(value) else None
+
+
+def chapter_title_candidates(chapter: Any) -> frozenset[str]:
+    """The names the retired canned goal may have used for ``chapter`` (a
+    ChapterGoal row): its catalog title, the title the last materialization
+    seeded, a hand-made chapter's title, and its id (the builder's fallback).
+
+    A chapter renamed at the desk after its last 确认写入 no longer carries the
+    old name; its canned goal then goes unrecognized until the next 确认写入
+    rewrites it."""
+
+    if chapter is None:
+        return frozenset()
+    narrative = getattr(chapter, "narrative_json", None)
+    brief = getattr(chapter, "writer_brief_json", None)
+    narrative = narrative if isinstance(narrative, Mapping) else {}
+    brief = brief if isinstance(brief, Mapping) else {}
+    names = (
+        narrative.get("title"),
+        brief.get("chapter_title"),
+        brief.get("title"),
+        getattr(chapter, "chapter_id", None),
+    )
+    return frozenset(str(name).strip() for name in names if name is not None and str(name).strip())
+
+
+def is_retired_chapter_goal(value: Any, titles: Iterable[Any]) -> bool:
+    """``value`` is exactly the retired canned goal 「推进本章：<title>」 for one
+    of ``titles`` (exact after trim; any other text starting the same way is
+    the author's)."""
+
+    text = "" if value is None else str(value).strip()
+    if not text.startswith(RETIRED_CHAPTER_GOAL_PREFIX):
+        return False
+    named = text[len(RETIRED_CHAPTER_GOAL_PREFIX):].strip()
+    return any(
+        named == str(title).strip()
+        for title in titles
+        if title is not None and str(title).strip()
+    )
+
+
+def planned_chapter_goal(value: Any, chapter: Any) -> str:
+    """A chapter's goal — or a field the canned goal was copied into (its
+    main_plot_push, a scene's goal or beat) — exactly as stored when the
+    author planned it, or ``""`` when nothing was planned: missing, blank, an
+    exact old scaffold, or the retired canned goal of ``chapter``. Prompts
+    print no goal line and payloads show the empty state for ``""``."""
+
+    if not normalize_story_slot(value):
+        return ""
+    if is_retired_chapter_goal(value, chapter_title_candidates(chapter)):
+        return ""
+    return str(value)
+
+
+def planned_beats(beats: Any, chapter: Any) -> list[Any]:
+    """A scene card's beats without the retired canned goal of ``chapter``
+    (the builder's single fallback beat); every other beat is kept as stored."""
+
+    if not isinstance(beats, (list, tuple)):
+        return []
+    titles = chapter_title_candidates(chapter)
+    return [beat for beat in beats if not is_retired_chapter_goal(beat, titles)]
 
 
 def normalize_story_slot_mapping(
