@@ -120,8 +120,7 @@ const sleep = (ms) => act(async () => { await new Promise(resolve => setTimeout(
 
 describe("构思 · 历史 · 服务器上保存的版本（R15a）", () => {
   beforeEach(() => {
-    vi.resetModules();
-    window.localStorage.clear();
+    vi.resetModules();   // 每个用例一份新的同步层（本机存储由 test-setup.js 在用例之间清空）
   });
   afterEach(async () => {
     while (mounted.length) {
