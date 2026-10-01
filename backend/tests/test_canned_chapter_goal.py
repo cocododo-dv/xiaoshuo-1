@@ -340,12 +340,17 @@ def test_catalog_and_payloads_show_the_empty_state(session) -> None:
         assert (payload["chapter_goal"], payload["main_plot_push"]) == ("", None)
     v1 = chapter_payload(session, chapter)
     assert (v1["chapter_goal"], v1["main_plot_push"]) == ("", None)
-    block = SceneWorkbenchService(session).payload(blank.scene_id, diagnostics=True)["chapter_goal"]
-    assert (block["chapter_goal"], block["main_plot_push"]) == ("", None)
+    blank_v1 = next(row for row in v1["scenes"] if row["scene_id"] == blank.scene_id)
+    assert (blank_v1["scene_goal"], blank_v1["beats_json"]) == ("", [])
+    workbench = SceneWorkbenchService(session).payload(blank.scene_id, diagnostics=True)
+    assert (workbench["chapter_goal"]["chapter_goal"], workbench["chapter_goal"]["main_plot_push"]) == ("", None)
+    assert (workbench["scene_card"]["scene_goal"], workbench["scene_card"]["beats_json"]) == ("", [])
     project.status = "chapter_final_review"
     session.commit()
     packet = ProjectChapterFlowService(session).review_packet(project, chapter.chapter_id)
     assert packet is not None and packet["chapter_goal"] == ""
+    review = next(row for row in packet["scene_reviews"] if row["scene_id"] == blank.scene_id)
+    assert review["title"] == blank.scene_id
 
     # 章节编排的待补清单（不是 AI）：没起题名的场，题名同目录
     blank.pov_character_id = None
@@ -361,6 +366,17 @@ def test_catalog_and_payloads_show_the_empty_state(session) -> None:
     catalog = CatalogService(session).chapter_payload(project, chapter, 0)
     assert (catalog["goal"], catalog["summary"]) == (AUTHORED_GOAL, "旧信线被正式打开")
     assert lifecycle.serialize_chapter(chapter)["main_plot_push"] == "  旧信线被正式打开  "
+
+
+def test_the_trash_lists_no_canned_goal_as_a_scene_title(session) -> None:
+    from novel_system.services.trash import TrashService
+
+    _chapter, blank = _legacy_rows(session)
+    blank.trashed_flag = 1
+    session.commit()
+
+    (row,) = [item for item in TrashService(session).list_trash(PROJECT_ID)["items"] if item["kind"] == "scene"]
+    assert row["title"] == blank.scene_id
 
 
 def test_the_design_context_and_the_proposal_target_take_no_canned_goal(session) -> None:

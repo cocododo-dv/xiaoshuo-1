@@ -43,7 +43,7 @@ from novel_system.services.scene_budget import lifecycle_budget_payload
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
-from novel_system.services.story_slots import planned_chapter_goal, planned_text
+from novel_system.services.story_slots import planned_beats, planned_chapter_goal, planned_text
 from novel_system.services.text_input import clean_backfill_markers
 
 # ``GET …/workbench?include=diagnostics``：连同诊断部分一起给（测试与排障用）
@@ -187,8 +187,9 @@ class SceneWorkbenchService:
             },
             "scene_card": {
                 "scene_id": scene.scene_id,
-                "scene_goal": scene.scene_goal,
-                "beats_json": scene.beats_json,
+                # 同上：旧物化给没写摘要的场补的本章样板目标（也当唯一一拍）算没规划
+                "scene_goal": planned_chapter_goal(scene.scene_goal, chapter),
+                "beats_json": planned_beats(scene.beats_json, chapter),
                 "must_include_text": clean_backfill_markers(scene.must_include_text),
                 "location": scene.location,
             },

@@ -24,6 +24,7 @@ from novel_system.services.catalog_labels import chapter_title, scene_title
 from novel_system.services.errors import DomainError
 from novel_system.services.project_purge import build_project_purge_plan, purge_project_rows
 from novel_system.services.scene_lookup import require_project, scene_project_id
+from novel_system.services.story_slots import planned_chapter_goal
 
 
 class TrashService:
@@ -91,12 +92,24 @@ class TrashService:
                 )
             ).scalars().all()
             trashed_chapter_ids = {c.chapter_id for c in chapters}
+            # 场题名同目录：没起题名拿场目标，旧物化给没写摘要的场补的本章样板目标不算（按所在章的章名认，S2 1）
+            scene_chapters = (
+                {
+                    row.chapter_id: row
+                    for row in self.session.execute(
+                        select(ChapterGoal).where(ChapterGoal.chapter_id.in_({scene.chapter_id for scene in scenes}))
+                    ).scalars()
+                }
+                if scenes
+                else {}
+            )
             for scene in scenes:
+                goal = planned_chapter_goal(scene.scene_goal, scene_chapters.get(scene.chapter_id))
                 items.append(
                     {
                         "id": f"scene:{scene.scene_id}",
                         "kind": "scene",
-                        "title": scene_title(scene),
+                        "title": scene_title(scene, goal=goal),
                         "removed_at": scene.trashed_at,
                         # 所在章也被删时，恢复场景会被既有服务阻止（先恢复章）
                         "restorable": scene.chapter_id not in trashed_chapter_ids,
