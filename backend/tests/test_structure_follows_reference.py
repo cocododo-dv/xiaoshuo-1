@@ -567,7 +567,7 @@ def test_chapter_title_suggestions_carry_the_reference_and_reject_copied_samples
     service = SnowflakeWorkspaceLLMService(session)
     reference = {"profile_id": "p", "count": 4, "named_count": 3, "marker_style": "第X章式", "name_chars": {"median": 3}, "samples": ["铁门", "河边的信"], "how_to_use": "…"}
     result = service.chapter_title_suggestions(
-        project={"project_id": "P_SFR_llm", "title": "何来"},
+        project={"project_id": "P_SFR_llm", "title": "雨城旧档"},
         book={"logline": "…"},
         chapters=[{"row_uid": "r1", "position": 1, "of": 2, "scenes": []}, {"row_uid": "r2", "position": 2, "of": 2, "scenes": []}],
         named_chapters=[],
