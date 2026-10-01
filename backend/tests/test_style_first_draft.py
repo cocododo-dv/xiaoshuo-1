@@ -164,10 +164,10 @@ def test_validation_rejects_bad_draft_mode_and_old_contracts_default_to_neutral_
     with pytest.raises(ValueError):
         validate_style_runtime_contract(broken)
     # 旧契约没有 draft_mode 键(重新计算哈希以模拟当年冻结的契约)→ neutral_first,重放不变
-    from novel_system.services.style_reference.runtime_contract import _json_hash
+    from novel_system.services.style_reference.runtime_contract_v1 import contract_json_hash
 
     old = {k: v for k, v in contract.items() if k not in {"draft_mode", "contract_hash"}}
-    old["contract_hash"] = _json_hash(old)
+    old["contract_hash"] = contract_json_hash(old)
     validate_style_runtime_contract(old)
     old_bundle = json.loads(json.dumps(bundle))
     old_bundle["snapshot"]["inline_digests"]["_style_reference_runtime_contract"] = json.dumps(old, ensure_ascii=False, sort_keys=True)

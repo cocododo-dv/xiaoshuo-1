@@ -176,7 +176,7 @@ def test_ingest_local_only_with_a_cloud_llm_is_refused_not_heuristic(monkeypatch
     assert "仅本机" in caught.value.message
     assert not sentinel.called
 
-    from tests.conftest import build_fake_paragraph_classifier
+    from tests.support.llm_fakes import build_fake_paragraph_classifier
 
     fake = build_fake_paragraph_classifier()(rule="default")
     monkeypatch.setattr(policy_module, "node_route_is_local", lambda *_a, **_k: True)

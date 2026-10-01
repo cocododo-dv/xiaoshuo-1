@@ -57,12 +57,12 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION_V1,
     STYLE_RUNTIME_CONTRACT_VERSION_V2,
-    _json_hash,
     build_style_runtime_contract,
     reset_contract_memo,
     style_runtime_contract_from_bundle,
     validate_style_runtime_contract,
 )
+from novel_system.services.style_reference.runtime_contract_v1 import contract_json_hash
 from novel_system.services.style_reference.schemas import (
     FEW_SHOT_CLOSING_MANDATE,
     FEW_SHOT_CLOSING_MANDATE_FINAL,
@@ -584,10 +584,10 @@ def test_contract_v2_rejects_sample_refs_and_tampering(session) -> None:
     with_refs["layers"][0]["sample_quote_refs"] = []
     layer = dict(with_refs["layers"][0])
     layer.pop("layer_hash")
-    with_refs["layers"][0]["layer_hash"] = _json_hash(layer)
+    with_refs["layers"][0]["layer_hash"] = contract_json_hash(layer)
     body = dict(with_refs)
     body.pop("contract_hash")
-    with_refs["contract_hash"] = _json_hash(body)
+    with_refs["contract_hash"] = contract_json_hash(body)
     with pytest.raises(ValueError, match="sample references"):
         validate_style_runtime_contract(with_refs)
     # 书快照的段落根哈希必须是 64 位十六进制（哈希重算过，只有格式不对）
@@ -595,10 +595,10 @@ def test_contract_v2_rejects_sample_refs_and_tampering(session) -> None:
     bad_root["layers"][0]["book"]["paragraph_root_sha256"] = "not-a-sha"
     layer = dict(bad_root["layers"][0])
     layer.pop("layer_hash")
-    bad_root["layers"][0]["layer_hash"] = _json_hash(layer)
+    bad_root["layers"][0]["layer_hash"] = contract_json_hash(layer)
     body = dict(bad_root)
     body.pop("contract_hash")
-    bad_root["contract_hash"] = _json_hash(body)
+    bad_root["contract_hash"] = contract_json_hash(body)
     with pytest.raises(ValueError, match="paragraph root is malformed"):
         validate_style_runtime_contract(bad_root)
 
@@ -633,7 +633,7 @@ def test_v1_contracts_in_old_bundles_still_validate_and_render(session) -> None:
         "sample_paragraph_refs": [],
         "book": {"book_id": book_id, "text_checksum": "x", "cloud_llm_allowed_at_freeze": True},
     }
-    layer["layer_hash"] = _json_hash(layer)
+    layer["layer_hash"] = contract_json_hash(layer)
     contract = {
         "schema_version": 1,
         "contract_version": STYLE_RUNTIME_CONTRACT_VERSION_V1,
@@ -643,7 +643,7 @@ def test_v1_contracts_in_old_bundles_still_validate_and_render(session) -> None:
         "layer_count": 1,
         "layers": [layer],
     }
-    contract["contract_hash"] = _json_hash(contract)
+    contract["contract_hash"] = contract_json_hash(contract)
     assert validate_style_runtime_contract(contract)["contract_hash"] == contract["contract_hash"]
     scene = seed_scene(session, "SC_V1")
     bundle = {

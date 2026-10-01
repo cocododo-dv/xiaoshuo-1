@@ -151,7 +151,7 @@ def seed_story_order(session, *, chapters: list[dict] | None = None, count: int 
     session.add(
         StoryProject(
             project_id=STORY_ORDER_PROJECT_ID,
-            title="何来",
+            title="合成长篇",
             outline_text="大纲",
             planning_mode="snowflake",
             snowflake_workflow_mode="explore",

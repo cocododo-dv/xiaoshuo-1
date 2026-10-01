@@ -80,8 +80,8 @@ confine_novel_system_to_this_checkout()
 for _key in developer_env_keys():
     del os.environ[_key]
 
-from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.support.api_client import AutoKeyTestClient
+from tests.support.llm_fakes import build_fake_paragraph_classifier
 
 from novel_system.api.app import create_app
 from novel_system.cache_registry import reset_all_caches
@@ -207,100 +207,6 @@ def session():
         yield db
     finally:
         db.close()
-
-
-def build_fake_paragraph_classifier():
-    """Deterministic LLMClient mock 的类(不经 fixture 也能用:路由测试的导入助手需要它——
-    2026-09-15 严格 LLM 后,产品路由的导入 / 重新分类没有 LLM 就 409)。
-
-    返回一个 FakeLLMClient 类(测试调 `FakeLLMClient(rule="dialogue_heavy")` 实例化)。
-    `rule` 控制启发式行为,便于覆盖锚定校准 agreement >= 0.85 与 < 0.85 两条路径。
-    """
-    import json
-
-    class _FakeLLMResponse:
-        def __init__(self, classifications: list[dict]) -> None:
-            self.structured_output = {"classifications": classifications}
-            self.text = json.dumps(self.structured_output, ensure_ascii=False)
-            self.usage: dict = {}
-            self.finish_reason = "stop"
-            self.request_id = None
-            self.provider = "fake"
-            self.model = "fake"
-            self.raw_response: dict = {}
-            self.response_format = "json_object"
-
-    class FakeLLMClient(AccountedGenerateMixin):
-        def __init__(self, rule: str = "default") -> None:
-            self.rule = rule
-            self.call_count = 0
-            self.call_log: list[dict] = []
-
-        def generate(self, request):  # noqa: ANN001
-            self.call_count += 1
-            self.call_log.append(
-                {
-                    "node_id": getattr(request, "node_id", None),
-                    "model": getattr(request, "model", None),
-                }
-            )
-            user_msg = request.messages[-1]["content"]
-            paragraphs: list[dict] = []
-            # 精确匹配"包含 paragraphs 字段的 JSON 块":在 user_msg 中找
-            # 形如 {"paragraphs": [...]} 的子串。task_prompt 模板里可能含其他 `{`,
-            # 所以不能用最长贪婪;改为按 "paragraphs" 关键字定位。
-            anchor = '"paragraphs"'
-            anchor_pos = user_msg.find(anchor)
-            if anchor_pos >= 0:
-                # 从 anchor 向左找最近的 {
-                start = user_msg.rfind("{", 0, anchor_pos)
-                if start >= 0:
-                    # 平衡括号扫描
-                    depth = 0
-                    end = -1
-                    for i in range(start, len(user_msg)):
-                        ch = user_msg[i]
-                        if ch == "{":
-                            depth += 1
-                        elif ch == "}":
-                            depth -= 1
-                            if depth == 0:
-                                end = i + 1
-                                break
-                    if end > start:
-                        try:
-                            data = json.loads(user_msg[start:end])
-                            paragraphs = data.get("paragraphs", []) or []
-                        except json.JSONDecodeError:
-                            paragraphs = []
-            classifications = [
-                {
-                    "paragraph_index": p.get("paragraph_index", i),
-                    "paragraph_type": self._classify(p.get("text", ""), request, i),
-                    "confidence": "high",
-                }
-                for i, p in enumerate(paragraphs)
-            ]
-            return _FakeLLMResponse(classifications)
-
-        def _classify(self, text: str, request, idx: int) -> str:
-            # rule="disagree_after_anchor":anchor 节点稳定;bulk 节点强制变型,
-            # 用于校验 agreement < 0.85 时 fallback 路径。
-            if self.rule == "disagree_after_anchor":
-                node_id = getattr(request, "node_id", "") or ""
-                if node_id.endswith("_bulk"):
-                    return "transition"  # 与 anchor 大量不一致
-            if any(q in text for q in ('"', "“", "”", "「", "」")):
-                return "dialogue"
-            if "记得" in text or "想起" in text:
-                return "flashback"
-            if "想着" in text or "心里" in text:
-                return "psychology"
-            if len(text) < 30:
-                return "transition"
-            return "narration"
-
-    return FakeLLMClient
 
 
 @pytest.fixture

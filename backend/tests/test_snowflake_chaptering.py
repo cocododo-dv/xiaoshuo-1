@@ -777,11 +777,11 @@ def test_keeping_the_live_table_also_replaces_an_old_frontend_cache_copy(client,
 
 def test_a_frontend_payload_missing_chapters_cannot_wipe_the_chapter_table(session) -> None:
     """draft_override 是「补上未保存的本地编辑」，不是删除指令——章表同场景表一样受保护。"""
-    from novel_system.services.snowflake_workspace import _merge_dicts_keeping_members
+    from novel_system.services.snowflake_draft_merge import overlay_keeping_members
 
     base = {"chapters": [{"row_uid": "a", "title": "一"}, {"row_uid": "b", "title": "二"}]}
     override = {"chapters": [{"row_uid": "a", "title": "一（改）"}]}
-    merged = _merge_dicts_keeping_members(base, override)
+    merged = overlay_keeping_members(base, override)
     assert [c["row_uid"] for c in merged["chapters"]] == ["a", "b"], "FE 少带一章就把它删了"
     assert merged["chapters"][0]["title"] == "一（改）"
 

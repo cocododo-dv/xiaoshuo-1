@@ -87,10 +87,10 @@ from novel_system.services.style_reference.policy import decide_reference_route
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION_V1,
-    _json_hash,
     build_style_runtime_contract,
     contract_layer,
 )
+from novel_system.services.style_reference.runtime_contract_v1 import contract_json_hash
 from novel_system.services.style_reference.schemas import FEW_SHOT_CLOSING_MANDATE_FINAL, FEW_SHOT_IN_USER_MESSAGE_NOTE
 from novel_system.services.style_reference.voice_signature import (
     compute_voice_signature_for_text,
@@ -526,7 +526,7 @@ def test_v1_contract_obeys_a_segments_only_book(session) -> None:
         # v1 的书快照没有 cloud_policy
         "book": {"book_id": book_id, "text_checksum": "x", "cloud_llm_allowed_at_freeze": True},
     }
-    layer["layer_hash"] = _json_hash(layer)
+    layer["layer_hash"] = contract_json_hash(layer)
     contract = {
         "schema_version": 1,
         "contract_version": STYLE_RUNTIME_CONTRACT_VERSION_V1,
@@ -536,7 +536,7 @@ def test_v1_contract_obeys_a_segments_only_book(session) -> None:
         "layer_count": 1,
         "layers": [layer],
     }
-    contract["contract_hash"] = _json_hash(contract)
+    contract["contract_hash"] = contract_json_hash(contract)
     policy = policy_from_contract(contract, mode="frozen")
     assert policy.reference_mode == "full"  # 快照里说不出书只发短句
     rendered = render_style(session, policy, StyleRenderRequest(placement=PLACEMENT_USER_TAIL, scene_id="L1"))

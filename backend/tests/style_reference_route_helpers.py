@@ -32,7 +32,7 @@ SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心
 
 
 def _default_fake() -> Any:
-    from tests.conftest import build_fake_paragraph_classifier
+    from tests.support.llm_fakes import build_fake_paragraph_classifier
 
     return build_fake_paragraph_classifier()(rule="default")
 
