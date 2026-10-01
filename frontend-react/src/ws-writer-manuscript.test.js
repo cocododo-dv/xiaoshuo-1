@@ -183,6 +183,18 @@ describe("选区按段切（wrSelectionSegments）", () => {
     expect(wrSelectionSegments(loose, collapsed)).toBeNull();
   });
 
+  it("段里的软换行（<br>）是一行的结束：送去改写的是两行、两段（与服务端按换行数的段数一样），不粘成一行（复核 Q3b-R3）", () => {
+    const root = editor("<p>雨城入夜，<br>林昭读完旧信。</p><p>窗外有人。</p>");
+    const seg = wrSelectionSegments(root, rangeIn(root, [0, 0], [0, 12]));
+    expect(seg.blocks).toEqual([root.children[0]]);
+    expect(seg.paragraphs).toEqual(["雨城入夜，", "林昭读完旧信。"]);
+    expect(seg.text).toBe("雨城入夜，\n林昭读完旧信。");
+    expect(seg.segments[0]).toMatchObject({ start: 0, end: 12, text: "雨城入夜，林昭读完旧信。", lines: ["雨城入夜，", "林昭读完旧信。"] });
+    // 段尾的 <br> 不多出空行；套在格式标签里的 <br> 照样断行
+    const nested = editor("<p>雨城入夜。<br></p><p>林昭<strong>读<br></strong>信。</p>");
+    expect(wrSelectionSegments(nested, rangeIn(nested, [0, 0], [1, 5])).paragraphs).toEqual(["雨城入夜。", "林昭读", "信。"]);
+  });
+
   it("wrPositionAt：落在两个文本节点之间时，preferNext 取后一个的开头，否则取前一个的末尾；空段落在段落本身", () => {
     const p = editor('<p>雨城<span class="wr-entity">林昭</span>读信。</p>').firstChild;
     const [rain, nameText] = [p.firstChild, p.querySelector("span").firstChild];

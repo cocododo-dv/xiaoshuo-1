@@ -159,11 +159,33 @@ function isLeafBlock(node) {
   return !!node && node.nodeType === 1 && LEAF_BLOCK_TAGS.has(node.tagName) && !node.querySelector(NESTED_BLOCK_SELECTOR);
 }
 
+/* 与服务端 str.splitlines 同一套行结束符：送去的段数和服务端数出来的对得上 */
+const LINE_BREAK_RE = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/;
+
+/* 一段里被选中的那一截按行切（空白行不算）：软换行（Shift+Enter 的 <br>）也是一行的结束。
+   Range.toString() 不认 <br>，按它送去的两行字会粘成一行（复核 Q3b-R3）。 */
+function sliceLines(block, range) {
+  const doc = block.ownerDocument;
+  const inside = doc.createRange();
+  inside.selectNodeContents(block);
+  if (block.contains(range.startContainer)) inside.setStart(range.startContainer, range.startOffset);
+  if (block.contains(range.endContainer)) inside.setEnd(range.endContainer, range.endOffset);
+  const walker = doc.createTreeWalker(inside.cloneContents(), 1 /* SHOW_ELEMENT */ | 4 /* SHOW_TEXT */);
+  let text = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === 3) text += node.nodeValue;
+    else if (node.tagName === "BR") text += "\n";
+  }
+  return text.split(LINE_BREAK_RE).filter((line) => line.trim());
+}
+
 /* 选区落在编辑器的哪几段：
-   { blocks, segments: [{ block, index, start, end, text }], paragraphs, text, head, tail }
+   { blocks, segments: [{ block, index, start, end, text, lines }], paragraphs, text, head, tail }
    · blocks：从选区起始段到结束段（含中间整段选中的空段），替换时这几段整体换掉；
-   · segments：每段里被选中的那一截（偏移按这一段的拼接文字算；index 是诊断的段号，不是段落元素时为 -1）；
-   · paragraphs：选中的字按段分开（空白段不算）——送去改写的就是它们，一段一行（text = paragraphs.join("\n")）；
+   · segments：每段里被选中的那一截（偏移按这一段的拼接文字算，text 是那一截的字、不含换行；index 是诊断的段号，
+     不是段落元素时为 -1；lines 是那一截按行切开的样子——段里的软换行 <br> 也断行，空白行不算）；
+   · paragraphs：选中的字按行分开（各段的 lines 连起来）——送去改写的就是它们，一行一段（text = paragraphs.join("\n")），
+     段数与服务端按换行数出来的一样；换回来时每一行各成一段；
    · head / tail：起始段里选区之前、结束段里选区之后留着不动的那两截的位置（{ block, offset }）。
    开头 / 结尾那一段里只选中了空白（选区停在下一段的开头、或从上一段的末尾起）不算那一段；中间没有字的顶层元素（空段、
    零散的 <br>）一起换掉。
@@ -191,8 +213,8 @@ export function wrSelectionSegments(editor, range) {
   if (!touched.length) return null;
   if (touched.some((item) => !isLeafBlock(item.block) && item.block.textContent.trim())) return { unsupported: true };
   const indexed = Array.from(editor.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR));
-  const segments = touched.map((item) => ({ ...item, index: indexed.indexOf(item.block) }));
-  const paragraphs = segments.map((item) => item.text).filter((text) => text.trim());
+  const segments = touched.map((item) => ({ ...item, index: indexed.indexOf(item.block), lines: sliceLines(item.block, range) }));
+  const paragraphs = segments.flatMap((item) => item.lines);
   const first = segments[0];
   const last = segments[segments.length - 1];
   return {

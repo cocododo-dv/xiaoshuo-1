@@ -164,7 +164,8 @@ async function loadRoom({ doc = THREE, options = null, reply = null } = {}) {
   return { client, ...writer, ...store };
 }
 
-/* 按「第几段、段里第几个字」选中：[段号, 偏移] → [段号, 偏移]（段里的字可能被标记拆成好几个文本节点） */
+/* 按「第几段、段里第几个字」选中：[段号, 偏移] → [段号, 偏移]（段号数编辑器的顶层段落，p / blockquote 都算；
+   段里的字可能被标记拆成好几个文本节点） */
 function pointIn(block, offset) {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   let seen = 0;
@@ -178,7 +179,7 @@ function pointIn(block, offset) {
   return [last, last ? last.nodeValue.length : 0];
 }
 async function selectBetween(editor, [startBlock, startOffset], [endBlock, endOffset]) {
-  const blocks = editor.querySelectorAll("p");
+  const blocks = editor.children;
   const range = document.createRange();
   range.setStart(...pointIn(blocks[startBlock], startOffset));
   range.setEnd(...pointIn(blocks[endBlock], endOffset));
@@ -403,6 +404,176 @@ describe("写作台 · 跨段改写按段换回（#20b）", () => {
     await vi.waitFor(() => expect(pop().textContent).toContain("模型这次没有给出可用的结果"), T);
     expect(button(pop(), "重试")).toBeTruthy();
     expect(pop().textContent).not.toContain("去系统设置");
+  });
+});
+
+/* ---------- 同一段里先后改写几处：各自都能还原（复核 Q3b-R1） ----------
+   一句一句地润色同一段是最常见的用法。过去第二次改写把第一处的「可还原」标记连同那一段一起换掉了：第一处只能等
+   第二处还原之后才能还原，第二处一「保留改写」，第一处就再也还原不了（「改写后又改过这几段」，作者其实什么都没改）。 */
+const ONE = "<p>雨城入夜。林昭把旧信压在案卷底下。窗外有人敲门。</p><p>灯下的字迹很淡。</p>";
+
+/* 每一次改写请求按顺序给一版候选（各是几段字） */
+function repliesInTurn(...versions) {
+  let call = 0;
+  return () => {
+    const paragraphs = versions[Math.min(call, versions.length - 1)];
+    call += 1;
+    return Promise.resolve({ candidate: { patch_id: `patch-${call}`, replacement_options: [{ option_id: `o${call}`, paragraphs }] } });
+  };
+}
+async function openRev(span) {
+  await act(async () => { window.getSelection().removeAllRanges(); });
+  await click(span);
+  const pop = () => document.querySelector('.wr-irw-pop[aria-label="AI 改写的这一处"]');
+  await vi.waitFor(() => expect(pop()).not.toBeNull(), T);
+  return pop;
+}
+/* 先把「雨城入夜。」改成「夜深了。」，再把同一段里的「窗外有人敲门。」改成「门外有人。」 */
+async function rewriteTwiceInFirstParagraph(editor) {
+  await selectBetween(editor, [0, 0], [0, 5]);
+  await rewriteWith();
+  await replaceWithFirst();
+  await selectBetween(editor, [0, 16], [0, 23]);
+  await rewriteWith();
+  await replaceWithFirst();
+  expect(editor.children[0].textContent).toBe("夜深了。林昭把旧信压在案卷底下。门外有人。");
+  const spans = [...editor.querySelectorAll(".wr-rev")];
+  expect(spans.map((span) => span.textContent)).toEqual(["夜深了。", "门外有人。"]);
+  return spans;
+}
+
+describe("写作台 · 同一段里先后改写两处，各自都能还原（复核 Q3b-R1）", () => {
+  it("先还原前一处：前一处的原文回来，后一处的改写留着、照样能单独还原", async () => {
+    const { editor } = await openRoom({ doc: ONE, reply: repliesInTurn(["夜深了。"], ["门外有人。"]) });
+    const [first, second] = await rewriteTwiceInFirstParagraph(editor);
+
+    const pop = await openRev(first);
+    expect(pop().textContent).not.toContain("不能整段还原");
+    await click(button(pop(), "还原原文"));
+
+    expect(editor.children[0].textContent).toBe("雨城入夜。林昭把旧信压在案卷底下。门外有人。");
+    expect([...editor.querySelectorAll(".wr-rev")]).toEqual([second]);
+    const popSecond = await openRev(second);
+    await click(button(popSecond(), "还原原文"));
+    expect(paragraphTexts(editor)).toEqual(["雨城入夜。林昭把旧信压在案卷底下。窗外有人敲门。", "灯下的字迹很淡。"]);
+    expect(editor.querySelector(".wr-rev")).toBeNull();
+  });
+
+  it("后一处点了「保留改写」，前一处照样能还原原文", async () => {
+    const { editor } = await openRoom({ doc: ONE, reply: repliesInTurn(["夜深了。"], ["门外有人。"]) });
+    const [first, second] = await rewriteTwiceInFirstParagraph(editor);
+    const popSecond = await openRev(second);
+    await click(button(popSecond(), "保留改写"));
+    expect([...editor.querySelectorAll(".wr-rev")]).toEqual([first]);
+
+    const pop = await openRev(first);
+    await click(button(pop(), "还原原文"));
+
+    expect(editor.children[0].textContent).toBe("雨城入夜。林昭把旧信压在案卷底下。门外有人。");
+    expect(editor.querySelector(".wr-rev")).toBeNull();
+  });
+
+  it("倒着还原（先还原后一处、再还原前一处）：innerHTML 逐字回到最初", async () => {
+    const { editor } = await openRoom({ doc: ONE, reply: repliesInTurn(["夜深了。"], ["门外有人。"]) });
+    const before = editor.innerHTML;
+    const [first, second] = await rewriteTwiceInFirstParagraph(editor);
+    let pop = await openRev(second);
+    await click(button(pop(), "还原原文"));
+    pop = await openRev(first);
+    await click(button(pop(), "还原原文"));
+    expect(editor.innerHTML).toBe(before);
+  });
+
+  it("跨两段改写之后，又改了结束段后半截的一句：先还原跨段的那一处，后一句的改写留着、也能还原", async () => {
+    const { editor } = await openRoom({ reply: repliesInTurn(["她把旧信压回案卷。", "灯下的字迹淡得像水。"], ["她读到这里停住了。"]) });
+    await selectBetween(editor, [0, 5], [1, 8]);
+    await rewriteWith();
+    await replaceWithFirst();
+    // 「她读到第三行停住了。」在改写后的第二段里从第 10 个字起
+    await selectBetween(editor, [1, 10], [1, 20]);
+    await rewriteWith();
+    await replaceWithFirst();
+    const spans = [...editor.querySelectorAll(".wr-rev")];
+    expect(spans.map((span) => span.textContent)).toEqual(["她把旧信压回案卷。", "灯下的字迹淡得像水。", "她读到这里停住了。"]);
+
+    const pop = await openRev(spans[0]);
+    await click(button(pop(), "还原原文"));
+    expect(paragraphTexts(editor)).toEqual(["雨城入夜。林昭把旧信压在案卷底下。", "灯下的字迹很淡。她读到这里停住了。", "窗外有人敲门。"]);
+    expect([...editor.querySelectorAll(".wr-rev")]).toEqual([spans[2]]);
+
+    const popLast = await openRev(spans[2]);
+    await click(button(popLast(), "还原原文"));
+    expect(paragraphTexts(editor)).toEqual(["雨城入夜。林昭把旧信压在案卷底下。", "灯下的字迹很淡。她读到第三行停住了。", "窗外有人敲门。"]);
+  });
+});
+
+/* ---------- 换回来的段落样子跟着对应的那一行（复核 Q3b-R2） ----------
+   第 i 段的段落种类与段首缩进对的是送去改写的第 i 行，不拿中间的空段、零散的 <br> 当样子，也不一律照抄第一段。 */
+describe("写作台 · 跨段改写换回的段落样子（复核 Q3b-R2）", () => {
+  it("两段之间隔着空段：第二段照样带着它原来的段首缩进", async () => {
+    const doc = "<p>　　雨城入夜。林昭读信。</p><p><br></p><p>　　窗外有人敲门。</p>";
+    const options = [{ option_id: "o1", paragraphs: ["她读完了信。", "门外有人。"] }];
+    const { client, editor } = await openRoom({ doc, options });
+    await selectBetween(editor, [0, 7], [2, 9]);
+    await rewriteWith();
+    await vi.waitFor(() => expect(rewriteCalls(client)).toHaveLength(1), T);
+    expect(rewriteCalls(client)[0][1].source_excerpt).toBe("林昭读信。\n　　窗外有人敲门。");
+
+    await replaceWithFirst();
+
+    expect(paragraphTexts(editor)).toEqual(["　　雨城入夜。她读完了信。", "　　门外有人。"]);
+  });
+
+  it("从引文选到正文：第二、三段原来是正文就还是 <p>，不跟着第一段变成引文", async () => {
+    const doc = "<blockquote>旧信上写着：雨城入夜。</blockquote><p>林昭读完了信。</p><p>窗外有人敲门。</p>";
+    const options = [{ option_id: "o1", paragraphs: ["夜深了。", "她读完了。", "门外有人。"] }];
+    const { editor } = await openRoom({ doc, options });
+    await selectBetween(editor, [0, 6], [2, 7]);
+    await rewriteWith();
+    await replaceWithFirst();
+
+    expect([...editor.children].map((node) => node.tagName)).toEqual(["BLOCKQUOTE", "P", "P"]);
+    expect(paragraphTexts(editor)).toEqual(["旧信上写着：夜深了。", "她读完了。", "门外有人。"]);
+  });
+});
+
+/* ---------- 段里的软换行（复核 Q3b-R3） ----------
+   Shift+Enter 的 <br> 也是一行的结束：按行送去改写（过去两行粘成一行送去），换回时每一行各成一段；
+   选区边上正好挨着的 <br> 跟着留下的那一截，不被一起删掉。 */
+describe("写作台 · 段里的软换行（复核 Q3b-R3）", () => {
+  it("选中跨过软换行的两行：按两行送去，换回成两段；「还原原文」原样放回（<br> 也在）", async () => {
+    const doc = "<p>雨城入夜，<br>林昭读完旧信。</p><p>窗外有人敲门。</p>";
+    const options = [{ option_id: "o1", paragraphs: ["夜深了，", "她读完了信。"] }];
+    const { client, editor } = await openRoom({ doc, options });
+    const before = editor.innerHTML;
+    await selectBetween(editor, [0, 0], [0, 12]);
+    await rewriteWith();
+    await vi.waitFor(() => expect(rewriteCalls(client)).toHaveLength(1), T);
+    expect(rewriteCalls(client)[0][1].source_excerpt).toBe("雨城入夜，\n林昭读完旧信。");
+
+    await replaceWithFirst();
+    expect(paragraphTexts(editor)).toEqual(["夜深了，", "她读完了信。", "窗外有人敲门。"]);
+
+    await openRevAndRevert(editor);
+    expect(editor.innerHTML).toBe(before);
+  });
+
+  it("只改软换行前面那一行：换行留着，下一行不被粘上来", async () => {
+    const doc = "<p>雨城入夜，<br>林昭读完旧信。</p>";
+    const options = [{ option_id: "o1", paragraphs: ["夜深了，"] }];
+    const { client, editor } = await openRoom({ doc, options });
+    await selectBetween(editor, [0, 0], [0, 5]);
+    await rewriteWith();
+    await vi.waitFor(() => expect(rewriteCalls(client)).toHaveLength(1), T);
+    expect(rewriteCalls(client)[0][1].source_excerpt).toBe("雨城入夜，");
+
+    await replaceWithFirst();
+
+    const paragraph = editor.children[0];
+    expect(paragraph.textContent).toBe("夜深了，林昭读完旧信。");
+    const br = paragraph.querySelector(".wr-rev").nextElementSibling;
+    expect(br && br.nodeName).toBe("BR");
+    expect(br.nextSibling.nodeValue).toBe("林昭读完旧信。");
   });
 });
 

@@ -10,8 +10,8 @@ import { wrBlockSlice, wrSelectionSegments } from "./ws-writer-manuscript.js";
    · capture()：从当前选区取位置（选区不在正文里、或不到两个字时返回 null）；记下选中的字、Range、
      起始段里的那一截（深改 → 起草时按它重新选中）与结束段序号（「AI 看这几段」按范围看），
      以及选区按段切开的样子（segmentsRef，wrSelectionSegments：跨段的改写按段送、按段换回）。
-     送去改写的字（textRef）是按段切好的那几段、一段一行；切不开（碰到不在段落里的散字）时 segmentsRef 是
-     { unsupported: true }，改写说明原因、不发请求，批注照常。
+     送去改写的字（textRef）是按段切好的那几行、一行一段（段里的软换行 <br> 也断行，送去的段数与服务端数的一样）；
+     切不开（碰到不在段落里的散字）时 segmentsRef 是 { unsupported: true }，改写说明原因、不发请求，批注照常。
    · intact(range)：那段字还在原处、没被改过、没塌成空的（整段重载后 Range 会塌到编辑器开头）。
    · liveSegments()：按 Range 现在的位置重新切一遍（替换前核对：和送去改写的必须是同一段字）。
    · returnFocus(caret)：焦点在工具条 / 弹层里（或随它们消失掉到 <body> 上）时还给正文——动过正文就把光标
@@ -24,7 +24,7 @@ const { useRef } = React;
 
 export function useEditorSelection({ editorRef, popRef, barRef }) {
   const rangeRef = useRef(null);
-  const textRef = useRef("");       // 送去改写的字：选中的那几段，一段一行（选区切不开时是 sel.toString()）
+  const textRef = useRef("");       // 送去改写的字：选中的那几行，一行一段（选区切不开时是 sel.toString()）
   const rangeTextRef = useRef("");  // Range.toString()：替换前据此确认那段字还在原处、没被改过
   const blockRef = useRef(null);    // 起始段里的那一截 { pid, pidEnd, start, end, text }
   const segmentsRef = useRef(null); // wrSelectionSegments 的结果（或 { unsupported: true }）
