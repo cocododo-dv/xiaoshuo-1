@@ -598,6 +598,55 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(client.apiGet).not.toHaveBeenCalled();
   });
 
+  it("「上游改了什么」按带栏名的分步文本对照：视角写名字，不印角色键、行 id 与枚举值（批准 #18b 的最后一处，合并胶水 G6）", async () => {
+    const { mod, client } = await loadSync({});
+    mod.SnowSync.applyServerStep("prj-main", "characters", {
+      step_key: "character_sheets", status: "approved", gate_satisfied: true, version: 3, draft: { characters: [] },
+      health: {}, completeness: {}, artifact: { step_run_id: "run_chars_v3", input_refs: {} },
+    });
+    mod.SnowSync.applyServerStep("prj-main", "scenes", {
+      step_key: "scene_list", status: "approved", gate_satisfied: true, version: 2, draft: { scenes: [] },
+      health: {}, completeness: {}, artifact: { step_run_id: "run_scenes_v2", input_refs: {} },
+    });
+    mod.SnowSync.applyServerStep("prj-main", "planning", {
+      step_key: "scene_details", status: "stale", gate_satisfied: false, version: 1, draft: { scenes: [] }, health: {}, completeness: {},
+      artifact: { step_run_id: "run_plan_v1", input_refs: { character_sheets: "run_chars_v1", scene_list: "run_scenes_v1" } },
+    });
+    const scene = (extra) => ({ row_uid: "row_5f2c9a", scene_id: "prj-main_SC_row_5f2c9a", pov_character_id: "c1", location: "码头", ...extra });
+    client.apiGet.mockImplementation(async (url) => {
+      if (String(url).includes("/steps/character_sheets/history")) {
+        return { items: [
+          { step_run_id: "run_chars_v3", version: 3, status: "approved", draft: { characters: [{ character_id: "c1", display_name: "林岑", role: "主角", goal: "查清谁改了档案", values: ["没有什么比真相更重要"] }] } },
+          { step_run_id: "run_chars_v1", version: 1, status: "superseded", draft: { characters: [{ character_id: "c1", display_name: "林岑", role: "主角", goal: "找回母本" }] } },
+        ] };
+      }
+      if (String(url).includes("/steps/scene_list/history")) {
+        return { items: [
+          { step_run_id: "run_scenes_v2", version: 2, status: "approved", draft: { scenes: [scene({ primary_form: "reactive", summary: "她在码头等到天亮", crucible: "退不出的困局" })] } },
+          { step_run_id: "run_scenes_v1", version: 1, status: "superseded", draft: { scenes: [scene({ primary_form: "proactive", summary: "她去码头取账本" })] } },
+        ] };
+      }
+      throw new Error("unexpected GET " + url);
+    });
+    // 本机的脚手架：视角名从 04 名册取
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ _t: 1, drafts: {}, checks: {}, states: {}, history: [],
+      scaffolds: { characters: { sel: "c1", chars: { c1: { name: "林岑", role: "主角" } } } } }));
+
+    const items = await mod.SnowSync.upstreamChanges("prj-main", "planning");
+
+    const byKey = Object.fromEntries(items.map(item => [item.feKey, item]));
+    expect(Object.keys(byKey).sort()).toEqual(["characters", "scenes"]);
+    expect(byKey.characters.oldText).toContain("目标（具体）：找回母本");
+    expect(byKey.characters.newText).toContain("价值观：没有什么比真相更重要");
+    expect(byKey.scenes.oldText).toContain("S01 · 主动 · 视角 林岑 · 码头");
+    expect(byKey.scenes.oldText).toContain("事件：她去码头取账本");
+    expect(byKey.scenes.newText).toContain("S01 · 反应 · 视角 林岑 · 码头");
+    expect(byKey.scenes.newText).toContain("坩埚：退不出的困局");
+    items.forEach(item => [item.oldText, item.newText].forEach(text => {
+      expect(text).not.toMatch(/\bc1\b|row_5f2c9a|prj-main|proactive|reactive/);
+    }));
+  });
+
   it("outline 往返：paragraphs 是五段展开而非章行镜像；历史章行镜像水合成空槽；章表只从规范的 chapters 来", async () => {
     const { mod } = await loadSync({});
     const saved = { scaffolds: { outline: {

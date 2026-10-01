@@ -239,11 +239,14 @@ const SnowSync = {
     return (snowHealth[id] || {})[feKey] || null;
   },
   /* 阶段 E：上游改了什么——按本步 artifact.input_refs（确认/写入时消费的上游 step_run_id）对照各上游
-     现在的 step_run_id，变了的上游拉 history?include_draft=true，把消费版本与现在版本折成可读文本并排返回。
-     没有记录（旧数据）或上游没变 → 空数组，视图据此提示。 */
+     现在的 step_run_id，变了的上游拉 history?include_draft=true，把消费版本与现在版本折成带栏名的分步文本并排返回
+     （视角名、04 名册与场序取本机现在的脚手架）。没有记录（旧数据）或上游没变 → 空数组，视图据此提示。 */
   async upstreamChanges(workId, feKey) {
     const id = workId || activeWork();
     const health = snowHealth[id] || {};
+    let local = null;
+    try { local = JSON.parse(localStorage.getItem(snowCacheKey(id))); } catch (e) {}
+    const scaffolds = (local && local.scaffolds) || {};
     const refs = ((health[feKey] || {}).inputRefs) || {};
     const changed = Object.entries(refs).map(([beKey, oldRunId]) => {
       const upFe = FE_BY_BE[beKey];
@@ -262,8 +265,8 @@ const SnowSync = {
         oldFound: !!oldRow,
         oldVersion: oldRow ? oldRow.version : null,
         newVersion: newRow ? newRow.version : null,
-        oldText: oldRow ? canonText(c.feKey, oldRow.draft) : "",
-        newText: newRow ? canonText(c.feKey, newRow.draft) : "",
+        oldText: oldRow ? canonText(c.feKey, oldRow.draft, scaffolds) : "",
+        newText: newRow ? canonText(c.feKey, newRow.draft, scaffolds) : "",
       });
     }
     return items;

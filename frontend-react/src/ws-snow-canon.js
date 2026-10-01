@@ -1,4 +1,4 @@
-import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow-model.js";
+import { S2_BE_STEPS, s2NormalizeState, s2StepText } from "./ws-snow-model.js";
 
 /* ==========================================================
    雪花构思 · 前端形状 ↔ 规范草稿（纯函数；2026-09-29 从 ws-snow-sync.jsx 拆出）
@@ -409,18 +409,13 @@ function adoptServerChapterTable(local, outlineDraft, sceneDraft) {
   return { cache: changed ? { ...base, scaffolds } : local, changed };
 }
 
-/* 规范草稿 → 可读文本（与视图 s2Content 同一折叠法：脚手架里的字符串按出现顺序拼接，跳过空串） */
-function canonText(feKey, draft) {
+/* 规范草稿 → 给作者看的分步文本（「上游改了什么」）：与导出大纲、引用上下文、回滚预览同一份——带栏名、一行一栏，
+   不印内部 id 与枚举值（批准 #18b）。以前它把脚手架里每一个字符串叶子拼起来，角色键 c1、09 的行 id、proactive 都在里面。
+   refs = 本机的整份脚手架（视角名与 04 名册、第 10 步的场序从这里取）；这一步自己换成这一版的。 */
+function canonText(feKey, draft, refs) {
   const fe = feFromCanon(feKey, draft || {});
-  if (fe.text != null) return String(fe.text);
-  const out = [];
-  const walk = (v) => {
-    if (typeof v === "string") out.push(v);
-    else if (Array.isArray(v)) v.forEach(walk);
-    else if (v && typeof v === "object") Object.values(v).forEach(walk);
-  };
-  walk(fe.scaffold || {});
-  return out.filter(s => s && s.trim()).join("\n");
+  const scaffolds = refs && typeof refs === "object" && !Array.isArray(refs) ? refs : {};
+  return s2StepText(feKey, fe.text, fe.scaffold, fe.scaffold ? { ...scaffolds, [feKey]: fe.scaffold } : scaffolds);
 }
 
 export {
