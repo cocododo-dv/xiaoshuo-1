@@ -146,6 +146,50 @@ def test_generate_records_react_trigger_source_on_step_run(client, monkeypatch) 
     assert "trigger_source" not in response.json()["data"]["step"]["health"]
 
 
+def test_a_same_story_autosave_keeps_the_generated_versions_provenance(client, monkeypatch) -> None:
+    """合并胶水 G5（Q2b 发现）：AI 生成之后，前端的下一次自动保存把同一份规范草稿带着新的 fe_* 写穿键再存一次。那不是
+    作者改了故事——待审版原位改写时出处照旧（AI 生成、触发入口、带了哪一版要点），AI 栏的出处不再一秒后就没了，
+    版本列表也不再说「你写的」。故事真的改了才算作者写的。"""
+    from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService
+
+    install_skeleton_snowflake(monkeypatch)
+    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "llm_enabled", lambda self: True)
+    pid = _create_project(client, key="keep-provenance")
+    # 带一条作者意图要点：这一版记下它消费了哪一版要点（health.direction_brief）
+    brief = client.put(
+        f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief/direction-brief",
+        json={"lines": [{"kind": "decision", "scope": "step", "text": "读者是想看旧案的人"}]},
+        headers={"X-Idempotency-Key": f"keep-provenance-brief-{pid}"},
+    )
+    assert brief.status_code == 200, brief.text
+    response = _generate(client, pid, "book_brief", {"require_llm": True, "source": "fe_scaffold_ai"}, key="gen")
+    assert response.status_code == 200, response.text
+    generated = response.json()["data"]["step"]
+    assert generated["health"]["generation_source"] == "llm"
+    assert generated["health"]["direction_brief"]["used"] is True
+    run_id = generated["artifact"]["step_run_id"]
+    draft = dict(generated["draft"])
+    url = f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief?include_workspace=false"
+
+    fe_keys = {"fe_text": "", "fe_scaffold": {"genre": draft.get("category", "")}, "fe_checks": [], "fe_state": "active", "fe_t": 1}
+    saved = client.patch(url, json={"draft": {**draft, **fe_keys}, "force": True})
+    assert saved.status_code == 200, saved.text
+    step = saved.json()["data"]["step"]
+    assert step["artifact"]["step_run_id"] == run_id  # 待审版原位改写
+    assert step["health"]["generation_source"] == "llm", "同一个故事的自动保存把 AI 生成的出处冲成了「你写的」"
+    assert step["health"]["trigger_source"] == "fe_scaffold_ai"
+    assert step["health"]["direction_brief"] == generated["health"]["direction_brief"]
+    history = client.get(f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief/history").json()["data"]
+    assert (history["items"][0]["generation_source"], history["items"][0]["trigger_source"]) == ("llm", "fe_scaffold_ai")
+
+    # 作者真的改了故事：这一版就是作者写的
+    edited = client.patch(url, json={"draft": {**draft, **fe_keys, "target_reader": "作者改过的读者", "fe_t": 2}, "force": True})
+    assert edited.status_code == 200, edited.text
+    health = edited.json()["data"]["step"]["health"]
+    assert health["generation_source"] == "author"
+    assert "trigger_source" not in health and "direction_brief" not in health
+
+
 @pytest.mark.parametrize(
     "bad_source",
     ["Bad Source!", "fe-scaffold-ai", "x" * 65, 7],

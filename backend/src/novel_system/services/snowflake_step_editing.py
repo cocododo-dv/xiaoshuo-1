@@ -32,6 +32,16 @@ from novel_system.services.snowflake_step_runs import (
 )
 
 
+#: 一版草稿的出处键（``_step_health`` 的同名参数）：语义没变的原位改写把它们原样带过去
+_PROVENANCE_KEYS = ("generation_source", "generation_notice", "trigger_source", "direction_brief", "direction")
+
+
+def _kept_provenance(health: Any) -> dict[str, Any]:
+    """待审版健康度里的出处（只取有值的键）。"""
+    stored = health if isinstance(health, dict) else {}
+    return {key: stored[key] for key in _PROVENANCE_KEYS if stored.get(key)}
+
+
 class SnowflakeStepEditingMixin:
     """见模块说明。与其它 ``snowflake_*`` 混入类一起组成 ``SnowflakeWorkspaceService``（B06-07）：
     方法之间照旧经 ``self`` 互相调用，名字与签名一个不改（测试与分章包依赖它们）。"""
@@ -240,10 +250,16 @@ class SnowflakeStepEditingMixin:
         wipes_story = latest is not None and would_wipe_story(latest.draft_json, draft)
         if latest is not None and latest.status == "pending_review" and not wipes_story:
             run = latest
+            # 这一版的出处（AI 生成 / 从历史恢复 / 按哪个方向、带了哪一版要点）：语义没变的保存——前端在生成或恢复之后
+            # 照例把同一份规范草稿带着新的 fe_* 写穿键（与章的包装）再存一次——不是作者改了故事，出处照旧；以前它被
+            # 改成「你写的」，AI 栏的出处一秒后就没了、版本列表也说「你写的」。故事真的改了才算作者写的
+            provenance: dict[str, Any] = {"generation_source": "author"}
+            if same_semantic_draft:
+                provenance.update(_kept_provenance(latest.health_json))
             StepRunStore.rewrite_pending(
                 run,
                 draft=draft,
-                health=self._step_health(step_key, draft, "pending_review", generation_source="author"),
+                health=self._step_health(step_key, draft, "pending_review", **provenance),
                 input_refs=self._input_refs(step_key, latest_by_step),
             )
         else:

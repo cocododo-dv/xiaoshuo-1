@@ -108,6 +108,32 @@ def test_restoring_without_a_shrink_carries_no_notice(session) -> None:
     assert "generation_notice" not in result["step"]["health"]
 
 
+def test_a_same_story_save_after_a_restore_keeps_the_restore_provenance(session) -> None:
+    """合并胶水 G5（Q2b 发现）：从历史恢复一版之后，前端的下一次自动保存把同一份规范草稿带着新的 fe_* 写穿键再存一次——
+    那不是作者改了故事，待审版原位改写时还是「从历史恢复」；故事真的改了才算作者写的。"""
+    service = _seed(session)
+    service.update_step(PROJECT_ID, "book_brief", {"draft": {"category": "悬疑", "target_reader": "第一版读者"}})
+    first = service.approve_step(PROJECT_ID, "book_brief")["step"]["artifact"]["step_run_id"]
+    service.update_step(PROJECT_ID, "book_brief", {"draft": {"category": "悬疑", "target_reader": "第二版读者"}})
+    restored = service.restore_step(PROJECT_ID, "book_brief", {"step_run_id": first})
+    run_id = restored["step_run"]["step_run_id"]
+    draft = dict(restored["step"]["draft"])
+
+    service.update_step(
+        PROJECT_ID, "book_brief",
+        {"draft": {**draft, "fe_text": "", "fe_scaffold": {"genre": "悬疑", "reader": "第一版读者"}, "fe_state": "active", "fe_t": 2}},
+    )
+    session.flush()
+    run = session.get(SnowflakeStepRun, run_id)
+    assert run.status == "pending_review" and run.draft_json["fe_t"] == 2  # 原位改写
+    assert run.health_json["generation_source"] == "history_restore", "同一个故事的保存把出处冲成了「你写的」"
+    assert service.step_history(PROJECT_ID, "book_brief")["items"][0]["generation_source"] == "history_restore"
+
+    service.update_step(PROJECT_ID, "book_brief", {"draft": {**draft, "target_reader": "作者又改了读者"}})
+    session.flush()
+    assert session.get(SnowflakeStepRun, run_id).health_json["generation_source"] == "author"
+
+
 def test_history_lists_versions_without_drafts_and_previews_one_version(session) -> None:
     service = _seed(session)
     service.update_step(PROJECT_ID, "book_brief", {"draft": {"category": "悬疑", "target_reader": "第一版读者"}})
