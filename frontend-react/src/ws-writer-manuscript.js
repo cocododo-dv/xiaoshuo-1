@@ -165,8 +165,9 @@ function isLeafBlock(node) {
    · segments：每段里被选中的那一截（偏移按这一段的拼接文字算；index 是诊断的段号，不是段落元素时为 -1）；
    · paragraphs：选中的字按段分开（空白段不算）——送去改写的就是它们，一段一行（text = paragraphs.join("\n")）；
    · head / tail：起始段里选区之前、结束段里选区之后留着不动的那两截的位置（{ block, offset }）。
-   开头 / 结尾那一段里只选中了空白（选区停在下一段的开头、或从上一段的末尾起）不算那一段。
-   选区碰到了不在任何段落里的散字、或套着段落 / 列表的结构：返回 { unsupported: true }——没法按段换回。
+   开头 / 结尾那一段里只选中了空白（选区停在下一段的开头、或从上一段的末尾起）不算那一段；中间没有字的顶层元素（空段、
+   零散的 <br>）一起换掉。
+   选区碰到了不在任何段落里的散字、或套着段落 / 列表、里面有字的结构：返回 { unsupported: true }——没法按段换回。
    选区不在编辑器里、或一个字都没选中：返回 null。 */
 export function wrSelectionSegments(editor, range) {
   if (!editor || !range || range.collapsed || !editor.contains(range.commonAncestorContainer)) return null;
@@ -188,7 +189,7 @@ export function wrSelectionSegments(editor, range) {
   while (touched.length && !touched[0].text.trim()) touched.shift();
   while (touched.length && !touched[touched.length - 1].text.trim()) touched.pop();
   if (!touched.length) return null;
-  if (touched.some((item) => !isLeafBlock(item.block))) return { unsupported: true };
+  if (touched.some((item) => !isLeafBlock(item.block) && item.block.textContent.trim())) return { unsupported: true };
   const indexed = Array.from(editor.querySelectorAll(MANUSCRIPT_BLOCK_SELECTOR));
   const segments = touched.map((item) => ({ ...item, index: indexed.indexOf(item.block) }));
   const paragraphs = segments.map((item) => item.text).filter((text) => text.trim());

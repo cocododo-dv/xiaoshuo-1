@@ -169,6 +169,13 @@ describe("选区按段切（wrSelectionSegments）", () => {
     range.setStart(list.children[0].firstChild, 1);
     range.setEnd(list.querySelector("li").firstChild, 1);
     expect(wrSelectionSegments(list, range)).toEqual({ unsupported: true });
+    // 中间没有字的顶层元素（零散的 <br>）一起换掉，不算「切不开」
+    const stray = editor("<p>第一段。</p><br><p>第三段。</p>");
+    const range2 = document.createRange();
+    range2.setStart(stray.children[0].firstChild, 1);
+    range2.setEnd(stray.children[2].firstChild, 2);
+    expect(wrSelectionSegments(stray, range2)).toMatchObject({ paragraphs: ["一段。", "第三"] });
+    expect(wrSelectionSegments(stray, range2).blocks).toHaveLength(3);
     const other = editor("<p>别处。</p>");
     expect(wrSelectionSegments(loose, rangeIn(other, [0, 0], [0, 2]))).toBeNull();
     const collapsed = document.createRange();
