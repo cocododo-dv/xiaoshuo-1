@@ -4,9 +4,9 @@ import { WsDialog } from "./ws-dialog.jsx";
 import { CloseButton, Segmented } from "./ws-ui.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import {
-  ACT_LABEL, applyChapterNames, buildChapterPlanPayload, buildChapterTitlesRequest, chapterActRuns, homeChapterFor,
-  isAutoChapterTitle, isNewChapter, mergeChapterIntoPrevious, moveSceneToChapter, rhythmSummary, scaleExplanation,
-  shapeDraft, splitChapterAt,
+  ACT_LABEL, applyChapterNames, buildChapterPlanPayload, buildChapterTitlesRequest, chapterActRuns, chapterTableSavedNote,
+  homeChapterFor, isAutoChapterTitle, isNewChapter, mergeChapterIntoPrevious, moveSceneToChapter, rhythmSummary,
+  scaleExplanation, shapeDraft, splitChapterAt,
 } from "./ws-snow-chapters-model.js";
 import { ChapterPlanChapter, ChapterPlanUnassigned, ChapterPlanWarnings } from "./ws-snow-chapters-parts.jsx";
 
@@ -14,13 +14,14 @@ import { ChapterPlanChapter, ChapterPlanUnassigned, ChapterPlanWarnings } from "
    分章预览面板（P2；2026-09-18 重做）
    ----------------------------------------------------------
    「整理章节结构」先开这个面板 —— 作者按下确认之前就看得见会得到什么：哪一章拿到
-   哪几场、哪些场还没分到、哪些章是空的。确认之前什么都不落库。
+   哪几场、哪些场还没分到、哪些章是空的。「确认写入」之前什么都不进目录；「只保存章表」只存章表
+   （重评 R11：07 的章表改成只读镜像之后，前面的步骤还没确认、确认写入点不动时，改章名 / 章摘要 / 章界走这里）。
 
    这一版的纪律（对应一次真实的「整理出来乱七八糟」）：
    - **章是场景列表上连续的一段**。场的先后只有一个来源——09 场景列表；面板不提供第二套
      「章内手排」，只提供挪章界（首场并入上一章 / 末场移到下一章）、从某一场另起一章、与上一章合并。
    - 每一场带着它在场景列表里的序号和功能标签，作者一眼看得出顺序对不对。
-   - 打开时由服务端按现状挑方案（auto）：分过章就原样摆出来；07 里有作者写的章表就把场倒进去；
+   - 打开时由服务端按现状挑方案（auto）：分过章就原样摆出来；有一张还没分场的章表就把场倒进去；
      什么都没有（或只有几行「（待补）」）就直接按场景分章——三个灾难各自收束一章。
    - 「每章约 N 场」是面板上的一个数，并写明这个数从哪来（参考书章长 / 作品设置 / 默认）。
 
@@ -30,10 +31,11 @@ import { ChapterPlanChapter, ChapterPlanUnassigned, ChapterPlanWarnings } from "
    纯模型在 ws-snow-chapters-model.js，一章 / 未分配 / 提醒区的展示件在 ws-snow-chapters-parts.jsx。
    ========================================================== */
 
+/* 07 的章表只是分章结果的只读镜像（重评 R11）：「倒进现有章表」「现有章表 · 均分」用的是已经确认写入或只保存过的那一张 */
 const STRATEGIES = [
   { key: "from_scenes", label: "按场景分章", hint: "章是列完场之后的包装决定：三个灾难各自收束一章，其余按「每章约 N 场」顺着场景列表切开" },
-  { key: "spine_anchor", label: "倒进 07 章表", needsTable: true, hint: "用 07 里你写的章表：同一个灾难标记的场与章互相锁定，其余按顺序铺开" },
-  { key: "even", label: "07 章表 · 均分", needsTable: true, hint: "用 07 里你写的章表：忽略灾难标记，按顺序把场平均分进各章" },
+  { key: "spine_anchor", label: "倒进现有章表", needsTable: true, hint: "用已确认的章表：同一个灾难标记的场与章互相锁定，其余按顺序铺开" },
+  { key: "even", label: "现有章表 · 均分", needsTable: true, hint: "用已确认的章表：忽略灾难标记，按顺序把场平均分进各章" },
   { key: "keep_current", label: "已保存的分章", needsSaved: true, hint: "上一次确认 / 保存的分章原样摆出来，新加的场跟着它前一场走" },
 ];
 
@@ -47,20 +49,24 @@ export function keepFocusOnDialogBackdrop(event) {
 
 /* 纯模型的这些函数原先就从这里导出（构思的场景表、单测都这样 import），拆文件后照样从这里拿得到 */
 export {
-  applyChapterNames, buildChapterPlanPayload, buildChapterTitlesRequest, chapterActRuns, homeChapterFor,
-  isAutoChapterTitle, mergeChapterIntoPrevious, moveSceneToChapter, rhythmSummary, scaleExplanation, splitChapterAt,
+  applyChapterNames, buildChapterPlanPayload, buildChapterTitlesRequest, chapterActRuns, chapterTableSavedNote,
+  homeChapterFor, isAutoChapterTitle, mergeChapterIntoPrevious, moveSceneToChapter, rhythmSummary, scaleExplanation,
+  splitChapterAt,
 };
 
 /* 这张面板有两扇门：构思页头和章节编排里的同名按钮「整理章节结构」（阶段 Z）。章的结构只有
-   这一个编辑器；onGoToScene(sceneId) 让面板里的一场直达构思第 10 步的那一场（由宿主视图决定怎么跳）。 */
-export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene }) {
+   这一个编辑器；onGoToScene(sceneId) 让面板里的一场直达构思第 10 步的那一场（由宿主视图决定怎么跳）。
+   focusChapter = { rowUid, index }：07 只读章表上某一章的「改名」开的面板——预览回来后焦点落在那一章的章名框上。
+   saving：正在写的是哪一种（"confirm" 确认写入 / "table" 只保存章表；空串 = 没在写）。 */
+export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, focusChapter = null }) {
   const [busy, setBusy] = React.useState(true);
-  const [saving, setSaving] = React.useState(false);
+  const [saving, setSaving] = React.useState("");
   const [error, setError] = React.useState("");
   const [draft, setDraft] = React.useState(null);
   const [dirty, setDirty] = React.useState(false);
   const [perChapter, setPerChapter] = React.useState("");
   const [materializationGate, setMaterializationGate] = React.useState(null);
+  const [saveNote, setSaveNote] = React.useState("");   // 「只保存章表」的回执（面板留着）
   const previewRequestRef = React.useRef(null);
   /* 这种分法刚算出来的样子（服务端预览或 AI 建议）。「撤销调整」回到它——不再请求一次：
      面板是模态的，打开期间预览的来源不会变；AI 建议也不必为了撤销再花一次模型调用。 */
@@ -141,6 +147,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
       return;
     }
     noteFocusReturn();
+    setSaveNote("");
     load(strategy, options);
   };
   /* 撤销调整：丢掉面板里还没确认的挪章界 / 拆章 / 并章 / 改章名，回到这种分法刚算出来的样子。
@@ -224,7 +231,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
       const { draft: next, applied } = applyChapterNames(draftRef.current || draft, (result && result.titles) || []);
       if (applied) { setDraft(next); setDirty(true); }
       const notice = result && result.notice && result.notice.message;
-      setNameNote(notice || (applied ? `AI 起了 ${applied} 个章名 —— 可以直接改，确认写入时一起落库。` : "这一次没有起出新的章名。"));
+      setNameNote(notice || (applied ? `AI 起了 ${applied} 个章名 —— 可以直接改，确认写入或只保存章表时一起存下。` : "这一次没有起出新的章名。"));
     } catch (e) {
       setError((e && e.message) || "AI 起章名不可用，请检查模型配置后重试。");
     } finally {
@@ -234,11 +241,27 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
 
   React.useEffect(() => { load("auto"); }, [load]);
 
+  /* 07 只读章表上某一章的「改名」开的面板：第一份预览回来后，焦点落在那一章的章名框上、原名选中——直接打字就是改名。
+     按 row_uid 认章（07 的章表就是这张章表的镜像，行身份相同）；旧数据没有 row_uid 时按位置。认不出就不抢焦点。 */
+  const focusChapterRef = React.useRef(focusChapter);
+  React.useEffect(() => {
+    const target = focusChapterRef.current;
+    if (busy || !draft || !target) return;
+    focusChapterRef.current = null;
+    const byUid = target.rowUid ? draft.chapters.findIndex(c => c.rowUid === target.rowUid) : -1;
+    const index = target.rowUid ? byUid : (Number.isInteger(target.index) ? target.index : -1);
+    const input = index >= 0 && hostRef.current
+      && hostRef.current.querySelector(`[data-testid="chapter-plan-chapter-${index}"] .sf-chapterplan-title`);
+    if (!input) return;
+    input.focus();
+    try { input.select(); } catch (e) { /* 只读输入框之类：选不中就算了 */ }
+  }, [busy, draft]);
+
   /* 关闭只有一条路：× / 取消 / Esc / 遮罩都走 WsDialog 的 requestClose，由这里放行或拦下——写入中不关；
      面板里有还没确认的调整时先问一句（以前换方案、AI 建议、去改某一场都会问，偏偏 Esc、点遮罩、× 和
      「取消」一声不响就把调整丢了）。点遮罩更容易是误触，所以有调整时遮罩干脆不关（dismissOnBackdrop）。 */
   const beforeClose = (reason) => {
-    if (saving) return false;
+    if (saving) return false;  // 写入中（确认写入 / 只保存章表）不关
     if (!dirty) return true;
     if (reason === "backdrop") return false;
     return window.confirm("面板里还有没确认的调整（挪章界 / 拆章 / 并章 / 改章名），关掉就不保留了。确定关闭？");
@@ -277,8 +300,9 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
 
   const confirm = async () => {
     if (!canConfirm) return;
-    setSaving(true);
+    setSaving("confirm");
     setError("");
+    setSaveNote("");
     try {
       if (!SnowSync || typeof SnowSync.materialize !== "function") {
         throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
@@ -294,11 +318,39 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
       } else {
         setError((e && e.message) || "写入章节结构失败，请稍后重试。");
       }
-      setSaving(false);
+      setSaving("");
     }
   };
 
-  const edit = (fn) => { setDraft(d => fn(d)); setDirty(true); };
+  /* 「只保存章表」（重评 R11）：整张章表落库（PATCH …/chapter-plan，replace_chapters），不物化、不进目录。
+     07 的章表改成只读镜像之后，前面的步骤还没确认、「确认写入」点不动时，改章名 / 章摘要 / 章界也有地方存。
+     存完按「已保存的分章」重拉一次预览：面板里还没落库的新章（new:*）此刻有了真身份，接着改、接着存都对得上。
+     目录这一侧：作者起的章名当场跟过去，拆章 / 并章 / 挪章界与「第 N 章」这类编号要等「确认写入」——回执照实说，
+     不说「目录已经是新的分章」。面板留着，作者可以接着改或直接关。 */
+  const canSaveTable = !!draft && !busy && !saving && !draft.unassigned.length && sceneTotal > 0;
+  const saveTable = async () => {
+    if (!canSaveTable) return;
+    setSaving("table");
+    setError("");
+    setSaveNote("");
+    try {
+      if (!SnowSync || typeof SnowSync.saveChapterPlan !== "function") {
+        throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
+      }
+      const payload = buildChapterPlanPayload({ ...draft, chapters: draft.chapters.filter(c => c.scenes.length || !isNewChapter(c)) });
+      const result = await SnowSync.saveChapterPlan(payload);
+      const healed = ((result && result.healed_scene_plan_ids) || []).length;
+      setNameNote("");
+      setSaveNote(chapterTableSavedNote(healed));
+      await load("keep_current");
+    } catch (e) {
+      setError((e && e.message) || "保存章表失败，请稍后重试。");
+    } finally {
+      setSaving("");
+    }
+  };
+
+  const edit = (fn) => { setDraft(d => fn(d)); setDirty(true); setSaveNote(""); };
   /* 拆章 / 并章 / 挪章界之后，按下的那个按钮往往跟着它的场换了位置或消失，焦点会掉到 body。
      焦点丢了就交给动作落点那一章的章名框，键盘用户可以接着起名、接着调整。 */
   const refocusChapter = (chapterIndex) => setTimeout(() => {
@@ -318,7 +370,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
   const actRuns = chapterActRuns(draft ? draft.chapters : []);
   const table = (draft && draft.chapterTable) || null;
   /* 加载中不禁用（见 Segmented 的 busy）：switchTo 在加载中本来就什么也不做 */
-  const strategyDisabled = (s) => saving
+  const strategyDisabled = (s) => !!saving
     || (s.needsTable && table && !table.authored)
     || (s.needsSaved && table && !table.saved);
   const scaleNote = draft && draft.strategy === "from_scenes" ? scaleExplanation(draft.scale) : "";
@@ -341,9 +393,9 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
           <header className="ws-dialog-head sf-chapterplan-head">
             <div>
               <h2 className="ws-dialog-title" id="sf-chapterplan-title">整理章节结构</h2>
-              <p className="ws-dialog-desc" id="sf-chapterplan-desc">确认之前先看清每一场归哪一章；在这里拆章、并章、挪章界、改章名，确认写入之前什么都不落库。</p>
+              <p className="ws-dialog-desc" id="sf-chapterplan-desc">先看清每一场归哪一章，在这里拆章、并章、挪章界、改章名。「确认写入」把这一版写进章节目录；「只保存章表」只存章表，目录等确认写入时才换。</p>
             </div>
-            <CloseButton className="wr-drawer-x" label="关闭" title="关闭（Esc）" disabled={saving} onClick={() => requestClose("close")} />
+            <CloseButton className="wr-drawer-x" label="关闭" title="关闭（Esc）" disabled={!!saving} onClick={() => requestClose("close")} />
           </header>
 
           <div className="sf-chapterplan-bar">
@@ -358,19 +410,19 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
               options={STRATEGIES.map(s => ({
                 value: s.key,
                 label: s.label,
-                title: s.needsTable && table && !table.authored ? "07 里还没有你写的章表（只有占位行或空着）——按场景分章就好" : s.hint,
+                title: s.needsTable && table && !table.authored ? "还没有确认过的章表（空着或只有占位行）——按场景分章就好" : s.hint,
                 disabled: strategyDisabled(s),
                 testId: `chapter-plan-strategy-${s.key}`,
               }))}
             />
-            <button className="btn btn-quiet btn-sm" disabled={busy || saving || suggesting || hasUnsavedChapters}
+            <button className="btn btn-quiet btn-sm" disabled={busy || !!saving || suggesting || hasUnsavedChapters}
               title={hasUnsavedChapters ? "AI 是往已经确认的章里分场——先确认写入这一版章表，再让它建议" : "让 AI 依据灾难标记与上下游材料给一份分章建议；采纳与否由你决定"}
               onClick={suggest} data-testid="chapter-plan-suggest">
               <I.Wand size={13} className={suggesting ? "sf-spin" : ""} /> {suggesting ? "推演中…" : "AI 建议"}
             </button>
-            <button className="btn btn-quiet btn-sm" disabled={busy || saving || naming || !unnamedCount}
+            <button className="btn btn-quiet btn-sm" disabled={busy || !!saving || naming || !unnamedCount}
               title={unnamedCount
-                ? `给还叫「第 N 章」的 ${unnamedCount} 章各起一个名字、写一句章摘要；你起过名字的章不动。结果可以直接改，确认写入时才落库`
+                ? `给还叫「第 N 章」的 ${unnamedCount} 章各起一个名字、写一句章摘要；你起过名字的章不动。结果可以直接改，确认写入或只保存章表时才存下`
                 : "每一章都已经有你起的名字了；想让 AI 重起某一章，先把它的章名清空"}
               onClick={nameChapters} data-testid="chapter-plan-name">
               <I.Tag size={13} className={naming ? "sf-spin" : ""} /> {naming ? "起名中…" : "AI 起章名"}
@@ -384,18 +436,23 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
               <I.Tag size={12} /> <span>{nameNote}</span>
             </div>
           )}
+          {!busy && saveNote && (
+            <div className="sf-chapterplan-rationale" role="status" data-testid="chapter-plan-save-note">
+              <I.Check size={12} /> <span>{saveNote}</span>
+            </div>
+          )}
 
           {!busy && draft && draft.strategy === "from_scenes" && (
             <div className="sf-chapterplan-scale" data-testid="chapter-plan-scale">
               <label className="sf-chapterplan-scale-field">
                 每章约
-                <input type="number" min="1" max="99" value={perChapter} disabled={saving}
+                <input type="number" min="1" max="99" value={perChapter} disabled={!!saving}
                   onChange={e => setPerChapter(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter") applyScale(); }}
                   aria-label="每章约几场" data-testid="chapter-plan-per-chapter" />
                 场
               </label>
-              <button className="btn btn-quiet btn-xs" disabled={busy || saving || !(Number(perChapter) > 0)}
+              <button className="btn btn-quiet btn-xs" disabled={busy || !!saving || !(Number(perChapter) > 0)}
                 onClick={applyScale} data-testid="chapter-plan-rescale">
                 <I.Refresh size={11} /> 重新分
               </button>
@@ -433,7 +490,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
                   <div key={`act-${group.act}-${group.chapters[0].index}`} className="sf-chapterplan-act">
                     <div className="sf-chapterplan-actlabel">{ACT_LABEL[group.act] || `第 ${group.act} 幕`}</div>
                     {group.chapters.map(chapter => (
-                      <ChapterPlanChapter key={chapter.rowUid} chapter={chapter} saving={saving}
+                      <ChapterPlanChapter key={chapter.rowUid} chapter={chapter} saving={!!saving}
                         isLastChapter={chapter.index >= draft.chapters.length - 1}
                         onSetField={(field, value) => setChapter(chapter.index, field, value)}
                         onMerge={() => merge(chapter.index)}
@@ -452,7 +509,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
 
               <ChapterPlanWarnings blockers={blockers} advisories={advisories}
                 gateBlockers={gateBlockers} gateAdvisories={gateAdvisories} unassignedCount={draft.unassigned.length}
-                busy={busy} saving={saving} resolving={resolving}
+                busy={busy} saving={!!saving} resolving={resolving}
                 onResolveOrphan={resolveOrphan} onFixOrder={() => switchTo("from_scenes")}
                 onGoToGateItem={typeof onGoToStep === "function" ? goToGateItem : null} />
 
@@ -462,15 +519,20 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene })
                 {dirty && (
                   <div className="sf-chapterplan-dirtyline">
                     <span className="sf-chapterplan-dirty" role="status">有还没确认的调整</span>
-                    <button type="button" className="btn btn-quiet btn-xs" onClick={revert} disabled={busy || saving}
+                    <button type="button" className="btn btn-quiet btn-xs" onClick={revert} disabled={busy || !!saving}
                       title="丢掉面板里还没确认的挪章界 / 拆章 / 并章 / 改章名，回到这种分法刚算出来的样子"
                       data-testid="chapter-plan-revert">撤销调整</button>
                   </div>
                 )}
-                <button className="btn btn-ghost btn-sm" onClick={() => requestClose("cancel")} disabled={saving}>取消</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => requestClose("cancel")} disabled={!!saving}>取消</button>
+                <button className="btn btn-ghost btn-sm" onClick={saveTable} disabled={!canSaveTable}
+                  title="只把这一版章表（章名、章摘要、章界）存下来，不写入章节目录——前面还有步骤没确认、「确认写入」点不动时也能存"
+                  data-testid="chapter-plan-save-table">
+                  {saving === "table" ? "保存中…" : "只保存章表"}
+                </button>
                 <button className="btn btn-accent btn-sm" onClick={confirm} disabled={!canConfirm}
                   data-testid="chapter-plan-confirm">
-                  {saving ? "写入中…" : `确认写入 ${chapterTotal} 章 / ${sceneTotal} 场`}
+                  {saving === "confirm" ? "写入中…" : `确认写入 ${chapterTotal} 章 / ${sceneTotal} 场`}
                 </button>
               </footer>
             </>

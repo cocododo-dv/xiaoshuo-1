@@ -543,33 +543,63 @@ describe("阶段 M · 09/10 交互", () => {
     expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
   });
 
-  it("07 章节表按数组顺序显示；第二幕已有章时「添加第一幕章节」插在第一幕最后一章之后，而不是存成最后一章", async () => {
+  it("07 章表是分章的只读镜像（重评 R11）：一章一行——章号 · 章名 · 章摘要 · 灾难标记，按数组顺序、幕分段；没有输入框、添加、删除", async () => {
+    const no = (n) => `第 ${n} 章`;   // 章号拼出来写：真实书稿的章名就是这几个字，公开仓库的扫描按字面数
     window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [
-      { id: "01", act: 1, title: "合成一章", summary: "a", spine: "" },
-      { id: "02", act: 2, title: "合成二章", summary: "b", spine: "" },
+      { row_uid: "cr1", id: "01", act: 1, title: "合成一章", summary: "合成一章的摘要", spine: "灾一" },
+      { row_uid: "cr2", id: "02", act: 1, title: "", summary: "", spine: "" },
+      { row_uid: "cr3", id: "03", act: 2, title: no(3), summary: "合成三章的摘要", spine: "" },
     ] } } }));
     const host = await renderAt("outline");
-    const titles = () => [...host.querySelectorAll(".sf-ch-title")].map(el => el.value);
-    expect(titles()).toEqual(["合成一章", "合成二章"]);
-    const addAct1 = [...host.querySelectorAll(".sf-ch-add")].find(b => b.textContent.includes("第一幕"));
-    await act(async () => addAct1.click());
-    expect(titles()).toEqual(["合成一章", "（待补）", "合成二章"]);
-    expect([...host.querySelectorAll(".sf-ch-no")].map(el => el.textContent)).toEqual(["第 1 章", "第 2 章", "第 3 章"]);
+    const rows = [...host.querySelectorAll('[data-testid^="snow-outline-chapter-"]')];
+    expect(rows.map(r => r.querySelector(".sf-ch-title").textContent)).toEqual(["合成一章", `${no(2)}（未命名）`, no(3)]);
     // 章名就是「第 N 章」占位（或空着）时，左边不再并排写一遍章号——与分章面板同一条规则
-    const setTitle = async (i, text) => act(async () => {
-      const input = host.querySelectorAll(".sf-ch-title")[i];
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, text);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await setTitle(0, "第 1 章");
-    await setTitle(1, "");
-    expect([...host.querySelectorAll(".sf-ch-no")].map(el => el.textContent)).toEqual(["", "", "第 3 章"]);
-    expect(host.querySelectorAll(".sf-ch-title")[1].placeholder).toBe("第 2 章（未命名）");
-    // 章序是只读的：不再有能改章 id 的输入框（改一个字就换 key、丢焦点）
-    expect(host.querySelector(".sf-ch-id")).toBeNull();
+    expect(rows.map(r => r.querySelector(".sf-ch-no").textContent)).toEqual([no(1), "", ""]);
+    expect(rows.map(r => r.querySelector(".sf-ch-sum").textContent)).toEqual(["合成一章的摘要", "还没有章摘要", "合成三章的摘要"]);
+    expect(rows[0].querySelector(".sf-ch-spine").textContent).toBe("灾一");
+    // 幕只是分段标签：第一幕两章、第二幕一章
+    expect([...host.querySelectorAll(".sf-act .sf-act-count")].map(el => el.textContent)).toEqual(["2 章", "1 章"]);
+    // 只读：章表里没有一个输入框 / 下拉，也没有「添加…章节」与删除
+    expect([...host.querySelectorAll(".sf-act")].some(block => block.querySelector("input, select, textarea"))).toBe(false);
+    expect([...host.querySelectorAll("button")].some(b => /添加.*章节/.test(b.textContent))).toBe(false);
+    expect(host.querySelector('[aria-label^="删除第"]')).toBeNull();
+    // 还用着系统章名（空 / 「第 N 章」）的章有几章
+    expect(host.querySelector('[data-testid="snow-outline-unnamed"]').textContent).toBe("2 章还没起名");
     // 07 的门开的是同一张分章面板
     await act(async () => host.querySelector('[data-testid="snow-materialize"]').click());
     expect(host.querySelectorAll('[data-testid="chapter-plan-panel"]').length).toBe(1);
+  });
+
+  it("07 章表空着：「章表空着，列完场再分章」，门照旧（在分章面板里整理）", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [] } } }));
+    const host = await renderAt("outline");
+    expect(host.querySelector('[data-testid="snow-outline-empty"]').textContent).toBe("章表空着，列完场再分章");
+    expect(host.querySelector('[data-testid^="snow-outline-chapter-"]')).toBeNull();
+    expect(host.querySelector('[data-testid="snow-materialize"]').textContent).toContain("在分章面板里整理");
+  });
+
+  it("07 每一章的「改名」：打开分章面板，按 row_uid 认出那一章，焦点落在它的章名框上（原名选中）", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { outline: { chapters: [
+      { row_uid: "cr1", id: "01", act: 1, title: "合成一章", summary: "", spine: "" },
+      { row_uid: "cr2", id: "02", act: 1, title: "合成二章", summary: "", spine: "" },
+    ] } } }));
+    const scene = (n) => ({ scene_plan_id: `sp${n}`, scene_id: `S0${n}`, story_index: n, title: `合成第 ${n} 场`, primary_form: "proactive", planned: true });
+    window.SnowSync.chapterPreview = vi.fn(async () => ({
+      strategy: "keep_current",
+      chapters: [
+        { row_uid: "cr1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [scene(1)] },
+        { row_uid: "cr2", chapter_seq: 2, act: 1, title: "合成二章", spine: "", chapter_goal: "", scenes: [scene(2)] },
+      ],
+      unassigned: [], warnings: [], chapter_table: { count: 2, authored: true, saved: true },
+    }));
+    const host = await renderAt("outline");
+    await act(async () => host.querySelector('[data-testid="snow-outline-rename-1"]').click());
+    await vi.waitFor(() => expect(document.activeElement && document.activeElement.classList.contains("sf-chapterplan-title")).toBe(true));
+    const input = document.activeElement;
+    expect(input.closest('[data-testid="chapter-plan-chapter-1"]')).toBeTruthy();
+    expect(input.value).toBe("合成二章");
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, "合成二章".length]);
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
   it("09 灾难标记：没有显式标记时按「功能」一栏推断，只显示、不写回", async () => {

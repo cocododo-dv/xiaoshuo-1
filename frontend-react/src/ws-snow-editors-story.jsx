@@ -2,16 +2,15 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { chapterActRuns } from "./ws-snow-chapters-model.js";
-import { chapterNoInTitle, isPlaceholderChapterRow } from "./labels/catalog.js";
+import { chapterNoInTitle, isAutoChapterTitle } from "./labels/catalog.js";
 import { S2AutoText } from "./ws-snow-fields.jsx";
 import { S2ExpansionRow } from "./ws-snow-editor-parts.jsx";
-import { S2_SPINE_OPTS } from "./ws-snow-model.js";
 import { countChars } from "./lib/text.js";
 
 /* ==========================================================
    雪花编辑器 · 情节轨（2026-09-29 从 ws-snow-scaffolds.jsx 拆出）
    ----------------------------------------------------------
-   01 读者定位、03 一段话概括（五句 + 道德前提翻转）、05 一页梗概、07 长篇大纲（五段展开 + 章节表）。
+   01 读者定位、03 一段话概括（五句 + 道德前提翻转）、05 一页梗概、07 长篇大纲（五段展开 + 章节表的只读镜像）。
    选哪个编辑器在 ws-snow-scaffolds.jsx 的 S2StepEditor。
    ========================================================== */
 
@@ -131,45 +130,37 @@ export function S2SynopsisBeats({ scaffold, onScaffold, refs }) {
   );
 }
 
-/* ---- 07 长篇大纲：五段展开 + 三幕章节表（章表可留空——章是列完场之后的包装决定，阶段 K / V）---- */
+/* ---- 07 长篇大纲：五段展开 + 章节表的只读镜像（章是列完场之后的包装决定，阶段 K / V；章表只读，重评 R11）---- */
 const S2_ACTS = [
   { act: 1, label: "第一幕", desc: "铺垫 → 灾难一", tone: "slate" },
   { act: 2, label: "第二幕", desc: "灾难二（中点翻转）", tone: "gold" },
   { act: 3, label: "第三幕", desc: "灾难三 → 收尾", tone: "crimson" },
 ];
-export function S2ChapterOutline({ scaffold, onScaffold, refs, onOpenChapterPlan, catalogHasChapters }) {
+/* 07 的章表是分章结果的只读镜像（重评 R11，批准 #18a）：章名、章摘要、章界、灾难标记都只在分章面板里改
+   （确认写入 / 只保存章表），章名也能在章节编排里改——07 这一份由服务端写，本机从不上行它。以前这里是第二个
+   编辑入口：「添加章节」点出来的占位行、改的章名一保存就当整张章表同步回去，另一台电脑或一直开着的旧标签页里的旧章表
+   会删章、把场退回「未分章」。现在每一章一行只读（章号 · 章名 · 章摘要 · 灾难标记），行尾的「改名」打开分章面板
+   并把焦点放在这一章的章名框上（onRenameChapter({ rowUid, index })）。 */
+export function S2ChapterOutline({ scaffold, onScaffold, refs, onOpenChapterPlan, onRenameChapter, catalogHasChapters }) {
   const chapters = scaffold.chapters || [];
-  /* 阶段 D：书里的第 6 步——05 的每一段再扩成约一页（五段展开）；章节表在它下面，仍是分章的真相。 */
+  /* 阶段 D：书里的第 6 步——05 的每一段再扩成约一页（五段展开）；章节表在它下面，是分章结果的镜像。 */
   const expansions = scaffold.expansions || {};
   const syn05 = ((refs && refs.synopsis) || {}).paras || {};
   const setExp = (f, v) => onScaffold(s => ({ ...s, expansions: { ...(s.expansions || {}), [f]: v } }));
   const expFilled = S2_SYN_BEATS.filter(b => (expansions[b.f] || "").trim()).length;
-  const setCh = (id, f, v) => onScaffold(s => ({ ...s, chapters: s.chapters.map(c => c.id === id ? { ...c, [f]: v } : c) }));
-  const delCh = (id) => onScaffold(s => ({ ...s, chapters: s.chapters.filter(c => c.id !== id) }));
-  /* 章表按数组顺序显示（= 上行的 chapter_seq = 分章面板看到的顺序），幕只是分段标签。以前按幕重新分组显示，
-     在第二幕已有章时「添加第一幕章节」会显示在第一幕、却按数组末尾存成最后一章——所见非所存。
-     现在新章插在同一幕最后一章之后（这一幕还没有章时，插在它前一幕的最后一章之后）。 */
-  const addCh = (act) => onScaffold(s => {
-    const list = s.chapters || [];
-    const max = list.reduce((m, c) => Math.max(m, parseInt(c.id, 10) || 0), 0);
-    const fresh = { id: String(max + 1).padStart(2, "0"), act, title: "（待补）", summary: "", spine: "" };
-    let at = -1;
-    list.forEach((c, i) => { if ((c.act || 1) <= act) at = i; });
-    return { ...s, chapters: [...list.slice(0, at + 1), fresh, ...list.slice(at + 1)] };
-  });
   const spineHits = chapters.filter(c => c.spine).length;
-  /* 占位章 = 「添加章节」点出来、还什么都没写的行（isPlaceholderChapterRow，与后端 is_placeholder_chapter
-     同一口径）：整张表都是占位时，分章面板当它不存在、直接按场景分章。 */
-  const isPlaceholder = isPlaceholderChapterRow;
-  const placeholders = chapters.filter(isPlaceholder).length;
+  // 还用着系统起的章名（空、「第 N 章」、带「待补」「未命名」占位标记的）的章：与 AI 起章名、后端同一条规则
+  const unnamed = chapters.filter(c => isAutoChapterTitle(c.title)).length;
+  /* 章表按数组顺序显示（= 章序 = 分章面板看到的顺序），幕只是分段标签：幕交错时就是看得见的两段 */
   const runs = chapterActRuns(chapters);
-  const lastRunOfAct = {};
-  runs.forEach((run, i) => { lastRunOfAct[run.act] = i; });
-  const actsWithout = S2_ACTS.filter(a => !chapters.some(c => (c.act || 1) === a.act));
+  const rename = (c) => {
+    if (onRenameChapter) onRenameChapter({ rowUid: c.row_uid || "", index: c.index });
+    else if (onOpenChapterPlan) onOpenChapterPlan();
+  };
   /* 整理成章之后的第二动线：去 AI 起草台（它的左栏就是全书书脊，与目录同源）。只有目录里真的有章时才出现
      （catalogHasChapters 由视图随 ws:catalog-changed 传下来——编辑器是 memo 的，不能在渲染里自己读目录）。 */
   const goDraft = async () => {
-    try { if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(); } catch (e) {}
+    try { if (WsCatalog && WsCatalog.refresh) await WsCatalog.refresh(); } catch (e) {}
     location.hash = "#scene";
   };
   return (
@@ -196,19 +187,21 @@ export function S2ChapterOutline({ scaffold, onScaffold, refs, onOpenChapterPlan
 
       <div className="sf-chapters-head">
         <h3 className="sf-chapters-title">章节表</h3>
-        <span className="sf-chapters-rule">可以先空着：章是列完场之后的包装决定。09 列好后用「整理章节结构」按场景分章，确认的章表会回填到这里；章的先后与每章有哪几场，都在分章面板里改。</span>
+        <span className="sf-chapters-rule">这里只读，是分章的结果。章是列完场之后的包装决定：09 列好后用「整理章节结构」按场景分章；章名、章摘要、章界与灾难标记都在分章面板里改（每一章行尾的「改名」直达那一章），章名也能在章节编排里改。</span>
       </div>
       <div className="sf-scene-stats">
-        <span className="sf-sstat"><b>{chapters.length}</b> 章</span>
-        <span className="sf-sstat tone-gold"><b>{spineHits}</b> 章带灾难标记</span>
         {chapters.length ? (
-          <span className={`sf-sstat ${placeholders ? "tone-gold" : "tone-sage"}`}>{placeholders ? <><I.AlertTriangle size={11} /> {placeholders} 章还是占位（分章时不算数，可删）</> : <><I.Check size={11} /> 章表已写</>}</span>
+          <>
+            <span className="sf-sstat"><b>{chapters.length}</b> 章</span>
+            <span className="sf-sstat tone-gold"><b>{spineHits}</b> 章带灾难标记</span>
+            {unnamed > 0 && <span className="sf-sstat tone-gold" data-testid="snow-outline-unnamed"><b>{unnamed}</b> 章还没起名</span>}
+          </>
         ) : (
-          <span className="sf-sstat">章表空着，列完场再分章</span>
+          <span className="sf-sstat" data-testid="snow-outline-empty">章表空着，列完场再分章</span>
         )}
         <span className="sf-sstat-spacer" />
         <button className="btn btn-quiet btn-sm" data-testid="snow-materialize" onClick={() => onOpenChapterPlan && onOpenChapterPlan()}
-          title="打开分章面板：章表空着就按 09 的场景分章，写了章表就把场倒进你的章；拆章、并章、挪章界、改章名都在那里，确认后才写入目录">
+          title="打开分章面板：还没分过章就按 09 的场景分章，分过就把现有的分章摆出来；拆章、并章、挪章界、改章名都在那里——「确认写入」写进目录，「只保存章表」先存下章表">
           <I.Layout size={13} /> 在分章面板里整理
         </button>
         {catalogHasChapters && (
@@ -217,49 +210,47 @@ export function S2ChapterOutline({ scaffold, onScaffold, refs, onOpenChapterPlan
           </button>
         )}
       </div>
-      {runs.map((run, ri) => {
+      {runs.map(run => {
         const a = S2_ACTS.find(x => x.act === run.act) || S2_ACTS[0];
         return (
-          <div key={`${run.act}-${run.chapters[0].id}`} className={`sf-act tone-${a.tone}`}>
+          <div key={`${run.act}-${run.chapters[0].index}`} className={`sf-act tone-${a.tone}`}>
             <div className="sf-act-head">
               <span className="sf-act-bar" aria-hidden="true" />
               <span className="sf-act-label">{a.label}</span>
               <span className="sf-act-desc">{a.desc}</span>
               <span className="sf-act-count">{run.chapters.length} 章</span>
             </div>
-            <div className="sf-ch-list">
-              {run.chapters.map(c => (
-                <div key={c.id} className={`sf-ch-row ${c.spine ? "is-spine" : ""} ${isPlaceholder(c) ? "is-ph" : ""}`}>
-                  {/* 章号与分章面板同一条规则（chapterNoInTitle）：章名就是「第 N 章」这种占位、或空着
-                      （占位提示里带着章号）时，左边这一格留空——不把章号和它自己的占位名并排写两遍。
-                      格子本身留着，各行的章名框才对得齐。 */}
-                  {chapterNoInTitle(c.title, c.index)
-                    ? <span className="sf-ch-no" aria-hidden="true" />
-                    : <span className="sf-ch-no" title="章序跟着表里的先后走">第 {c.index + 1} 章</span>}
-                  <div className="sf-ch-body">
-                    <input className="sc-in sf-ch-title" value={c.title || ""} onChange={(e) => setCh(c.id, "title", e.target.value)} placeholder={`第 ${c.index + 1} 章（未命名）`} aria-label={`第 ${c.index + 1} 章标题`} />
-                    <input className="sc-in sf-ch-sum" value={c.summary || ""} onChange={(e) => setCh(c.id, "summary", e.target.value)} placeholder="这一章把局面推到哪——一句话" aria-label={`第 ${c.index + 1} 章摘要`} />
-                  </div>
-                  <select className="sc-spine sf-ch-spine" value={c.spine || ""} onChange={(e) => setCh(c.id, "spine", e.target.value)} aria-label={`第 ${c.index + 1} 章的灾难标记`} title="这一章收束在哪个灾难上">
-                    {S2_SPINE_OPTS.map(o => <option key={o} value={o}>{o || "—"}</option>)}
-                  </select>
-                  <button className="sc-act sc-act-del" onClick={() => delCh(c.id)} aria-label={`删除第 ${c.index + 1} 章`} title="删除本章"><I.X size={13} /></button>
-                </div>
-              ))}
-              {lastRunOfAct[run.act] === ri && (
-                <button className="sf-ch-add" onClick={() => addCh(run.act)}><I.Plus size={13} /> 添加{a.label}章节</button>
-              )}
-            </div>
+            <ul className="sf-ch-list">
+              {run.chapters.map(c => {
+                const no = `第 ${c.index + 1} 章`;
+                const title = String(c.title || "").trim();
+                const summary = String(c.summary || "").trim();
+                return (
+                  <li key={c.row_uid || c.id || c.index} className={`sf-ch-row ${c.spine ? "is-spine" : ""}`} data-testid={`snow-outline-chapter-${c.index}`}>
+                    {/* 章号与分章面板同一条规则（chapterNoInTitle）：章名就是「第 N 章」这种占位、或空着时，左边这一格留空——
+                        不把章号和它自己的占位名并排写两遍。格子本身留着，各行的章名才对得齐。 */}
+                    {chapterNoInTitle(title, c.index)
+                      ? <span className="sf-ch-no" aria-hidden="true" />
+                      : <span className="sf-ch-no" title="章序跟着章表的先后走">{no}</span>}
+                    <div className="sf-ch-body">
+                      <span className={`sf-ch-title ${title ? "" : "is-unnamed"}`}>{title || `${no}（未命名）`}</span>
+                      <span className={`sf-ch-sum ${summary ? "" : "is-empty"}`}>{summary || "还没有章摘要"}</span>
+                    </div>
+                    {c.spine
+                      ? <span className="sf-ch-spine" title="这一章收束在这个灾难上">{c.spine}</span>
+                      : <span className="sf-ch-spine is-none" aria-hidden="true" />}
+                    <button type="button" className="btn btn-quiet btn-xs sf-ch-rename" data-testid={`snow-outline-rename-${c.index}`}
+                      onClick={() => rename(c)} aria-label={`改${no}的章名`}
+                      title="打开分章面板，光标落在这一章的章名上（章摘要、章界也在那里改）">
+                      <I.Pen size={12} /> 改名
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         );
       })}
-      {actsWithout.length > 0 && (
-        <div className="sf-ch-addbar">
-          {actsWithout.map(a => (
-            <button key={a.act} className="sf-ch-add" onClick={() => addCh(a.act)}><I.Plus size={13} /> 添加{a.label}章节</button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

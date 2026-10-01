@@ -154,9 +154,12 @@ function WsSnowflake({ initialStep }) {
   /* ---- 「整理章节结构」= 分章预览面板 ----
      面板只有这一个宿主：顶部按钮、07 章表的门、09 的章头都调同一个回调。ws:snow-chapter-plan 是 SnowSync
      每次水合都会广播的「分章状态」，视图不听它（以前把它当「打开面板」的命令，面板会在落地、刷新、
-     09/10 自动保存之后自己弹出来）。 */
+     09/10 自动保存之后自己弹出来）。07 只读章表上某一章的「改名」也开这张面板，并带上那一章
+     （{ rowUid, index }），面板拉回预览后把焦点放在它的章名框上（重评 R11）。 */
   const [chapterPlanOpen, setChapterPlanOpen] = useSS(false);
-  const openChapterPlan = useStableCallback(() => setChapterPlanOpen(true));
+  const [chapterPlanFocus, setChapterPlanFocus] = useSS(null);
+  const openChapterPlan = useStableCallback(() => { setChapterPlanFocus(null); setChapterPlanOpen(true); });
+  const renameChapter = useStableCallback((target) => { setChapterPlanFocus(target || null); setChapterPlanOpen(true); });
   const goToPlanScene = (sceneId) => {
     setChapterPlanOpen(false);
     jumpToPlanScene(sceneId);
@@ -365,7 +368,7 @@ function WsSnowflake({ initialStep }) {
                   onRegenWithBrief={regenWithBrief} err={genErr} onClearErr={() => gen.clearGenErr(activeKey)} />
                 <S2StepEditor step={active} data={data} draft={draft} setDraft={setDraft}
                   scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} refs={scaffolds} go={selectStep}
-                  ai={stepAI} onOpenChapterPlan={openChapterPlan}
+                  ai={stepAI} onOpenChapterPlan={openChapterPlan} onRenameChapter={renameChapter}
                   catalogHasChapters={catalogChapters.length > 0} />
               </React.Fragment>
             )}
@@ -420,7 +423,7 @@ function WsSnowflake({ initialStep }) {
       )}
       {chapterPlanOpen && (
         <WsChapterPlanPanel onClose={() => setChapterPlanOpen(false)} onDone={onChapterPlanDone}
-          onGoToStep={goToMaterializationStep} onGoToScene={goToPlanScene} />
+          onGoToStep={goToMaterializationStep} onGoToScene={goToPlanScene} focusChapter={chapterPlanFocus} />
       )}
 
       <UndoToast toast={toast} onClose={clearToast} />

@@ -98,9 +98,10 @@ export function scaleExplanation(scale) {
   return base;
 }
 
-/* 本地态 → materialize / chapter-plan 的提交载荷。
+/* 本地态 → materialize（确认写入）/ PATCH chapter-plan（只保存章表）的提交载荷。
    replace_chapters：这就是整张章表——new:* 的章由后端新建，没列出来的旧章被软删。
-   章内顺序由后端按场景列表的顺序重算，scene_seq 只是给旧调用方留的。 */
+   归属只说「哪一场归哪一章」：章内顺序永远等于场景列表的故事序，由后端重算（renumber_scene_seq），
+   载荷不再带 scene_seq——后端本来就不读它（B07-07）。 */
 export function buildChapterPlanPayload(draft) {
   return {
     replace_chapters: true,
@@ -113,13 +114,19 @@ export function buildChapterPlanPayload(draft) {
       ...(c.summary != null ? { summary: c.summary } : {}),
     })),
     assignments: draft.chapters.flatMap(c =>
-      c.scenes.map((s, si) => ({
-        scene_plan_id: s.scenePlanId,
-        chapter_row_uid: c.rowUid,
-        scene_seq: si + 1,
-      })),
+      c.scenes.map(s => ({ scene_plan_id: s.scenePlanId, chapter_row_uid: c.rowUid })),
     ),
   };
+}
+
+/* 「只保存章表」之后的回执（重评 R11 + 复核 P04-R2）：章表存了，目录没动——章节编排、写作台、成稿中心仍是上次
+   「确认写入」的分章与章号，只有作者起的章名当场跟过去（拆章 / 并章之后按新章序重编的「第 N 章」要等确认写入才进目录，
+   否则目录里会冒出两章同一个号）。回执不能说「目录已经是新的分章」。healed = 服务端为守住「章是连续的一段」
+   改归前一场那一章的场数。 */
+export function chapterTableSavedNote(healed) {
+  const base = "章表已保存，还没写入目录。你起的章名会跟到章节编排和写作台；拆章、并章、挪章界和「第 N 章」这类编号，"
+    + "要等「确认写入」才进目录——在那之前，章节编排、写作台和成稿中心仍按上次确认写入的分章。";
+  return healed > 0 ? `${base}另有 ${healed} 场不在连续的一段里，已归到故事序上前一场所在的章。` : base;
 }
 
 /* 章表 → 幕段（按**数组顺序**切，幕值一变就起新的一段）。
@@ -145,11 +152,9 @@ const cloneDraft = (draft) => ({
   unassigned: draft.unassigned.slice(),
 });
 
-const AUTO_TITLE_RE = /^第\s*\d+\s*章$/;
-
 /* 结构改动（挪章界 / 拆章 / 并章）之后的收口。
    章的灾难标记跟着场走：章里有带标记的场就取最后一个（灾难是章的收束点）；章上原有的标记如果
-   属于一个已经搬去别章的场，就清掉；场上根本没有这个标记时，保留作者在 07 里的声明。 */
+   属于一个已经搬去别章的场，就清掉；场上根本没有这个标记时，保留章上原有的声明。 */
 function respine(draft) {
   const marksOnScenes = new Set();
   draft.chapters.forEach(c => c.scenes.forEach(s => { if (s.spine) marksOnScenes.add(s.spine); }));
@@ -157,10 +162,11 @@ function respine(draft) {
     const inside = c.scenes.map(s => s.spine).filter(Boolean);
     if (inside.length) c.spine = inside[inside.length - 1];
     else if (c.spine && marksOnScenes.has(c.spine)) c.spine = "";
-    /* 系统起的占位章名「第 N 章」跟着章序走（作者起的名字一个字不动）：拆章 / 并章之后
-       「第 3 章」不能排在第 4 位，空章名落进目录会变成章 id 字符串。后端 save 同一条规则。 */
-    const title = String(c.title || "").trim();
-    if (!title || AUTO_TITLE_RE.test(title)) c.title = `第 ${index + 1} 章`;
+    /* 系统起的章名（空、「第 N 章」、带「待补」「未命名」占位标记的——isAutoChapterTitle）跟着章序重编，
+       作者起的名字一个字不动：拆章 / 并章之后「第 3 章」不能排在第 4 位，空章名落进目录会变成章 id 字符串。
+       与后端落库时的 refresh_auto_chapter_fields 同一条规则（B07-14：以前这里只认「第 N 章」，
+       带「待补」标记的占位名在面板里原样留着、落库时才被后端改掉——面板上看到的不是存下去的）。 */
+    if (isAutoChapterTitle(c.title)) c.title = `第 ${index + 1} 章`;
   });
   return draft;
 }

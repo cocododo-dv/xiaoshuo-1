@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { PLACEHOLDER_CHAPTER_TITLE_MARKERS, chapterNoInTitle, isAutoChapterTitle, isPlaceholderChapterRow } from "./labels/catalog.js";
+import { PLACEHOLDER_CHAPTER_TITLE_MARKERS, chapterNoInTitle, isAutoChapterTitle } from "./labels/catalog.js";
 import { isAutoChapterTitle as panelIsAutoChapterTitle } from "./ws-snow-chapters-model.js";
 import { SNOW_STEPS, snowStepByBackendKey } from "./snow-steps.js";
 import { WS_SNOW_STEPS } from "./ws-nav.js";
@@ -293,14 +293,6 @@ describe("章名规则只有一份，与后端同一张标记表（F02-06）", (
     ["雨夜来信", "第三章的灯", "第 7 章 · 雨夜"].forEach(t => expect(isAutoChapterTitle(t), t).toBe(false));
     // 面板从分章模型取的是同一个函数
     expect(panelIsAutoChapterTitle).toBe(isAutoChapterTitle);
-  });
-
-  it("isPlaceholderChapterRow：章名空或带占位标记、且摘要 / 章目标 / 脊柱全空", () => {
-    expect(isPlaceholderChapterRow({ title: "（占位）" })).toBe(true);
-    expect(isPlaceholderChapterRow({ title: "未命名章节", summary: "" })).toBe(true);
-    expect(isPlaceholderChapterRow({ title: "", goal: "信件迫使主角回乡" })).toBe(false);
-    expect(isPlaceholderChapterRow({ title: "（占位）", spine: "灾一" })).toBe(false);
-    expect(isPlaceholderChapterRow({ title: "雨夜来信" })).toBe(false);
   });
 
   it("chapterNoInTitle：章名空着或就是对得上的「第 N 章」时，章号已经在框里", () => {
