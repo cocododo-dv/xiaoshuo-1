@@ -20,8 +20,8 @@ from novel_system.db.models import (
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.qc_engine import HardQcEngine
-from novel_system.services import scene_generation as scene_generation_module
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.support.qc import allow_legacy_neutral_required_fact_gap as _allow_legacy_neutral_required_fact_gap
 from tests.support.strict_qc import (
     FakeQcClient,
     FakeSequenceQcClient,
@@ -37,20 +37,6 @@ pytestmark = pytest.mark.usefixtures("online_pipeline")
 class FakeRuntimeFailureClient(AccountedGenerateMixin):
     def generate(self, request: LLMRequest) -> LLMResponse:
         raise RuntimeError("qc transport timed out before a response was returned")
-
-
-def _allow_legacy_neutral_required_fact_gap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Model a pre-validation neutral draft for downstream Hard-QC coverage."""
-
-    original = scene_generation_module._assess_neutral_draft
-
-    def assess(scene, content, lengths):  # noqa: ANN001, ANN202
-        result = original(scene, content, lengths)
-        if set(result.get("reasons") or []) == {"required_facts_missing"}:
-            return {**result, "accepted": True, "reasons": []}
-        return result
-
-    monkeypatch.setattr(scene_generation_module.text_gates, "_assess_neutral_draft", assess)
 
 
 # ---------- G-03 核心：软性意见不再断头 ----------

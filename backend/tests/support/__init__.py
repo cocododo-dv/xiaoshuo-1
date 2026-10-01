@@ -8,6 +8,7 @@ when it is registered before its first import, so every module of this package i
 import pytest
 
 pytest.register_assert_rewrite(
+    "tests.support.accounting",
     "tests.support.api_client",
     "tests.support.candidate_gate",
     "tests.support.catalog",
@@ -19,6 +20,7 @@ pytest.register_assert_rewrite(
     "tests.support.import_graph",
     "tests.support.llm_fakes",
     "tests.support.migrations",
+    "tests.support.qc",
     "tests.support.scene_pipeline",
     "tests.support.schema",
     "tests.support.snowflake",
