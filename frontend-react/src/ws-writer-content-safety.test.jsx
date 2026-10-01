@@ -215,7 +215,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
   });
 
   it("切换作品时立即清除旧场景，目录装载完成前不允许在旧稿上继续写", async () => {
-    const secondProject = { ...DEFAULT_PROJECT, project_id: "project-2", title: "第二部作品", is_demo: false };
+    const secondProject = { ...DEFAULT_PROJECT, project_id: "project-2", title: "第二部作品" };
     const { WriterRoom, WrDocs } = await loadWriter({ projects: [DEFAULT_PROJECT, secondProject] });
     vi.spyOn(WrDocs, "load").mockImplementation((sid) => `<p>${sid} 的正文</p>`);
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);

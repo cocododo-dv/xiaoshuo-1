@@ -21,13 +21,12 @@ import { sceneLabel } from "./labels/catalog.js";
 /* 6 月原型时期本机作品（ws_works_created_v1）的一次性上行已删除（批准 #25，重评 R16）：旧键原样留着、不再读。 */
 const WS_ACTIVE_LS = "ws_active_work_v1";    // 当前作品 id（UI 状态，长期保留 localStorage）
 const WS_CACHE_LS = "ws_works_cache_v1";     // 列表启动缓存（API 真相的本地影子，仅为同步 list()）
+/* 已退役的两部演示作品：浏览器里的旧缓存影子不让它们复活（离线时书架只剩缓存可显示）。后端早就不再有演示作品，
+   作品载荷里的 is_demo 也不再读。 */
 const WS_RETIRED_DEMO_IDS = new Set(["tide", "salt"]);
 
 function wsIsRetiredDemo(work) {
-  return !!(
-    work
-    && (WS_RETIRED_DEMO_IDS.has(String(work.id || work.project_id || "")) || work.isDemo === true || work.is_demo === true)
-  );
+  return !!work && WS_RETIRED_DEMO_IDS.has(String(work.id || work.project_id || ""));
 }
 
 function wsAgo(iso) {

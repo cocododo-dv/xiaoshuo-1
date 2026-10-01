@@ -23,7 +23,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-const SALT_PROJECT = { project_id: "prj-second", title: "盐镇旧志", genre: "悬疑", is_demo: true, stats: { words_total: 0 } };
+const SALT_PROJECT = { project_id: "prj-second", title: "盐镇旧志", genre: "悬疑", stats: { words_total: 0 } };
 
 // ensure → draft d1/rev1；save PATCH(d1) → rev2 + words_rollup。
 function wireDrafts(client) {

@@ -10,7 +10,7 @@ import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.
 export const T = { timeout: 5000, interval: 25 };
 
 export const RUN_STATES_URL = /^\/api\/v1\/scene-run-states\?/;
-export const NON_DEMO_PROJECT = { ...DEFAULT_PROJECT, project_id: "novel-1", title: "回归小说", is_demo: false };
+export const NON_DEMO_PROJECT = { ...DEFAULT_PROJECT, project_id: "novel-1", title: "回归小说" };
 export const TWO_SCENE_CHAP = {
   ...DEFAULT_CHAP,
   scenes: [

@@ -13,7 +13,6 @@ export const DEFAULT_PROJECT = {
   title: "北岸手记",
   genre: "悬疑",
   synopsis_line: "一桩跨越三代的旧案。",
-  is_demo: false,
   target_word_count: 100000,
   stats: { words_total: 38000, words_today: 0, streak_days: 3 },
 };
