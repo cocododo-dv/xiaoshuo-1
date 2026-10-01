@@ -35,6 +35,9 @@ const WORKSPACE = {
 const VERSIONS = [
   { step_run_id: "run_log_3", version: 3, status: "approved", generation_source: "author", updated_at: "2026-09-30T08:00:00+00:00" },
   { step_run_id: "run_log_2", version: 2, status: "superseded", generation_source: "llm", updated_at: "2026-09-29T08:00:00+00:00" },
+  // 被标过「需复核」之后又有了新版的旧版本：停在 stale 上，updated_at 是被标失效的时刻（比后来的版本还新）
+  { step_run_id: "run_log_1", version: 1, status: "stale", generation_source: "author",
+    created_at: "2026-09-20T08:00:00+00:00", updated_at: "2026-09-30T09:00:00+00:00" },
 ];
 const DRAFTS = { run_log_2: { summary: OLD, fe_text: "（这一版写穿的旧缓存，不读）" }, run_log_3: { summary: NOW } };
 
@@ -144,6 +147,10 @@ describe("构思 · 历史 · 服务器上保存的版本（R15a）", () => {
     expect(rows[1]).toContain("第 2 版");
     expect(rows[1]).toContain("已被新版取代");
     expect(rows[1]).toContain("AI 生成");
+    // 旧版本行上不写「需复核」（那不是作者欠着的事）；时间是建版时间，不是后来被标失效的时刻
+    expect(rows[2]).toContain("确认过的旧版");
+    expect(rows[2]).not.toContain("需复核");
+    expect(rows[2]).toContain("9 月 20 日");
     // 本机的操作记录仍在下面
     expect(host.querySelector(".sf-history-local").textContent).toContain("本机的操作记录");
 

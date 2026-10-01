@@ -184,21 +184,28 @@ const VERSION_STATUS = {
   skipped: { label: "已略过", tone: "neutral" },
   superseded: { label: "已被新版取代", tone: "neutral" },
 };
+/* 旧版本的状态说的是它自己的来历，不是要作者去做什么：一版被标「需复核」之后又有了新版，它就停在 stale 上——
+   在旧版本行上写「需复核」像是还欠着一件事。 */
+const OLD_VERSION_STATUS = {
+  pending_review: { label: "没确认过", tone: "neutral" },
+  stale: { label: "确认过的旧版", tone: "neutral" },
+};
 const VERSION_SOURCE = { llm: "AI 生成", author: "你写的", history_restore: "从历史恢复", skip: "略过", fallback: "旧版规则稿" };
 
-/* 一版的状态与来历（列表行与预览对话框共用） */
-export function s2VersionStatus(item) {
+/* 一版的状态与来历（列表行与预览对话框共用）。latest = 这一步现在的那一版 */
+export function s2VersionStatus(item, { latest = false } = {}) {
   const it = item || {};
-  if (it.status === "stale" && it.stale_accepted_at) return { label: "已复核 · 仍有效", tone: "ok" };
-  return VERSION_STATUS[it.status] || { label: "旧版本", tone: "neutral" };
+  if (latest && it.status === "stale" && it.stale_accepted_at) return { label: "已复核 · 仍有效", tone: "ok" };
+  return (!latest && OLD_VERSION_STATUS[it.status]) || VERSION_STATUS[it.status] || { label: "旧版本", tone: "neutral" };
 }
 export function s2VersionSource(item) {
   const it = item || {};
   if (it.wipe_guard_preserved_step_run_id) return "整步清空时另起的一版";
   return VERSION_SOURCE[it.generation_source] || "";
 }
+/* 这一版是什么时候来的（建版时间：待确认的稿子原位改写、旧版被标失效都会改 updated_at，按它排看起来就乱了） */
 function versionTime(item) {
-  const t = Date.parse((item && (item.updated_at || item.created_at)) || "");
+  const t = Date.parse((item && (item.created_at || item.updated_at)) || "");
   return Number.isFinite(t) ? recentOrDayTimeLabel(t) : "";
 }
 
@@ -270,7 +277,7 @@ export function S2ServerVersions({ workId, step, refreshKey, onPreview }) {
       ) : (
         <ul className="sf-versions-list">
           {items.map((it, i) => {
-            const status = s2VersionStatus(it);
+            const status = s2VersionStatus(it, { latest: i === 0 });
             const source = s2VersionSource(it);
             return (
               <li key={it.step_run_id} className="sf-version-row" data-testid="snow-version-row">
@@ -295,7 +302,7 @@ export function S2ServerVersions({ workId, step, refreshKey, onPreview }) {
 export function S2VersionDiff({ diff, current, refs, onRestore, onClose }) {
   const st = S2_STEPS.find(s => s.key === diff.key) || {};
   const item = diff.item || {};
-  const status = s2VersionStatus(item);
+  const status = s2VersionStatus(item);   // 预览的总是旧版本（现在的那一版没有「预览」）
   const source = s2VersionSource(item);
   const oldText = diff.draft ? s2VersionText(diff.key, diff.draft, refs) : "";
   const curText = s2StepText(diff.key, current.draft, current.scaffold, refs).trim();
