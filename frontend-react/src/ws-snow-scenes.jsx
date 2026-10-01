@@ -4,7 +4,7 @@ import { apiPost } from "./lib/client.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId, useSnowNotices } from "./ws-snow-hooks.js";
-import { snowDraftOverride } from "./ws-snow-generation.js";
+import { snowAiFailureToast, snowDraftOverride } from "./ws-snow-generation.js";
 import {
   S2_PLAN_FIELDS, S2_TRIAGE_LABEL, s2BusyOn,
 } from "./ws-snow-model.js";
@@ -79,10 +79,12 @@ export function S2SceneAiActions({ step, ai, sceneRows, plans, emphasize = false
   );
 }
 
-/* 场景分诊（第 10 步）：后端逐场评估 pass/maybe/rewrite + 修复建议/补丁。
+/* 场景分诊（第 10 步）：后端用模型逐场评估 pass/maybe/rewrite + 修复建议/补丁。
    draft_override 带本地最新折叠草稿，免受自动保存节流竞态影响。分诊结果随手存档（save_scene_triage）；
    会话内记住 triage_id，复诊时原行更新而不是堆新行。作者的裁定（pass / maybe / rewrite / cut）本地即时更新、
-   服务端存档，失败回滚并提示。api 是工作台 API（ws-snow-workbench.jsx，调用时读视图的最新值）。 */
+   服务端存档，失败回滚并提示。api 是工作台 API（ws-snow-workbench.jsx，调用时读视图的最新值）。
+   AI 分诊 fail-closed（B06-20）：没有可用的模型时服务端 409 + author_action，不再拿规则诊断冒充——这里不存档、
+   不记历史，回执写全原话并带「去系统配置」的门（与教练同一条，snowAiFailureToast）。 */
 export function useSnowTriage(api) {
   const [triage, setTriage] = useSS(null);   // { items: rowUid -> item, at, source }
   const [triageBusy, setTriageBusy] = useSS(false);
@@ -112,8 +114,8 @@ export function useSnowTriage(api) {
         draftOverride && (draftOverride.scenes || []).length ? { draft_override: draftOverride } : {});
       const byRow = {};
       (res && res.items || []).forEach(it => { const k = it.row_uid || it.scene_id; if (k) byRow[k] = it; });
-      setTriage({ items: byRow, at: Date.now(), source: (res && res.source) || "fallback" });
-      api.journal("场景分诊", `10 场景规划 · ${Object.keys(byRow).length} 场`, res && res.source === "llm" ? "AI" : "规则", null, key);
+      setTriage({ items: byRow, at: Date.now(), source: (res && res.source) || "llm" });
+      api.journal("场景分诊", `10 场景规划 · ${Object.keys(byRow).length} 场`, "AI", null, key);
       // 存档为推荐态（不写人工裁定），让「重写场挡物化」的闸门真实生效
       try {
         const saved = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/scene-triage`, {
@@ -128,9 +130,9 @@ export function useSnowTriage(api) {
         (saved && saved.items || []).forEach(it => { if (it.scene_plan_id && it.triage_id) triageIdsRef.current[it.scene_plan_id] = it.triage_id; });
         try { SnowSync.refetch(workId); } catch (e2) {}
       } catch (e2) { /* 存档失败不打断分诊展示；下次分诊重试 */ }
-      api.toast(res && res.source === "llm" ? "分诊完成 · AI 评估每场压力 · 已存档" : "分诊完成 · 规则诊断（启用 LLM 可得更深评估）· 已存档", "gold");
+      api.toast("分诊完成 · AI 评估每场压力 · 已存档", "gold");
     } catch (err) {
-      api.toast("分诊失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.notify(snowAiFailureToast("分诊失败", err));
     } finally {
       setTriageBusy(false);
     }

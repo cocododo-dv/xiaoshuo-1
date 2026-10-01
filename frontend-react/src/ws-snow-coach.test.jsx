@@ -463,6 +463,59 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     expect(cache.history[0].snap.scaffold.plans.S01).toEqual({ goal: "拿到旧信" });
   });
 
+  it("B06-20：AI 分诊 fail-closed——没接好模型（409 + author_action）时回执写全原话、带「去系统配置」的门；不存档、不记历史、不出分诊结果", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
+    window.SnowSync.pushCanon = vi.fn(() => ({ scenes: [{ row_uid: "S01" }] }));
+    const message = "雪花工作台的 AI 生成需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。";
+    withRoutes({
+      "/scene-triage/suggest": () => { throw Object.assign(new Error(message), { status: 409, code: "SNOWFLAKE_LLM_NOT_CONFIGURED",
+        details: { author_action: { title: "需要先启用真实模型", target_view: "config", target_ref: "system_config:llm", primary_button_label: "去系统配置" } } }); },
+    });
+    const host = await renderSnow("planning");
+    await act(async () => host.querySelector('[data-testid="snow-ai-triage"]').click());
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain(message), T);
+    expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("分诊失败");
+    expect(client.apiPost.mock.calls.some(c => String(c[0]).endsWith("/scene-triage"))).toBe(false);
+    expect(host.querySelector(".sf-triage-badge")).toBeNull();
+    expect(host.querySelector(".sf-triage-sum")).toBeNull();
+    expect(hist().some(h => h.action === "场景分诊")).toBe(false);
+    const door = [...host.querySelectorAll('[data-testid="undo-toast"] button')].find(b => b.textContent.includes("去系统配置"));
+    expect(door).toBeTruthy();
+    window.location.hash = "#snowflake";
+    await act(async () => door.click());
+    expect(window.location.hash).toBe("#settings");
+  });
+
+  it("教练也一样：没接好模型（409）时回执写全原话、带「去系统配置」的门（以前截在 40 个字，正好截掉去哪儿配）", async () => {
+    const message = "雪花工作台的 AI 生成需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。";
+    withRoutes({
+      "/assistant": () => { throw Object.assign(new Error(message), { status: 409, code: "SNOWFLAKE_LLM_NOT_CONFIGURED",
+        details: { author_action: { target_view: "config", primary_button_label: "去系统配置" } } }); },
+    });
+    const host = await renderSnow("paragraph");
+    await openCoach(host);
+    await act(async () => setValue(host.querySelector(".sf-coach-input textarea"), "主角再被动一点"));
+    const send = Array.from(host.querySelectorAll(".sf-coach-input button")).find(b => (b.textContent || "").includes("发送"));
+    await act(async () => send.click());
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain(message), T);
+    expect([...host.querySelectorAll('[data-testid="undo-toast"] button')].some(b => b.textContent.includes("去系统配置"))).toBe(true);
+  });
+
+  it("B06-20：分诊成功只有 AI 一条路——历史记「AI」，回执不再提「规则诊断」", async () => {
+    window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
+    window.SnowSync.pushCanon = vi.fn(() => ({ scenes: [{ row_uid: "S01" }] }));
+    window.SnowSync.refetch = vi.fn();
+    withRoutes({
+      "/scene-triage/suggest": () => ({ items: [{ row_uid: "S01", scene_plan_id: "sp1", status: "pass", score: 90, notes: "" }] }),
+      "/scene-triage": () => ({ items: [{ scene_plan_id: "sp1", triage_id: "t1" }] }),
+    });
+    const host = await renderSnow("planning");
+    await act(async () => host.querySelector('[data-testid="snow-ai-triage"]').click());
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("分诊完成"), T);
+    expect(host.querySelector('[data-testid="undo-toast"]').textContent).not.toContain("规则");
+    await vi.waitFor(() => expect(hist()[0]).toMatchObject({ action: "场景分诊", who: "AI" }), T);
+  });
+
   it("F02-19：04「AI 补全此角色」只并回焦点角色；教练回复「填入本步」经 applyCanonPatch 合并当前两块内容、填入前留底、回编辑页", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
     const patchTurn = { ...CHAT_TURN, turn_id: "turn-p", step_key: "character_sheets", reply: "改好了。",

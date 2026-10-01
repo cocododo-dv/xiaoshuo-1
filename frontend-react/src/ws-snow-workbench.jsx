@@ -37,7 +37,7 @@ const { useState: useSS, useEffect: useSE, useRef: useSR, useMemo: useSM } = Rea
    视图的状态、setter、回调全装在里面，教练的历史 setter 也是塞进去给生成通道用的——谁读了什么、能改什么，
    只能挨个翻。这里挂载时建一次、身份不变；方法在调用那一刻读视图的最新值（通道在 await 之后写回时仍用发起那一刻
    取到的步骤键，与以前一样），通道只能调这些方法，碰不到视图的其余状态。live 是这一次渲染视图交出来的值：
-   { workId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel }。 */
+   { workId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, pushToast, sceneLabel }。 */
 export function useSnowWorkbenchApi(live) {
   const liveRef = useSR(live);
   liveRef.current = live;
@@ -58,6 +58,8 @@ export function useSnowWorkbenchApi(live) {
       journal: (action, note, who, snap, key) => v().pushHist(action, note, who, snap, key),
       snapshot: (key) => v().snapNow(key),
       toast: (text, tone) => v().showToast(text, tone),
+      /* 带一扇门的回执：{ text, tone, timeout, actionLabel, onAction }（如 AI 没接好时「去系统配置」） */
+      notify: (opts) => v().pushToast(opts),
       /* 场景的显示号（S01…），不把 row_<uuid> 摆给作者 */
       sceneLabel: (rowUid) => v().sceneLabel(rowUid),
     };

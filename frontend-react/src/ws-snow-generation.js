@@ -3,6 +3,7 @@ import { SnowSync } from "./ws-snow-sync.jsx";
 import { apiPost } from "./lib/client.js";
 import { S2_BE_KEY, s2AdoptServerScaffold, s2SettlePlanning } from "./ws-snow-model.js";
 import { activeWorkId } from "./ws-snow-hooks.js";
+import { navigateWithViewIntent } from "./ws-view-intents.js";
 
 /* ==========================================================
    雪花工作台 · AI 生成（从 ws-snow-hooks.js 拆出，2026-09-29）
@@ -21,6 +22,23 @@ export function snowDraftOverride(key, doc, workId) {
     const d = SnowSync.pushCanon(key, { drafts: (doc && doc.drafts) || {}, scaffolds: (doc && doc.scaffolds) || {} }, workId);
     return d && Object.keys(d).length ? d : null;
   } catch (e) { return null; }
+}
+
+/* AI 请求被服务端以「还没接好模型」拒绝时的回执（雪花的 AI 节点都 fail-closed：没有可用的模型就 409
+   SNOWFLAKE_LLM_NOT_CONFIGURED，节点路由 / 提示词没配好是 SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING，前者带 details.author_action）：
+   写全服务端的原话（以前截在 40 个字，正好把「去哪儿配」截掉），带一扇去「设置 → AI 模型」的门，按钮字取 author_action。
+   其它失败只给原话。返回 UndoToast 的参数（text / tone / timeout / actionLabel / onAction）。 */
+const LLM_SETUP_CODES = ["SNOWFLAKE_LLM_NOT_CONFIGURED", "SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING"];
+export function snowAiFailureToast(lead, err) {
+  const message = String((err && err.message) || "稍后重试");
+  const action = (err && err.details && err.details.author_action) || null;
+  const setup = LLM_SETUP_CODES.includes(err && err.code) || !!(action && action.target_view === "config");
+  if (!setup) return { text: `${lead}：${message.slice(0, 60)}`, tone: "crimson", timeout: 6000 };
+  return {
+    text: `${lead}：${message}`, tone: "crimson", timeout: 12000,
+    actionLabel: String((action && action.primary_button_label) || "去系统配置"),
+    onAction: () => navigateWithViewIntent("settings", "ws:settings-tab", "ai"),
+  };
 }
 
 /* ---- AI 生成：忙态 / 入口 / 错误按步骤隔离 ----

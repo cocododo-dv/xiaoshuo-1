@@ -113,7 +113,7 @@ function WsSnowflake({ initialStep }) {
   /* 教练、生成、分诊三条 AI 通道经工作台 API 调视图（ws-snow-workbench.jsx：挂载时建一次，调用时读最新值）；
      生成回来的教练历史直接交给教练的 setter */
   const api = useSnowWorkbenchApi({
-    workId: snowWorkId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, sceneLabel,
+    workId: snowWorkId, activeKey, active, data, drafts, scaffolds, setScaffolds, setDrafts, setTabFor, pushHist, snapNow, showToast, pushToast, sceneLabel,
   });
   const coach = useSnowCoach(api, tab);
   const gen = useSnowGeneration(api, coach.setCoachHist);

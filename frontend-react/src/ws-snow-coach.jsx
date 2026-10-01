@@ -7,7 +7,7 @@ import { modEnterShortcut } from "./lib/platform.js";
 import { isImeComposing } from "./lib/keyboard.js";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId } from "./ws-snow-hooks.js";
-import { snowDraftOverride } from "./ws-snow-generation.js";
+import { snowAiFailureToast, snowDraftOverride } from "./ws-snow-generation.js";
 import { CoachInline, CoachReply } from "./ws-snow-reply.jsx";
 import { BRIEF_KIND_LABEL, BRIEF_KIND_ORDER, S2_BE_KEY, s2AdoptServerScaffold, s2BriefDeltaParts, s2Provenance } from "./ws-snow-model.js";
 
@@ -82,7 +82,7 @@ export function useSnowCoach(api, tab) {
       const parts = s2BriefDeltaParts(res && res.brief_delta);
       api.journal("教练问答", `${step.num} ${step.name}${body.focus_scene_id ? " · 聚焦 " + api.sceneLabel(body.focus_scene_id) : ""}${parts.length ? " · 要点 " + parts.join(" / ") : ""}`, "AI", null, key);
     } catch (err) {
-      api.toast("教练回复失败：" + ((err && err.message) || "稍后重试").slice(0, 40), "crimson");
+      api.notify(snowAiFailureToast("教练回复失败", err));
     } finally {
       setCoachBusy(false);
     }
