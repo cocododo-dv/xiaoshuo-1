@@ -179,9 +179,10 @@ chk("风格页没有 4xx / 5xx 请求", style4xx.length === 0, JSON.stringify(st
 await shot("styleref-tide");
 
 // ---- 全局 console 错误汇总（巡检全部视图）----
+// 章节编排（author）只有这里看 console error（以前的 AUTHOR-04 只认 SVG path 报错，已删）
 ctx = "console-sweep";
 consoleErrs.length = 0;
-for (const v of ["home", "writer", "library", "manuscripts", "settings", "trash"]) {
+for (const v of ["home", "author", "writer", "library", "manuscripts", "settings", "trash"]) {
   await go("work-a", v);
   await observe(700); // 观察窗口：页面挂上、读完数据之后没有 console error
 }

@@ -76,6 +76,9 @@ describe("React 工具链独立性", () => {
     const go = source.match(/^async function go\(work, view\) \{[\s\S]*?^\}/m)?.[0] || "";
     expect(go).toContain("await waitForApp({ work });");
     expect(source).not.toContain("${API}/api/v1/projects");
+    // 全视图 console 巡检也走章节编排：AUTHOR-04 删掉以后，这一页有没有 console error 只剩巡检在看
+    const sweep = source.match(/ctx = "console-sweep";[\s\S]*?for \(const v of (\[[^\]]*\])\)/)?.[1] || "[]";
+    expect(JSON.parse(sweep)).toContain("author");
   });
 
   it("前端启动脚本先查 Node（下限与 package.json engines 一致）再停旧实例，也不改写操作者的 NODE_OPTIONS", () => {
