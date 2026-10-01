@@ -885,3 +885,51 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     expect(document.activeElement && document.activeElement.classList.contains("sf-chapterplan-title")).toBe(false);
   });
 });
+
+/* 批准 #18c：面板里的追问走应用内的确认框（wsConfirm），不再弹浏览器原生的 confirm。WsDialog 能等异步的
+   onBeforeClose，所以连「关面板」那一问也换掉了；确认框叠在面板上面，它的 Esc 只关它自己。 */
+describe("分章面板 · 追问用应用内的确认框（批准 #18c）", () => {
+  it("有调整时 Esc 关面板：先弹应用内确认框（不调 window.confirm）；「回到面板」或在确认框里按 Esc 都留着面板，「关掉面板」才关", async () => {
+    const { WsToastHost } = await import("./ws-notify.jsx");
+    window.SnowSync = { chapterPreview: vi.fn(async () => ({
+      ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
+      strategy: "keep_current",
+      chapters: [{ row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "",
+        scenes: [1, 2, 3].map(i => ({ scene_plan_id: `sp${i}`, story_index: i, title: `第 ${i} 场`, primary_form: "proactive", planned: true })) }],
+      chapter_table: { count: 1, authored: true, saved: true },
+    })) };
+    const native = vi.spyOn(window, "confirm");
+    const onClose = vi.fn();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => root.render(<><WsToastHost /><WsChapterPlanPanel onClose={onClose} onDone={vi.fn()} /></>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
+    const esc = () => act(async () => {
+      document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    const dialog = () => document.querySelector('[data-testid="ws-confirm"]');
+
+    await esc();
+    expect(dialog()).toBeTruthy();
+    expect(dialog().textContent).toContain("关掉分章面板？");
+    expect(dialog().textContent).toContain("没确认的调整");
+    await act(async () => document.querySelector('[data-testid="ws-confirm-cancel"]').click());
+    expect(dialog()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await esc();
+    expect(dialog()).toBeTruthy();
+    await esc();   // 确认框在最上面：这一下 Esc 只关确认框（= 不关面板）
+    expect(dialog()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeTruthy();
+
+    await esc();
+    await act(async () => document.querySelector('[data-testid="ws-confirm-ok"]').click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(native).not.toHaveBeenCalled();
+  });
+});

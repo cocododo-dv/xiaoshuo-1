@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { apiPost } from "./lib/client.js";
+import { wsConfirm } from "./ws-notify.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import { activeWorkId, useSnowNotices } from "./ws-snow-hooks.js";
 import { snowDraftOverride } from "./ws-snow-generation.js";
@@ -28,9 +29,12 @@ const { useState: useSS, useEffect: useSE, useRef: useSR } = React;
 export function S2SceneAiActions({ step, ai, sceneRows, plans, emphasize = false }) {
   const tone = emphasize ? "btn-accent" : "btn-ghost";
   if (step === "scenes") {
-    const generateTable = () => {
-      if (sceneRows.some(s => (s.event || s.crucible || "").trim())
-        && !window.confirm(`AI 会依上游材料重新生成整份场景表，现有 ${sceneRows.length} 场将被整体替换（生成前留底，可在「历史」里回滚）。继续？`)) return;
+    const generateTable = async () => {
+      if (sceneRows.some(s => (s.event || s.crucible || "").trim()) && !(await wsConfirm({
+        title: "重新生成整份场景表？",
+        body: `AI 会依上游材料重新生成，现有 ${sceneRows.length} 场将被整体替换（生成前留底，可在「历史」里回滚）。`,
+        confirmLabel: "重新生成",
+      }))) return;
       ai.onGenerateAll();
     };
     return (
@@ -41,9 +45,13 @@ export function S2SceneAiActions({ step, ai, sceneRows, plans, emphasize = false
     );
   }
   if (step !== "planning") return null;
-  const fillAllScenes = () => {
+  const fillAllScenes = async () => {
     const hasPlans = Object.values(plans || {}).some(p => p && S2_PLAN_FIELDS.some(f => (p[f] || "").trim()));
-    if (hasPlans && !window.confirm("AI 会逐场补齐三拍（主动：目标 / 冲突 / 挫败；反应：反应 / 两难 / 决定）、坩埚与钩子，已填的内容会被深化改写（生成前留底，可在「历史」里回滚）。继续？")) return;
+    if (hasPlans && !(await wsConfirm({
+      title: "让 AI 补全所有场景？",
+      body: "AI 会逐场补齐三拍（主动：目标 / 冲突 / 挫败；反应：反应 / 两难 / 决定）、坩埚与钩子，已填的内容会被深化改写（生成前留底，可在「历史」里回滚）。",
+      confirmLabel: "补全所有场景",
+    }))) return;
     ai.onFillAll();
   };
   const triage = ai.triage;

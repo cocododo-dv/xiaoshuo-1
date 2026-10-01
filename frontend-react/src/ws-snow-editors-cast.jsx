@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { wsConfirm, wsNotify } from "./ws-notify.jsx";
 import { S2AutoText } from "./ws-snow-fields.jsx";
 import { S2CharFillButton, S2CharTabs } from "./ws-snow-editor-parts.jsx";
 import { S2_CHAR_FIELDS } from "./ws-snow-model.js";
@@ -43,9 +44,12 @@ export function S2CharSheet({ scaffold, onScaffold, ai }) {
     const id = "c" + n;
     return { ...s, sel: id, chars: { ...s.chars, [id]: { name: "新角色", role: "次要", goal: "", ambition: "", values: "", conflict: "", epiphany: "", storyline: "", storyline_para: "" } } };
   });
-  const delChar = () => {
-    if (ids.length <= 1) { window.alert("至少保留一个角色。"); return; }
-    if (!window.confirm(`删除角色「${ch.name || "未命名"}」？06 / 08 中她的深档字段会保留但不再展示。`)) return;
+  const delChar = async () => {
+    if (ids.length <= 1) { wsNotify({ message: "至少保留一个角色。", tone: "warn" }); return; }
+    if (!(await wsConfirm({
+      title: `删除角色「${ch.name || "未命名"}」？`, body: "06 角色背景与 08 角色全档案里她的深档会保留，但不再展示。",
+      confirmLabel: "删除角色", tone: "danger",
+    }))) return;
     onScaffold(s => {
       const chars = { ...s.chars }; delete chars[sel];
       return { ...s, sel: Object.keys(chars)[0], chars };

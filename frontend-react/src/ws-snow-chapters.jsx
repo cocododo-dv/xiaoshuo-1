@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
 import { CloseButton, Segmented } from "./ws-ui.jsx";
 import { SnowSync } from "./ws-snow-sync.jsx";
 import {
@@ -138,11 +139,16 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
     restoreFocus(want);
   }, [busy]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* 换方案会丢掉面板里还没确认的手动调整——先问一句。 */
-  const switchTo = (strategy, options) => {
+  /* 换方案会丢掉面板里还没确认的手动调整——先问一句（应用内的确认框 wsConfirm，与别处一样；批准 #18c）。
+     确认框叠在面板上面，作者回答之前面板原样不动；答「换分法」才拉新预览。 */
+  const LOSE_ADJUSTMENTS = "面板里还没确认的调整（挪章界 / 拆章 / 并章 / 改章名）";
+  const switchTo = async (strategy, options) => {
     if (busy || saving) return;
-    if (dirty && !window.confirm("换一种分法会丢掉你在面板里还没确认的调整（挪章界 / 拆章 / 并章 / 改章名）。继续？")) {
-      // 方向键在 onChange 之后才把焦点挪到相邻那一项（它没被选中）：等那一步做完，再交还给仍然选中的分法
+    if (dirty && !(await wsConfirm({
+      title: "换一种分法？", body: `会丢掉${LOSE_ADJUSTMENTS}。`, confirmLabel: "换分法", cancelLabel: "留着调整",
+    }))) {
+      // 方向键在 onChange 之后才把焦点挪到相邻那一项（它没被选中）；确认框关上后焦点也回到那一项：
+      // 等这些都做完，再交还给仍然选中的分法
       setTimeout(() => restoreFocus("strategy"), 0);
       return;
     }
@@ -152,9 +158,11 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
   };
   /* 撤销调整：丢掉面板里还没确认的挪章界 / 拆章 / 并章 / 改章名，回到这种分法刚算出来的样子。
      分段单选对「点已经选中的那一项」不做反应，所以这里单独给一个入口。 */
-  const revert = () => {
+  const revert = async () => {
     if (!dirty || busy || saving || !pristineRef.current) return;
-    if (!window.confirm("撤销面板里还没确认的调整（挪章界 / 拆章 / 并章 / 改章名），回到这种分法刚算出来的样子？")) return;
+    if (!(await wsConfirm({
+      title: "撤销面板里的调整？", body: `丢掉${LOSE_ADJUSTMENTS}，回到这种分法刚算出来的样子。`, confirmLabel: "撤销调整",
+    }))) return;
     setDraft(pristineRef.current);
     setDirty(false);
     setNameNote("");
@@ -189,7 +197,9 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
   const hasUnsavedChapters = !!draft && draft.chapters.some(isNewChapter);
   const suggest = async () => {
     if (suggesting || busy || saving || hasUnsavedChapters) return;
-    if (dirty && !window.confirm("AI 建议会替换面板里还没确认的调整。继续？")) return;
+    if (dirty && !(await wsConfirm({
+      title: "让 AI 建议替换面板里的调整？", body: `AI 的分章建议会替换${LOSE_ADJUSTMENTS}。`, confirmLabel: "让 AI 建议",
+    }))) return;
     setSuggesting(true);
     setError("");
     try {
@@ -264,7 +274,10 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
     if (saving) return false;  // 写入中（确认写入 / 只保存章表）不关
     if (!dirty) return true;
     if (reason === "backdrop") return false;
-    return window.confirm("面板里还有没确认的调整（挪章界 / 拆章 / 并章 / 改章名），关掉就不保留了。确定关闭？");
+    // WsDialog 等这个 Promise（onBeforeClose 可以是异步的），所以关面板的追问也走应用内的确认框
+    return wsConfirm({
+      title: "关掉分章面板？", body: `${LOSE_ADJUSTMENTS}关掉就不保留了。`, confirmLabel: "关掉面板", cancelLabel: "回到面板", tone: "danger",
+    });
   };
 
   const blockers = ((draft && draft.warnings) || []).filter(w => w.severity === "blocker");
@@ -289,11 +302,13 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
   const canConfirm = !!draft && !busy && !saving && !blockers.length && !gateBlockers.length
     && !draft.unassigned.length && sceneTotal > 0;
 
-  const goToGateItem = (item) => {
+  const goToGateItem = async (item) => {
     const stepKey = (item && item.step_key)
       || (item && item.primary_action && item.primary_action.step_key);
     if (!stepKey || typeof onGoToStep !== "function") return;
-    if (dirty && !window.confirm("去补这一步会关掉面板，面板里还没确认的调整（挪章界 / 拆章 / 并章 / 改章名）不会保留。继续？")) return;
+    if (dirty && !(await wsConfirm({
+      title: "去补这一步？", body: `会关掉面板，${LOSE_ADJUSTMENTS}不会保留。`, confirmLabel: "去补这一步", cancelLabel: "留在面板",
+    }))) return;
     onGoToStep(stepKey);
     onClose();
   };
@@ -375,9 +390,11 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
     || (s.needsSaved && table && !table.saved);
   const scaleNote = draft && draft.strategy === "from_scenes" ? scaleExplanation(draft.scale) : "";
   /* 去改这一场：面板里还没确认的调整会丢，先问一句 */
-  const goToScene = (scene) => {
+  const goToScene = async (scene) => {
     if (typeof onGoToScene !== "function" || !scene.sceneId || saving) return;
-    if (dirty && !window.confirm("去构思里改这一场会关掉面板，面板里还没确认的调整（挪章界 / 拆章 / 并章 / 改章名）不会保留。继续？")) return;
+    if (dirty && !(await wsConfirm({
+      title: "去构思里改这一场？", body: `会关掉面板，${LOSE_ADJUSTMENTS}不会保留。`, confirmLabel: "去改这一场", cancelLabel: "留在面板",
+    }))) return;
     onGoToScene(scene.sceneId);
   };
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
+import { wsConfirm } from "./ws-notify.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
 import { modEnterShortcut } from "./lib/platform.js";
 import { isImeComposing } from "./lib/keyboard.js";
@@ -202,9 +203,9 @@ function S2BriefCard({ brief, busy, onSave, usage, onRegen, structBusy }) {
     save([...visible(), { kind: adding.kind, scope: adding.scope, text, status: "active" }]);
     setAdding({ ...adding, text: "" });
   };
-  const clearAll = () => {
+  const clearAll = async () => {
     if (!active.length) return;
-    if (!window.confirm("撤下本步全部要点？（可在「已撤」里恢复）")) return;
+    if (!(await wsConfirm({ title: "撤下本步全部要点？", body: "撤下的要点可以在「已撤」里恢复。", confirmLabel: "全部撤下" }))) return;
     save([]);
   };
   const hasAnything = active.length || dismissed.length || inherited.length;

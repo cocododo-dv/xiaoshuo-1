@@ -645,6 +645,40 @@ describe("阶段 M · 09/10 交互", () => {
     }
   });
 
+  it("批准 #18c：04 删角色走应用内的确认框；只剩一个角色时给一条提示——不弹浏览器的 confirm / alert", async () => {
+    const { WsToastHost } = await import("./ws-notify.jsx");
+    const blankChar = { goal: "", ambition: "", values: "", conflict: "", epiphany: "", storyline: "", storyline_para: "" };
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: { characters: { sel: "c2", chars: {
+      c1: { ...blankChar, name: "合成主角", role: "主角" }, c2: { ...blankChar, name: "合成对手", role: "对立面" },
+    } } } }));
+    const nativeConfirm = vi.spyOn(window, "confirm");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => root.render(<><WsToastHost /><WsSnowflake initialStep="characters" /></>));
+    const tabs = () => [...host.querySelectorAll(".sf-char-tab-name")].map(el => el.textContent);
+    const delBtn = () => [...host.querySelectorAll("button")].find(b => b.textContent.includes("删除角色"));
+    const dialog = () => document.querySelector('[data-testid="ws-confirm"]');
+    expect(tabs()).toEqual(["合成主角", "合成对手"]);
+
+    await act(async () => delBtn().click());
+    expect(dialog().textContent).toContain("删除角色「合成对手」？");
+    await act(async () => document.querySelector('[data-testid="ws-confirm-cancel"]').click());
+    expect(tabs()).toEqual(["合成主角", "合成对手"]);
+
+    await act(async () => delBtn().click());
+    await act(async () => document.querySelector('[data-testid="ws-confirm-ok"]').click());
+    expect(tabs()).toEqual(["合成主角"]);
+
+    await act(async () => delBtn().click());
+    expect(dialog()).toBeNull();
+    expect(document.querySelector('[data-testid="ws-toast-stack"]').textContent).toContain("至少保留一个角色。");
+    expect(tabs()).toEqual(["合成主角"]);
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    expect(window.alert).not.toHaveBeenCalled();
+  });
+
   it("09 灾难标记：没有显式标记时按「功能」一栏推断，只显示、不写回", async () => {
     const seeded = threeScenes();
     seeded.scaffolds.scenes.list[1].fn = "灾难一·一幕高潮";
