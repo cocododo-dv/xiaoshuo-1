@@ -52,3 +52,66 @@ dev_wait_http_ok() {
   done
   return 1
 }
+
+# Oldest Node the React frontend runs on — keep equal to frontend-react/package.json
+# "engines" (ESLint 9's floor; Vite 6 / Vitest 3 need 18 as well). Node 22 is the
+# version CI tests and the one every message recommends.
+DEV_NODE_FLOOR_MAJOR=18
+DEV_NODE_FLOOR_MINOR=18
+
+# Put a Node toolchain for the React frontend on PATH — first hit wins:
+#   1. $NOVEL_SYSTEM_NODE_BIN   directory holding node/npm (explicit override)
+#   2. nvm ($NVM_DIR, ~/.nvm)   sourced; its default alias puts node on PATH
+#   3. ~/.local/node/bin        a plain tarball install (the Ubuntu dev host)
+#   4. whatever `node` is already on PATH
+dev_use_frontend_node() {
+  if [ -n "${NOVEL_SYSTEM_NODE_BIN:-}" ]; then
+    export PATH="$NOVEL_SYSTEM_NODE_BIN:$PATH"
+  elif [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    # shellcheck disable=SC1091
+    . "$NVM_DIR/nvm.sh"
+  elif [ -x "$HOME/.local/node/bin/node" ]; then
+    export PATH="$HOME/.local/node/bin:$PATH"
+  fi
+}
+
+dev_node_install_hint() {
+  cat >&2 <<'MSG'
+   Install Node 22 (the version CI tests) and point NOVEL_SYSTEM_NODE_BIN at its bin/
+   directory, unpack it at ~/.local/node, or make it nvm's default (nvm alias default 22).
+   CentOS 7 / glibc 2.17: use Node 22's glibc-217 build from
+   https://unofficial-builds.nodejs.org/download/release/
+MSG
+}
+
+# Check — without stopping or starting anything — that the React frontend in
+# directory $1 can run: node + npm on PATH (call dev_use_frontend_node first),
+# Node >= DEV_NODE_FLOOR_*, node_modules installed. Prints what to do and returns
+# 1 otherwise. Call it BEFORE dev_stop_pidfile / dev_stop_port: a relaunch with a
+# missing or too-old Node must leave the running frontend alone.
+dev_check_frontend_toolchain() {
+  local frontend_dir="$1" node_path version major=0 minor=0
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    echo "!! node/npm not found: the React frontend needs Node >= ${DEV_NODE_FLOOR_MAJOR}.${DEV_NODE_FLOOR_MINOR}." >&2
+    dev_node_install_hint
+    return 1
+  fi
+  node_path="$(command -v node)"
+  version="$(node --version 2>&1)" || true
+  version="${version%%$'\n'*}"
+  if [[ "$version" =~ ^v([0-9]+)\.([0-9]+)\. ]]; then
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+  fi
+  if [ "$major" -lt "$DEV_NODE_FLOOR_MAJOR" ] \
+    || { [ "$major" -eq "$DEV_NODE_FLOOR_MAJOR" ] && [ "$minor" -lt "$DEV_NODE_FLOOR_MINOR" ]; }; then
+    echo "!! \`${node_path} --version\` says '${version:-nothing}': the React frontend needs Node >= ${DEV_NODE_FLOOR_MAJOR}.${DEV_NODE_FLOOR_MINOR}." >&2
+    dev_node_install_hint
+    return 1
+  fi
+  if [ ! -d "$frontend_dir/node_modules" ]; then
+    echo "!! frontend-react/node_modules is missing. Run: cd frontend-react && npm ci" >&2
+    return 1
+  fi
+}

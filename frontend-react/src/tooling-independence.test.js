@@ -73,6 +73,23 @@ describe("React 工具链独立性", () => {
     expect(source).toContain("catalog.chapters.length === 1");
   });
 
+  it("前端启动脚本先查 Node（下限与 package.json engines 一致）再停旧实例，也不改写操作者的 NODE_OPTIONS", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(frontendRoot, "package.json"), "utf8"));
+    const lifecycle = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "dev-lifecycle.sh"), "utf8");
+    const floor = ["MAJOR", "MINOR"].map((part) => (lifecycle.match(new RegExp(`^DEV_NODE_FLOOR_${part}=(\\d+)$`, "m")) || [])[1]);
+    expect(pkg.engines && pkg.engines.node).toBe(`>=${floor.join(".")}`);
+    // 换错 Node 重启时要先报错退出：要是检查排在停旧实例之后，正在跑的前端会先被停掉、再拒绝启动
+    const leg = fs.readFileSync(path.join(repoRoot, "scripts", "start-frontend-linux.sh"), "utf8")
+      .split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+    const check = leg.indexOf("dev_check_frontend_toolchain");
+    expect(check).toBeGreaterThan(-1);
+    for (const stop of ["dev_stop_pidfile", "dev_stop_port"]) {
+      expect(leg.indexOf(stop), stop).toBeGreaterThan(check);
+    }
+    // 操作者自己设的 NODE_OPTIONS 原样传给 Vite（以前为 Node 16 预加载 crypto-polyfill.cjs，把它整个盖掉）
+    expect(leg).not.toMatch(/NODE_OPTIONS=/);
+  });
+
   it("静态 ESM 依赖图没有循环", () => {
     const modules = sourceModules();
     const knownModules = new Set(modules.map((file) => path.normalize(file)));
