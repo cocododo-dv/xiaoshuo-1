@@ -203,7 +203,8 @@ function DxFindingDetail({ finding, onSelect, onRewrite, onIgnore, onPassageRevi
 }
 
 /* 独立看一段 / 一段范围（没有复核某条发现）的结果：判定 + 评语 + 这一处的改法；新发现已并进清单。
-   模型看的是整场（焦点段标出），所以「看了第 2–3 段」也可能指出与别处的矛盾。 */
+   模型看的是整场（焦点段标出），所以「看了第 2–3 段」也可能指出与别处的矛盾。
+   给了改法时：一段给「按这个改法改写这一段」，几段给「按这个改法改写这几段」（改写按段送、按段换回，重评 R12）。 */
 function DxPassageNote({ passage, onRewriteParagraph }) {
   if (!passage || passage.about_signal_id) return null;
   const meta = WR_DX_VERDICT[passage.verdict] || WR_DX_VERDICT.no_finding;
@@ -211,6 +212,8 @@ function DxPassageNote({ passage, onRewriteParagraph }) {
     ? passage.focus_paragraphs
     : (Number.isInteger(passage.paragraph_index) ? [passage.paragraph_index] : []);
   const pid = focus.length === 1 ? focus[0] : null;
+  const first = focus.length ? Math.min(...focus) : null;
+  const last = focus.length ? Math.max(...focus) : null;
   const where = focus.length > 1 ? `第 ${focus[0] + 1}–${focus[focus.length - 1] + 1} 段` : (pid != null ? `第 ${pid + 1} 段` : "这一段");
   return (
     <section className="wr-dxd-passage" aria-label="AI 看这一段">
@@ -226,6 +229,13 @@ function DxPassageNote({ passage, onRewriteParagraph }) {
         <div className="wr-dxd-row-acts">
           <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewriteParagraph(pid, passage.rewrite_brief, passage)}>
             <I.Sparkles size={13} /> 按这个改法改写这一段
+          </button>
+        </div>
+      )}
+      {passage.rewrite_brief && focus.length > 1 && onRewriteParagraph && (
+        <div className="wr-dxd-row-acts">
+          <button type="button" className="btn btn-accent btn-sm" onClick={() => onRewriteParagraph(first, passage.rewrite_brief, passage, last)}>
+            <I.Sparkles size={13} /> 按这个改法改写这几段
           </button>
         </div>
       )}

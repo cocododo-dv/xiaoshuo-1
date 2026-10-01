@@ -2,7 +2,7 @@ import React from "react";
 import { focusableIn, isImeComposing } from "./ws-dialog.jsx";
 import { useWindowEvents } from "./lib/events.js";
 import { WR_RW_ACTIONS } from "./ws-writer-ai.js";
-import { WrAnnoPop, WrDeepSelectionBar, WrRevPop, WrRewriteBar, WrRewritePop } from "./ws-writer-inline-parts.jsx";
+import { WrAnnoPop, WrDeepSelectionBar, WrRevPop, WrRewriteBar, WrRewritePop, wrRewritePopWide } from "./ws-writer-inline-parts.jsx";
 import { useEditorSelection } from "./ws-writer-inline-selection.js";
 import { useInlineRewrite } from "./ws-writer-inline-rewrite.js";
 import { useInlineAnnotation } from "./ws-writer-inline-anno.js";
@@ -11,8 +11,9 @@ import { useInlineAnnotation } from "./ws-writer-inline-anno.js";
    选区工具条 + 改写 / 批注弹层（2026-09-21 从 ws-writer.jsx 拆出）
    ----------------------------------------------------------
    选中正文 → 工具条：润色 / 更凝练 / 更具象 / 对话化 / 批注 / 调音 / 自定义…
-   改写走后端 passages/patch-candidates（writer_passage_patch 节点），替换后在原处留一个
-   「可还原」标记——那是界面标记，只标到离开这一场为止（落盘的是干净正文）。
+   改写走后端 passages/patch-candidates（writer_passage_patch 节点）。选了几段就按段送、按段换回（重评 R12：
+   候选第一段接在起始段选区之前那一截后面，最后一段接上结束段之后那一截，中间各成一段），替换后在原处留一个
+   「可还原」标记——那是界面标记，只标到离开这一场为止（落盘的是干净正文）；还原时原来那几段原样回来。
    每次请求的候选裁决把手（patch）跟着这一次弹层走，采纳 = accept、关掉 = reject。
    批注存在本机浏览器（ws-writer-annotations.js），不进正文。
    readOnly（已批准终稿）：不出工具条，也不响应批注 / 改写标记的点击——那些动作都会改正文。
@@ -54,7 +55,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
   };
   const locked = readOnly;
   const selection = useEditorSelection({ editorRef, popRef, barRef });
-  const rewrite = useInlineRewrite({ sceneId, selection, findingRef, disabled: locked || deep, setPhase, onCommit });
+  const rewrite = useInlineRewrite({ editorRef, sceneId, selection, findingRef, disabled: locked || deep, setPhase, onCommit });
   const anno = useInlineAnnotation({ editorRef, sceneId, annoKey, selection, disabled: locked || deep });
 
   /* 切到只读（批准锁定）时收起一切正在进行的弹层 */
@@ -179,7 +180,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     let top = prefBelow ? rect.bottom + 10 : rect.top - 10 - h;
     top = Math.min(Math.max(12, top), window.innerHeight - h - 12);
     setPopTop(top);
-  }, [rect, phase, rewrite.results, rewrite.error, rewrite.custom, anno.text, rewrite.tone]);
+  }, [rect, phase, rewrite.results, rewrite.error, rewrite.custom, anno.text, rewrite.tone, rewrite.revertRefused]);
 
   /* 点正文里已有的批注 / 改写标记：打开对应的弹层 */
   useEffect(() => {
@@ -211,6 +212,11 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     const result = rewrite.replace();
     if (result.done) close({ caret: result.caret });
   };
+  /* 还原原文：改写之后那几段又改过时不还原，弹层留着说原因 */
+  const doRevert = () => {
+    const result = rewrite.revert();
+    if (result.done) close({ caret: result.caret });
+  };
   const startAnno = () => {
     const at = anno.start();
     if (!at) return;
@@ -237,7 +243,17 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     left: Math.min(Math.max(rect.left, w / 2 + 12), window.innerWidth - w / 2 - 12),
     transform: below ? "translate(-50%, 0)" : "translate(-50%, -100%)",
   });
-  const popStyle = { top: popTop != null ? popTop : (rect.bottom + 10), left: Math.min(Math.max(rect.left, 192), window.innerWidth - 192), transform: "translateX(-50%)" };
+  /* 选了几段、选得长、或候选 / 改写标记是几段时弹层放宽（wr-irw-pop.is-wide），定位按实际宽度夹在视口里 */
+  const revGroup = phase === "rev" ? rewrite.revGroup() : null;
+  const wide = phase === "anno" ? false : phase === "rev"
+    ? !!revGroup && wrRewritePopWide([revGroup.original.length, revGroup.now.length], revGroup.now.join("").length)
+    : wrRewritePopWide(
+      [(selection.segmentsRef.current && selection.segmentsRef.current.paragraphs ? selection.segmentsRef.current.paragraphs.length : 1),
+        ...rewrite.results.map((result) => result.paragraphs.length)],
+      Array.from(selection.textRef.current || "").length,
+    );
+  const half = Math.min(wide ? 560 : 360, window.innerWidth * 0.88) / 2 + 12;
+  const popStyle = { top: popTop != null ? popTop : (rect.bottom + 10), left: Math.min(Math.max(rect.left, half), window.innerWidth - half), transform: "translateX(-50%)" };
 
   if (phase === "idle" && deep) {
     return (
@@ -262,11 +278,9 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     );
   }
   if (phase === "rev") {
-    const span = rewrite.revSpan();
     return (
-      <WrRevPop popRef={popRef} style={popStyle}
-        orig={span ? (span.getAttribute("data-orig") || "") : ""} now={span ? span.textContent : ""}
-        onDismiss={dismiss} onRevert={() => close({ caret: rewrite.revert() })} onAccept={() => close({ caret: rewrite.accept() })} />
+      <WrRevPop popRef={popRef} style={popStyle} wide={wide} group={revGroup} refused={rewrite.revertRefused}
+        onDismiss={dismiss} onRevert={doRevert} onAccept={() => close({ caret: rewrite.accept() })} />
     );
   }
   if (phase === "anno") {
@@ -276,7 +290,7 @@ export function WrInlineRewrite({ editorRef, sceneId, annoKey, onCommit, readOnl
     );
   }
   return (
-    <WrRewritePop popRef={popRef} style={popStyle} phase={phase} finding={finding} selText={selection.textRef.current}
+    <WrRewritePop popRef={popRef} style={popStyle} wide={wide} phase={phase} finding={finding} selText={selection.textRef.current}
       results={rewrite.results} pick={rewrite.pick} onPick={rewrite.choose}
       custom={rewrite.custom} onCustom={rewrite.setCustom} tone={rewrite.tone} onTone={rewrite.tuneTone}
       error={rewrite.error} staleSel={rewrite.staleSel} copied={rewrite.copied} onCopy={rewrite.copy}

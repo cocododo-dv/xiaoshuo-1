@@ -13,7 +13,7 @@ import { WrAiErrorBlock } from "./ws-writer-candidates.jsx";
    WrInlineRewrite 管状态、选区、请求与焦点；这里只按它给的值画：深改姿态的工具条、起草姿态的工具条、
    改写标记弹层、批注弹层、改写弹层（自定义 / 调音 / 加载 / 出错 / 结果）。
    barRef / popRef 由 WrInlineRewrite 持有（焦点与定位要用），以 prop 传进来。
-   另有两件小工具：选区是否同一处（wrSameRange）、紧跟节点后的光标（wrCaretAfter）、工具条的方向键。
+   另有两件小工具：选区是否同一处（wrSameRange）、工具条的方向键（紧跟节点后的光标 wrCaretAfter 住在 ws-writer-rev.js）。
    ESM 模块，不写 window。
    ========================================================== */
 
@@ -30,15 +30,6 @@ export function wrSameRange(a, b) {
   try {
     return a.compareBoundaryPoints(Range.START_TO_START, b) === 0 && a.compareBoundaryPoints(Range.END_TO_END, b) === 0;
   } catch (e) { return false; }
-}
-
-/* 紧跟在某个节点后面的光标（节点随后被拆包 / 合并时，活动 Range 会跟着挪到那段字后面） */
-export function wrCaretAfter(node) {
-  if (!node || !node.parentNode) return null;
-  const range = document.createRange();
-  range.setStartAfter(node);
-  range.collapse(true);
-  return range;
 }
 
 /* 工具条里的 ←→ / Home / End：在按钮之间移动（role=toolbar 的键盘约定；下标规则同 lib/keyboard 的 rovingIndex，
@@ -99,18 +90,45 @@ export function WrRewriteBar({ barRef, style, finding, quoteLength, onRun, onSta
   );
 }
 
-/* 点开正文里的改写标记：原文 / 改写对照，还原或保留 */
-export function WrRevPop({ popRef, style, orig, now, onDismiss, onRevert, onAccept }) {
+/* 几段字按段画（段与段之间留出段距）：改写候选、原文、改写标记的对照都用它 */
+export function WrParagraphs({ paragraphs }) {
+  const list = Array.isArray(paragraphs) ? paragraphs : [paragraphs];
   return (
-    <div className="wr-irw-pop" ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写的这一处" style={style} onMouseDown={(e) => e.stopPropagation()}>
+    <span className="wr-irw-paras">
+      {list.map((text, i) => <span key={i} className="wr-irw-para">{text}</span>)}
+    </span>
+  );
+}
+
+/* 改写弹层要不要放宽：选了几段、选得长、或候选是几段时，360px 的窄弹层读起来太挤 */
+export function wrRewritePopWide(paragraphCounts, textLength) {
+  return paragraphCounts.some((count) => count > 1) || textLength > 240;
+}
+
+/* 点开正文里的改写标记：原文 / 改写对照（按段），还原或保留。
+   group 为空：这一处不是这一次打开里换进来的（记录找不到），只能保留；group.intact 为假或 refused：改写之后那几段
+   又改过，不能整段还原——打开时就说，「还原原文」不可点。 */
+export function WrRevPop({ popRef, style, wide = false, group, refused = false, onDismiss, onRevert, onAccept }) {
+  const blocked = refused || !group || !group.intact;
+  return (
+    <div className={`wr-irw-pop ${wide ? "is-wide" : ""}`} ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写的这一处" style={style} onMouseDown={(e) => e.stopPropagation()}>
       <div className="wr-irw-head"><I.Sparkles size={14} /> 这一处是 AI 改写的 <span className="sp">离开这一场后不再标出</span></div>
       <div className="wr-irw-body">
-        <div className="wr-rev-row"><span className="wr-rev-tag">原文</span><div className="wr-irw-orig wr-rev-text">{orig}</div></div>
-        <div className="wr-rev-row"><span className="wr-rev-tag now">改写</span><div className="wr-irw-new wr-rev-text">{now}</div></div>
+        {blocked && (
+          <Notice tone="warn" className="wr-irw-stale" role="alert">
+            改写后又改过这几段，不能整段还原；可在版本历史里找回。
+          </Notice>
+        )}
+        {group && (
+          <>
+            <div className="wr-rev-row"><span className="wr-rev-tag">原文</span><div className="wr-irw-orig wr-rev-text"><WrParagraphs paragraphs={group.original} /></div></div>
+            <div className="wr-rev-row"><span className="wr-rev-tag now">改写</span><div className="wr-irw-new wr-rev-text"><WrParagraphs paragraphs={group.now} /></div></div>
+          </>
+        )}
       </div>
       <div className="wr-irw-foot">
         <button type="button" className="btn btn-quiet btn-sm" onClick={onDismiss}>关闭</button>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onRevert}>还原原文</button>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={blocked} onClick={onRevert}>还原原文</button>
         <button type="button" className="btn btn-accent btn-sm" onClick={onAccept}>保留改写</button>
       </div>
     </div>
@@ -142,11 +160,14 @@ export function WrAnnoPop({ popRef, style, annoNew, annoText, onAnnoText, annoSa
   );
 }
 
-/* 改写弹层：自定义要求 / 调音 / 改写中 / 出错 / 候选（选中的那段字变了时不再原样替换，给复制） */
-export function WrRewritePop({ popRef, style, phase, finding, selText, results, pick, onPick, custom, onCustom, tone, onTone, error, staleSel, copied, onCopy, onRun, onRetry, onDismiss, onReplace, onOpenSettings }) {
-return (
-    <div className="wr-irw-pop" ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写选中的文字" style={style} onMouseDown={(e) => e.stopPropagation()}>
-      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 改写{phase === "result" && results.length > 1 ? `（${results.length} 版）` : ""}{finding ? ` · 按诊断：${finding.label || ""}` : ""} <span className="sp">选中 {selText.length} 字</span></div>
+/* 改写弹层：自定义要求 / 调音 / 改写中 / 出错 / 候选（选中的那段字变了时不再原样替换，给复制）。
+   selText 是送去改写的字（选了几段时一段一行）；每一版候选按段画，模型把几句对白放在同一段时标一句（仍可替换）。 */
+export function WrRewritePop({ popRef, style, wide = false, phase, finding, selText, results, pick, onPick, custom, onCustom, tone, onTone, error, staleSel, copied, onCopy, onRun, onRetry, onDismiss, onReplace, onOpenSettings }) {
+  const selParas = String(selText || "").split("\n").filter((part) => part.trim());
+  const selCount = Array.from(String(selText || "").replace(/\n/g, "")).length;
+  return (
+    <div className={`wr-irw-pop ${wide ? "is-wide" : ""}`} ref={popRef} tabIndex={-1} role="dialog" aria-label="AI 改写选中的文字" style={style} onMouseDown={(e) => e.stopPropagation()}>
+      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 改写{phase === "result" && results.length > 1 ? `（${results.length} 版）` : ""}{finding ? ` · 按诊断：${finding.label || ""}` : ""} <span className="sp">选中 {selParas.length > 1 ? `${selParas.length} 段 · ` : ""}{selCount} 字</span></div>
       {phase === "custom" && (
         <div className="wr-irw-custom">
           <input className="wr-irw-input" autoFocus value={custom} aria-label="改写要求" placeholder="如：更冷一点、删掉比喻、加一个动作…"
@@ -187,12 +208,15 @@ return (
                 选中的那段字已经不在原处（改过、删掉，或正文刚重新载入），这一版没有替换进去。可以先复制这一版，或重新选中再改。
               </Notice>
             )}
-            <div className="wr-irw-orig">{selText}</div>
+            <div className="wr-irw-orig"><WrParagraphs paragraphs={selParas} /></div>
             <div className="wr-irw-cands" role="radiogroup" aria-label="改写版本">
-              {results.map((text, i) => (
+              {results.map((result, i) => (
                 <button type="button" key={i} role="radio" aria-checked={pick === i} className={`wr-irw-cand ${pick === i ? "is-sel" : ""}`} onClick={() => onPick(i)}>
                   <span className="wr-irw-cand-k" aria-hidden="true">{i + 1}</span>
-                  <span className="wr-irw-cand-t">{text}</span>
+                  <span className="wr-irw-cand-t">
+                    <WrParagraphs paragraphs={result.paragraphs} />
+                    {result.collapsed && <span className="wr-irw-cand-note">这一版把几句对白放在了同一段</span>}
+                  </span>
                 </button>
               ))}
             </div>
