@@ -17,6 +17,7 @@ from novel_system.db.models import ChapterGoal, GenerationPlanningArtifact, LlmC
 from novel_system.services.chapter_plan_llm import sanitize_plan_patch
 from novel_system.services.llm_client import LLMResponse
 from tests.accounted_llm_fakes import accounted_generate_method
+from tests.support.api_client import create_project
 from tests.support.catalog import mark_chapter_approved as _approve_chapter
 
 pytestmark = pytest.mark.usefixtures("online_pipeline")
@@ -32,13 +33,7 @@ def _key(prefix: str = "chapter-plan") -> str:
 
 
 def _create_project(client) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": f"编排规划 {_key('t')}", "outline_text": "大纲", "genre": "悬疑"},
-        headers={"X-Idempotency-Key": _key("project")},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, title=f"编排规划 {_key('t')}", outline_text="大纲", genre="悬疑", key=_key("project"))["project_id"]
 
 
 def _create_chapter(client, pid: str, title: str = "第一章") -> dict:

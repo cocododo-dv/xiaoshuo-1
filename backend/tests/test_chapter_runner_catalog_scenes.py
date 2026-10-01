@@ -19,6 +19,7 @@ from novel_system.db.models import ChapterRunJob, FinalScene, SceneCard, SceneRu
 from novel_system.services.catalog import CatalogService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
+from tests.support.api_client import create_project
 
 _seq = 0
 
@@ -30,13 +31,7 @@ def _key(prefix: str) -> str:
 
 
 def _create_project(client) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": "章节编排回归", "outline_text": "大纲", "genre": "悬疑"},
-        headers={"X-Idempotency-Key": _key("fix-cr-project")},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, title="章节编排回归", outline_text="大纲", genre="悬疑", key=_key("fix-cr-project"))["project_id"]
 
 
 def _create_catalog_chapter(client, project_id: str, *, title: str = "第一章", with_scene: bool = False) -> dict:

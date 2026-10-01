@@ -10,6 +10,7 @@ from novel_system.services.writing_stats import (
     count_words,
 )
 from tests.fixture_works import seed_fixture_works
+from tests.support.api_client import create_project
 
 
 _create_seq = 0
@@ -29,13 +30,7 @@ def _create_project(client, **overrides):
         "words_target_daily": 1000,
         **overrides,
     }
-    response = client.post(
-        "/api/v2/projects",
-        json=payload,
-        headers={"X-Idempotency-Key": f"create-overview-{_create_seq}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return create_project(client, **payload, key=f"create-overview-{_create_seq}")
 
 
 def test_project_profile_fields_roundtrip(client):

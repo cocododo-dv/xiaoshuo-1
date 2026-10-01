@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import SceneCard, SceneRunState
 from tests.fixture_works import seed_fixture_works
+from tests.support.api_client import create_project
 
 _seq = 0
 
@@ -19,13 +20,7 @@ def _post(client, path, body=None):
 def _create_project(client) -> dict:
     global _seq
     _seq += 1
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": f"收件箱测试 {_seq}", "outline_text": "大纲"},
-        headers={"X-Idempotency-Key": f"rc-create-{_seq}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return create_project(client, title=f"收件箱测试 {_seq}", outline_text="大纲", key=f"rc-create-{_seq}")
 
 
 def _card(client, project_id, **overrides):

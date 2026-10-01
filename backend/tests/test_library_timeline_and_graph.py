@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from novel_system.db.models import StoryCharacter
+from tests.support.api_client import create_project
 from tests.fixture_works import seed_fixture_works
 
 _seq = 0
@@ -18,13 +19,7 @@ def _post(client, path, body=None):
 def _create_project(client) -> str:
     global _seq
     _seq += 1
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": f"资料库测试 {_seq}", "outline_text": "大纲"},
-        headers={"X-Idempotency-Key": f"lib-create-{_seq}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, title=f"资料库测试 {_seq}", outline_text="大纲", key=f"lib-create-{_seq}")["project_id"]
 
 
 def test_timeline_crud_and_ordering(client):

@@ -45,6 +45,7 @@ from tests.real_llm_fakes import (
     ScenePipelineOnlineFake,
     install_online_pipeline,
 )
+from tests.support.api_client import create_project
 
 _seq = 0
 
@@ -59,13 +60,7 @@ def _key(prefix: str) -> str:
 
 
 def _create_project(client) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": "归档检查点回归", "outline_text": "大纲", "genre": "悬疑"},
-        headers={"X-Idempotency-Key": _key("fix-ac-project")},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, title="归档检查点回归", outline_text="大纲", genre="悬疑", key=_key("fix-ac-project"))["project_id"]
 
 
 def _create_catalog_chapter(client, project_id: str) -> str:

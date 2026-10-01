@@ -6,6 +6,7 @@ import pytest
 from novel_system.db.models import AuthorDraft, ChapterGoal, StoryProject
 from novel_system.services.catalog import CatalogService
 from novel_system.services.errors import DomainError
+from tests.support.api_client import create_project
 
 _seq = 0
 
@@ -13,13 +14,7 @@ _seq = 0
 def _create_project(client) -> dict:
     global _seq
     _seq += 1
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": f"目录测试 {_seq}", "outline_text": "大纲", "genre": "悬疑"},
-        headers={"X-Idempotency-Key": f"catalog-create-{_seq}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return create_project(client, title=f"目录测试 {_seq}", outline_text="大纲", genre="悬疑", key=f"catalog-create-{_seq}")
 
 
 def _post(client, path, body=None, extra_headers=None):
