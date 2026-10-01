@@ -25,8 +25,14 @@ from novel_system.services.snowflake_steps import (
     merge_step_draft,
     step_guidance,
 )
-from novel_system.services.snowflake_workspace import _is_protagonist_role
+from novel_system.services.snowflake_step_diagnosis import is_protagonist_role
 from novel_system.services.snowflake_workspace_llm import StructuredCountMismatch, _sanitize_step_patch
+from tests.support.snowflake import (
+    install_snowflake_llm as _install_llm,
+    llm_payload_response as _respond,
+    seed_synopsis_project as _seed_synopsis_project,
+    working_payload_of as _payload_of,
+)
 
 GOLDILOCKS_SCENES = {
     "en_20_proactive": {
@@ -296,7 +302,7 @@ def test_guidance_and_prompts_drop_mechanical_alternation() -> None:
     ],
 )
 def test_is_protagonist_role(role, expected: bool) -> None:
-    assert _is_protagonist_role(role) is expected
+    assert is_protagonist_role(role) is expected
 
 
 def test_writer_brief_carries_the_protagonist_and_the_structure_brief_renders_it() -> None:
@@ -349,59 +355,6 @@ def test_writer_brief_carries_the_protagonist_and_the_structure_brief_renders_it
 # ---------------------------------------------------------------------------
 # B2 · 整步生成：数量契约被违反时重试一次，再错就如实报错
 # ---------------------------------------------------------------------------
-
-
-def _install_llm(monkeypatch, responder):
-    from novel_system.services import snowflake_workspace_llm as mod
-
-    monkeypatch.setattr(
-        mod, "execute_accounted_call", lambda session, client, request, context, *, llm_call_id: responder(request)
-    )
-    monkeypatch.setattr(mod, "mark_postprocess_failure", lambda session, llm_call_id, **kwargs: None)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
-
-
-def _payload_of(request) -> dict:
-    import json
-
-    prompt = "\n".join(str(m.get("content", "")) for m in request.messages)
-    return json.loads(prompt.split("Working payload:\n", 1)[1].rsplit("\n\nRequired top-level", 1)[0])
-
-
-def _respond(payload: dict):
-    import json
-
-    from novel_system.services.llm_client import LLMResponse
-
-    return LLMResponse(
-        request_id="r",
-        provider="p",
-        model="m",
-        text=json.dumps(payload, ensure_ascii=False),
-        structured_output=payload,
-        response_format="json_object",
-        raw_response={},
-        usage={},
-        finish_reason="stop",
-    )
-
-
-def _seed_synopsis_project(session, project_id: str) -> None:
-    from novel_system.db.models import StoryProject
-
-    session.add(
-        StoryProject(
-            project_id=project_id,
-            title="五段契约",
-            outline_text="五段契约大纲",
-            planning_mode="snowflake",
-            snowflake_workflow_mode="explore",
-            target_word_count=100000,
-        )
-    )
-    session.flush()
 
 
 def test_short_synopsis_generation_retries_once_with_the_rejection_reason(session, monkeypatch) -> None:

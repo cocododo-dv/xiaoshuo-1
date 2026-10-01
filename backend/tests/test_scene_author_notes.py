@@ -1,44 +1,20 @@
 from __future__ import annotations
 
+from tests.support.seed import seed_chapter, seed_project, seed_scene
 
-def _create_scene(client, suffix: str = "NOTES") -> str:
-    project = client.post(
-        "/api/v1/projects",
-        json={"title": "Notes project", "outline_text": "outline"},
-        headers={"X-Idempotency-Key": f"notes-project-{suffix}"},
-    )
-    assert project.status_code == 200
-    project_id = project.json()["data"]["project"]["project_id"]
+
+def _create_scene(suffix: str = "NOTES") -> str:
+    project_id = f"PRJ_NOTES_{suffix}"
+    seed_project(project_id, title="Notes project", outline_text="outline")
     chapter_id = f"CH_{suffix}"
-    chapter = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": chapter_id,
-            "project_id": project_id,
-            "planned_scene_count": 1,
-            "chapter_goal": "goal",
-        },
-        headers={"X-Idempotency-Key": f"notes-chapter-{suffix}"},
-    )
-    assert chapter.status_code == 200
+    seed_chapter(chapter_id, project_id=project_id, planned_scene_count=1, chapter_goal="goal")
     scene_id = f"{chapter_id}_SC01"
-    scene = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "project_id": project_id,
-            "scene_seq": 1,
-            "scene_goal": "goal",
-        },
-        headers={"X-Idempotency-Key": f"notes-scene-{suffix}"},
-    )
-    assert scene.status_code == 200
+    seed_scene(scene_id, chapter_id=chapter_id, project_id=project_id, scene_seq=1, scene_goal="goal")
     return scene_id
 
 
 def test_scene_author_notes_are_durable_and_revision_fenced(client) -> None:
-    scene_id = _create_scene(client)
+    scene_id = _create_scene()
 
     initial = client.get(f"/api/v1/scenes/{scene_id}/author-notes")
     assert initial.status_code == 200

@@ -13,24 +13,21 @@ from __future__ import annotations
 
 import pytest
 
-from tests.real_llm_fakes import install_skeleton_snowflake
 from sqlalchemy import select
 
 from novel_system.db.models import SceneRunState, SnowflakeScenePlan
-from tests.test_snowflake_closeout import (
-    _approve,
-    _approve_through,
-    _create_project,
-    _generate,
-    _revise_and_approve,
-    _step,
-    _workspace,
+from tests.support.snowflake import (
+    approve_through as _approve_through,
+    closeout_approve as _approve,
+    closeout_generate as _generate,
+    create_closeout_project as _create_project,
+    patch_step,
+    revise_and_approve as _revise_and_approve,
+    step_of as _step,
+    workspace_payload as _workspace,
 )
 
-
-@pytest.fixture(autouse=True)
-def _skeleton_snowflake_generate(monkeypatch):
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 def _statuses(client, project_id: str) -> dict[str, str]:
@@ -38,9 +35,7 @@ def _statuses(client, project_id: str) -> dict[str, str]:
 
 
 def _patch(client, project_id: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}", json={"draft": draft})
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return patch_step(client, project_id, step_key, draft, force=False)
 
 
 def _plans(session, project_id: str) -> list[SnowflakeScenePlan]:

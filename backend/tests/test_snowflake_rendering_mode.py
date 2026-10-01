@@ -17,112 +17,19 @@ import pathlib
 
 import yaml
 
-from novel_system.db.models import (
-    OutlinePlan,
-    SceneCard,
-    SnowflakeScenePlan,
-    StoryProject,
-)
-from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService
+from novel_system.db.models import SceneCard
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
-from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, _rhythm_report
-from novel_system.services.snowflake_scene_rows import SCENE_LIST_OWNED_FIELDS
+from novel_system.services.snowflake_chaptering import rhythm_report
 from novel_system.services.snowflake_staleness import semantic_payload
 from novel_system.services.snowflake_steps import RENDERING_MODES, SUMMARY_LENGTH_BAND, _scene_detail_seed, effective_rendering_mode
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.snowflake_workspace_llm import _sanitize_scene_detail_items
-
-PROJECT_ID = "prj-render"
-
-
-def _scene_rows() -> list[dict]:
-    return [
-        {"row_uid": "u1", "scene_seq": 1, "summary": "取账本", "primary_form": "proactive", "scene_type": "proactive",
-         "location": "码头", "crucible": "退不出的困局", "pov_character_id": "c1", "chapter_role": "起疑"},
-        {"row_uid": "u2", "scene_seq": 2, "summary": "消化挫败", "primary_form": "reactive", "scene_type": "reactive",
-         "location": "旅馆", "crucible": "无人可信", "pov_character_id": "c1", "chapter_role": "转向"},
-        {"row_uid": "u3", "scene_seq": 3, "summary": "再受挫", "primary_form": "reactive", "scene_type": "reactive",
-         "location": "码头", "crucible": "只剩一晚", "pov_character_id": "c1", "chapter_role": "转向"},
-    ]
-
-
-def _seed(session) -> SnowflakeWorkspaceService:
-    session.add(
-        StoryProject(
-            project_id=PROJECT_ID,
-            title="概述两段",
-            outline_text="概述两段大纲",
-            planning_mode="snowflake",
-            snowflake_workflow_mode="explore",
-            target_word_count=100000,
-        )
-    )
-    session.flush()
-    service = SnowflakeWorkspaceService(session)
-    service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": _scene_rows()}})
-    scenes = service.workspace(PROJECT_ID)
-    listed = next(step for step in scenes["steps"] if step["step_key"] == "scene_list")["draft"]["scenes"]
-    details = []
-    for scene in listed:
-        row = {
-            **scene,
-            "title": scene["summary"],
-            "goal": "拿到账本" if scene["primary_form"] == "proactive" else "",
-            "conflict": "三轮受阻" if scene["primary_form"] == "proactive" else "",
-            "setback": "账本被烧" if scene["primary_form"] == "proactive" else "",
-            "reaction": "" if scene["primary_form"] == "proactive" else "手抖，半天说不出话。",
-            "dilemma": "" if scene["primary_form"] == "proactive" else "报警伤弟弟；不报警明天轮到自己。",
-            "decision": "" if scene["primary_form"] == "proactive" else "去找当年的证人。",
-            "cost_requirement": "失去遗物",
-        }
-        if scene["row_uid"] == "u1":
-            row["rendering_mode"] = "summary"  # 阶段 N：主动场也可以按叙述概述写
-        elif scene["row_uid"] == "u2":
-            row["rendering_mode"] = "summary"
-        else:
-            row["rendering_mode"] = "bogus"  # 非法值：full
-        details.append(row)
-    service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": details}})
-    return service
-
-
-#: 已有场景计划上只归 09 改的字段（第 10 步的草稿不改它们）
-_LIST_OWNED = SCENE_LIST_OWNED_FIELDS
-
-
-def _edit_plan(service: SnowflakeWorkspaceService, row_uid: str, **fields) -> None:
-    """作者改一场的真实路径（R15a 删掉了逐场的 PATCH …/scenes/{id}）：形态 / 视角在 09 改（整张场景表），
-    其余字段在 10 改（整张场景规划表，只动这一行）。"""
-    listed = {key: value for key, value in fields.items() if key in _LIST_OWNED}
-    if listed:
-        if "primary_form" in listed:
-            listed["scene_type"] = listed["primary_form"]
-        rows = _step_rows(service, "scene_list")
-        for row in rows:
-            if row["row_uid"] == row_uid:
-                row.update(listed)
-        service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": rows}})
-    detailed = {key: value for key, value in fields.items() if key not in _LIST_OWNED}
-    if detailed:
-        rows = _step_rows(service, "scene_details")
-        for row in rows:
-            if row["row_uid"] == row_uid:
-                row.update(detailed)
-        service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": rows}})
-
-
-def _step_rows(service: SnowflakeWorkspaceService, step_key: str) -> list[dict]:
-    workspace = service.workspace(PROJECT_ID)
-    step = next(item for item in workspace["steps"] if item["step_key"] == step_key)
-    return [dict(row) for row in step["draft"]["scenes"]]
-
-
-def _plan(session, row_uid: str) -> SnowflakeScenePlan:
-    return next(
-        plan
-        for plan in session.query(SnowflakeScenePlan).filter(SnowflakeScenePlan.project_id == PROJECT_ID).all()
-        if plan.row_uid == row_uid
-    )
+from tests.support.snowflake import (
+    RENDER_PROJECT_ID as PROJECT_ID,
+    edit_scene_plan as _edit_plan,
+    materialize_render_project as _materialize,
+    scene_plan as _plan,
+    seed_render_project as _seed,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -189,29 +96,6 @@ def test_llm_output_may_suggest_summary_for_both_forms_and_skip_for_reactive_onl
 # ---------------------------------------------------------------------------
 # 物化 / 回流：summary 场拿数值篇幅带，简报带呈现方式
 # ---------------------------------------------------------------------------
-
-
-def _materialize(session, service: SnowflakeWorkspaceService) -> dict:
-    service.update_step(
-        PROJECT_ID,
-        "long_synopsis",
-        {"draft": {"paragraphs": ["第一幕"], "chapters": [{"act": 1, "title": "第一章", "summary": "全书一章", "chapter_goal": "推进"}]}},
-    )
-    SnowflakeChapteringService(session).autoassign(PROJECT_ID, "even")
-    project = session.get(StoryProject, PROJECT_ID)
-    plan_json = service._build_chaptered_outline_plan(project, service._scene_plans(PROJECT_ID))
-    outline = OutlinePlan(
-        plan_id="outline_plan_prj-render_01",
-        project_id=PROJECT_ID,
-        version=1,
-        status=PLAN_STATUS_PENDING_REVIEW,
-        plan_json=plan_json,
-    )
-    session.add(outline)
-    session.flush()
-    ProjectService(session).approve_outline_plan(PROJECT_ID, outline.plan_id)
-    session.flush()
-    return plan_json
 
 
 def test_materialization_gives_summary_scenes_a_numeric_band_and_briefs_carry_the_mode(session) -> None:
@@ -294,7 +178,7 @@ def test_rhythm_report_weights_summary_scenes_as_half() -> None:
         {"chapter_seq": 2, "title": "二", "act": 2, "spine": "灾二", "scene_count": 2,
          "scenes": [{"rendering_mode": "full"}, {"rendering_mode": "full"}]},
     ]
-    report = _rhythm_report(chapters)
+    report = rhythm_report(chapters)
     assert report["scene_counts"] == [4, 2]
     assert report["weighted_scene_counts"] == [3.0, 2.0]
     assert report["summary_scene_count"] == 2

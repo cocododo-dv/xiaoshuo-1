@@ -11,6 +11,7 @@ from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace_llm import _collect_generation_gaps, _normalize_candidates_output
 from tests.accounted_llm_fakes import accounted_generate_method
+from tests.support.snowflake import create_project
 
 
 def _prompt_payload(prompt: str) -> dict:
@@ -55,13 +56,7 @@ def _fake_generate_capturing(captured: list, payload: dict):
 
 
 def _create_project(client, key: str = "fe-cands-project", title: str = "候选之书") -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": title, "outline_text": "构思候选验证用项目。"},
-        headers={"X-Idempotency-Key": key},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, key=key, title=title, outline_text="构思候选验证用项目。")["project_id"]
 
 
 def test_fe_candidates_is_fail_closed_without_llm_and_records_no_turn(client) -> None:

@@ -24,7 +24,7 @@ from novel_system.db.models import StyleReferenceJob, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.style_reference_route_helpers import fake_import_llm, install_fake_classifier, wait_book_status
-from tests.test_style_reference_routes import _import_book, _seed_full_chain
+from tests.support.style_reference import import_sample_book as _import_book, seed_full_chain as _seed_full_chain
 
 PREFIX = "/api/v2/style-reference"
 
@@ -154,11 +154,6 @@ def test_an_import_that_fails_before_the_job_exists_has_no_activity_entry(client
     assert resp.json()["error"]["code"] == "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED"
     items = client.get(f"{PREFIX}/activity").json()["data"]["items"]
     assert not any(item.get("title") == "坏格式" for item in items)
-
-
-def test_the_legacy_import_progress_poll_is_gone(client: TestClient) -> None:
-    """旧前端的导入轮询删除:导入进度一律看响应里的 job_id + 活动清单。"""
-    assert client.get(f"{PREFIX}/imports/sr-import-never/progress").status_code == 404
 
 
 def test_import_progress_is_live_while_the_job_classifies(

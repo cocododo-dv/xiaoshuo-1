@@ -55,9 +55,6 @@ from novel_system.services.snowflake_chaptering.scale import (
 from novel_system.services.snowflake_chaptering.service import SnowflakeChapteringService
 from novel_system.services.snowflake_chaptering.spine import scene_spine, spine_from_role, spine_positions
 
-# 旧名：测试从本包 import
-_rhythm_report = rhythm_report
-
 __all__ = [
     "NEW_CHAPTER_PREFIX",
     "SPINE_MARKS",
@@ -66,7 +63,6 @@ __all__ = [
     "_coerce_act",
     "_reference_chapter_scale_hint",
     "_reference_chapter_titles",
-    "_rhythm_report",
     "build_chaptered_outline_plan",
     "chapter_target_id",
     "heal_assignment",

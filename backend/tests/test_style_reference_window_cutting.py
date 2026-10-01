@@ -2,7 +2,7 @@
 
 原来的 dict 索引(``profile_json.exemplar_windows``)与辨识度打分、按段型选窗、证据引文兜底都已删除——持久化的窗口
 索引在 ``windows.py``(测试 ``test_style_reference_windows.py``),按本场挑样例在 ``inject/selection.py``(测试
-``test_style_reference_inject_v3.py``)。这里只钉住切窗本身:鲁迅黄金语料按篇切、每窗有界不重叠、位置标签;
+``test_style_reference_inject.py``)。这里只钉住切窗本身:鲁迅黄金语料按篇切、每窗有界不重叠、位置标签;
 副文本与太短的「章」不入窗。
 """
 

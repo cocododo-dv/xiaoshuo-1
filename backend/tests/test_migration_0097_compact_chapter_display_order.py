@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate
 
 PREVIOUS_HEAD = "20260929_0096"
 CURRENT_HEAD = "20260929_0097"
 
 
 def _project(connection: sqlite3.Connection, project_id: str, approved: str = "[]") -> None:
-    _insert_minimal_row(
+    insert_minimal_row(
         connection,
         "story_projects",
         {"project_id": project_id, "title": project_id, "outline_text": "x", "approved_chapter_ids_json": approved},
@@ -30,7 +30,7 @@ def _chapter(
     state: str = "planned",
     trashed: bool = False,
 ) -> None:
-    _insert_minimal_row(
+    insert_minimal_row(
         connection,
         "chapter_goals",
         {
@@ -57,7 +57,7 @@ def test_0097_compacts_drifted_chapter_orders_except_where_an_approved_chapter_w
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "compact-display-order-0097.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     # 原生 sqlite3 不开外键：作品行只为读 approved_chapter_ids_json
     with sqlite3.connect(path) as connection:
         _project(connection, "prj-gap")
@@ -82,7 +82,7 @@ def test_0097_compacts_drifted_chapter_orders_except_where_an_approved_chapter_w
         _chapter(connection, "place-b", "prj-approved-in-place", 9)
         connection.commit()
 
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)  # 显式升到本迁移：以后再加迁移不必回来改这个文件
+    migrate(path, CURRENT_HEAD, monkeypatch)  # 显式升到本迁移：以后再加迁移不必回来改这个文件
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (CURRENT_HEAD,)
     assert _orders(path, "prj-gap") == {"gap-a": 1, "gap-b": 2, "gap-c": 3, "gap-trashed": 1}
@@ -92,8 +92,8 @@ def test_0097_compacts_drifted_chapter_orders_except_where_an_approved_chapter_w
     assert _orders(path, "prj-approved-in-place") == {"place-a": 1, "place-b": 2}
 
     # 降级是空操作；再升一次没有要改的行（可重复执行）
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
     assert _orders(path, "prj-gap") == {"gap-a": 1, "gap-b": 2, "gap-c": 3, "gap-trashed": 1}
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)
+    migrate(path, CURRENT_HEAD, monkeypatch)
     assert _orders(path, "prj-gap") == {"gap-a": 1, "gap-b": 2, "gap-c": 3, "gap-trashed": 1}
     assert _orders(path, "prj-locked-list") == {"list-a": 4, "list-b": None}

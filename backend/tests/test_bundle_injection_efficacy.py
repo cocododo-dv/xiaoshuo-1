@@ -203,7 +203,7 @@ def test_narrative_state_digest_uses_scene_project_id(session):
 def test_bundle_never_carries_drift_calibration_even_with_legacy_events(session):
     """风格参考 v3：漂移驾驶已删——同章更早场景残留的 style_drift_observed 事件不再进下一场 bundle。"""
     from novel_system.db.models import StyleReferenceMetricEvent
-    from tests.test_style_reference_style_continuity import seed_binding, seed_work, short_dense_reference
+    from tests.support.style_reference import seed_style_binding as seed_binding, seed_work, short_dense_reference
 
     seed_work(session, project_id="P_W6_BND", scenes_per_chapter=2)
     seed_binding(
@@ -276,7 +276,7 @@ def test_bundle_freshness_budget_applies_exemptions_from_bound_reference(session
 
     from novel_system.db.models import FinalScene
     from novel_system.services import self_repetition as self_repetition_module
-    from tests.test_style_reference_style_continuity import seed_binding, seed_work
+    from tests.support.style_reference import seed_style_binding as seed_binding, seed_work
 
     monkeypatch.setattr(
         self_repetition_module.SelfRepetitionDetector,

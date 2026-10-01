@@ -16,58 +16,39 @@ Covers:
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import StoryCharacter
 from novel_system.services.project_runtime_invalidation import SnowflakeImpactAnalyzer
-from tests.real_llm_fakes import install_skeleton_snowflake
+from tests.support.api_client import create_project
+from tests.support.snowflake import approve_step, post_generate
 
-
-@pytest.fixture(autouse=True)
-def _skeleton(monkeypatch):
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
 def _create_project(client) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "雨城残响",
-            "genre": "都市悬疑",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": (
-                "女主收到一封来自十年前的信。\n"
-                "她回到雨城，发现旧案和家族秘密有关。\n"
-                "结尾她决定公开真相。"
-            ),
-        },
-        headers={"X-Idempotency-Key": f"create-{uuid.uuid4().hex}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(
+        client,
+        title="雨城残响",
+        genre="都市悬疑",
+        target_chapter_count=2,
+        target_word_count=120000,
+        outline_text=(
+            "女主收到一封来自十年前的信。\n"
+            "她回到雨城，发现旧案和家族秘密有关。\n"
+            "结尾她决定公开真相。"
+        ),
+    )["project_id"]
 
 
 def _approve_step(client, project_id: str, step_key: str) -> dict:
-    generated = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json={},
-        headers={"X-Idempotency-Key": f"gen-{project_id}-{step_key}"},
-    )
+    generated = post_generate(client, project_id, step_key, key=f"gen-{project_id}-{step_key}")
     assert generated.status_code == 200, generated.text
-    approved = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"approve-{project_id}-{step_key}"},
-    )
-    assert approved.status_code == 200, approved.text
-    return approved.json()["data"]["step"]
+    return approve_step(client, project_id, step_key, key=f"approve-{project_id}-{step_key}")["step"]
 
 
 def _characters(session, project_id: str) -> list[StoryCharacter]:

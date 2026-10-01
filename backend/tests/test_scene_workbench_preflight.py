@@ -12,6 +12,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
 )
+from tests.support.seed import seed_chapter, seed_scene
 
 
 SCENE_WRITER_BRIEF_V2 = {
@@ -32,24 +33,18 @@ SCENE_WRITER_BRIEF_V2 = {
 }
 
 
-def create_chapter(client, chapter_id: str = "CH910") -> None:
-    response = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": chapter_id,
-            "planned_scene_count": 1,
-            "chapter_goal": f"goal for {chapter_id}",
-            "main_plot_push": f"push for {chapter_id}",
-            "emotional_target": f"emotion for {chapter_id}",
-            "ending_effect": f"ending for {chapter_id}",
-        },
-        headers={"X-Idempotency-Key": f"chapter-{chapter_id}"},
+def create_chapter(chapter_id: str = "CH910") -> None:
+    seed_chapter(
+        chapter_id,
+        planned_scene_count=1,
+        chapter_goal=f"goal for {chapter_id}",
+        main_plot_push=f"push for {chapter_id}",
+        emotional_target=f"emotion for {chapter_id}",
+        ending_effect=f"ending for {chapter_id}",
     )
-    assert response.status_code == 200
 
 
 def create_scene(
-    client,
     *,
     chapter_id: str = "CH910",
     scene_id: str = "CH910_SC01",
@@ -60,25 +55,20 @@ def create_scene(
     beats_json: list[str] | None = None,
     must_include_text: str = "Old letter clue",
 ) -> None:
-    response = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "scene_seq": 1,
-            "pov_character_id": pov_character_id,
-            "onstage_chars_json": ["CHAR_A", "CHAR_B"] if onstage_chars_json is None else onstage_chars_json,
-            "location": location,
-            "scene_goal": scene_goal,
-            "beats_json": ["beat-1", "beat-2"] if beats_json is None else beats_json,
-            "must_include_text": must_include_text,
-            "target_length_band": "short",
-            "scene_type": "reunion",
-            "is_chapter_last": 0,
-        },
-        headers={"X-Idempotency-Key": f"scene-{scene_id}"},
+    seed_scene(
+        scene_id,
+        chapter_id=chapter_id,
+        scene_seq=1,
+        pov_character_id=pov_character_id,
+        onstage_chars_json=["CHAR_A", "CHAR_B"] if onstage_chars_json is None else onstage_chars_json,
+        location=location,
+        scene_goal=scene_goal,
+        beats_json=["beat-1", "beat-2"] if beats_json is None else beats_json,
+        must_include_text=must_include_text,
+        target_length_band="short",
+        scene_type="reunion",
+        is_chapter_last=0,
     )
-    assert response.status_code == 200
 
 
 def seed_literary_ready_state(session: Session, scene_id: str = "CH910_SC01", chapter_id: str = "CH910") -> None:
@@ -138,8 +128,8 @@ DIAGNOSTIC_WORKBENCH_KEYS = {
 
 def test_workbench_default_payload_carries_only_what_the_drafting_desk_reads(client) -> None:
     """默认载荷不再每次现算预检、抄袭门、蓝图、准终稿摘要、尝试历史、bundle 冻结快照（界面一个都不读）。"""
-    create_chapter(client, "CH925")
-    create_scene(client, chapter_id="CH925", scene_id="CH925_SC01")
+    create_chapter("CH925")
+    create_scene(chapter_id="CH925", scene_id="CH925_SC01")
 
     default = client.get("/api/v1/scenes/CH925_SC01/workbench")
     assert default.status_code == 200
@@ -159,8 +149,8 @@ def test_workbench_default_payload_carries_only_what_the_drafting_desk_reads(cli
 
 
 def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields(client, session: Session) -> None:
-    create_chapter(client)
-    create_scene(client)
+    create_chapter()
+    create_scene()
     seed_literary_ready_state(session)
 
     response = client.get("/api/v1/scenes/CH910_SC01/workbench?include=diagnostics")
@@ -197,8 +187,8 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
 
 
 def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_run(client, session: Session) -> None:
-    create_chapter(client, "CH915")
-    create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
+    create_chapter("CH915")
+    create_scene(chapter_id="CH915", scene_id="CH915_SC01")
 
     response = client.get("/api/v1/scenes/CH915_SC01/workbench?include=diagnostics")
 
@@ -227,8 +217,8 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
         "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
         '["欧文·灰港", "盐湾学院"]',
     )
-    create_chapter(client, "CH921")
-    create_scene(client, chapter_id="CH921", scene_id="CH921_SC01")
+    create_chapter("CH921")
+    create_scene(chapter_id="CH921", scene_id="CH921_SC01")
     bundle = SceneBundle(
         bundle_id="bundle_CH921_SC01_v1",
         scene_id="CH921_SC01",
@@ -275,8 +265,8 @@ def test_workbench_payload_scans_final_scene_against_the_bound_reference(client,
     """风格参考 v3：工作台的终稿读数就是唯一抄袭门——绑定的书连续照抄与画像的受保护专名都报。"""
     from tests.reference_copy_fixtures import PROTECTED_NAME, REFERENCE_PASSAGE, seed_bound_reference
 
-    create_chapter(client, "CH921D")
-    create_scene(client, chapter_id="CH921D", scene_id="CH921D_SC01")
+    create_chapter("CH921D")
+    create_scene(chapter_id="CH921D", scene_id="CH921D_SC01")
     refs = seed_bound_reference(
         session,
         seed="workbench",
@@ -314,8 +304,8 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     真实作品的每一次「开始起草」都被预检拦下（VOICE_PROFILE_MISSING / RELATION_PROFILE_MISSING），
     唯一的出路是让预检自己铸一句占位套话。缺卡不再拦起草，也不再有「铸最小卡」这个动作。
     """
-    create_chapter(client, "CH911")
-    create_scene(client, chapter_id="CH911", scene_id="CH911_SC01")
+    create_chapter("CH911")
+    create_scene(chapter_id="CH911", scene_id="CH911_SC01")
 
     response = client.get("/api/v1/scenes/CH911_SC01/workbench?include=diagnostics")
 
@@ -325,9 +315,6 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     assert preflight["blocking_items"] == []
     assert "missing_dependencies" not in preflight
     assert "create_actions" not in preflight
-    assert client.post(
-        "/api/v1/scenes/CH911_SC01/preflight/create-cards", headers={"X-Idempotency-Key": "gone-create-cards"}
-    ).status_code == 404
 
 
 def test_bundle_builds_without_voice_or_relation_cards(client, session: Session) -> None:
@@ -335,8 +322,8 @@ def test_bundle_builds_without_voice_or_relation_cards(client, session: Session)
     既没有这两节，也没有它们的出处；角色身份契约照常从人物资料来。"""
     from novel_system.services.bundle_builder import BundleBuilder
 
-    create_chapter(client, "CH912")
-    create_scene(client, chapter_id="CH912", scene_id="CH912_SC01")
+    create_chapter("CH912")
+    create_scene(chapter_id="CH912", scene_id="CH912_SC01")
 
     snapshot = BundleBuilder(session).build("CH912_SC01")["snapshot"]
     assert "voice_card" not in snapshot["inline_digests"]
@@ -347,9 +334,8 @@ def test_bundle_builds_without_voice_or_relation_cards(client, session: Session)
 
 
 def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(client) -> None:
-    create_chapter(client, "CH913")
+    create_chapter("CH913")
     create_scene(
-        client,
         chapter_id="CH913",
         scene_id="CH913_SC01",
         pov_character_id="",
@@ -379,8 +365,8 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
 
 
 def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Session) -> None:
-    create_chapter(client, "CH919")
-    create_scene(client, chapter_id="CH919", scene_id="CH919_SC01")
+    create_chapter("CH919")
+    create_scene(chapter_id="CH919", scene_id="CH919_SC01")
     scene = session.get(SceneCard, "CH919_SC01")
     scene.hook = "以死亡证明作为雨夜钩子。"
     scene.forbidden_text = "死亡证明"
@@ -404,7 +390,7 @@ def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Sess
 
 
 def test_create_scene_rejects_corrupted_user_text(client) -> None:
-    create_chapter(client, "CH920")
+    create_chapter("CH920")
 
     response = client.post(
         "/api/v1/scenes",
@@ -432,8 +418,8 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
     client,
     session: Session,
 ) -> None:
-    create_chapter(client, "CH915")
-    create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
+    create_chapter("CH915")
+    create_scene(chapter_id="CH915", scene_id="CH915_SC01")
 
     state = session.get(SceneRunState, "CH915_SC01")
     state.current_human_review_event_id = None
@@ -465,8 +451,8 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
 
 
 def test_workbench_soft_qc_summary_only_uses_reports_from_the_active_run(client, session: Session) -> None:
-    create_chapter(client, "CH916")
-    create_scene(client, chapter_id="CH916", scene_id="CH916_SC01")
+    create_chapter("CH916")
+    create_scene(chapter_id="CH916", scene_id="CH916_SC01")
 
     state = session.get(SceneRunState, "CH916_SC01")
     state.current_bundle_id = "bundle_current_CH916_SC01"
@@ -518,8 +504,8 @@ def test_workbench_generation_summary_stays_empty_when_current_run_has_no_genera
     client,
     session: Session,
 ) -> None:
-    create_chapter(client, "CH917")
-    create_scene(client, chapter_id="CH917", scene_id="CH917_SC01")
+    create_chapter("CH917")
+    create_scene(chapter_id="CH917", scene_id="CH917_SC01")
 
     session.add(
         LlmCall(

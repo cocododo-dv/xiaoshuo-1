@@ -26,8 +26,6 @@ from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
-# Importing the autouse fixture runs every test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import (
     _durable_scene_text,
     _CountingGenerationClient,
@@ -49,6 +47,8 @@ from tests.support.checkpoint_fakes import (
     _selection_resume_orchestrator,
 )
 from tests.support.style_first_fixtures import bind_style_first, install_readings, reading
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def _style_first_resume_scene(session, monkeypatch) -> None:

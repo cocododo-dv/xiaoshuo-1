@@ -13,6 +13,7 @@ import pytest
 from novel_system.db.models import SnowflakeStepRun, StoryProject
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+from tests.support.snowflake import working_payload_of as _prompt_payload
 
 UPSTREAM_DRAFTS = {
     "book_brief": {"category": "悬疑", "target_reader": "都市读者", "story_kind": "追凶",
@@ -74,12 +75,6 @@ def _seed_project(session, *, status: str, project_id: str = "prj-upstream") -> 
         ))
     session.flush()
     return project_id
-
-
-def _prompt_payload(request) -> dict:
-    prompt = "\n".join(str(m.get("content", "")) for m in request.messages)
-    body = prompt.split("Working payload:\n", 1)[1].rsplit("\n\nRequired top-level", 1)[0]
-    return json.loads(body)
 
 
 @pytest.mark.parametrize("status", ["approved", "pending_review", "stale", "draft"])

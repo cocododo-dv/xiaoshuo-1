@@ -440,7 +440,7 @@ def test_app_shutdown_releases_its_run_leases_so_a_restart_resumes_at_once(sessi
     进程退出之后工人的续约不再生效（心跳线程续不回来）。"""
     from novel_system.services import scene_run_jobs as job_module
     from novel_system.services.run_job_leases import lease_is_active
-    from tests.test_scene_run_jobs import _create_chapter_and_scene
+    from tests.support.catalog import job_chapter_and_scene as _create_chapter_and_scene
 
     started = threading.Event()
     release = threading.Event()
@@ -460,7 +460,7 @@ def test_app_shutdown_releases_its_run_leases_so_a_restart_resumes_at_once(sessi
 
     monkeypatch.setattr(job_module, "Orchestrator", _BlockingPipeline)
     with AutoKeyTestClient(create_app()) as client:
-        _create_chapter_and_scene(client)
+        _create_chapter_and_scene()
         job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs").json()["data"]["job_id"]
         assert started.wait(10)
         with SessionLocal() as observer:

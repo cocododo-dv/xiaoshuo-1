@@ -188,13 +188,6 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
 
     from novel_system.db.session import reset_engine
 
-    # Backup stub so migration 0036 (drop legacy reference_learning) passes its guard
-    # without touching the real, gitignored backups directory.
-    fake_root = tmp_path / "repo_root"
-    (fake_root / "backups").mkdir(parents=True)
-    (fake_root / "backups" / "style_reference_legacy_test.json").write_text("[]", encoding="utf-8")
-    monkeypatch.setenv("STYLE_REFERENCE_REPO_ROOT", str(fake_root))
-
     migrated_db = tmp_path / "migrated.db"
     create_all_db = tmp_path / "create_all.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{migrated_db}")

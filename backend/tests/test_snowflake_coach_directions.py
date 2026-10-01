@@ -11,7 +11,12 @@
 
 from __future__ import annotations
 
-from tests.test_snowflake_direction_brief import COACH_REPLY, _create_project, _install, _prompt_payload
+from tests.support.snowflake import (
+    COACH_REPLY,
+    coach_working_payload as _prompt_payload,
+    create_brief_project as _create_project,
+    install_coach_llm as _install,
+)
 
 DIRECTIONS = {
     "candidates": [

@@ -34,7 +34,7 @@ from tests.style_reference_factories import (
     make_book,
     make_windows,
 )
-from tests.test_style_reference_windows import synthetic_rows
+from tests.support.style_reference import synthetic_rows
 
 RIGHTS = {"rights_declaration": {"declared": True, "analysis_rights": True, "send_rights": True}}
 PROJECT_ID = "PRJ_INJ3"

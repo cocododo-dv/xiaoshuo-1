@@ -13,39 +13,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from novel_system.services.scene_workbench import serialize_generation_summary
-from novel_system.db.models import (
-    AttemptTracker,
-    ChapterGoal,
-    LlmCall,
-    SceneCard,
-    SceneDraft,
-    SceneRunState,
-    StoryProject,
-)
 from novel_system.db.session import SessionLocal
-from tests.style_reference_factories import make_book, make_profile
+from tests.support.style_reference import (
+    seed_numbered_book as _seed_book,
+    seed_surface_profile as _seed_profile,
+    seed_windows_scene as _seed_scene,
+    windows_attempt as _attempt,
+)
 
 PREFIX = "/api/v2/style-reference"
-
-
-def _seed_book(session: Session, book_id: str, *, paragraphs: int = 100) -> None:
-    make_book(
-        session,
-        book_id,
-        title=f"参考书 {book_id}",
-        cloud_policy="local_only",
-        text_checksum=f"sha_{book_id}",
-        total_chars=paragraphs * 10,
-        paragraph_id="{book_id}_p{index:04d}",
-        paragraphs=[
-            {"text": f"{book_id} 第 {index} 段的原文。", "paragraph_type": "dialogue" if index % 3 == 0 else "narration"}
-            for index in range(paragraphs)
-        ],
-    )
-
-
-def _seed_profile(session: Session, *, book_id: str, profile_id: str) -> None:
-    make_profile(session, book_id, profile_id=profile_id, title=f"画像 {profile_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -133,85 +109,6 @@ def test_paragraph_range_rejects_inverted_or_negative_range(client: TestClient) 
 # ---------------------------------------------------------------------------
 # generation_summary.style_windows
 # ---------------------------------------------------------------------------
-
-
-def _seed_scene(session: Session, *, project_id: str, scene_id: str = "CH701_SC01") -> SceneRunState:
-    chapter_id = "CH701"
-    session.add(StoryProject(project_id=project_id, title="WP4 windows", outline_text=""))
-    session.add(
-        ChapterGoal(chapter_id=chapter_id, project_id=project_id, planned_scene_count=1, chapter_goal="g")
-    )
-    session.add(
-        SceneCard(
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-            project_id=project_id,
-            scene_seq=1,
-            pov_character_id="CHAR_A",
-            onstage_chars_json=["CHAR_A"],
-            location="旧城门廊",
-            scene_goal="reveal",
-            beats_json=["arrival"],
-            must_include_text=None,
-            target_length_band="short",
-            scene_type="reveal",
-            is_chapter_last=0,
-        )
-    )
-    # 生成摘要要能解析出 llm_call:中性稿行指向一条 LlmCall
-    session.add(
-        LlmCall(
-            llm_call_id=f"llm_{scene_id}",
-            step="neutral_draft",
-            scope_type="scene",
-            scope_id=scene_id,
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-        )
-    )
-    session.add(
-        SceneDraft(
-            row_id=f"draft_{scene_id}",
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-            stage="neutral_draft",
-            content="x",
-            source_bundle_id="bundle_v2",
-            source_bundle_hash="h_v2",
-            generation_llm_call_id=f"llm_{scene_id}",
-        )
-    )
-    state = SceneRunState(
-        scene_id=scene_id,
-        scene_status="near_final",
-        current_bundle_id="bundle_v2",
-        current_neutral_draft_row_id=f"draft_{scene_id}",
-    )
-    session.add(state)
-    session.commit()
-    return state
-
-
-def _attempt(
-    scene_id: str,
-    *,
-    step: str,
-    bundle_id: str,
-    refs: list | None,
-    status: str = "completed",
-    profile_ids: list[str] | None = None,
-) -> AttemptTracker:
-    runtime: dict = {"outcome": "hit", "profile_ids": profile_ids or []}
-    if refs is not None:
-        runtime["few_shot_window_refs"] = refs
-    return AttemptTracker(
-        scene_id=scene_id,
-        chapter_id="CH701",
-        step=step,
-        status=status,
-        source_bundle_id=bundle_id,
-        details_json={"style_reference_runtime": runtime},
-    )
 
 
 _WINDOW_A = {

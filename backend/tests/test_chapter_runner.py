@@ -14,44 +14,35 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
+from tests.support.seed import seed_chapter, seed_scene
 
 
-def _create_chapter(client, chapter_id: str) -> None:
-    response = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": chapter_id,
-            "planned_scene_count": 3,
-            "chapter_goal": f"goal {chapter_id}",
-            "main_plot_push": f"push {chapter_id}",
-            "emotional_target": f"emotion {chapter_id}",
-            "ending_effect": f"ending {chapter_id}",
-        },
-        headers={"X-Idempotency-Key": f"create-chapter-{chapter_id}"},
+def _create_chapter(chapter_id: str) -> None:
+    seed_chapter(
+        chapter_id,
+        planned_scene_count=3,
+        chapter_goal=f"goal {chapter_id}",
+        main_plot_push=f"push {chapter_id}",
+        emotional_target=f"emotion {chapter_id}",
+        ending_effect=f"ending {chapter_id}",
     )
-    assert response.status_code == 200
 
 
-def _create_scene(client, chapter_id: str, scene_id: str, scene_seq: int, *, is_chapter_last: int = 0) -> None:
-    response = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "scene_seq": scene_seq,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A"],
-            "location": f"location {scene_id}",
-            "scene_goal": f"goal {scene_id}",
-            "beats_json": [f"beat {scene_id}"],
-            "must_include_text": f"must {scene_id}",
-            "target_length_band": "short",
-            "scene_type": "bridge",
-            "is_chapter_last": is_chapter_last,
-        },
-        headers={"X-Idempotency-Key": f"create-scene-{scene_id}"},
+def _create_scene(chapter_id: str, scene_id: str, scene_seq: int, *, is_chapter_last: int = 0) -> None:
+    seed_scene(
+        scene_id,
+        chapter_id=chapter_id,
+        scene_seq=scene_seq,
+        pov_character_id="CHAR_A",
+        onstage_chars_json=["CHAR_A"],
+        location=f"location {scene_id}",
+        scene_goal=f"goal {scene_id}",
+        beats_json=[f"beat {scene_id}"],
+        must_include_text=f"must {scene_id}",
+        target_length_band="short",
+        scene_type="bridge",
+        is_chapter_last=is_chapter_last,
     )
-    assert response.status_code == 200
 
 
 def _add_job_parent(session, chapter_id: str) -> None:
@@ -208,10 +199,10 @@ def test_chapter_job_detached_renewal_is_visible_to_other_sessions(session) -> N
 
 
 def test_chapter_run_full_executes_scenes_in_order_and_reports_completed_status(client, session, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2)
-    _create_scene(client, "CH900", "CH900_SC03", 3, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2)
+    _create_scene("CH900", "CH900_SC03", 3, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch)
 
     response = client.post(
@@ -436,8 +427,8 @@ def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
     session,
     monkeypatch,
 ) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1, is_chapter_last=1)
     _install_fake_runner(monkeypatch)
     observed_execution_ids: list[str] = []
     provider_dispatches = 0
@@ -505,9 +496,9 @@ def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
 
 
 def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scene(client, session, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch, blocked_scene="CH900_SC01", block_kind="human_review")
 
     blocked_response = client.post(
@@ -565,9 +556,9 @@ def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scen
 
 
 def test_chapter_run_full_blocks_when_scene_finishes_without_final_scene(client, session, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch, blocked_scene="CH900_SC01", block_kind="partial_rewrite")
 
     response = client.post(
@@ -597,9 +588,9 @@ def test_chapter_run_full_blocks_when_scene_finishes_without_final_scene(client,
 
 
 def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, session, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch, blocked_scene="CH900_SC01", block_kind="human_review")
 
     blocked_response = client.post(
@@ -677,9 +668,9 @@ def test_chapter_run_blocked_on_candidate_selection_points_at_the_drafting_desk(
     （终选只能在起草台做；过去指向「待处理建议」，那里没有这张卡，作者找不到出口）。选完之前重新运行本章
     仍然停在这一场、同一个指引，不会再跑这一场。
     """
-    _create_chapter(client, "CH903")
-    _create_scene(client, "CH903", "CH903_SC01", 1)
-    _create_scene(client, "CH903", "CH903_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH903")
+    _create_scene("CH903", "CH903_SC01", 1)
+    _create_scene("CH903", "CH903_SC02", 2, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch, blocked_scene="CH903_SC01", block_kind="candidate_selection")
 
     expected_error = {
@@ -718,9 +709,9 @@ def test_chapter_run_blocked_on_candidate_selection_points_at_the_drafting_desk(
 
 
 def test_prepare_full_run_restarts_resolved_blocked_job(client, session, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2, is_chapter_last=1)
     _install_fake_runner(monkeypatch, blocked_scene="CH900_SC01", block_kind="human_review")
 
     blocked_response = client.post(
@@ -755,9 +746,9 @@ def test_prepare_full_run_restarts_resolved_blocked_job(client, session, monkeyp
 
 
 def test_chapter_run_full_reuses_completed_job_progress_when_new_scene_is_added(client, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch)
 
     first_response = client.post(
@@ -770,7 +761,7 @@ def test_chapter_run_full_reuses_completed_job_progress_when_new_scene_is_added(
     assert first_run["status"] == "completed"
     assert shared["calls"] == ["CH900_SC01", "CH900_SC02"]
 
-    _create_scene(client, "CH900", "CH900_SC03", 3, is_chapter_last=1)
+    _create_scene("CH900", "CH900_SC03", 3, is_chapter_last=1)
     shared = _install_fake_runner(monkeypatch)
 
     resumed_response = client.post(
@@ -787,9 +778,9 @@ def test_chapter_run_full_reuses_completed_job_progress_when_new_scene_is_added(
 
 
 def test_chapter_run_status_preserves_failed_job_visibility(client, session) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1)
+    _create_scene("CH900", "CH900_SC02", 2, is_chapter_last=1)
     session.add(
         ChapterRunJob(
             job_id="chapter_run_CH900_failed",
@@ -834,8 +825,8 @@ def test_chapter_run_status_preserves_failed_job_visibility(client, session) -> 
 
 
 def test_chapter_run_status_reconciles_external_finalized_scene_progress(client, session) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1, is_chapter_last=1)
+    _create_chapter("CH900")
+    _create_scene("CH900", "CH900_SC01", 1, is_chapter_last=1)
     state = session.get(SceneRunState, "CH900_SC01")
     assert state is not None
     state.scene_status = "archived"

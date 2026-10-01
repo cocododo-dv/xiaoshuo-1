@@ -24,7 +24,7 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
-from tests.test_scene_run_jobs import _create_chapter_and_scene
+from tests.support.catalog import job_chapter_and_scene as _create_chapter_and_scene
 
 
 def _seed_owned_scene(session) -> None:
@@ -57,7 +57,7 @@ def _seed_owned_scene(session) -> None:
 
 
 def _create_queued_job(client) -> dict:
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
     assert response.status_code == 200
     return response.json()["data"]
@@ -179,7 +179,7 @@ def test_terminal_cleanup_is_fenced_to_its_own_active_job(session) -> None:
 
 
 def test_concurrent_scene_job_creation_has_one_active_lock_winner(client) -> None:
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     barrier = Barrier(2)
 
     def contender() -> tuple[str, str]:

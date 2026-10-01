@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _columns, _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate, table_columns
 
 PREVIOUS_HEAD = "20260917_0088"
 CURRENT_HEAD = "20260920_0089"
@@ -16,7 +16,7 @@ COLUMN = "catalog_chapter_id"
 
 
 def _chapter(connection: sqlite3.Connection, plan_id: str, seq: int, *, removed: bool = False) -> None:
-    _insert_minimal_row(
+    insert_minimal_row(
         connection,
         TABLE,
         {"chapter_plan_id": plan_id, "project_id": "prj-0089", "row_uid": f"uid-{plan_id}", "chapter_seq": seq,
@@ -25,7 +25,7 @@ def _chapter(connection: sqlite3.Connection, plan_id: str, seq: int, *, removed:
 
 
 def _scene(connection: sqlite3.Connection, scene_plan_id: str, plan_id: str, chapter_id: str) -> None:
-    _insert_minimal_row(
+    insert_minimal_row(
         connection,
         "snowflake_scene_plans",
         {"scene_plan_id": scene_plan_id, "project_id": "prj-0089", "scene_id": f"scene-{scene_plan_id}",
@@ -35,13 +35,13 @@ def _scene(connection: sqlite3.Connection, scene_plan_id: str, plan_id: str, cha
 
 def test_0089_pins_materialized_chapters_and_leaves_ambiguous_ones_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "chapter-plan-catalog-id-0089.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
-    assert COLUMN not in _columns(path, TABLE)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
+    assert COLUMN not in table_columns(path, TABLE)
 
     # 原生 sqlite3 不开外键：不必先建作品行
     with sqlite3.connect(path) as connection:
         for chapter_id in ("prj-0089_CH01", "prj-0089_CH02"):
-            _insert_minimal_row(connection, "chapter_goals", {"chapter_id": chapter_id, "project_id": "prj-0089", "chapter_goal": "x"})
+            insert_minimal_row(connection, "chapter_goals", {"chapter_id": chapter_id, "project_id": "prj-0089", "chapter_goal": "x"})
         _chapter(connection, "cp-clean", 1)       # 全部场都指着目录里存在的 CH01 → 钉住
         _scene(connection, "sp1", "cp-clean", "prj-0089_CH01")
         _scene(connection, "sp2", "cp-clean", "prj-0089_CH01")
@@ -55,8 +55,8 @@ def test_0089_pins_materialized_chapters_and_leaves_ambiguous_ones_open(tmp_path
         _scene(connection, "sp6", "cp-removed", "prj-0089_CH02")
         connection.commit()
 
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)  # 显式升到本迁移：以后再加迁移不必回来改这个文件
-    assert COLUMN in _columns(path, TABLE)
+    migrate(path, CURRENT_HEAD, monkeypatch)  # 显式升到本迁移：以后再加迁移不必回来改这个文件
+    assert COLUMN in table_columns(path, TABLE)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (CURRENT_HEAD,)
         pinned = dict(connection.execute(f"SELECT chapter_plan_id, {COLUMN} FROM {TABLE}").fetchall())
@@ -64,8 +64,8 @@ def test_0089_pins_materialized_chapters_and_leaves_ambiguous_ones_open(tmp_path
         "cp-clean": "prj-0089_CH01", "cp-mixed": None, "cp-unmaterialized": None, "cp-empty": None, "cp-removed": None,
     }
 
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
-    assert COLUMN not in _columns(path, TABLE)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
+    assert COLUMN not in table_columns(path, TABLE)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (PREVIOUS_HEAD,)
         assert connection.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone() == (5,)
@@ -73,14 +73,14 @@ def test_0089_pins_materialized_chapters_and_leaves_ambiguous_ones_open(tmp_path
 
 def test_0089_does_not_pin_a_catalog_chapter_two_plans_lay_claim_to(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "chapter-plan-catalog-id-0089-claims.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     with sqlite3.connect(path) as connection:
-        _insert_minimal_row(connection, "chapter_goals", {"chapter_id": "prj-0089_CH01", "project_id": "prj-0089", "chapter_goal": "x"})
+        insert_minimal_row(connection, "chapter_goals", {"chapter_id": "prj-0089_CH01", "project_id": "prj-0089", "chapter_goal": "x"})
         _chapter(connection, "cp-a", 1)
         _scene(connection, "sp1", "cp-a", "prj-0089_CH01")
         _chapter(connection, "cp-b", 2)
         _scene(connection, "sp2", "cp-b", "prj-0089_CH01")
         connection.commit()
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)
+    migrate(path, CURRENT_HEAD, monkeypatch)
     with sqlite3.connect(path) as connection:
         assert set(connection.execute(f"SELECT {COLUMN} FROM {TABLE}").fetchall()) == {(None,)}

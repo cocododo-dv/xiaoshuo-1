@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib
+import pkgutil
 
 import pytest
 
@@ -15,8 +16,10 @@ from novel_system.cache_registry import register_cache_reset, registered_cache_n
 
 # 已知的进程级缓存：模块 → 它在定义处登记的名字。新加一处按库内容缓存的地方，就在这里加一行。
 KNOWN_CACHES = {
-    "novel_system.api.readiness": ("api.readiness.verified_structure",),
+    "novel_system.api.readiness": ("api.readiness.verified_structure", "api.readiness.schema_gate"),
+    "novel_system.env_config": ("env_config.retired_env_warning",),
     "novel_system.services.literary_quality.calibration_source": ("literary_quality.calibration_source.rule_stats",),
+    "novel_system.services.literary_signals": ("literary_signals.rule_analysis",),
     "novel_system.services.llm_degrade": ("llm_degrade.connectivity_caps",),
     "novel_system.services.pricing": ("pricing.price_book",),
     "novel_system.services.reference_copy_gate": ("reference_copy_gate",),
@@ -41,6 +44,17 @@ def test_each_known_cache_registers_its_reset_where_it_is_defined(module_name: s
         assert name in names, f"{module_name} 的缓存 {name} 没有登记复位函数"
 
 
+def test_every_registered_cache_is_known() -> None:
+    """反向清点：把 novel_system 的每个模块都导入一遍（缓存在模块导入时登记），登记处里的每个名字都得在
+    ``KNOWN_CACHES`` 里——新加一处缓存却忘了在上表记一行，这里就红，而不是等哪天用例换了顺序才露出来。"""
+    import novel_system
+
+    for module in pkgutil.walk_packages(novel_system.__path__, "novel_system."):
+        importlib.import_module(module.name)
+    known = {name for names in KNOWN_CACHES.values() for name in names}
+    assert set(registered_cache_names()) - known == set(), "登记了复位函数、却不在 KNOWN_CACHES 里的缓存"
+
+
 def test_registry_replaces_by_name_and_resets_everything(monkeypatch) -> None:
     monkeypatch.setattr(cache_registry, "_RESETS", {})
     calls: list[str] = []
@@ -57,8 +71,11 @@ def test_registry_replaces_by_name_and_resets_everything(monkeypatch) -> None:
 
 
 def _fill_every_known_cache() -> None:
+    from novel_system import env_config
     from novel_system.api import readiness
     from novel_system.services import (
+        literary_signals,
+        llm_degrade,
         pricing,
         reference_copy_gate,
         run_job_leases,
@@ -71,6 +88,11 @@ def _fill_every_known_cache() -> None:
     from novel_system.services.style_reference.inject import render
 
     readiness._VERIFIED_STRUCTURE["probe"] = "probe"
+    readiness._SCHEMA_GATE_OPEN.add("probe")
+    readiness._SCHEMA_GATE_LOGGED.add(("probe", "probe"))
+    env_config._retired_env_warning["logged"] = True
+    literary_signals.rule_analysis("探针")
+    llm_degrade.CONNECTIVITY_CAPS[("probe",)] = {"structured_tier": 0}
     pricing.load_price_book()
     reference_copy_gate._RESULT_CACHE[("probe",)] = object()
     scene_diagnosis.findings._FINDINGS_CACHE.put("probe", ("probe",), [], [])
@@ -93,8 +115,11 @@ def test_caches_filled_by_one_test_part_1_fill() -> None:
 
 
 def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
+    from novel_system import env_config
     from novel_system.api import readiness
     from novel_system.services import (
+        literary_signals,
+        llm_degrade,
         pricing,
         reference_copy_gate,
         run_job_leases,
@@ -107,6 +132,10 @@ def test_caches_filled_by_one_test_part_2_are_empty_in_the_next() -> None:
     from novel_system.services.style_reference.inject import render
 
     assert not readiness._VERIFIED_STRUCTURE
+    assert not readiness._SCHEMA_GATE_OPEN and not readiness._SCHEMA_GATE_LOGGED
+    assert env_config._retired_env_warning["logged"] is False
+    assert literary_signals._analysis.cache_info().currsize == 0
+    assert not llm_degrade.CONNECTIVITY_CAPS
     assert pricing._CACHE is None
     assert not reference_copy_gate._RESULT_CACHE and not reference_copy_gate._INDEX_CACHE
     assert not scene_diagnosis.findings._FINDINGS_CACHE and not scene_diagnosis.calibration._CRAFT_STATS

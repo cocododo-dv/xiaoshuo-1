@@ -14,7 +14,7 @@ import pytest
 from novel_system.db.models import SnowflakeStepRun
 from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _seed
+from tests.support.snowflake import RENDER_PROJECT_ID as PROJECT_ID, seed_render_project as _seed
 
 
 def _chapter(title: str, **extra) -> dict:
@@ -31,7 +31,7 @@ def test_restoring_an_older_07_keeps_the_live_chapter_table(session) -> None:
 
     from novel_system.db.models import SnowflakeScenePlan
     from novel_system.services.snowflake_chapter_table import live_chapter_plans
-    from tests.test_snowflake_chaptering_story_order import _payload
+    from tests.support.chaptering import confirm_payload as _payload
 
     service = _seed(session)
     # 一版确认过的旧 07：只有一章，前端写穿缓存里也是那时候的一章（直接落库——示例作品的前六步没有确认）
@@ -271,7 +271,7 @@ def test_restoring_an_older_10_keeps_the_scenes_and_fields_09_owns(session) -> N
     from sqlalchemy import select
 
     from novel_system.db.models import SnowflakeScenePlan
-    from tests.test_snowflake_rendering_mode import _scene_rows
+    from tests.support.snowflake import render_scene_rows as _scene_rows
 
     service = _seed(session)
     rows = next(st for st in service.workspace(PROJECT_ID)["steps"] if st["step_key"] == "scene_details")["draft"]["scenes"]
@@ -321,7 +321,7 @@ def test_a_same_story_save_after_restoring_an_older_10_keeps_the_provenance_when
     行，09 在那一版之后加过的场照旧挂在场上、也在交出去的草稿里；09 里改过的事件同理。前端恢复后立刻改写本机缓存，下一次
     原样的自动保存就带着它们：与存下的草稿语义不同、与交出去的那份相同。那不是作者改了第 10 步，还是「从历史恢复」；
     作者真改了第 10 步的一栏才是「你写的」。"""
-    from tests.test_snowflake_rendering_mode import _scene_rows
+    from tests.support.snowflake import render_scene_rows as _scene_rows
 
     service = _seed(session)
 

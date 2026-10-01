@@ -31,6 +31,7 @@ from novel_system.services.style_reference.jobs import (
     run_job_inline,
 )
 from tests.style_reference_factories import make_book
+from tests.support.style_reference import load_job as _job
 
 
 def _book(session, book_id: str = "sr_book_jobs") -> str:
@@ -319,13 +320,6 @@ def test_worker_that_loses_ownership_writes_nothing() -> None:
 # ---------------------------------------------------------------------------
 # 2026-09-23 复核修正：进程退出 ≠ 作业失败；先插后查的互斥；清扫收尾带取消标记的过期作业；条件放回队列
 # ---------------------------------------------------------------------------
-
-
-def _job(job_id: str) -> StyleReferenceJob:
-    with SessionLocal() as db:
-        job = db.get(StyleReferenceJob, job_id)
-        db.expunge(job)
-        return job
 
 
 def test_worker_shutdown_puts_the_running_job_back_in_the_queue_with_its_cursor() -> None:

@@ -20,9 +20,14 @@ from novel_system.db.models import (
     SnowflakeStepRun,
 )
 from novel_system.services.chapter_title_sync import is_auto_chapter_title
-from tests.test_catalog_book_spine import _catalog, _materialized, _preview
-from tests.test_snowflake_chaptering import _patch
-from tests.test_snowflake_chaptering_story_order import _confirm, _payload
+from tests.support.chaptering import (
+    catalog_chapters as _catalog,
+    confirm_chaptering as _confirm,
+    confirm_payload as _payload,
+    materialized_project as _materialized,
+    patch_step as _patch,
+    preview_from_scenes as _preview,
+)
 
 
 def _rename(client, project_id: str, chapter_id: str, title: str, key: str):

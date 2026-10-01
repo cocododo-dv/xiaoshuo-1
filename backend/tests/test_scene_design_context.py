@@ -39,7 +39,8 @@ from novel_system.services.scene_structure_brief import (
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
 from novel_system.services.snowflake_scene_brief import scene_writer_brief
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-from tests.real_llm_fakes import install_online_pipeline
+
+pytestmark = pytest.mark.usefixtures("online_pipeline")
 
 PROJECT_ID = "prj-design"
 # 库里的角色 id 带作品前缀（B06-01：雪花写入时规范成 f"{project_id}_{raw}"）
@@ -56,11 +57,6 @@ SENTENCES = [
 ]
 PREMISE = "只有放弃体面的自保，才能换来真正的清白。"
 POV_STORY = "在我看来，这座城市从来没打算放过我。" + "我每走一步都在替别人的谎言付账。" * 30
-
-
-@pytest.fixture(autouse=True)
-def _auto_online_pipeline(monkeypatch):
-    install_online_pipeline(monkeypatch)
 
 
 def _scene_rows() -> list[dict]:

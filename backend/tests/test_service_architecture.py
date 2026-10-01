@@ -5,36 +5,20 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.support.import_graph import (
+    PACKAGE_ROOT,
+    SRC_ROOT,
+    imports_of as _imports,
+    modules_under as _modules_under,
+)
 
-SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+
 SERVICES_ROOT = SRC_ROOT / "novel_system" / "services"
 API_ROOT = SRC_ROOT / "novel_system" / "api"
-PACKAGE_ROOT = SRC_ROOT / "novel_system"
 
 
 def _service_modules() -> dict[Path, str]:
     return _modules_under(SERVICES_ROOT)
-
-
-def _modules_under(root: Path) -> dict[Path, str]:
-    modules: dict[Path, str] = {}
-    for path in root.rglob("*.py"):
-        parts = list(path.relative_to(SRC_ROOT).with_suffix("").parts)
-        if parts[-1] == "__init__":
-            parts.pop()
-        modules[path] = ".".join(parts)
-    return modules
-
-
-def _imports(path: Path) -> list[tuple[str, int]]:
-    imports: list[tuple[str, int]] = []
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            imports.append((node.module, node.lineno))
-        elif isinstance(node, ast.Import):
-            imports.extend((alias.name, node.lineno) for alias in node.names)
-    return imports
 
 
 def _service_graph() -> dict[str, set[str]]:

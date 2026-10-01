@@ -30,7 +30,7 @@ from novel_system.services.style_reference.measure import (
 )
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 
-from tests.test_style_reference_windows import seed_book, synthetic_rows
+from tests.support.style_reference import seed_book, synthetic_rows
 
 CORPUS = Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus"
 

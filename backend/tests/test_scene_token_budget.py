@@ -28,7 +28,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.db.session import SessionLocal
-from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
+from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
@@ -43,15 +43,10 @@ from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
 
-import pytest as _pytest_ap
-from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.support.api_client import AutoKeyTestClient
 
-
-@_pytest_ap.fixture(autouse=True)
-def _auto_online_pipeline(monkeypatch):
-    """假生成已退役：给场景管线未显式注入的子服务兜底在线记账替身。"""
-    _install_online_pipeline(monkeypatch)
+pytestmark = pytest.mark.usefixtures("online_pipeline")
 
 
 SCENE_ID = "CH400_SC01"
@@ -78,15 +73,7 @@ def _response(payload: dict, *, request_id: str) -> LLMResponse:
     )
 
 
-class _AccountedTestClient(OnlineAccountedExecution):
-    def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
-        handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
-        response = self.generate(request)
-        accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
-        return response
-
-
-class CountingSceneClient(_AccountedTestClient):
+class CountingSceneClient(AccountedGenerateMixin):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 
@@ -98,7 +85,7 @@ class CountingSceneClient(_AccountedTestClient):
         )
 
 
-class CountingQcClient(_AccountedTestClient):
+class CountingQcClient(AccountedGenerateMixin):
     def __init__(self, payload: dict) -> None:
         self.payload = payload
         self.requests: list[LLMRequest] = []

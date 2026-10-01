@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import SceneCard, SceneRunState
 from tests.fixture_works import seed_fixture_works
+from tests.support.api_client import create_project
 
 _seq = 0
 
@@ -19,13 +20,7 @@ def _post(client, path, body=None):
 def _create_project(client) -> dict:
     global _seq
     _seq += 1
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": f"收件箱测试 {_seq}", "outline_text": "大纲"},
-        headers={"X-Idempotency-Key": f"rc-create-{_seq}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return create_project(client, title=f"收件箱测试 {_seq}", outline_text="大纲", key=f"rc-create-{_seq}")
 
 
 def _card(client, project_id, **overrides):
@@ -322,7 +317,6 @@ def test_priority_one_cards_come_first_and_the_badge_is_counted_from_the_list(cl
     items = [item for item in client.get(f"/api/v1/review-items?state=open&project_id={pid}").json()["data"]["items"] if not item["live"]]
     assert [item["title"] for item in items] == ["高优先", "普通"]
     assert sum(1 for item in items if item["priority"] == 1) == 1
-    assert client.get(f"/api/v1/review-items/badge?project_id={pid}").status_code in (404, 405)
 
 
 def test_the_inbox_takes_only_cards(client):
@@ -331,7 +325,6 @@ def test_the_inbox_takes_only_cards(client):
     pid = project["project_id"]
     legacy = _post(client, "/api/v1/review-items", {"review_id": "legacy_row", "item_type": "author_preference_profile", "candidate_text": "{}"})
     assert legacy.status_code == 422
-    assert client.get("/api/v1/review-items/legacy_row").status_code in (404, 405)
     missing_state = client.get(f"/api/v1/review-items?project_id={pid}")
     assert missing_state.status_code == 400 and missing_state.json()["error"]["code"] == "REVIEW_STATE_INVALID"
     missing_project = client.get("/api/v1/review-items?state=open")

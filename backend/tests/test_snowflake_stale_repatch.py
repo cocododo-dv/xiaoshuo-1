@@ -12,13 +12,15 @@ import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import SnowflakeStepRun
-from tests.real_llm_fakes import install_skeleton_snowflake
-from tests.test_snowflake_workspace_v2 import _approve_generated_step, _approve_step, _create_project, _generate_step, _intent_key
+from tests.support.snowflake import (
+    approve_generated_step as _approve_generated_step,
+    approve_workspace_step as _approve_step,
+    create_workspace_project as _create_project,
+    generate_workspace_step as _generate_step,
+    intent_key as _intent_key,
+)
 
-
-@pytest.fixture(autouse=True)
-def _skeleton(monkeypatch):
-    install_skeleton_snowflake(monkeypatch)
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake")
 
 
 def _make_one_sentence_stale(client, project_id: str) -> None:

@@ -22,7 +22,12 @@ from novel_system.services.style_reference.fidelity import (
     recent_gap_phrases,
 )
 from novel_system.services.style_reference.windows import WINDOW_INDEX_VERSION
-from tests.test_style_windows_surface import _attempt, _seed_book, _seed_profile, _seed_scene
+from tests.support.style_reference import (
+    seed_numbered_book as _seed_book,
+    seed_surface_profile as _seed_profile,
+    seed_windows_scene as _seed_scene,
+    windows_attempt as _attempt,
+)
 
 
 def _row(

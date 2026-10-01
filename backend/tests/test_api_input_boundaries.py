@@ -4,17 +4,11 @@ import pytest
 
 from novel_system.api.app import create_app
 from novel_system.api.requests.common import MAX_API_OBJECT_PROPERTIES
+from tests.support.api_client import validation_issues as _validation_issues
 
 
 def _headers(key: str) -> dict[str, str]:
     return {"X-Idempotency-Key": key}
-
-
-def _validation_issues(response) -> list[dict[str, str]]:
-    payload = response.json()
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "REQUEST_VALIDATION_FAILED"
-    return payload["error"]["details"]["issues"]
 
 
 def test_chapter_upsert_rejects_server_owned_fields(client) -> None:

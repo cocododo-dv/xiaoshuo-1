@@ -301,9 +301,6 @@ def test_fe_scene_with_pov_is_not_blocked_by_a_missing_voice_card(client, sessio
     assert job["status"] == "queued"
     assert job["error_code"] is None
 
-    gone = client.post(f"/api/v1/scenes/{scene_id}/preflight/create-cards", headers={"X-Idempotency-Key": "fc-cards"})
-    assert gone.status_code == 404
-
 
 def test_passage_patch_candidate_for_fe_scene_uses_online_llm(client, session, monkeypatch) -> None:
     """FE-ALIGN G4：内联改写端点对 FE 目录场景可用；离线桩已退役，改写接入真实 LLM

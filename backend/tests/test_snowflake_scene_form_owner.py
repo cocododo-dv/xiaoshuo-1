@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _plan, _seed
+from tests.support.snowflake import RENDER_PROJECT_ID as PROJECT_ID, scene_plan as _plan, seed_render_project as _seed
 
 # 库里的角色 id 带作品前缀（B06-01）；前端草稿里写的是不带前缀的 c1 / c2
 C1, C2 = f"{PROJECT_ID}_c1", f"{PROJECT_ID}_c2"

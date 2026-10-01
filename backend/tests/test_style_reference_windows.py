@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import random
-
 import pytest
 from sqlalchemy import select
 
@@ -20,56 +18,12 @@ from novel_system.services.style_reference.paragraph_root import (
     patch_book_stats,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from tests.style_reference_factories import make_book
 from novel_system.services.style_reference.runtime_contract import compute_paragraph_root
 from novel_system.services.style_reference.structure import compute_structure_card, split_book_chapters
-
-_NAMES = ("老周", "小满", "阿禾", "陈叔")
-_PLACES = ("院子", "渡口", "灶间", "巷口", "桥头")
-_DIALOGUE = (
-    "“{a}，你到底去不去？”{b}把灯芯拨小了些。",
-    "“去。”{a}说，“等雨停了就走。”",
-    "“你听见了吗？”",
-    "{b}问：“船什么时候到？”",
-    "“别问了，吃饭吧。”",
+from tests.support.style_reference import (
+    seed_book,
+    synthetic_rows,
 )
-_NARRATION = (
-    "{a}没有回答，先把袖口的水拧了拧，{p}里两只碗一只是干的。",
-    "雨又密起来了，{p}那株桂树被打得低了头，叶子上的水一颗一颗落在石阶上。",
-    "{a}在{p}站了很久，直到天色暗下去，才慢慢转身。",
-    "他想起三年前的那个冬天，{b}也是这样站在{p}，一句话也不说。",
-    "风从{p}吹过来，带着一点河水的腥气。",
-)
-
-
-def synthetic_rows(seed: str = "a", chapters: int = 8, per_chapter: int = 70) -> list[dict]:
-    """合成书的段落行(章题 + 正文):对白 / 叙述比例随章变化,段长随机。"""
-    rng = random.Random(seed)
-    rows: list[dict] = []
-
-    def add(text: str, ptype: str) -> None:
-        rows.append({"paragraph_index": len(rows), "text": text, "paragraph_type": ptype})
-
-    for chapter in range(1, chapters + 1):
-        add(f"第{chapter}章 灯下", "transition")
-        dialogue_bias = 0.25 + 0.5 * rng.random()
-        for _ in range(per_chapter):
-            a, b = rng.sample(_NAMES, 2)
-            p = rng.choice(_PLACES)
-            if rng.random() < dialogue_bias:
-                text = rng.choice(_DIALOGUE).format(a=a, b=b, p=p)
-                ptype = "dialogue"
-            else:
-                text = "".join(rng.choice(_NARRATION).format(a=a, b=b, p=p) for _ in range(rng.randint(1, 3)))
-                ptype = "narration"
-            add(text, ptype)
-    return rows
-
-
-def seed_book(session, book_id: str, rows: list[dict], *, stats: dict | None = None) -> str:
-    make_book(session, book_id, title="合成书", paragraphs=rows, stats=stats)
-    session.commit()
-    return book_id
 
 
 def _stats(book_id: str) -> dict:

@@ -34,9 +34,9 @@ from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.scene_run import archive as scene_run_archive
 
-# Importing the autouse fixture runs every test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _response, _seed_resume_scene
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_post_archive_failure_retries_missing_side_effects_before_archived_checkpoint(session) -> None:
@@ -562,7 +562,7 @@ def test_non_chapter_last_writes_fixed_archive_products_and_ordered_manifest(ses
     assert refs["archive_volume_product"]["outcome"] == "not_applicable"
     assert refs["archive_chapter_evaluation_product"]["outcome"] == "not_applicable"
     # 风格参考 v3：sub 11（archive:style_drift:0）不再做漂移读数，改记「像不像」读数（P5b 接上）：
-    # 绑定了参考 → recorded + reading_id（见 test_style_fidelity_pipeline_v3）；这一场没绑定 → not_applicable。
+    # 绑定了参考 → recorded + reading_id（见 test_style_fidelity_pipeline）；这一场没绑定 → not_applicable。
     assert refs["archive_drift_product"]["outcome"] == "not_applicable"
     assert refs["archive_drift_product"]["reason"] == "unbound"
     assert [entry["sub_index"] for entry in refs["archive_manifest"]] == list(range(4, 12))

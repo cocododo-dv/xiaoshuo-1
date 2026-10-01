@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from novel_system.services.snowflake_workspace import _would_wipe_story
+from novel_system.services.snowflake_step_runs import would_wipe_story
+from tests.support.snowflake import create_project, patch_step as _patch
 
 # 前端空白默认稿上行的形状：规范字段全空，只有身份 / 枚举与 fe_* 写穿键
 BLANK_LOGLINE = {"summary": "", "fe_text": "", "fe_scaffold": None, "fe_checks": [], "fe_state": "todo", "fe_t": 1}
@@ -17,30 +18,18 @@ BLANK_CHARACTERS = {
 
 
 def _create_project(client, key: str) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": "抹空保护之书", "outline_text": "抹空保护验证用项目。"},
-        headers={"X-Idempotency-Key": f"wipe-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
-
-
-def _patch(client, pid: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}", json={"draft": draft, "force": True})
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return create_project(client, key=f"wipe-{key}", title="抹空保护之书", outline_text="抹空保护验证用项目。")["project_id"]
 
 
 def test_would_wipe_story_only_fires_on_a_total_wipe() -> None:
     full = {"summary": "她回到雨城，替恩师撒的谎要她自己付账。"}
-    assert _would_wipe_story(full, BLANK_LOGLINE)
-    assert not _would_wipe_story(full, {"summary": "她回到雨城。"}), "改短不是抹空"
-    assert not _would_wipe_story({"summary": "雨"}, BLANK_LOGLINE), "两三个字的试笔被清空不值得多留一版"
-    assert not _would_wipe_story(BLANK_LOGLINE, BLANK_LOGLINE)
+    assert would_wipe_story(full, BLANK_LOGLINE)
+    assert not would_wipe_story(full, {"summary": "她回到雨城。"}), "改短不是抹空"
+    assert not would_wipe_story({"summary": "雨"}, BLANK_LOGLINE), "两三个字的试笔被清空不值得多留一版"
+    assert not would_wipe_story(BLANK_LOGLINE, BLANK_LOGLINE)
     sheets = {"characters": [{"character_id": "c1", "display_name": "林晚", "role": "主角", "goal": "在交班前拿到母本"}]}
-    assert _would_wipe_story(sheets, BLANK_CHARACTERS), "role / id 这类默认值不算故事文字"
-    assert not _would_wipe_story(sheets, {"characters": [{"character_id": "c1", "display_name": "林晚", "role": "主角"}]})
+    assert would_wipe_story(sheets, BLANK_CHARACTERS), "role / id 这类默认值不算故事文字"
+    assert not would_wipe_story(sheets, {"characters": [{"character_id": "c1", "display_name": "林晚", "role": "主角"}]})
 
 
 def test_blank_overwrite_of_a_pending_draft_keeps_the_old_version_restorable(client) -> None:

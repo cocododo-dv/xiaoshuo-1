@@ -30,8 +30,6 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
-# Importing the autouse fixture runs every test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import (
     _AccountedTestClient,
     _CountingGenerationClient,
@@ -40,6 +38,8 @@ from tests.support.checkpoint_fakes import (
     _response,
     _seed_resume_scene,
 )
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_provider_owner_lease_tracks_each_request_timeout_and_restores_default(session, monkeypatch) -> None:

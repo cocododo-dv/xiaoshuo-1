@@ -15,66 +15,22 @@ import pytest
 import yaml
 from sqlalchemy import select
 
-from novel_system.db.models import SnowflakeChapterPlan, SnowflakeScenePlan, SnowflakeStepRun, StoryProject
+from novel_system.db.models import SnowflakeScenePlan, SnowflakeStepRun
 from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, propose_chapter_chunks
 from novel_system.services.snowflake_steps import diagnose_step_pressure, step_completeness
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-
-PROJECT_ID = "prj-chapters"
-
-
-def _rows(count: int, spine_at: dict[int, str]) -> list[dict]:
-    return [
-        {
-            "row_uid": f"u{index:02d}",
-            "scene_seq": index,
-            "summary": f"第 {index} 场",
-            "primary_form": "proactive",
-            "scene_type": "proactive",
-            "location": "雨城",
-            "crucible": "退不出的困局",
-            "pov_character_id": "c1",
-            "chapter_role": "推进",
-            "spine": spine_at.get(index, ""),
-        }
-        for index in range(1, count + 1)
-    ]
-
-
-def _seed(session, count: int = 12, spine_at: dict[int, str] | None = None, target_chapter_count: int = 0) -> SnowflakeWorkspaceService:
-    session.add(
-        StoryProject(
-            project_id=PROJECT_ID,
-            title="章在场景之后",
-            outline_text="大纲",
-            planning_mode="snowflake",
-            snowflake_workflow_mode="explore",
-            target_word_count=100000,
-            target_chapter_count=target_chapter_count,
-        )
-    )
-    session.flush()
-    service = SnowflakeWorkspaceService(session)
-    service.update_step(PROJECT_ID, "long_synopsis", {"draft": {"paragraphs": ["一", "二", "三", "四", "五"], "chapters": []}})
-    service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": _rows(count, spine_at or {4: "灾一", 8: "灾二", 11: "灾三"})}})
-    return service
+from tests.support.chaptering import (
+    AFTER_SCENES_PROJECT_ID as PROJECT_ID,
+    after_scenes_rows as _rows,
+    live_chapter_plans as _chapters,
+    seed_after_scenes as _seed,
+)
 
 
 def _plans(session) -> list[SnowflakeScenePlan]:
     return list(
         session.execute(
             select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == PROJECT_ID).order_by(SnowflakeScenePlan.scene_seq)
-        ).scalars().all()
-    )
-
-
-def _chapters(session) -> list[SnowflakeChapterPlan]:
-    return list(
-        session.execute(
-            select(SnowflakeChapterPlan)
-            .where(SnowflakeChapterPlan.project_id == PROJECT_ID, SnowflakeChapterPlan.removed_at.is_(None))
-            .order_by(SnowflakeChapterPlan.chapter_seq)
         ).scalars().all()
     )
 

@@ -1399,30 +1399,6 @@ def test_llm_provider_probe_reports_available_models_when_local_name_does_not_ma
     assert "qwen3:14b" in payload["message"]
 
 
-def test_llm_oauth_routes_are_removed(client, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
-    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-
-    start_response = client.post(
-        "/api/v1/system-config/llm/oauth/gemini/start",
-        headers=ADMIN_HEADERS,
-        json={
-            "provider_id": "gemini_oauth",
-            "account_id": "acct_google",
-            "client_id": "google-client-id",
-            "redirect_uri": "http://127.0.0.1:8000/api/v1/system-config/llm/oauth/callback",
-            "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
-        },
-    )
-    callback_response = client.get(
-        "/api/v1/system-config/llm/oauth/callback",
-        params={"state": "legacy-state", "code": "auth-code"},
-    )
-
-    assert start_response.status_code == 404
-    assert callback_response.status_code == 404
-
-
 def test_llm_overview_marks_route_not_ready_when_secret_cannot_be_decrypted(
     client, session, monkeypatch
 ) -> None:

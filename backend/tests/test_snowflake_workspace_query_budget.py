@@ -8,33 +8,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-
-from sqlalchemy import event
-
 from novel_system.db.models import SnowflakeStepRun, StoryProject
-from novel_system.db.session import engine
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+from tests.support.sql import count_statements as _count_statements
 
 #: 上限（量得的值留了几条余量，给分章现状等别处的小改动）；关键是下面「40 场与 20 场一样多」
 WORKSPACE_BUDGET = 20
 PATCH_BUDGET = 36
 LEAN_PATCH_BUDGET = 24
-
-
-@contextmanager
-def _count_statements():
-    counter = {"n": 0}
-
-    def _count(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        counter["n"] += 1
-
-    target = engine()
-    event.listen(target, "before_cursor_execute", _count)
-    try:
-        yield counter
-    finally:
-        event.remove(target, "before_cursor_execute", _count)
 
 
 def _seed(session, project_id: str, scene_count: int, versions: int = 3) -> SnowflakeWorkspaceService:

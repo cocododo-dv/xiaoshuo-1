@@ -221,7 +221,7 @@ def test_archive_final_scene_never_fails_because_of_the_reading(session, monkeyp
 def _seed_previous_scene_prose(session, *, project_id: str) -> str:
     from novel_system.db.models import SceneDraft, SceneMemory
 
-    from tests.test_style_reference_style_continuity import _add_final_scene
+    from tests.support.style_reference import add_final_scene as _add_final_scene
 
     prev = f"{project_id}_CH01_SC01"
     long_text = "\n".join(f"第{i}段。上一场的正文，句子很长很长，一直写到段尾都不停顿也不换气。" for i in range(40))
@@ -259,7 +259,7 @@ def _seed_previous_scene_prose(session, *, project_id: str) -> str:
 @pytest.mark.parametrize("draft_mode", ["style_first", "neutral_first"])
 def test_bundle_drops_own_prose_voice_sections_under_style_first(session, draft_mode: str) -> None:
     from novel_system.services.bundle_builder import BundleBuilder
-    from tests.test_style_reference_style_continuity import seed_binding, seed_work, short_dense_reference
+    from tests.support.style_reference import seed_style_binding as seed_binding, seed_work, short_dense_reference
 
     project_id = f"P_RF_{draft_mode[:3].upper()}"
     seed_work(session, project_id=project_id, scenes_per_chapter=2)

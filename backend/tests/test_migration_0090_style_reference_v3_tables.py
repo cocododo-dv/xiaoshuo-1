@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _columns, _migrate
+from tests.support.migrations import migrate, table_columns, table_names
 
 PREVIOUS_HEAD = "20260920_0089"
 THIS_REVISION = "20260923_0090"
@@ -34,21 +34,16 @@ TABLES = {
 }
 
 
-def _tables(path: Path) -> set[str]:
-    with sqlite3.connect(path) as connection:
-        return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-
-
 def test_0090_creates_v3_tables_and_downgrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "style-reference-v3-0090.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
-    assert not (set(TABLES) & _tables(path))
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
+    assert not (set(TABLES) & table_names(path))
 
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
-    tables = _tables(path)
+    migrate(path, THIS_REVISION, monkeypatch)
+    tables = table_names(path)
     for table, columns in TABLES.items():
         assert table in tables
-        assert columns <= _columns(path, table), table
+        assert columns <= table_columns(path, table), table
 
     with sqlite3.connect(path) as connection:
         window_indexes = {row[1]: int(row[2]) for row in connection.execute("PRAGMA index_list('style_reference_windows')")}
@@ -60,7 +55,7 @@ def test_0090_creates_v3_tables_and_downgrades(tmp_path: Path, monkeypatch: pyte
         selection_indexes = {row[1]: int(row[2]) for row in connection.execute("PRAGMA index_list('style_reference_scene_windows')")}
         assert any(name.startswith("sqlite_autoindex_style_reference_scene_windows") and unique == 1 for name, unique in selection_indexes.items())
         # 读数表刻意不存 chapter_id：场景改章时不必跟着搬（scene_rehome 守卫只盯同时带 scene_id 与 chapter_id 的表）
-        assert "chapter_id" not in _columns(path, "style_fidelity_readings")
+        assert "chapter_id" not in table_columns(path, "style_fidelity_readings")
 
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
-    assert not (set(TABLES) & _tables(path))
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
+    assert not (set(TABLES) & table_names(path))

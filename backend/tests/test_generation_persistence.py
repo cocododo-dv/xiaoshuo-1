@@ -222,17 +222,6 @@ EXPECTED_LLM_CALL_ATTEMPT_COLUMNS = {
 }
 
 
-def _prepare_style_reference_backup_root(tmp_path: Path) -> Path:
-    repo_root = tmp_path / "style_reference_test_repo"
-    backup_dir = repo_root / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    (backup_dir / "style_reference_legacy_test.json").write_text(
-        '{"row_count": 0, "profiles": [], "source": "generation-persistence"}',
-        encoding="utf-8",
-    )
-    return repo_root
-
-
 def _materialize_legacy_dynamic_checkout(db_path: Path, revision: str) -> None:
     """Reproduce databases created when 0001 still called live Base.metadata.
 
@@ -310,9 +299,8 @@ def test_generation_persistence_migration_is_frozen_with_explicit_ddl() -> None:
 def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     db_path = tmp_path / "generation-persistence-head.sqlite"
-    backup_root = _prepare_style_reference_backup_root(tmp_path)
 
-    _run_alembic(repo_root, db_path, "head", backup_root=backup_root)
+    _run_alembic(repo_root, db_path, "head")
 
     connection = sqlite3.connect(db_path)
     try:
@@ -494,10 +482,9 @@ def test_generation_persistence_orm_round_trip(session) -> None:
 def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     db_path = tmp_path / "generation-persistence.sqlite"
-    backup_root = _prepare_style_reference_backup_root(tmp_path)
 
     _build_true_pre_0007_database(db_path)
-    _run_alembic(repo_root, db_path, "head", backup_root=backup_root)
+    _run_alembic(repo_root, db_path, "head")
 
     connection = sqlite3.connect(db_path)
     try:
@@ -593,10 +580,9 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
 def test_generation_persistence_downgrade_is_non_destructive_on_dynamic_checkout(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     db_path = tmp_path / "generation-persistence-downgrade.sqlite"
-    backup_root = _prepare_style_reference_backup_root(tmp_path)
 
     _materialize_legacy_dynamic_checkout(db_path, "20260414_0007")
-    _run_alembic_downgrade(repo_root, db_path, "20260413_0006", backup_root=backup_root)
+    _run_alembic_downgrade(repo_root, db_path, "20260413_0006")
 
     connection = sqlite3.connect(db_path)
     try:
@@ -620,11 +606,10 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     db_path = tmp_path / "generation-persistence-idempotent.sqlite"
-    backup_root = _prepare_style_reference_backup_root(tmp_path)
 
     _materialize_legacy_dynamic_checkout(db_path, "20260413_0006")
     _seed_dynamic_0006_materialized_generation_rows(db_path)
-    _run_alembic(repo_root, db_path, "head", backup_root=backup_root)
+    _run_alembic(repo_root, db_path, "head")
 
     connection = sqlite3.connect(db_path)
     try:
@@ -971,12 +956,10 @@ def test_c1b_migration_partial_replay_preserves_new_accounting_rows(tmp_path: Pa
         }
 
 
-def _run_alembic(backend_dir: Path, db_path: Path, revision: str, *, backup_root: Path | None = None) -> None:
+def _run_alembic(backend_dir: Path, db_path: Path, revision: str) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
     env["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
-    if backup_root is not None:
-        env["STYLE_REFERENCE_REPO_ROOT"] = str(backup_root)
 
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend_dir / "alembic.ini"), "upgrade", revision],
@@ -1084,18 +1067,10 @@ def _build_c1b_legacy_0064_database(db_path: Path) -> None:
         )
 
 
-def _run_alembic_downgrade(
-    backend_dir: Path,
-    db_path: Path,
-    revision: str,
-    *,
-    backup_root: Path | None = None,
-) -> None:
+def _run_alembic_downgrade(backend_dir: Path, db_path: Path, revision: str) -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(backend_dir / "src")
     env["NOVEL_SYSTEM_DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
-    if backup_root is not None:
-        env["STYLE_REFERENCE_REPO_ROOT"] = str(backup_root)
 
     subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(backend_dir / "alembic.ini"), "downgrade", revision],

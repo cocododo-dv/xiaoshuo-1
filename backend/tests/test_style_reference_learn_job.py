@@ -69,6 +69,9 @@ from tests.learn_fakes import (
     default_extract,
     paragraphs_of,
 )
+from tests.support.style_reference import load_job as _job
+
+pytestmark = pytest.mark.usefixtures("style_workers")
 
 PREFIX = "/api/v2/style-reference"
 NAMES = ("韩小暖", "程铁", "苏半夏")
@@ -77,14 +80,6 @@ ORG = "雾港同盟"
 PROTECTED = ("韩小暖", "程铁", "苏半夏", "铁灰城", ORG)
 KINDS = {"铁灰城": "place", ORG: "organization"}
 RIGHTS = {"rights_declaration": {"declared": True, "send_rights": True, "analysis_rights": True}}
-
-
-@pytest.fixture(autouse=True)
-def _style_workers_installed() -> None:
-    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
-    from novel_system.services.style_reference.workers import install_workers
-
-    install_workers()
 
 
 def learn_rows(chapters: int = 6, per_chapter: int = 40, seed: str = "learn") -> list[dict]:
@@ -151,13 +146,6 @@ def _start(book_id: str, **kwargs) -> str:
         job = learn_job.start_learn_job(db, book_id, **kwargs)
         db.commit()
         return job.job_id
-
-
-def _job(job_id: str) -> StyleReferenceJob:
-    with SessionLocal() as db:
-        job = db.get(StyleReferenceJob, job_id)
-        db.expunge(job)
-        return job
 
 
 def _profile(profile_id: str) -> StyleReferenceProfile:
@@ -1100,7 +1088,9 @@ def test_learn_route_requires_an_llm(client, session, monkeypatch) -> None:
     assert resp.status_code == 409 and resp.json()["error"]["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
 
 
-def test_card_line_route_and_removed_routes(client, session, monkeypatch) -> None:
+def test_card_line_route_pins_or_excludes_one_line(client, session, monkeypatch) -> None:
+    """旧学习链路的写接口（books/{id}/runs、runs/{id}/synthesize、findings/{id}/review|user-feedback）都没了：
+    退役接口表 tests/test_retired_surface.py 钉着。"""
     _fake1, job = _learn(monkeypatch, session)
     profile_id = job.result_json["profile_id"]
     line = card_from_profile_json(_profile(profile_id).profile_json).all_lines()[0][1]
@@ -1118,13 +1108,6 @@ def test_card_line_route_and_removed_routes(client, session, monkeypatch) -> Non
         headers={"X-Idempotency-Key": "line-2"},
     )
     assert missing.status_code == 404
-    # 旧学习链路的写接口都没了
-    assert client.post(f"{PREFIX}/books/learn_book/runs", json={}, headers={"X-Idempotency-Key": "r"}).status_code in (404, 405)
-    run_id = job.result_json["run_id"]
-    assert client.post(f"{PREFIX}/runs/{run_id}/synthesize", json={}, headers={"X-Idempotency-Key": "s"}).status_code in (404, 405)
-    finding_id = session.scalars(select(StyleReferenceFinding.finding_id)).first()
-    for path in (f"findings/{finding_id}/review", f"findings/{finding_id}/user-feedback"):
-        assert client.post(f"{PREFIX}/{path}", json={}, headers={"X-Idempotency-Key": path}).status_code in (404, 405)
 
 
 def test_evidence_counts_are_consistent_with_the_rows(session, monkeypatch) -> None:

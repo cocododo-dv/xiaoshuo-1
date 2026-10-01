@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _columns, _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate, table_columns, table_names
 
 PREVIOUS_HEAD = "20260929_0097"
 REVISION = "20260929_0098"
@@ -31,11 +31,6 @@ DEAD_COLUMNS = {
 }
 
 
-def _tables(path: Path) -> set[str]:
-    with sqlite3.connect(path) as connection:
-        return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-
-
 def _export_path(path: Path) -> Path:
     return path.with_name(path.name + ".0098-voice-relation-cards.json")
 
@@ -44,34 +39,34 @@ def test_0098_drops_the_empty_card_tables_and_the_dead_columns_and_keeps_the_row
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "dead-schema-0098.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     for table, columns in DEAD_COLUMNS.items():
-        assert columns <= _columns(path, table), table
+        assert columns <= table_columns(path, table), table
     with sqlite3.connect(path) as connection:
-        _insert_minimal_row(connection, "chapter_goals", {"chapter_id": "ch-0098", "chapter_goal": "旧信"})
-        _insert_minimal_row(
+        insert_minimal_row(connection, "chapter_goals", {"chapter_id": "ch-0098", "chapter_goal": "旧信"})
+        insert_minimal_row(
             connection,
             "chapter_states",
             {"chapter_id": "ch-0098", "current_phase": "drafting", "aggregate_block_reason": "none"},
         )
-        _insert_minimal_row(connection, "scene_cards", {"scene_id": "sc-0098", "chapter_id": "ch-0098", "scene_seq": 1})
-        _insert_minimal_row(
+        insert_minimal_row(connection, "scene_cards", {"scene_id": "sc-0098", "chapter_id": "ch-0098", "scene_seq": 1})
+        insert_minimal_row(
             connection,
             "scene_bundles",
             {"bundle_id": "bundle-0098", "scene_id": "sc-0098", "chapter_id": "ch-0098", "execution_mode": "P2"},
         )
         # review_items 带生成列：整表重建时不能往生成列里复制（有行时才会暴露）
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             "review_items",
             {"review_id": "review-0098", "item_type": "scene_memory", "status": "pending", "retry_count": 2},
         )
 
-    _migrate(path, REVISION, monkeypatch, tmp_path)
+    migrate(path, REVISION, monkeypatch)
 
-    assert {"voice_profiles", "relation_profiles"}.isdisjoint(_tables(path))
+    assert {"voice_profiles", "relation_profiles"}.isdisjoint(table_names(path))
     for table, columns in DEAD_COLUMNS.items():
-        assert columns.isdisjoint(_columns(path, table)), table
+        assert columns.isdisjoint(table_columns(path, table)), table
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT current_phase FROM chapter_states WHERE chapter_id = 'ch-0098'").fetchone() == (
             "drafting",
@@ -84,11 +79,11 @@ def test_0098_drops_the_empty_card_tables_and_the_dead_columns_and_keeps_the_row
         ).fetchone() == ("scene_memories",)
     assert not _export_path(path).exists()
 
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
 
-    assert {"voice_profiles", "relation_profiles"} <= _tables(path)
+    assert {"voice_profiles", "relation_profiles"} <= table_names(path)
     for table, columns in DEAD_COLUMNS.items():
-        assert columns <= _columns(path, table), table
+        assert columns <= table_columns(path, table), table
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT aggregate_block_reason, chapter_backfill_pending_count FROM chapter_states WHERE chapter_id = 'ch-0098'"
@@ -106,14 +101,14 @@ def test_0098_exports_leftover_card_rows_next_to_the_database_before_dropping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "cards-0098.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     with sqlite3.connect(path) as connection:
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             "voice_profiles",
             {"row_id": "voice_profile_v1", "voice_profile_id": "VOICE_A", "character_id": "A", "content": "占位声线"},
         )
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             "relation_profiles",
             {
@@ -125,9 +120,9 @@ def test_0098_exports_leftover_card_rows_next_to_the_database_before_dropping(
             },
         )
 
-    _migrate(path, REVISION, monkeypatch, tmp_path)
+    migrate(path, REVISION, monkeypatch)
 
-    assert {"voice_profiles", "relation_profiles"}.isdisjoint(_tables(path))
+    assert {"voice_profiles", "relation_profiles"}.isdisjoint(table_names(path))
     exported = json.loads(_export_path(path).read_text(encoding="utf-8"))
     assert exported["revision"] == REVISION
     assert [row["row_id"] for row in exported["tables"]["voice_profiles"]] == ["voice_profile_v1"]

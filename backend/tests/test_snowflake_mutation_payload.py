@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from itertools import count
 
+from tests.support.snowflake import patch_step, workspace_step as _get_step
+
 _KEYS = count(1)
 
 
@@ -26,19 +28,7 @@ def _create_project(client) -> str:
 
 
 def _patch(client, project_id: str, step_key: str, draft: dict, *, lean: bool = False):
-    query = "?include_workspace=false" if lean else ""
-    response = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}{query}",
-        json={"draft": draft},
-        headers={"X-Idempotency-Key": f"mutation-payload-patch-{next(_KEYS)}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def _get_step(client, project_id: str, step_key: str) -> dict:
-    workspace = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace").json()["data"]
-    return next(step for step in workspace["steps"] if step["step_key"] == step_key)
+    return patch_step(client, project_id, step_key, draft, force=False, lean=lean, key=f"mutation-payload-patch-{next(_KEYS)}")
 
 
 BRIEF = {"category": "悬疑", "target_reader": "喜欢旧案与家族秘密的读者", "story_kind": "追查旧案"}

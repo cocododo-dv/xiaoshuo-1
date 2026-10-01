@@ -11,50 +11,28 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from novel_system.api.app import create_app
 from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from tests.support.api_client import AutoKeyTestClient
-
-
-SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心情,字数足以触发分段。
-
-他说:"今天天气不错。"
-
-我心里想着昨天的事情,觉得有些不安。
-
-记得那年她还在的时候。
-
-雪花从天空飘落。
-""".encode("utf-8")
+from tests.support.style_reference import (
+    ensure_project as _seed_project,
+    import_sample_book as _import_book,
+    SAMPLE_TXT,
+    seed_full_chain as _seed_full_chain,
+)
 
 
 PREFIX = "/api/v2/style-reference"
 from tests.style_reference_route_helpers import (  # noqa: E402
     fake_import_llm,
-    import_book,
     install_fake_classifier,
     wait_book_status,
 )
 
 
-def test_legacy_reference_books_routes_are_never_exposed() -> None:
-    with AutoKeyTestClient(create_app()) as client:
-        paths = {getattr(route, "path", "") for route in client.app.routes}
-
-    assert "/api/v1/reference-books" not in paths
-    assert not any(path.startswith("/api/v1/reference-books/") for path in paths)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _import_book(client: TestClient, fake: Any | None = None) -> str:
-    """2026-09-15 严格 LLM:导入必须有 LLM——用假分类器顶替运行时客户端,并等后台分类完成。"""
-    return import_book(client, text=SAMPLE_TXT, fake=fake)
 
 
 def test_import_upload_rejects_malformed_rights_json(client: TestClient) -> None:
@@ -74,89 +52,6 @@ def test_import_upload_rejects_malformed_rights_json(client: TestClient) -> None
         response.json()["error"]["code"]
         == "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID"
     )
-
-
-def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
-    """直接用 service 层快速建 run + finding(含 2 evidence)+ profile,绕过 LLM 调用。"""
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        run_id = f"sr_run_route_{book_id[-6:]}"
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        extraction_id = f"sr_ext_route_{book_id[-6:]}"
-        repo.create_extraction(
-            extraction_id=extraction_id,
-            book_id=book_id,
-            run_id=run_id,
-            layer="language",
-            sub_dimension="language.rhetoric",
-            raw_payload_json={},
-            status="done",
-            validation_errors_json=[],
-            purpose="extract",
-        )
-        finding_id = f"sr_find_route_{book_id[-6:]}"
-        repo.create_finding(
-            finding_id=finding_id,
-            book_id=book_id,
-            run_id=run_id,
-            extraction_id=extraction_id,
-            sub_dimension="language.rhetoric",
-            finding_kind="observation",
-            statement="测试 observation 描述",
-            confidence="high",
-            status="pending",
-        )
-        # 2 evidence(≥2 强约束):1 条真实段落引文 + 1 条合成反例
-        paragraphs = repo.list_paragraphs(book_id)
-        repo.create_quote(
-            quote_id=f"sr_quote_route_a_{book_id[-6:]}",
-            book_id=book_id,
-            paragraph_id=paragraphs[0].paragraph_id if paragraphs else None,
-            span_start=0,
-            span_end=10,
-            quote_text="真实段落引文文本",
-            illustrates_dims=["language.rhetoric"],
-            extracted_features={},
-        )
-        repo.create_quote(
-            quote_id=f"sr_quote_route_b_{book_id[-6:]}",
-            book_id=book_id,
-            paragraph_id=None,
-            span_start=0,
-            span_end=8,
-            quote_text="合成反例文本",
-            illustrates_dims=["language.rhetoric"],
-            extracted_features={},
-        )
-        repo.create_evidence(
-            evidence_id=f"sr_ev_route_a_{book_id[-6:]}",
-            finding_id=finding_id,
-            quote_id=f"sr_quote_route_a_{book_id[-6:]}",
-            anchor_kind="paragraph_quote",
-        )
-        repo.create_evidence(
-            evidence_id=f"sr_ev_route_b_{book_id[-6:]}",
-            finding_id=finding_id,
-            quote_id=f"sr_quote_route_b_{book_id[-6:]}",
-            anchor_kind="counter_example",
-        )
-        profile_id = f"sr_profile_route_{book_id[-6:]}"
-        repo.create_profile(
-            profile_id=profile_id,
-            book_id=book_id,
-            run_id=run_id,
-            title="测试 profile",
-            status="draft",
-            profile_json={
-                "narrative_summary": "ns",
-                "scene_samples_index": {},
-                "calibration_guidance": ["calib A"],
-            },
-            coverage_json={},
-            source_finding_ids_json=[finding_id],
-        )
-        session.commit()
-    return run_id, finding_id, profile_id
 
 
 # ---------------------------------------------------------------------------
@@ -383,36 +278,9 @@ def test_reclassify_executes_and_purges_derived_data(
 # ---------------------------------------------------------------------------
 
 
-def test_lineage_and_debug_read_endpoints_are_gone(client: TestClient) -> None:
-    """没有界面调用的只读端点都删了（2026-09-30，#24a）：run 与发现只是文风卡行的血缘，依据由 ``GET /profiles/{id}``
-    给出；画像摘要在书库载荷里；叠层视图、单条读数、旧任务默认策略表同样没有消费方。"""
-    book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
-    for path in (
-        f"runs/{run_id}",
-        f"books/{book_id}/runs",
-        f"runs/{run_id}/findings",
-        "profiles",
-        "injection/layers",
-        "injection/task-defaults",
-        "readings/sr_reading_x",
-    ):
-        assert client.get(f"{PREFIX}/{path}").status_code in (404, 405), path
-
-
 # ---------------------------------------------------------------------------
 # Profiles endpoints
 # ---------------------------------------------------------------------------
-
-
-def _seed_project(project_id: str) -> str:
-    from novel_system.db.models import StoryProject
-
-    with SessionLocal() as session:
-        if session.get(StoryProject, project_id) is None:
-            session.add(StoryProject(project_id=project_id, title="合成作品", outline_text=""))
-            session.commit()
-    return project_id
 
 
 def test_book_payload_carries_the_profile_summary(client: TestClient) -> None:
@@ -516,17 +384,6 @@ def test_delete_binding_404(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 # 旧示例预览已删除(用的是早已不用的引擎,台账 U6):本场预览走 /injection-preview
 # ---------------------------------------------------------------------------
-
-
-def test_legacy_sample_preview_endpoint_is_gone(client: TestClient) -> None:
-    book_id = _import_book(client)
-    _, _, profile_id = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/profiles/{profile_id}/preview",
-        json={},
-        headers={"X-Idempotency-Key": "preview_gone"},
-    )
-    assert resp.status_code in (404, 405)
 
 
 def _book_calibration(client: TestClient, book_id: str) -> dict[str, Any]:

@@ -59,7 +59,10 @@ from novel_system.services.style_reference.planning_context import (
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.writer_deep_review import WriterDeepReviewService
 from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
-from tests.test_style_reference_structure import _profile_json_with_structure, _seed_style_binding
+from tests.support.style_reference import (
+    profile_json_with_structure as _profile_json_with_structure,
+    seed_style_binding as _seed_style_binding,
+)
 
 PROJECT_ID = "P_WP6"
 CHAPTER_ID = "WP6_CH01"

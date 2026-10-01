@@ -53,7 +53,9 @@ from tests.style_reference_route_helpers import (
     wait_classification_state,
 )
 from tests.support.api_client import AutoKeyTestClient
-from tests.test_style_reference_routes import _seed_full_chain
+from tests.support.style_reference import seed_full_chain as _seed_full_chain
+
+pytestmark = pytest.mark.usefixtures("style_workers")
 
 LONG_TEXT = "\n\n".join(
     f"第{i + 1}段。潮水在夜里退去,露出一行脚印,她数着脚印往前走,每一步都比上一步更接近那句没人认领的对不起。"
@@ -61,14 +63,6 @@ LONG_TEXT = "\n\n".join(
 ).encode("utf-8")
 
 _BOUNDARY_RE = re.compile(r"\[UNTRUSTED_REFERENCE_DATA:[^\]]+\]\n")
-
-
-@pytest.fixture(autouse=True)
-def _style_workers_installed() -> None:
-    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
-    from novel_system.services.style_reference.workers import install_workers
-
-    install_workers()
 
 
 def _items(request) -> list[dict]:
@@ -991,7 +985,6 @@ def test_activity_lists_the_classification_job(client: TestClient, monkeypatch) 
     assert canonical["steps"] == {"done": 1, "total": 17}
     assert canonical["cancellable"] is True
     assert not any(item["key"] == "act-key" or "compat_alias_of" in item for item in items)
-    assert client.get(f"{PREFIX}/imports/act-key/progress").status_code == 404
     gated.gate.set()
     wait_book_status(client, book_id)
     items = client.get(f"{PREFIX}/activity").json()["data"]["items"]

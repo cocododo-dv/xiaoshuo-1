@@ -12,62 +12,34 @@ from __future__ import annotations
 import pytest
 
 from novel_system.db.models import ChapterState
-from tests.real_llm_fakes import install_skeleton_snowflake
+from tests.support.snowflake import ALL_STEPS, create_project, post_approve, post_generate
 
-
-@pytest.fixture(autouse=True)
-def _skeleton_snowflake_generate(monkeypatch):
-    """假生成已退役：本文件只回归物化/再批准链路，不关心生成质量——
-    把 generate_step 打成「规划器骨架直通」（与旧离线 fallback 同形），并开 llm_enabled 过路由闸。"""
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
-
-ALL_STEPS = [
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "character_sheets",
-    "short_synopsis",
-    "character_synopses",
-    "long_synopsis",
-    "character_bibles",
-    "scene_list",
-    "scene_details",
-]
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 def _create_project(client, key: str) -> dict:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": f"QA3再批准 {key}",
-            "genre": "悬疑",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": "样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
-        },
-        headers={"X-Idempotency-Key": f"qa3-reappr-create-{key}"},
+    return create_project(
+        client,
+        key=f"qa3-reappr-create-{key}",
+        title=f"QA3再批准 {key}",
+        genre="悬疑",
+        target_chapter_count=2,
+        target_word_count=120000,
+        outline_text="样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
     )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
 
 
 def _generate(client, pid: str, step_key: str, payload: dict | None = None, *, attempt: int = 1) -> dict:
     # 每次生成都是一次新的作者意图：幂等键带上第几次（旧版借 force_new 字段区分，那个字段已删）
-    r = client.post(
-        f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}/generate",
-        json=payload or {},
-        headers={"X-Idempotency-Key": f"qa3-reappr-gen-{pid}-{step_key}-{attempt}"},
-    )
+    r = post_generate(client, pid, step_key, payload, key=f"qa3-reappr-gen-{pid}-{step_key}-{attempt}")
     assert r.status_code == 200, r.text
     return r.json()["data"]
 
 
-def _approve(client, pid: str, step_key: str):
-    return client.post(
-        f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"qa3-reappr-approve-{pid}-{step_key}"},
-    )
+def _approve(client, pid: str, step_key: str, *, attempt: int = 1):
+    # 再确认一次同样是新的作者意图，幂等键同样带上第几次：同键同载荷会被幂等层原样重放第一次的回包、等于没批——
+    # 下面两条「再确认不 500」以前就是这样一直绿着，从没真的再确认过
+    return post_approve(client, pid, step_key, key=f"qa3-reappr-approve-{pid}-{step_key}-{attempt}")
 
 
 def _drop_chapter_states(session) -> int:
@@ -116,8 +88,9 @@ def test_reapprove_upstream_step_after_materialization_does_not_500(client, sess
     #    BUG-1：263-loop 与 _apply_block 各建一遍同一 chapter 的 ChapterState → flush 撞 UNIQUE → 500。
     #    修复（263-loop 后 flush）后应 200。
     _generate(client, pid, "book_brief", attempt=2)
-    resp = _approve(client, pid, "book_brief")
+    resp = _approve(client, pid, "book_brief", attempt=2)
     assert resp.status_code == 200, f"re-approve 上游步在已物化项目上崩溃: {resp.status_code} {resp.text}"
+    assert resp.headers.get("X-Idempotency-Status") != "replayed", "再确认被幂等层重放成了第一次的回包，等于没批"
 
     body = resp.json()
     assert body["ok"] is True
@@ -149,8 +122,9 @@ def test_reapprove_scoped_step_after_materialization_does_not_500(client, sessio
     _drop_chapter_states(session)
 
     _generate(client, pid, "scene_details", attempt=2)
-    resp = _approve(client, pid, "scene_details")
+    resp = _approve(client, pid, "scene_details", attempt=2)
     assert resp.status_code == 200, f"re-approve scene_details 崩溃: {resp.status_code} {resp.text}"
+    assert resp.headers.get("X-Idempotency-Status") != "replayed", "再确认被幂等层重放成了第一次的回包，等于没批"
 
 
 def test_repatch_identical_approved_draft_does_not_revert(client, session):

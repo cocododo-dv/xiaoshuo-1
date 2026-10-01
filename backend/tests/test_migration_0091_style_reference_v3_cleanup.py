@@ -11,18 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _columns, _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate, table_columns, table_names
 
 PREVIOUS_HEAD = "20260923_0090"
 THIS_REVISION = "20260923_0091"
 REPORTS = "style_reference_validation_reports"
 FEEDBACK = "style_reference_finding_feedback"
 FINDINGS = "style_reference_findings"
-
-
-def _tables(path: Path) -> set[str]:
-    with sqlite3.connect(path) as connection:
-        return {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
 def _indexes(path: Path, table: str) -> dict[str, int]:
@@ -43,7 +38,7 @@ def _unique_column_sets(path: Path, table: str) -> set[tuple[str, ...]]:
 def _seed(path: Path) -> None:
     """原生 sqlite3 连接不开外键：各表只补必填列即可。"""
     with sqlite3.connect(path) as connection:
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             FINDINGS,
             {
@@ -60,12 +55,12 @@ def _seed(path: Path) -> None:
                 "status": "active",
             },
         )
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             FEEDBACK,
             {"feedback_id": "srfb_0091", "finding_id": "sr_find_0091", "operator_ref": "operator", "vote": "up"},
         )
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             REPORTS,
             {
@@ -82,17 +77,17 @@ def test_0091_drops_the_retired_tables_and_column_then_downgrades(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "style-reference-v3-0091.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
-    assert {REPORTS, FEEDBACK} <= _tables(path)
-    assert "base_confidence" in _columns(path, FINDINGS)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
+    assert {REPORTS, FEEDBACK} <= table_names(path)
+    assert "base_confidence" in table_columns(path, FINDINGS)
     findings_indexes_before = {name for name in _indexes(path, FINDINGS) if not name.startswith("sqlite_autoindex")}
     findings_uniques_before = _unique_column_sets(path, FINDINGS)
     _seed(path)
 
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
-    tables = _tables(path)
+    migrate(path, THIS_REVISION, monkeypatch)
+    tables = table_names(path)
     assert REPORTS not in tables and FEEDBACK not in tables
-    columns = _columns(path, FINDINGS)
+    columns = table_columns(path, FINDINGS)
     assert "base_confidence" not in columns
     assert {"finding_id", "statement", "statement_hash", "confidence", "status", "review_id"} <= columns
     # 发现行保留（只少了一列），索引与唯一约束随整表重建原样回来
@@ -107,16 +102,16 @@ def test_0091_drops_the_retired_tables_and_column_then_downgrades(
     assert _unique_column_sets(path, FINDINGS) == findings_uniques_before
     assert ("extraction_id", "sub_dimension", "finding_kind", "statement_hash") in findings_uniques_before
 
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
-    tables = _tables(path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
+    tables = table_names(path)
     assert {REPORTS, FEEDBACK} <= tables
-    assert "base_confidence" in _columns(path, FINDINGS)
+    assert "base_confidence" in table_columns(path, FINDINGS)
     assert {
         "report_id", "profile_id", "target_kind", "target_ref_id", "verdict", "quantitative_json", "semantic_json",
         "plagiarism_json", "forbidden_hits_json", "mode_executed", "created_at", "status", "error_code", "error_text",
         "retryable", "started_at", "heartbeat_at", "finished_at",
-    } == _columns(path, REPORTS)
-    assert {"feedback_id", "finding_id", "operator_ref", "vote", "created_at", "updated_at"} == _columns(path, FEEDBACK)
+    } == table_columns(path, REPORTS)
+    assert {"feedback_id", "finding_id", "operator_ref", "vote", "created_at", "updated_at"} == table_columns(path, FEEDBACK)
     assert {
         "ix_style_reference_validation_reports_profile_target",
         "ix_style_reference_validation_reports_verdict",
@@ -131,5 +126,5 @@ def test_0091_drops_the_retired_tables_and_column_then_downgrades(
         assert connection.execute(f"SELECT base_confidence FROM {FINDINGS}").fetchall() == [(None,)]
 
     # 再升一次（降级重建的结构与原来一致，迁移可重复）
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
-    assert REPORTS not in _tables(path) and "base_confidence" not in _columns(path, FINDINGS)
+    migrate(path, THIS_REVISION, monkeypatch)
+    assert REPORTS not in table_names(path) and "base_confidence" not in table_columns(path, FINDINGS)

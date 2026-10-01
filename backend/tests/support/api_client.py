@@ -45,4 +45,32 @@ class AutoKeyTestClient(TestClient):
         return super().request(method, url, headers=headers, **kwargs)
 
 
-__all__ = ["AutoKeyTestClient", "IDEMPOTENCY_HEADER", "MUTATING_METHODS", "with_idempotency_key"]
+def key_header(key: str | None) -> dict[str, str] | None:
+    """显式幂等键的请求头（同键同载荷即重放）；``None`` 不带，由 AutoKeyTestClient 每次配一个新键。"""
+    return None if key is None else {IDEMPOTENCY_HEADER: key}
+
+
+def create_project(client, *, key: str | None = None, **fields: Any) -> dict:
+    """``POST /api/v2/projects`` 建一部作品：``fields`` 原样作请求体，回新作品的 ``project``。"""
+    response = client.post("/api/v2/projects", json=fields, headers=key_header(key))
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["project"]
+
+
+def validation_issues(response) -> list[dict[str, str]]:
+    """一个被请求校验挡下的回包（``REQUEST_VALIDATION_FAILED``）里逐字段的问题清单。"""
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+    return payload["error"]["details"]["issues"]
+
+
+__all__ = [
+    "AutoKeyTestClient",
+    "IDEMPOTENCY_HEADER",
+    "MUTATING_METHODS",
+    "create_project",
+    "key_header",
+    "validation_issues",
+    "with_idempotency_key",
+]

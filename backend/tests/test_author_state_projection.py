@@ -344,10 +344,10 @@ def test_archived_with_final_scene(session):
 
 def test_status_endpoint_exposes_projection(client, session):
     """API 挂载点 1：GET /scenes/{id}/status 必须带 author_state 契约字段。"""
-    from tests.test_chapter_manuscripts import _create_chapter, _create_scene
+    from tests.support.catalog import manuscript_chapter as _create_chapter, manuscript_scene as _create_scene
 
-    _create_chapter(client, "chapter_as_api")
-    _create_scene(client, "scene_as_api", chapter_id="chapter_as_api", scene_seq=1)
+    _create_chapter("chapter_as_api")
+    _create_scene("scene_as_api", chapter_id="chapter_as_api", scene_seq=1)
     response = client.get("/api/v1/scenes/scene_as_api/status")
     assert response.status_code == 200
     data = response.json()["data"]
@@ -359,7 +359,7 @@ def test_status_endpoint_exposes_projection(client, session):
 def test_scene_run_states_list_exposes_author_state(client, session):
     """API 挂载点 2：GET /scene-run-states 列表项带 author_state。"""
     from novel_system.db.models import StoryProject
-    from tests.test_chapter_manuscripts import _create_chapter, _create_scene
+    from tests.support.catalog import manuscript_chapter as _create_chapter, manuscript_scene as _create_scene
 
     session.add(
         StoryProject(
@@ -370,8 +370,8 @@ def test_scene_run_states_list_exposes_author_state(client, session):
         )
     )
     session.commit()
-    _create_chapter(client, "chapter_as_list")
-    _create_scene(client, "scene_as_list", chapter_id="chapter_as_list", scene_seq=1)
+    _create_chapter("chapter_as_list")
+    _create_scene("scene_as_list", chapter_id="chapter_as_list", scene_seq=1)
     scene = session.get(SceneCard, "scene_as_list")
     scene.project_id = "proj_as_list"
     state = session.get(SceneRunState, "scene_as_list")
@@ -388,10 +388,10 @@ def test_scene_run_states_list_exposes_author_state(client, session):
 
 def test_workbench_exposes_projection(client, session):
     """API 挂载点 3：workbench 响应带 author_state 投影块。"""
-    from tests.test_chapter_manuscripts import _create_chapter, _create_scene
+    from tests.support.catalog import manuscript_chapter as _create_chapter, manuscript_scene as _create_scene
 
-    _create_chapter(client, "chapter_as_wb")
-    _create_scene(client, "scene_as_wb", chapter_id="chapter_as_wb", scene_seq=1)
+    _create_chapter("chapter_as_wb")
+    _create_scene("scene_as_wb", chapter_id="chapter_as_wb", scene_seq=1)
     state_count_before = session.query(SceneRunState).count()
     response = client.get("/api/v1/scenes/scene_as_wb/workbench")
     assert response.status_code == 200

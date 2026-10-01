@@ -23,6 +23,7 @@ from novel_system.db.models import (
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.errors import DomainError
+from tests.support.seed import seed_chapter, seed_project, seed_scene
 
 
 @pytest.fixture(autouse=True)
@@ -100,54 +101,36 @@ def test_scene_target_uses_scene_project_when_legacy_chapter_has_no_project(sess
     assert target["project_id"] == project_id
 
 
-def _create_chapter(client, chapter_id: str, *, planned_scene_count: int = 2) -> None:
-    project_response = client.post(
-        "/api/v1/projects",
-        json={
-            "title": f"Author draft project {chapter_id}",
-            "outline_text": "Writer-first author draft test.",
-        },
-        headers={"X-Idempotency-Key": f"author-draft-project-{chapter_id}"},
+def _create_chapter(chapter_id: str, *, planned_scene_count: int = 2) -> None:
+    project_id = f"PRJ_{chapter_id}"
+    seed_project(project_id, title=f"Author draft project {chapter_id}", outline_text="Writer-first author draft test.")
+    seed_chapter(
+        chapter_id,
+        project_id=project_id,
+        planned_scene_count=planned_scene_count,
+        chapter_goal=f"目标 {chapter_id}",
+        main_plot_push="推进主线",
+        emotional_target="情绪转折",
+        ending_effect="留下余味",
     )
-    assert project_response.status_code == 200
-    project_id = project_response.json()["data"]["project"]["project_id"]
-    response = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": chapter_id,
-            "project_id": project_id,
-            "planned_scene_count": planned_scene_count,
-            "chapter_goal": f"目标 {chapter_id}",
-            "main_plot_push": "推进主线",
-            "emotional_target": "情绪转折",
-            "ending_effect": "留下余味",
-        },
-        headers={"X-Idempotency-Key": f"author-draft-chapter-{chapter_id}"},
-    )
-    assert response.status_code == 200
 
 
-def _create_scene(client, scene_id: str, *, chapter_id: str, scene_seq: int, is_chapter_last: int = 0) -> None:
-    response = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "scene_seq": scene_seq,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A"],
-            "location": "档案室",
-            "scene_goal": f"场景目标 {scene_id}",
-            "beats_json": ["发现", "选择"],
-            "exit_change": "关系改变",
-            "hook": "尾钩",
-            "target_length_band": "medium",
-            "scene_type": "reunion",
-            "is_chapter_last": is_chapter_last,
-        },
-        headers={"X-Idempotency-Key": f"author-draft-scene-{scene_id}"},
+def _create_scene(scene_id: str, *, chapter_id: str, scene_seq: int, is_chapter_last: int = 0) -> None:
+    seed_scene(
+        scene_id,
+        chapter_id=chapter_id,
+        scene_seq=scene_seq,
+        pov_character_id="CHAR_A",
+        onstage_chars_json=["CHAR_A"],
+        location="档案室",
+        scene_goal=f"场景目标 {scene_id}",
+        beats_json=["发现", "选择"],
+        exit_change="关系改变",
+        hook="尾钩",
+        target_length_band="medium",
+        scene_type="reunion",
+        is_chapter_last=is_chapter_last,
     )
-    assert response.status_code == 200
 
 
 def _create_project(session, project_id: str = "PRJ_OPEN") -> None:
@@ -206,9 +189,9 @@ def _set_final_aggregate(session, chapter_id: str, content: str) -> str:
 
 
 def test_ensure_and_save_scene_author_drafts_without_overwriting_runtime_outputs(client, session) -> None:
-    _create_chapter(client, "AD100")
-    _create_scene(client, "AD100_SC01", chapter_id="AD100", scene_seq=1)
-    _create_scene(client, "AD100_SC02", chapter_id="AD100", scene_seq=2, is_chapter_last=1)
+    _create_chapter("AD100")
+    _create_scene("AD100_SC01", chapter_id="AD100", scene_seq=1)
+    _create_scene("AD100_SC02", chapter_id="AD100", scene_seq=2, is_chapter_last=1)
     final_row_id = _finalize_scene(session, "AD100_SC01", "AD100", "场景运行终稿。")
     aggregate_row_id = _set_final_aggregate(session, "AD100", "章节最终聚合稿。")
 
@@ -244,7 +227,7 @@ def test_ensure_and_save_scene_author_drafts_without_overwriting_runtime_outputs
 
 def test_author_drafts_are_scene_drafts_only(client, session) -> None:
     """章稿 / 作品稿只剩测试在建、库里没有（B08-22）：不再新建，也读不到。"""
-    _create_chapter(client, "AD110", planned_scene_count=1)
+    _create_chapter("AD110", planned_scene_count=1)
     project_id = session.get(ChapterGoal, "AD110").project_id
     for object_type, object_id in (("chapter", "AD110"), ("project", project_id)):
         for method, suffix in (("post", "ensure"), ("get", "current")):
@@ -255,8 +238,8 @@ def test_author_drafts_are_scene_drafts_only(client, session) -> None:
 
 
 def test_scene_draft_is_dirty_when_runtime_final_pointer_moves_after_promotion(client, session) -> None:
-    _create_chapter(client, "AD_POINTER", planned_scene_count=1)
-    _create_scene(client, "AD_POINTER_SC01", chapter_id="AD_POINTER", scene_seq=1, is_chapter_last=1)
+    _create_chapter("AD_POINTER", planned_scene_count=1)
+    _create_scene("AD_POINTER_SC01", chapter_id="AD_POINTER", scene_seq=1, is_chapter_last=1)
     first_final_id = _finalize_scene(session, "AD_POINTER_SC01", "AD_POINTER", "作者已确认的正文。")
     ensured = client.post("/api/v1/author-drafts/scene/AD_POINTER_SC01/ensure")
     assert ensured.status_code == 200
@@ -291,8 +274,8 @@ def test_scene_draft_is_dirty_when_runtime_final_pointer_moves_after_promotion(c
 
 
 def test_author_draft_save_uses_optimistic_locking(client, session) -> None:
-    _create_chapter(client, "AD200", planned_scene_count=1)
-    _create_scene(client, "AD200_SC01", chapter_id="AD200", scene_seq=1, is_chapter_last=1)
+    _create_chapter("AD200", planned_scene_count=1)
+    _create_scene("AD200_SC01", chapter_id="AD200", scene_seq=1, is_chapter_last=1)
     _finalize_scene(session, "AD200_SC01", "AD200", "第一版。")
     draft = client.post("/api/v1/author-drafts/scene/AD200_SC01/ensure").json()["data"]["draft"]
 
@@ -357,8 +340,8 @@ def test_author_draft_save_uses_database_compare_and_swap(session) -> None:
 
 
 def _scene_draft(client, key: str) -> dict:
-    _create_chapter(client, key, planned_scene_count=1)
-    _create_scene(client, f"{key}_SC01", chapter_id=key, scene_seq=1, is_chapter_last=1)
+    _create_chapter(key, planned_scene_count=1)
+    _create_scene(f"{key}_SC01", chapter_id=key, scene_seq=1, is_chapter_last=1)
     return client.post(f"/api/v1/author-drafts/scene/{key}_SC01/ensure").json()["data"]["draft"]
 
 
@@ -472,22 +455,6 @@ def test_only_continuation_variants_are_generated(client, session) -> None:
     assert response.status_code == 400, response.text
     assert response.json()["error"]["code"] == "AUTHOR_DRAFT_PROPOSAL_MODE_UNSUPPORTED"
     assert session.query(AuthorDraftProposal).filter_by(draft_id=draft["draft_id"]).count() == 0
-
-
-def test_the_retired_proposal_routes_are_gone(client, session) -> None:
-    """采纳 ×2 / 放弃 / 对比 / 单条生成 / 列表：界面从没调过，已删（批准 #7）。"""
-    draft = _scene_draft(client, "AD_CONT_ROUTES")
-    draft_id = draft["draft_id"]
-    for method, path in (
-        ("post", f"/api/v1/author-drafts/{draft_id}/proposals/generate"),
-        ("post", f"/api/v1/author-drafts/{draft_id}/apply-proposal"),
-        ("get", f"/api/v1/author-drafts/{draft_id}/proposals"),
-        ("get", f"/api/v1/author-drafts/{draft_id}/proposals/missing/diff"),
-        ("post", "/api/v1/author-draft-proposals/missing/apply"),
-        ("post", "/api/v1/author-draft-proposals/missing/reject"),
-    ):
-        response = client.request(method, path, json={} if method == "post" else None)
-        assert response.status_code in {404, 405}, (method, path, response.status_code)
 
 
 def test_saving_the_author_draft_learns_no_preferences_and_never_diffs(client, session, monkeypatch) -> None:
@@ -604,8 +571,8 @@ def test_the_continuation_snapshot_builds_no_digest_the_prompt_never_renders(cli
 
 
 def test_ensure_creates_a_blank_scene_draft_when_the_scene_has_no_final(client, session) -> None:
-    _create_chapter(client, "AD500", planned_scene_count=1)
-    _create_scene(client, "AD500_SC01", chapter_id="AD500", scene_seq=1, is_chapter_last=1)
+    _create_chapter("AD500", planned_scene_count=1)
+    _create_scene("AD500_SC01", chapter_id="AD500", scene_seq=1, is_chapter_last=1)
 
     scene_response = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure")
 
@@ -615,6 +582,4 @@ def test_ensure_creates_a_blank_scene_draft_when_the_scene_has_no_final(client, 
     # 阶段 X：空白稿就是空白——场景卡常驻在正文旁边，不再抄成脚手架塞进正文
     assert scene_draft["content"] == ""
     assert session.query(FinalScene).count() == 0
-    # ensure-blank 没有界面调用，已删（批准 #24a）：ensure 在没有权威正文时就给空白稿
-    gone = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure-blank")
-    assert gone.status_code in {404, 405}
+    # ensure-blank 没有界面调用，已删（批准 #24a，见 test_retired_surface）：ensure 在没有权威正文时就给空白稿

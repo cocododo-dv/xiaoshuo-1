@@ -14,10 +14,9 @@ import pytest
 from novel_system.db.models import SnowflakeStepRun, StoryProject
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_client import LLMResponse
-from novel_system.services.snowflake_workspace import (
-    SnowflakeWorkspaceService,
-    _merge_member_lists,
-)
+from novel_system.services.snowflake_draft_merge import merge_member_lists
+from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+from tests.support.snowflake import install_snowflake_llm as _install_llm
 
 SCENES = [
     {"row_uid": f"u{i}", "scene_id": f"SC{i:03d}", "chapter_id": "CH01", "scene_seq": i,
@@ -39,21 +38,6 @@ def _seed(session, project_id: str) -> None:
             health_json={}, input_refs_json={},
         ))
     session.flush()
-
-
-def _install_llm(monkeypatch, responder):
-    from novel_system.services import snowflake_workspace_llm as mod
-
-    monkeypatch.setattr(mod, "execute_accounted_call",
-                        lambda session, client, request, context, *, llm_call_id: responder(request))
-    # 记账父行被上面的桩件跳过了：清洗失败的标记路径不能反过来把真实错误吃掉。
-    # 场景规划整表生成会分批派发（见 test_snowflake_scene_details_batching），
-    # 只认一个场景的假模型必然让后续批次走到这条清洗失败路径。
-    monkeypatch.setattr(mod, "mark_postprocess_failure",
-                        lambda session, llm_call_id, **kwargs: None)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
 
 
 def test_truncated_generation_fails_loudly_instead_of_returning_an_unchanged_draft(session, monkeypatch):
@@ -165,7 +149,7 @@ def test_merge_member_lists_matches_a_member_keyed_by_scene_id_or_row_uid():
     override = [{"row_uid": "r1", "summary": "刚编辑的第1场"},
                 {"scene_id": "s2", "summary": "刚编辑的第2场"}]
 
-    merged = _merge_member_lists(base, override, id_keys=("scene_id", "row_uid"))
+    merged = merge_member_lists(base, override, id_keys=("scene_id", "row_uid"))
 
     assert len(merged) == 2, f"跨键成员被当成新成员重复了：{[m['summary'] for m in merged]}"
     by_summary = [m["summary"] for m in merged]

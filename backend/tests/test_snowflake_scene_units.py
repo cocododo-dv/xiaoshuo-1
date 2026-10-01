@@ -16,9 +16,16 @@ import yaml
 from novel_system.db.models import SceneCard, StoryCharacter
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
-from novel_system.services.snowflake_chaptering import _rhythm_report
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService, _scene_card_beats
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _edit_plan, _materialize, _plan, _seed
+from novel_system.services.snowflake_chaptering import rhythm_report
+from novel_system.services.snowflake_scene_brief import scene_card_beats
+from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+from tests.support.snowflake import (
+    RENDER_PROJECT_ID as PROJECT_ID,
+    edit_scene_plan as _edit_plan,
+    materialize_render_project as _materialize,
+    scene_plan as _plan,
+    seed_render_project as _seed,
+)
 
 
 def _skip_u3(session, service: SnowflakeWorkspaceService) -> None:
@@ -41,7 +48,7 @@ def test_skipped_reactive_scene_is_not_materialized_and_weighs_nothing(session) 
     _edit_plan(service, "u1", rendering_mode="skip")
     assert _plan(session, "u1").rendering_mode == "full"
 
-    report = _rhythm_report(
+    report = rhythm_report(
         [
             {
                 "act": 1,
@@ -111,8 +118,8 @@ def test_follow_up_beats_join_the_card_beats_and_the_brief_says_where_the_scene_
         "dilemma": "认罪换假释，还是抵抗",
         "decision": "签字前给记者发暗语",
     }
-    assert _scene_card_beats("proactive", detail) == ["拿到离开许可", "三轮受阻", "被拘留 48 小时", "手在颤抖", "认罪换假释，还是抵抗", "签字前给记者发暗语"]
-    assert _scene_card_beats("reactive", detail) == ["手在颤抖", "认罪换假释，还是抵抗", "签字前给记者发暗语", "拿到离开许可", "三轮受阻", "被拘留 48 小时"]
+    assert scene_card_beats("proactive", detail) == ["拿到离开许可", "三轮受阻", "被拘留 48 小时", "手在颤抖", "认罪换假释，还是抵抗", "签字前给记者发暗语"]
+    assert scene_card_beats("reactive", detail) == ["手在颤抖", "认罪换假释，还是抵抗", "签字前给记者发暗语", "拿到离开许可", "三轮受阻", "被拘留 48 小时"]
 
     scene = SceneCard(
         scene_id="U01_SC01",

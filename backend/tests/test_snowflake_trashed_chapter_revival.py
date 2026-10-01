@@ -19,8 +19,13 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from novel_system.db.models import ChapterGoal, OperationLog, SceneCard
-from tests.test_catalog_book_spine import _base, _catalog, _materialized, _preview
-from tests.test_snowflake_chaptering_story_order import _confirm
+from tests.support.chaptering import (
+    catalog_chapters as _catalog,
+    confirm_chaptering as _confirm,
+    materialized_project as _materialized,
+    preview_from_scenes as _preview,
+    workspace_base as _base,
+)
 
 
 def _snowflake_chapters(client, project_id: str) -> list[dict]:

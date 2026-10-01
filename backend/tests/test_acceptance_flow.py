@@ -2,23 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from novel_system.services.llm_task_runner import LLMNodeRunner
-from tests.real_llm_fakes import ScenePipelineOnlineFake
 
-from .test_orchestrator_flow import seed_story
+from tests.support.scene_pipeline import seed_story
 
-
-@pytest.fixture(autouse=True)
-def _online_pipeline(monkeypatch) -> None:
-    """假生成已退役：验收冒烟的整链场景运行注入在线记账测试替身。"""
-    monkeypatch.setattr(
-        "novel_system.services.orchestrator.LLMNodeRunner",
-        lambda session: LLMNodeRunner(session, llm_client=ScenePipelineOnlineFake()),
-    )
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_l3_acceptance_smoke(client) -> None:
-    seed_story(client)
+    seed_story()
     run_scene = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
         headers={"X-Idempotency-Key": "acceptance-scene-1"},

@@ -21,7 +21,7 @@ from alembic.config import Config
 from sqlalchemy.engine import Connection
 
 from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
-from tests.test_migration_0084_scene_plan_rendering_mode import _insert_minimal_row
+from tests.support.migrations import insert_minimal_row
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROBE_REVISION = "zz_test_orphans_parent_rows"
@@ -39,7 +39,6 @@ def isolated_database(
 
     db_path = tmp_path / "migrated.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
-    monkeypatch.setenv("NOVEL_SYSTEM_VECTOR_BACKEND", "memory")
     reset_engine()
     yield db_path
     reset_engine()
@@ -102,8 +101,8 @@ def _spy_on_foreign_key_scans(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def _seed_chapter_with_qc_report(path: Path, *, chapter_id: str = "CH_FK_CHECK") -> None:
     """原生 sqlite3 连接不开外键：父子两行都按迁移建出来的表结构补齐必填列。"""
     with sqlite3.connect(path) as connection:
-        _insert_minimal_row(connection, "chapter_goals", {"chapter_id": chapter_id})
-        _insert_minimal_row(
+        insert_minimal_row(connection, "chapter_goals", {"chapter_id": chapter_id})
+        insert_minimal_row(
             connection,
             "qc_reports",
             {"qc_report_id": f"QC_{chapter_id}", "chapter_id": chapter_id, "scene_id": None},
@@ -148,7 +147,7 @@ def test_violations_the_database_already_had_are_reported_but_do_not_fail(
 ) -> None:
     command.upgrade(_config(), "head")
     with sqlite3.connect(isolated_database) as connection:
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             "qc_reports",
             {"qc_report_id": "QC_ALREADY_ORPHANED", "chapter_id": "CH_GONE_LONG_AGO", "scene_id": None},

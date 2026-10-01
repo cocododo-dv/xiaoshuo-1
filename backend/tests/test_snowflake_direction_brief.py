@@ -14,9 +14,6 @@
 
 from __future__ import annotations
 
-import json
-
-from novel_system.services.llm_client import LLMResponse
 from novel_system.services.snowflake_direction_brief import (
     MAX_ACTIVE_LINES,
     MAX_LINE_CHARS,
@@ -30,7 +27,12 @@ from novel_system.services.snowflake_prompt_budget import (
     PROTECTED_KEYS,
     apply_snowflake_prompt_budget,
 )
-from tests.accounted_llm_fakes import accounted_generate_method
+from tests.support.snowflake import (
+    COACH_REPLY,
+    coach_working_payload as _prompt_payload,
+    create_brief_project as _create_project,
+    install_coach_llm as _install,
+)
 
 
 # ---------- 纯函数 ----------
@@ -152,63 +154,6 @@ def test_apply_author_edit_dismisses_absent_lines_restores_and_claims_edited_lin
 
 
 # ---------- 路由 ----------
-
-
-def _create_project(client, key: str) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": "要点之书", "outline_text": "作者意图要点验证用项目。"},
-        headers={"X-Idempotency-Key": f"brief-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
-
-
-def _fake(captured: list, payload: dict):
-    """捕获发往 LLM 的请求，回放固定 structured_output。"""
-
-    def fake_generate(self, request):  # noqa: ANN001
-        captured.append(request)
-        return LLMResponse(
-            request_id=f"resp_{request.node_id}_{len(captured)}",
-            provider="fake-provider",
-            model=request.model,
-            text=json.dumps(payload, ensure_ascii=False),
-            structured_output=payload,
-            response_format="json_object",
-            raw_response={"id": f"resp_{request.node_id}"},
-            usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
-            finish_reason="stop",
-        )
-
-    return accounted_generate_method(fake_generate)
-
-
-def _prompt_payload(request) -> dict:
-    content = request.messages[-1]["content"]
-    start = content.index("Working payload:\n") + len("Working payload:\n")
-    end = content.index("\n\nRequired top-level JSON keys")
-    return json.loads(content[start:end])
-
-
-COACH_REPLY = {
-    "reply": "先把主角的被动写实。",
-    "suggestions": ["第一灾之前他不出手"],
-    "candidate_label": "",
-    "candidate_patch": {},
-    "brief_update": {
-        "lines": [
-            {"kind": "decision", "scope": "step", "text": "主角是被动卷入，第一灾才出手"},
-            {"kind": "constraint", "scope": "book", "text": "基调冷，不热血"},
-            {"kind": "pending", "scope": "step", "text": "结局是否团圆"},
-        ]
-    },
-}
-
-
-def _install(monkeypatch, captured: list, payload: dict) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
-    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate_accounted", _fake(captured, payload))
 
 
 def _put_brief(client, pid: str, step_key: str, lines: list, *, inherit=None, key: str = "") -> dict:

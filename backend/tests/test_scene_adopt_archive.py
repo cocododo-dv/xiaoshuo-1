@@ -23,7 +23,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.archiver import Archiver
 from novel_system.services.errors import DomainError
-from tests.test_chapter_manuscripts import _create_chapter, _create_scene
+from tests.support.catalog import manuscript_chapter as _create_chapter, manuscript_scene as _create_scene
 
 
 def _seed_style_draft(session, scene_id: str, chapter_id: str, *, content: str, row_id: str | None = None) -> str:
@@ -48,8 +48,8 @@ def _seed_style_draft(session, scene_id: str, chapter_id: str, *, content: str, 
 
 
 def test_adopt_promotes_style_draft_to_archived_final(client, session):
-    _create_chapter(client, "chapter_adopt_1")
-    _create_scene(client, "scene_adopt_1", chapter_id="chapter_adopt_1", scene_seq=1)
+    _create_chapter("chapter_adopt_1")
+    _create_scene("scene_adopt_1", chapter_id="chapter_adopt_1", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_1", "chapter_adopt_1", content="潮水退去，她看清了闸门上的名字。")
 
     response = client.post(
@@ -85,9 +85,8 @@ def test_adopt_exact_author_revision_archives_the_submitted_text_not_stale_pipel
 ):
     """浏览器当前稿必须与权威 FinalScene 是同一份修订，不能由服务端另选旧管线稿。"""
 
-    _create_chapter(client, "chapter_adopt_exact")
+    _create_chapter("chapter_adopt_exact")
     _create_scene(
-        client,
         "scene_adopt_exact",
         chapter_id="chapter_adopt_exact",
         scene_seq=1,
@@ -142,8 +141,8 @@ def test_adopt_exact_author_revision_archives_the_submitted_text_not_stale_pipel
 
 
 def test_adopt_without_any_draft_409(client, session):
-    _create_chapter(client, "chapter_adopt_2")
-    _create_scene(client, "scene_adopt_2", chapter_id="chapter_adopt_2", scene_seq=1)
+    _create_chapter("chapter_adopt_2")
+    _create_scene("scene_adopt_2", chapter_id="chapter_adopt_2", scene_seq=1)
 
     response = client.post(
         "/api/v1/scenes/scene_adopt_2/adopt-current",
@@ -155,8 +154,8 @@ def test_adopt_without_any_draft_409(client, session):
 
 
 def test_adopt_idempotent_replay_and_already_archived(client, session):
-    _create_chapter(client, "chapter_adopt_3")
-    _create_scene(client, "scene_adopt_3", chapter_id="chapter_adopt_3", scene_seq=1)
+    _create_chapter("chapter_adopt_3")
+    _create_scene("scene_adopt_3", chapter_id="chapter_adopt_3", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_3", "chapter_adopt_3", content="第一次归档正文。")
 
     first = client.post(
@@ -196,8 +195,8 @@ def test_adopt_source_safety_blocked_keeps_draft(client, session):
     """设计红线 8：来源安全未通过（与绑定的参考书原文连续相同）时草稿可保存，但不能标记为已安全归档。"""
     from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
 
-    _create_chapter(client, "chapter_adopt_4")
-    _create_scene(client, "scene_adopt_4", chapter_id="chapter_adopt_4", scene_seq=1)
+    _create_chapter("chapter_adopt_4")
+    _create_scene("scene_adopt_4", chapter_id="chapter_adopt_4", scene_seq=1)
     draft_row_id = _seed_style_draft(
         session, "scene_adopt_4", "chapter_adopt_4",
         content=f"他抬起头。{REFERENCE_PASSAGE[:30]}",  # 与参考书原文连续 30 字相同
@@ -226,9 +225,8 @@ def test_adopt_content_safety_requires_exact_acknowledgement_and_audits_it(
     session,
     monkeypatch,
 ):
-    _create_chapter(client, "chapter_adopt_content_safety")
+    _create_chapter("chapter_adopt_content_safety")
     _create_scene(
-        client,
         "scene_adopt_content_safety",
         chapter_id="chapter_adopt_content_safety",
         scene_seq=1,
@@ -272,9 +270,8 @@ def test_adopt_content_safety_requires_exact_acknowledgement_and_audits_it(
 
 
 def test_adopt_rejects_unbounded_or_unknown_request_fields(client):
-    _create_chapter(client, "chapter_adopt_request_contract")
+    _create_chapter("chapter_adopt_request_contract")
     _create_scene(
-        client,
         "scene_adopt_request_contract",
         chapter_id="chapter_adopt_request_contract",
         scene_seq=1,
@@ -309,8 +306,8 @@ def test_a_protected_name_never_blocks_adopt_reconfirm_or_promote(client, sessio
     from tests.reference_copy_fixtures import PROTECTED_NAME, REFERENCE_PASSAGE, seed_bound_reference
 
     monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["灰港学会"]')
-    _create_chapter(client, "chapter_adopt_dynamic")
-    _create_scene(client, "scene_adopt_dynamic", chapter_id="chapter_adopt_dynamic", scene_seq=1)
+    _create_chapter("chapter_adopt_dynamic")
+    _create_scene("scene_adopt_dynamic", chapter_id="chapter_adopt_dynamic", scene_seq=1)
     content = f"{PROTECTED_NAME}推门进来，说灰港学会的人不会来了，手里拎着一只不相干的铁皮箱。"
     _seed_style_draft(session, "scene_adopt_dynamic", "chapter_adopt_dynamic", content=content)
     seed_bound_reference(
@@ -405,8 +402,8 @@ def test_exact_draft_adopt_copy_block_carries_the_reference_copy_record(client, 
     ws-copy-gate.js 认它说人话；以前只有 {scene_id, final_text_gate, author_action}，作者看到的是英文原话。"""
     from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
 
-    _create_chapter(client, "chapter_adopt_exact_copy")
-    _create_scene(client, "scene_adopt_exact_copy", chapter_id="chapter_adopt_exact_copy", scene_seq=1)
+    _create_chapter("chapter_adopt_exact_copy")
+    _create_scene("scene_adopt_exact_copy", chapter_id="chapter_adopt_exact_copy", scene_seq=1)
     seed_bound_reference(session, seed="adopt_exact_copy", scope="scene", scope_ref_id="scene_adopt_exact_copy")
     ensured = client.post(
         "/api/v1/author-drafts/scene/scene_adopt_exact_copy/ensure",
@@ -449,8 +446,8 @@ def test_adopt_blocks_verbatim_reference_copy_without_leaking_the_source(client,
     from novel_system.services.final_text_gate import FinalTextGateService
     from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
 
-    _create_chapter(client, "chapter_adopt_copy")
-    _create_scene(client, "scene_adopt_copy", chapter_id="chapter_adopt_copy", scene_seq=1)
+    _create_chapter("chapter_adopt_copy")
+    _create_scene("scene_adopt_copy", chapter_id="chapter_adopt_copy", scene_seq=1)
     copied = REFERENCE_PASSAGE[:60]
     prefix = "她把雨伞靠在门边。"
     content = f"{prefix}{copied}然后她什么也没说。"
@@ -485,8 +482,8 @@ def test_adopt_blocks_verbatim_reference_copy_without_leaking_the_source(client,
 
 def test_adopt_promotes_existing_unarchived_final_scene(client, session):
     """管线停在 near_final_ready 的既有 FinalScene：adopt 提升归档它，不建新行。"""
-    _create_chapter(client, "chapter_adopt_5")
-    _create_scene(client, "scene_adopt_5", chapter_id="chapter_adopt_5", scene_seq=1)
+    _create_chapter("chapter_adopt_5")
+    _create_scene("scene_adopt_5", chapter_id="chapter_adopt_5", scene_seq=1)
     session.add(
         FinalScene(
             row_id="final_adopt_5_v1",
@@ -518,8 +515,8 @@ def test_adopt_promotes_existing_unarchived_final_scene(client, session):
 
 def test_adopt_falls_back_to_author_draft(client, session):
     """人工手写场（无管线稿，只有 author-draft 正文）也能走同一归档入口。"""
-    _create_chapter(client, "chapter_adopt_6")
-    _create_scene(client, "scene_adopt_6", chapter_id="chapter_adopt_6", scene_seq=1)
+    _create_chapter("chapter_adopt_6")
+    _create_scene("scene_adopt_6", chapter_id="chapter_adopt_6", scene_seq=1)
     ensure = client.post("/api/v1/author-drafts/scene/scene_adopt_6/ensure", json={})
     assert ensure.status_code == 200
     draft_id = ensure.json()["data"]["draft"]["draft_id"]
@@ -545,8 +542,8 @@ def test_adopt_falls_back_to_author_draft(client, session):
 def test_adopt_author_draft_fallback_stores_visible_text_not_html_entities(client, session):
     """B12-21：不带精确稿的兼容路径拿作者稿当内容源时，权威正文是作者看到的字——实体还原成字符、一段一行。
     以前正则剥标签，``&nbsp;`` / ``&quot;`` / ``&amp;`` / ``&lt;`` 原样进了终稿。"""
-    _create_chapter(client, "chapter_adopt_7")
-    _create_scene(client, "scene_adopt_7", chapter_id="chapter_adopt_7", scene_seq=1)
+    _create_chapter("chapter_adopt_7")
+    _create_scene("scene_adopt_7", chapter_id="chapter_adopt_7", scene_seq=1)
     ensure = client.post("/api/v1/author-drafts/scene/scene_adopt_7/ensure", json={})
     assert ensure.status_code == 200
     draft = ensure.json()["data"]["draft"]
@@ -611,9 +608,8 @@ def test_archiver_blocks_unsafe_actual_final_text(client, session):
     """归档路径逐字查终稿：与绑定的参考书原文连续相同 → 拦下（Q0，没有豁免），409 带位置记录。"""
     from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
 
-    _create_chapter(client, "chapter_archive_gate_source")
+    _create_chapter("chapter_archive_gate_source")
     _create_scene(
-        client,
         "scene_archive_gate_source",
         chapter_id="chapter_archive_gate_source",
         scene_seq=1,
@@ -655,8 +651,8 @@ def test_final_gate_reports_an_unchecked_reference_as_a_warning_not_a_pass(clien
     from novel_system.services.style_reference.cleanup import delete_reference_book
     from tests.reference_copy_fixtures import seed_bound_reference
 
-    _create_chapter(client, "chapter_gate_unchecked")
-    _create_scene(client, "scene_gate_unchecked", chapter_id="chapter_gate_unchecked", scene_seq=1)
+    _create_chapter("chapter_gate_unchecked")
+    _create_scene("scene_gate_unchecked", chapter_id="chapter_gate_unchecked", scene_seq=1)
     refs = seed_bound_reference(session, seed="gate_unchecked", scope="scene", scope_ref_id="scene_gate_unchecked")
     frozen = StylePolicy(bound=True, mode="frozen", profile_id=refs["profile_id"], book_id=refs["book_id"])
     if case == "deleted_book":
@@ -693,9 +689,8 @@ def test_final_gate_reports_an_unchecked_reference_as_a_warning_not_a_pass(clien
 
 
 def test_archiver_fails_closed_when_source_safety_is_unavailable(client, session, monkeypatch):
-    _create_chapter(client, "chapter_archive_gate_unavailable")
+    _create_chapter("chapter_archive_gate_unavailable")
     _create_scene(
-        client,
         "scene_archive_gate_unavailable",
         chapter_id="chapter_archive_gate_unavailable",
         scene_seq=1,
@@ -734,9 +729,8 @@ def test_archiver_fails_closed_when_source_safety_is_unavailable(client, session
 
 
 def test_archiver_blocks_verified_continuity_issue(client, session):
-    _create_chapter(client, "chapter_archive_gate_continuity")
+    _create_chapter("chapter_archive_gate_continuity")
     _create_scene(
-        client,
         "scene_archive_gate_continuity",
         chapter_id="chapter_archive_gate_continuity",
         scene_seq=1,
@@ -769,9 +763,8 @@ def test_archiver_is_not_blocked_by_the_legacy_reference_policy_sentence(client,
 
     正文里出现「人物」两个字就是 continuity:forbidden_text，归档被拦。政策句不是禁用词表。
     """
-    _create_chapter(client, "chapter_archive_gate_policy")
+    _create_chapter("chapter_archive_gate_policy")
     _create_scene(
-        client,
         "scene_archive_gate_policy",
         chapter_id="chapter_archive_gate_policy",
         scene_seq=1,
@@ -799,9 +792,8 @@ def test_archiver_is_not_blocked_by_the_legacy_reference_policy_sentence(client,
 
 
 def test_archiver_keeps_literary_findings_advisory(client, session):
-    _create_chapter(client, "chapter_archive_gate_literary")
+    _create_chapter("chapter_archive_gate_literary")
     _create_scene(
-        client,
         "scene_archive_gate_literary",
         chapter_id="chapter_archive_gate_literary",
         scene_seq=1,
@@ -895,9 +887,8 @@ def test_final_gate_checks_required_text_group_by_group(session):
 
 
 def test_archiver_blocks_persisted_content_hash_mismatch_before_side_effects(client, session):
-    _create_chapter(client, "chapter_archive_gate_hash")
+    _create_chapter("chapter_archive_gate_hash")
     _create_scene(
-        client,
         "scene_archive_gate_hash",
         chapter_id="chapter_archive_gate_hash",
         scene_seq=1,
@@ -934,8 +925,8 @@ def test_archiver_blocks_persisted_content_hash_mismatch_before_side_effects(cli
 
 def test_adopt_updates_latest_valid_pointer(client, session):
     """归档路径同样维护 latest_valid_draft 指针（§4.3）。"""
-    _create_chapter(client, "chapter_adopt_7")
-    _create_scene(client, "scene_adopt_7", chapter_id="chapter_adopt_7", scene_seq=1)
+    _create_chapter("chapter_adopt_7")
+    _create_scene("scene_adopt_7", chapter_id="chapter_adopt_7", scene_seq=1)
     draft_row_id = _seed_style_draft(session, "scene_adopt_7", "chapter_adopt_7", content="指针维护正文。")
 
     response = client.post(
@@ -951,8 +942,8 @@ def test_adopt_updates_latest_valid_pointer(client, session):
 
 def test_manuscript_detail_scene_entry_carries_content(client, session):
     """FE 换源数据面：detail 的 scenes[].final_scene 必须带 content 全文。"""
-    _create_chapter(client, "chapter_adopt_8")
-    _create_scene(client, "scene_adopt_8", chapter_id="chapter_adopt_8", scene_seq=1)
+    _create_chapter("chapter_adopt_8")
+    _create_scene("scene_adopt_8", chapter_id="chapter_adopt_8", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_8", "chapter_adopt_8", content="逐场正文全文。")
     adopted = client.post(
         "/api/v1/scenes/scene_adopt_8/adopt-current",
@@ -987,8 +978,8 @@ def _seed_run_residue(session, scene_id: str, *, status: str, checkpoint: str | 
 
 def test_adopt_finalizes_failed_run_residue(client, session):
     """failed@soft_qc_ready 残留在归档事务内收敛为 completed/archived。"""
-    _create_chapter(client, "chapter_adopt_9")
-    _create_scene(client, "scene_adopt_9", chapter_id="chapter_adopt_9", scene_seq=1)
+    _create_chapter("chapter_adopt_9")
+    _create_scene("scene_adopt_9", chapter_id="chapter_adopt_9", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_9", "chapter_adopt_9", content="残留收敛正文。")
     _seed_run_residue(session, "scene_adopt_9", status="failed")
 
@@ -1022,8 +1013,8 @@ def test_adopt_finalizes_failed_run_residue(client, session):
 
 def test_adopt_keeps_accounting_fence_untouched(client, session):
     """会计安全栅栏（usage_exceeds_reservation）在事故修复前不得被归档抹除。"""
-    _create_chapter(client, "chapter_adopt_10")
-    _create_scene(client, "scene_adopt_10", chapter_id="chapter_adopt_10", scene_seq=1)
+    _create_chapter("chapter_adopt_10")
+    _create_scene("scene_adopt_10", chapter_id="chapter_adopt_10", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_10", "chapter_adopt_10", content="栅栏保留正文。")
     _seed_run_residue(session, "scene_adopt_10", status="usage_exceeds_reservation")
 
@@ -1043,8 +1034,8 @@ def test_adopt_keeps_accounting_fence_untouched(client, session):
 
 def test_adopt_leaves_live_execution_untouched(client, session):
     """活跃执行有 owner：归档不得抢占其执行栅栏。"""
-    _create_chapter(client, "chapter_adopt_11")
-    _create_scene(client, "scene_adopt_11", chapter_id="chapter_adopt_11", scene_seq=1)
+    _create_chapter("chapter_adopt_11")
+    _create_scene("scene_adopt_11", chapter_id="chapter_adopt_11", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_11", "chapter_adopt_11", content="活跃执行正文。")
     _seed_run_residue(session, "scene_adopt_11", status="active")
 
@@ -1064,8 +1055,8 @@ def test_adopt_leaves_live_execution_untouched(client, session):
 
 def test_adopt_replay_heals_legacy_residue_on_archived_scene(client, session):
     """修复前已归档但残留 failed 的历史场景：幂等重放 adopt 即自愈。"""
-    _create_chapter(client, "chapter_adopt_13")
-    _create_scene(client, "scene_adopt_13", chapter_id="chapter_adopt_13", scene_seq=1)
+    _create_chapter("chapter_adopt_13")
+    _create_scene("scene_adopt_13", chapter_id="chapter_adopt_13", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_13", "chapter_adopt_13", content="历史残留自愈正文。")
 
     first = client.post(
@@ -1097,8 +1088,8 @@ def test_latest_job_view_converges_to_archived(client, session):
     """job 视图层收敛：场景归档后 latest 不再展示旧 awaiting_candidate_selection。"""
     from novel_system.db.models import ChapterRunJob
 
-    _create_chapter(client, "chapter_adopt_12")
-    _create_scene(client, "scene_adopt_12", chapter_id="chapter_adopt_12", scene_seq=1)
+    _create_chapter("chapter_adopt_12")
+    _create_scene("scene_adopt_12", chapter_id="chapter_adopt_12", scene_seq=1)
     _seed_style_draft(session, "scene_adopt_12", "chapter_adopt_12", content="视图收敛正文。")
     session.add(
         ChapterRunJob(

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate
 
 PREVIOUS_HEAD = "20260929_0094"
 CURRENT_HEAD = "20260929_0095"
@@ -37,20 +37,20 @@ def _indexes(path: Path, table: str) -> dict[str, list[str]]:
 
 def test_0095_indexes_the_diagnosis_lookups_and_downgrades(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "diagnosis-indexes-0095.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     for table, indexes in EXPECTED.items():
         assert not (set(indexes) & set(_indexes(path, table)))
 
     # 升级前就有的行：只加索引，行原样留着（原生 sqlite3 不开外键，不必先建场景行）
     with sqlite3.connect(path) as connection:
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             "writer_evaluations",
             {"evaluation_id": "eval-0095", "object_type": "scene", "object_id": "scene-0095", "rubric_id": "literary_revision_v1"},
         )
         connection.commit()
 
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)  # 升到本迁移自己的版本：后续迁移不必回头改这里
+    migrate(path, CURRENT_HEAD, monkeypatch)  # 升到本迁移自己的版本：后续迁移不必回头改这里
     for table, indexes in EXPECTED.items():
         present = _indexes(path, table)
         for name, columns in indexes.items():
@@ -72,12 +72,12 @@ def test_0095_indexes_the_diagnosis_lookups_and_downgrades(tmp_path: Path, monke
     with sqlite3.connect(path) as connection:
         connection.execute("UPDATE alembic_version SET version_num = ?", (PREVIOUS_HEAD,))
         connection.commit()
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)
+    migrate(path, CURRENT_HEAD, monkeypatch)
     for table, indexes in EXPECTED.items():
         present = _indexes(path, table)
         assert all(present.get(name) == columns for name, columns in indexes.items()), (table, present)
 
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
     for table, indexes in EXPECTED.items():
         assert not (set(indexes) & set(_indexes(path, table)))
     with sqlite3.connect(path) as connection:

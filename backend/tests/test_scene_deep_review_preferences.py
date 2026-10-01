@@ -1,42 +1,20 @@
 from __future__ import annotations
 
+from tests.support.seed import seed_chapter, seed_project, seed_scene
 
-def _create_scene(client) -> str:
-    project = client.post(
-        "/api/v1/projects",
-        json={"title": "Deep-review preferences", "outline_text": "outline"},
-        headers={"X-Idempotency-Key": "deep-prefs-project"},
-    )
-    assert project.status_code == 200
-    project_id = project.json()["data"]["project"]["project_id"]
+
+def _create_scene() -> str:
+    project_id = "PRJ_DEEP_PREFS"
+    seed_project(project_id, title="Deep-review preferences", outline_text="outline")
     chapter_id = "CH_DEEP_PREFS"
-    assert client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": chapter_id,
-            "project_id": project_id,
-            "planned_scene_count": 1,
-            "chapter_goal": "goal",
-        },
-        headers={"X-Idempotency-Key": "deep-prefs-chapter"},
-    ).status_code == 200
+    seed_chapter(chapter_id, project_id=project_id, planned_scene_count=1, chapter_goal="goal")
     scene_id = f"{chapter_id}_SC01"
-    assert client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "project_id": project_id,
-            "scene_seq": 1,
-            "scene_goal": "goal",
-        },
-        headers={"X-Idempotency-Key": "deep-prefs-scene"},
-    ).status_code == 200
+    seed_scene(scene_id, chapter_id=chapter_id, project_id=project_id, scene_seq=1, scene_goal="goal")
     return scene_id
 
 
 def test_scene_deep_review_preferences_are_durable_deduplicated_and_revision_fenced(client) -> None:
-    scene_id = _create_scene(client)
+    scene_id = _create_scene()
     path = f"/api/v1/scenes/{scene_id}/deep-review/preferences"
 
     initial = client.get(path)
@@ -71,7 +49,7 @@ def test_scene_deep_review_preferences_are_durable_deduplicated_and_revision_fen
 
 
 def test_scene_deep_review_preferences_reject_oversized_client_state(client) -> None:
-    scene_id = _create_scene(client)
+    scene_id = _create_scene()
     response = client.patch(
         f"/api/v1/scenes/{scene_id}/deep-review/preferences",
         json={

@@ -13,11 +13,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import sqlalchemy as sa
 from alembic import command
-from alembic.config import Config
+
+from tests.support.migrations import alembic_config
 
 _LEGACY_SCENE_PLANS = """
 CREATE TABLE snowflake_scene_plans (
@@ -69,12 +68,6 @@ def _insert_plan(conn, *, pk: str, project: str, row_uid: str | None, scene_id: 
 def test_migration_repairs_duplicate_scene_ids_on_a_legacy_database(tmp_path, monkeypatch) -> None:
     from novel_system.db.session import reset_engine
 
-    # 迁移 0036 的遗留备份守卫（与 test_metadata_isolation 同一套处置）
-    fake_root = tmp_path / "repo_root"
-    (fake_root / "backups").mkdir(parents=True)
-    (fake_root / "backups" / "style_reference_legacy_test.json").write_text("[]", encoding="utf-8")
-    monkeypatch.setenv("STYLE_REFERENCE_REPO_ROOT", str(fake_root))
-
     legacy_db = tmp_path / "legacy.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{legacy_db}")
     reset_engine()
@@ -105,9 +98,7 @@ def test_migration_repairs_duplicate_scene_ids_on_a_legacy_database(tmp_path, mo
                     {"scene_id": scene_id},
                 )
 
-        backend_dir = Path(__file__).resolve().parents[1]
-        cfg = Config(str(backend_dir / "alembic.ini"))
-        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+        cfg = alembic_config()
         command.upgrade(cfg, "20260725_0075")
 
         with engine.begin() as conn:
@@ -168,11 +159,6 @@ def test_the_keeper_follows_the_materialized_card_not_merely_the_oldest_row(tmp_
     """
     from novel_system.db.session import reset_engine
 
-    fake_root = tmp_path / "repo_root"
-    (fake_root / "backups").mkdir(parents=True)
-    (fake_root / "backups" / "style_reference_legacy_test.json").write_text("[]", encoding="utf-8")
-    monkeypatch.setenv("STYLE_REFERENCE_REPO_ROOT", str(fake_root))
-
     legacy_db = tmp_path / "legacy-keeper.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{legacy_db}")
     reset_engine()
@@ -195,9 +181,7 @@ def test_the_keeper_follows_the_materialized_card_not_merely_the_oldest_row(tmp_
                 "VALUES ('PRJ_K_CH01_SC02', 'PRJ_K', 'PRJ_K_CH01', 2, '已经写好的正文')"
             ))
 
-        backend_dir = Path(__file__).resolve().parents[1]
-        cfg = Config(str(backend_dir / "alembic.ini"))
-        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+        cfg = alembic_config()
         command.upgrade(cfg, "20260725_0075")
 
         with engine.begin() as conn:

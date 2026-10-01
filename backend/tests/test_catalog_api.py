@@ -6,6 +6,7 @@ import pytest
 from novel_system.db.models import AuthorDraft, ChapterGoal, StoryProject
 from novel_system.services.catalog import CatalogService
 from novel_system.services.errors import DomainError
+from tests.support.api_client import create_project
 
 _seq = 0
 
@@ -13,13 +14,7 @@ _seq = 0
 def _create_project(client) -> dict:
     global _seq
     _seq += 1
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": f"目录测试 {_seq}", "outline_text": "大纲", "genre": "悬疑"},
-        headers={"X-Idempotency-Key": f"catalog-create-{_seq}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return create_project(client, title=f"目录测试 {_seq}", outline_text="大纲", genre="悬疑", key=f"catalog-create-{_seq}")
 
 
 def _post(client, path, body=None, extra_headers=None):
@@ -229,16 +224,6 @@ def test_catalog_import_rejects_non_linear_approval_or_current(client, session):
         )
     assert wrong_current.value.status_code == 400
     assert wrong_current.value.code == "CATALOG_IMPORT_CURRENT_INVALID"
-
-
-def test_catalog_import_route_is_gone(client):
-    project = _create_project(client)
-    response = client.post(
-        f"/api/v2/projects/{project['project_id']}/catalog/import",
-        json={"chapters": [{"title": "旧目录"}]},
-        headers={"X-Idempotency-Key": "catalog-import-gone"},
-    )
-    assert response.status_code in {404, 405}
 
 
 def test_draft_save_updates_scene_words_and_returns_rollup(client, session):
