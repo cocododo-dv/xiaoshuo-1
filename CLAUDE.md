@@ -98,11 +98,8 @@ irreversible revisions and the refactor deploy order: `docs/migrations.md`. The 
   `scripts/db_backup_drill.{sh,ps1}`); never plain-copy the WAL-mode `novel_system.db`.
 - Deploy: stop → `db_backup` (kept as a named archive) → fast-forward → `alembic upgrade head` → `compact_db PATH
   --execute` → `sync_prompt_templates --execute` (installs with a prompts snapshot) → start → `/ready`.
-
-### Author-state reset
-`python -m novel_system.tools.reset_author_state` (dry-run) / `--execute --yes`: wipes project / snowflake / chapter /
-run data, keeps reference books, profiles and system config. A new table must be a reset target or listed in
-`PRESERVED_TABLES` (completeness guard in `tests/test_reset_author_state.py`).
+- `reset_author_state` (dry-run; `--execute --yes`) wipes project / snowflake / chapter / run data and keeps reference
+  books, profiles and system config.
 
 ## Drift guards (they fail the suite — know them before adding code)
 Backend (`backend/tests/`):
@@ -206,8 +203,9 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   `api/mutations.mutate()`; Chinese error text via `api/error_catalog.py`; `api/middleware.py` wraps unhandled
   exceptions as `INTERNAL_ERROR` inside CORS and answers 503 `SERVICE_NOT_READY` on `/api/*` while the schema is behind.
   Every response carries `X-Request-Id`; `X-Operator-Ref` is the audit actor (local mode only).
-- `db/models/` is a package of domain submodules behind the `db.models` facade; `env_config.py` is the only settings
-  module (`settings.get_settings()` = env + the active api snapshot).
+- `db/models/` is a package of domain submodules behind the `db.models` facade (`novel_system.db` does not import it —
+  import it before using `Base.metadata`); `env_config.py` is the only settings module (`settings.get_settings()` = env +
+  the active api snapshot). `GET …/scenes/{id}/workbench` returns desk keys only (`?include=diagnostics` for the rest).
 - A missing prerequisite answers with an `author_action` (`services/author_actions.py`); LLM failures become domain
   errors only through `services/llm_fail_closed.py` (409 capability / 502 upstream).
 - Big services are packages or facades over mixins; the facade docstring lists the parts and the monkeypatch seams:
@@ -257,8 +255,9 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   (keys on `version`; keeps prompts the author edited in the UI unless `--force-text`). Never re-import a whole file.
 - Model routing: the node spec in `llm_node_registry.py` is the only default. A saved models snapshot stores each
   node's provider / model choice; missing parameters resolve from the spec, so spec fixes reach configured installs. On
-  a configured install a node without a saved route fails closed (`LLM_ROUTE_NOT_CONFIGURED`) until 系统配置「一键补齐」;
-  routes of removed nodes show as stale until 一键补齐 / 分工 prunes them. `raise_llm_output_budget --node N --floor F
+  a configured install a node without a saved route fails closed (`LLM_ROUTE_NOT_CONFIGURED`) until 系统配置「一键补齐」
+  (it fills only routes that are missing, unparsable or not ready); routes of removed nodes show as stale until
+  一键补齐 / 分工 prunes them. `raise_llm_output_budget --node N --floor F
   --execute` writes an explicit override (rarely needed).
 - The author's `--reload` backend hot-loads new models before the DB is migrated → `/api/*` answers 503 until
   `alembic upgrade head` (launcher restart, or in place — no restart needed afterwards).
@@ -293,8 +292,9 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
 - Coach, directions, generate and AI triage fail closed; `author_direction_brief` is a protected prompt key. JSON
   columns mutated in place need `flag_modified`.
 - FE sync (`ws-snow-sync.jsx` + `ws-snow-push.js` / `ws-snow-hydrate.js`): nothing is pushed before a successful hydrate
-  in this session, a pristine step without a `lastPushed` record is never pushed, and the cache merges 「本机为准」, so
-  server-side structure changes are pulled in explicitly (`SnowSync.adoptServerChapters`). The backend turns a total
+  in this session, a pristine step without a `lastPushed` record is never pushed, and a local copy whose last author
+  edit is not older than the server's wins (「本机为准」), so server-side structure changes are pulled in explicitly
+  (`SnowSync.adoptServerChapters`). The backend turns a total
   wipe of a `pending_review` draft into a new version (`snowflake_step_runs.would_wipe_story`); 构思 → 历史 restores it.
 
 **Chapters, catalog, desks**

@@ -224,3 +224,21 @@
 - 新浏览器打开构思时 09 / 10 会各回声式 PATCH 两次（语义上是空操作，步骤状态不变）——与本阶段无关，未处理。
 - 章 slug（`chNN`）与 `#writer` 深链里的章序号仍是位置式的显示序号。
 - 章计划与目录章之间没有数据库级的唯一约束（一个目录章至多被一个活跃章计划钉住，由铸号与迁移回填的规则保证）。
+
+## 15. 找不到与在回收站：错误码对照
+
+章、场、作品「不在」时回什么码（2026-09-30 盘点，审计 B08-26）。实现集中在 `services/scene_lookup.py`（`require_scene` /
+`require_chapter` 的几个参数），条件不同的少数几处留在原处。码的名字不改：界面按码分支。
+
+| 情形 | 码 | 状态 | 用在哪 |
+|---|---|---|---|
+| 场景 / 章不存在，或在回收站（多数接口把回收站里的当作不存在） | `SCENE_NOT_FOUND` / `CHAPTER_NOT_FOUND` | 404 | 默认口径 |
+| 场景 / 章在回收站，需要和「不存在」分开时 | `SCENE_TRASHED` / `CHAPTER_TRASHED` | 409 | 场景笔记、深评偏好、场景诊断、作者生命周期（`trashed_as_conflict=True`） |
+| 场景 / 章不属于这部作品 | `SCENE_NOT_FOUND` / `CHAPTER_NOT_FOUND`（说明是「… not found in project」） | 404 | 目录等按作品限定的接口（`project_id=…`） |
+| 场景 / 章所属的作品不在或在回收站 | `PROJECT_TRASHED` | 404 | 作者生命周期（`with_parents=True`；场景所在的章在回收站也算场景在回收站） |
+| 作品不存在（`reject_trashed` 时也包括在回收站） | `PROJECT_NOT_FOUND` | 404 | `require_project` |
+| 运行本章、通读确认、定稿流程里的章不存在或不属于这部作品（不看回收站） | `PROJECT_CHAPTER_NOT_FOUND` | 404 | `chapter_final_flow` |
+
+只查存在、不看回收站的变体是 `get_scene_or_404` / `get_chapter_or_404`。这张表里的码前端都不按码分支（目录与成稿这一块，
+前端按码分支的是设计 / 结构归属的 409 `CATALOG_*_OWNED_BY_PLAN`、`AUTHOR_DRAFT_CONFLICT` 与 `SOURCE_SAFETY_BLOCKED`）；
+给作者看的说明按 `backend/src/novel_system/api/error_catalog.py` 换成中文。
