@@ -17,7 +17,11 @@
 //   原来每轮约 79 s 的固定 waitForTimeout 也换成等页面元素 / store / 后端数据（phase6 资料库的间歇失败就是固定时长
 //   赶不上懒加载路由的冷编译）。只有「这段时间里不该出现什么」的观察窗口还是定长的（observe）。
 // · check(label, fn)：一条检查，失败只记数、打印首行，后面的照跑；finish()：关浏览器、列出页面错误、设退出码。
+// · reseedFixtures()：重灌中性测试夹具（run-smokes.mjs 在每套之前调；单跑一套之前想要干净的夹具也可以调）。
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
@@ -29,6 +33,23 @@ export const LIVE_API = "http://127.0.0.1:8000";
 const LIVE_API_PATTERN = /^https?:\/\/(?:127\.0\.0\.1|localhost):8000(?:[/?#]|$)/;
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const BACKEND_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../backend");
+
+/* 重灌中性测试夹具：backend/tests/fixture_runtime.py（解释器取 NOVEL_SYSTEM_PYTHON，否则 PATH 上的 python）。
+   各套用例都会改动夹具数据（裁决 / 插场 / 改题），套与套之间重灌保独立性。失败抛错，带上脚本的输出。 */
+export function reseedFixtures() {
+  const python = process.env.NOVEL_SYSTEM_PYTHON || "python";
+  const r = spawnSync(python, ["tests/fixture_runtime.py"], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, PYTHONPATH: "src" },
+    stdio: "pipe",
+  });
+  if (r.error || r.status !== 0) {
+    const detail = String(r.stderr || r.stdout || r.error || "unknown reseed failure").slice(0, 2000);
+    throw new Error(`fixture reseed failed (exit=${r.status ?? "spawn-error"}): ${detail}`);
+  }
+}
 
 /* Node 侧轮询，直到 probe() 给出真值并返回它；超时抛错，消息里带最后一次的值。 */
 export async function waitUntil(probe, { timeout = 20_000, interval = 100, message = "等待超时" } = {}) {
