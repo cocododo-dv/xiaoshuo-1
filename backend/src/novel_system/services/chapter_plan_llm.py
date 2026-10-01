@@ -36,7 +36,6 @@ from novel_system.services.catalog import (
 from novel_system.services.catalog_labels import DRAMA_SLOT_LABELS, SCENE_SLOT_LABELS, scene_display_title
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.chapter_architecture import (
-    ARCHITECTURE_FIELDS,  # noqa: F401 — 旧名：从本模块 import 的调用方
     CHAPTER_ARCHITECTURE_ARTIFACT,
     latest_chapter_architecture,
     normalize_chapter_architecture,
@@ -708,10 +707,6 @@ def empty_slot_gaps(
             title = scene_title(scene, goal=planned_chapter_goal(scene.scene_goal, chapter))
             gaps.append(f"{title}（{scene.scene_id}）：待补 {', '.join(missing)}{where}")
     return gaps
-
-
-# 旧名：测试从本模块 import
-_empty_slot_gaps = empty_slot_gaps
 
 
 def _serialize_architecture(artifact: GenerationPlanningArtifact | None) -> dict[str, Any] | None:

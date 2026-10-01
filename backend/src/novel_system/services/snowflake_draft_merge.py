@@ -8,7 +8,9 @@
   保持底稿的成员顺序（作者的语序），新成员追加在尾部；没有身份键的列表整个替换。
 
 2026-09-30 从 ``snowflake_steps`` / ``snowflake_workspace`` / ``snowflake_workspace_llm`` 三处收拢到这里；
-旧名字（``_merge_dicts`` / ``_merge_dicts_keeping_members`` / ``_merge_member_lists`` / ``_merge_patch``）在原模块照旧可用。
+旧名字 ``_merge_dicts``（``snowflake_step_drafts``，``snowflake_steps`` 照旧转出）与 ``_merge_patch``（``snowflake_llm_sanitize``，
+``snowflake_workspace_llm`` 照旧转出）还在；工作台模块里只给测试留的 ``_merge_dicts_keeping_members`` / ``_merge_member_lists``
+已没有读者，2026-10-01 删掉（测试改用这里的公开名）。
 叶子模块。
 """
 

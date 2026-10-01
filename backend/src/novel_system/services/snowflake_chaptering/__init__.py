@@ -31,7 +31,6 @@ from novel_system.services.snowflake_chapter_table import (
     NEW_CHAPTER_PREFIX,
     SPINE_MARKS,
     chapter_target_id,
-    coerce_act as _coerce_act,
     is_auto_chapter_title,
     is_placeholder_chapter,
     mint_chapter_row_uid,
@@ -48,10 +47,6 @@ from novel_system.services.snowflake_chaptering.contiguity import heal_assignmen
 from novel_system.services.snowflake_chaptering.outline_plan import build_chaptered_outline_plan, protagonist_hint
 from novel_system.services.snowflake_chaptering.outline_sync import sync_long_synopsis_chapters
 from novel_system.services.snowflake_chaptering.rhythm import rhythm_report
-from novel_system.services.snowflake_chaptering.scale import (
-    reference_chapter_scale_hint as _reference_chapter_scale_hint,
-    reference_chapter_titles as _reference_chapter_titles,
-)
 from novel_system.services.snowflake_chaptering.service import SnowflakeChapteringService
 from novel_system.services.snowflake_chaptering.spine import scene_spine, spine_from_role, spine_positions
 
@@ -60,9 +55,6 @@ __all__ = [
     "SPINE_MARKS",
     "STRATEGIES",
     "SnowflakeChapteringService",
-    "_coerce_act",
-    "_reference_chapter_scale_hint",
-    "_reference_chapter_titles",
     "build_chaptered_outline_plan",
     "chapter_target_id",
     "heal_assignment",

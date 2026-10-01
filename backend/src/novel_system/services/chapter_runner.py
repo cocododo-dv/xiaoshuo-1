@@ -171,7 +171,7 @@ class ChapterRunnerService:
                 author_action=self._domain_error_author_action(exc),
             )
             raise
-        except Exception:  # safety net for runtime failures (covered by test_fix_chapter_runner_catalog_scenes)
+        except Exception:  # safety net for runtime failures (covered by test_chapter_runner_catalog_scenes)
             self._fail_claimed_job(
                 job,
                 scene_id=active_scene_id,

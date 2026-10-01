@@ -44,26 +44,13 @@ from novel_system.services.snowflake_chaptering import (
 )
 from novel_system.services.snowflake_coach import SnowflakeCoachMixin
 from novel_system.services.snowflake_direction_brief import DirectionBriefStore
-from novel_system.services.snowflake_draft_merge import merge_member_lists, overlay_keeping_members
-from novel_system.services.snowflake_scene_brief import scene_card_beats
-from novel_system.services.snowflake_step_diagnosis import is_protagonist_role
 from novel_system.services.snowflake_step_editing import SnowflakeStepEditingMixin
-from novel_system.services.snowflake_step_runs import StepRunStore, would_wipe_story
+from novel_system.services.snowflake_step_runs import StepRunStore
 from novel_system.services.snowflake_structured_sync import SnowflakeStructuredSyncMixin
-from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES  # noqa: F401 — 测试从本模块 import
-from novel_system.services.snowflake_triage import coerce_triage_status
 from novel_system.services.snowflake_triage_service import SnowflakeTriageMixin
 from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService
 from novel_system.services.snowflake_workspace_view import SnowflakeWorkspaceViewMixin
 from novel_system.services.writing_stats import WritingStatsService
-
-# 旧名：测试从本模块 import（实现各在叶子模块）
-_scene_card_beats = scene_card_beats
-_coerce_triage_status = coerce_triage_status
-_is_protagonist_role = is_protagonist_role
-_merge_dicts_keeping_members = overlay_keeping_members
-_merge_member_lists = merge_member_lists
-_would_wipe_story = would_wipe_story
 
 
 class SnowflakeWorkspaceService(
