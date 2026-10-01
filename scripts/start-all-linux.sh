@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-click start: backend + React frontend, both backgrounded and logged
 # under .codex-run/. Safe to re-run — each leg stops its own previous
-# instance first (see start-backend-linux.sh / start-frontend-linux.sh).
+# instance first (see start-backend-linux.sh / start-frontend-linux.sh);
+# nothing is stopped when the frontend's Node toolchain is missing or too old.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +33,13 @@ leg_failed() {
   tail -n 20 "$log" >&2 || true
   exit 1
 }
+
+# The frontend leg refuses a missing / too-old Node or a missing node_modules
+# before it stops its previous instance — but this script stops both legs
+# itself, before it launches either. Run the same check here first, so a
+# relaunch with the wrong Node leaves the running backend and frontend alone.
+# The subshell keeps nvm / the Node PATH out of the backend leg's environment.
+( dev_use_frontend_node; dev_check_frontend_toolchain "$REPO_ROOT/frontend-react" ) || exit 1
 
 # Each leg also tears its previous instance down, but doing it here first
 # guarantees the readiness probes below can only ever hit the *new* process —

@@ -86,16 +86,23 @@ describe("React 工具链独立性", () => {
     const lifecycle = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "dev-lifecycle.sh"), "utf8");
     const floor = ["MAJOR", "MINOR"].map((part) => (lifecycle.match(new RegExp(`^DEV_NODE_FLOOR_${part}=(\\d+)$`, "m")) || [])[1]);
     expect(pkg.engines && pkg.engines.node).toBe(`>=${floor.join(".")}`);
-    // 换错 Node 重启时要先报错退出：要是检查排在停旧实例之后，正在跑的前端会先被停掉、再拒绝启动
-    const leg = fs.readFileSync(path.join(repoRoot, "scripts", "start-frontend-linux.sh"), "utf8")
-      .split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
-    const check = leg.indexOf("dev_check_frontend_toolchain");
-    expect(check).toBeGreaterThan(-1);
-    for (const stop of ["dev_stop_pidfile", "dev_stop_port"]) {
-      expect(leg.indexOf(stop), stop).toBeGreaterThan(check);
+    // 换错 Node 重启时要先报错退出：要是检查排在停旧实例之后，正在跑的前端会先被停掉、再拒绝启动。
+    // 一键启动（start-all-linux.sh，作者平时用的就是它）在起前端这条腿之前自己先停前后端，所以它也要先查
+    for (const script of ["start-frontend-linux.sh", "start-all-linux.sh"]) {
+      const code = fs.readFileSync(path.join(repoRoot, "scripts", script), "utf8")
+        .split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+      const check = code.indexOf("dev_check_frontend_toolchain");
+      expect(check, script).toBeGreaterThan(-1);
+      // 查的是起前端时会用的那个 Node：先按同样的顺序找 Node，再查
+      const useNode = code.indexOf("dev_use_frontend_node");
+      expect(useNode, script).toBeGreaterThan(-1);
+      expect(useNode, script).toBeLessThan(check);
+      for (const stop of ["dev_stop_pidfile", "dev_stop_port"]) {
+        expect(code.indexOf(stop), `${script}: ${stop}`).toBeGreaterThan(check);
+      }
+      // 操作者自己设的 NODE_OPTIONS 原样传给 Vite（以前为 Node 16 预加载 crypto-polyfill.cjs，把它整个盖掉）
+      expect(code, script).not.toMatch(/NODE_OPTIONS=/);
     }
-    // 操作者自己设的 NODE_OPTIONS 原样传给 Vite（以前为 Node 16 预加载 crypto-polyfill.cjs，把它整个盖掉）
-    expect(leg).not.toMatch(/NODE_OPTIONS=/);
   });
 
   // 启动脚本的 Node 查找与检查（scripts/lib/dev-lifecycle.sh）照真的跑一遍：假 HOME、只会报版本号的假 node / npm，
