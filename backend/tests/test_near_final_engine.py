@@ -17,7 +17,6 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
     StyleReferenceMetricEvent,
-    VoiceProfile,
     WriterEvaluation,
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
@@ -147,18 +146,6 @@ def _seed_scene(session, *, is_chapter_last: int = 0) -> None:
         )
     )
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready"))
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_lincen_v1",
-            voice_profile_id="VOICE_林岑",
-            version=1,
-            character_id="林岑",
-            content="林岑的叙述声线克制、冷静，但在选择代价时会显出迟疑。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
-        )
-    )
     session.commit()
 
 
@@ -695,7 +682,7 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
 
 
 def test_scene_story_check_is_normalized_recorded_and_surfaced(session) -> None:
-    from novel_system.api.routes.scenes import _serialize_near_final_summary
+    from novel_system.services.scene_workbench import serialize_near_final_summary
     from novel_system.db.models import AttemptTracker
     from novel_system.services.catalog import CatalogService
     from novel_system.services.near_final import _normalize_acceptance_payload
@@ -736,7 +723,7 @@ def test_scene_story_check_is_normalized_recorded_and_surfaced(session) -> None:
         "crucible_identified": True, "shape_landed": True, "verdict": "yes", "note": "坩埚是船坞的封锁。",
     }
     # 工作台摘要与目录场景行都按最近一次评审透出
-    assert _serialize_near_final_summary(session, SCENE_ID)["scene_story_check"]["verdict"] == "yes"
+    assert serialize_near_final_summary(session, SCENE_ID)["scene_story_check"]["verdict"] == "yes"
     catalog = CatalogService(session)
     assert catalog.story_checks([SCENE_ID])[SCENE_ID]["verdict"] == "yes"
     assert catalog.story_checks([]) == {}

@@ -172,7 +172,6 @@ class WriterNodeOnlineFake(AccountedGenerateMixin):
 
 
 _WRITER_NODE_RUNNER_MODULES = (
-    "novel_system.services.writer_review",
     "novel_system.services.writer_deep_review",
 )
 

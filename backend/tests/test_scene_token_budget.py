@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from novel_system.api.app import create_app
@@ -24,11 +23,9 @@ from novel_system.db.models import (
     ChapterState,
     LlmCall,
     OperationLog,
-    RelationProfile,
     SceneCard,
     SceneRunState,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
@@ -48,6 +45,7 @@ from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
 import pytest as _pytest_ap
 from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+from tests.support.api_client import AutoKeyTestClient
 
 
 @_pytest_ap.fixture(autouse=True)
@@ -156,27 +154,6 @@ def _seed_scene(session) -> None:
         )
     )
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready"))
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_VOICE_CHAR_A_v1",
-            voice_profile_id="VOICE_CHAR_A",
-            version=1,
-            character_id="CHAR_A",
-            content="tight internal narration",
-            active_flag=1,
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_REL_CHAR_A_CHAR_B_v1",
-            relation_profile_id="REL_CHAR_A_CHAR_B",
-            left_character_id="CHAR_A",
-            right_character_id="CHAR_B",
-            version=1,
-            content="they mistrust each other but still care",
-            active_flag=1,
-        )
-    )
     session.commit()
 
 
@@ -1388,7 +1365,7 @@ def test_concurrent_three_dimensional_topups_are_atomic_and_each_audited_once(se
     # metadata during application assembly.  Creating both apps inside worker
     # threads races FastAPI/Pydantic field cloning and emits a spurious
     # UnsupportedFieldAttributeWarning unrelated to the budget contract.
-    with TestClient(create_app()) as first_client, TestClient(create_app()) as second_client:
+    with AutoKeyTestClient(create_app()) as first_client, AutoKeyTestClient(create_app()) as second_client:
         worker_clients = (first_client, second_client)
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(topup, (1, 2)))

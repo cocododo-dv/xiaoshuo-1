@@ -93,7 +93,7 @@ def test_legacy_v1_blueprint_rows_still_surface_in_workbench_and_bundle(client, 
     session.add(legacy)
     session.commit()
 
-    workbench = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]
+    workbench = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench?include=diagnostics").json()["data"]
     assert workbench["literary_blueprint"]["row_id"] == legacy.row_id
     assert workbench["literary_blueprint"]["blueprint_json"]["choice_under_pressure"] == "trust the friend or investigate alone"
 

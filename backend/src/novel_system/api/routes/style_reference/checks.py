@@ -15,17 +15,16 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.deps import get_session
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.style_reference import CheckRequest
+from novel_system.api.response import respond
 from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS, dispatch_response_job
 from novel_system.services.style_reference import check_job as check_job_service
 from novel_system.services.style_reference.check_job import (
-    CHECK_MAX_TEXT_CHARS,
     cancel_check_job,
     check_job_or_404,
     check_job_payload,
@@ -34,17 +33,6 @@ from novel_system.services.style_reference.check_job import (
 from novel_system.services.style_reference.errors import LLMRequiredError
 
 router = APIRouter(tags=ROUTE_TAGS)
-
-
-class CheckRequest(BaseModel):
-    """对照检查：``text`` 与 ``scene_id`` 恰好给一个；文字要说对照哪份参考（``profile_id`` 或 ``project_id``）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str | None = Field(default=None, max_length=CHECK_MAX_TEXT_CHARS)
-    scene_id: str | None = Field(default=None, max_length=255)
-    profile_id: str | None = Field(default=None, max_length=255)
-    project_id: str | None = Field(default=None, max_length=255)
 
 
 @router.post(f"{PATH_PREFIX}/checks")
@@ -75,11 +63,9 @@ def create_style_check(
         )
         return {"job_id": job.job_id, "state": job.state, **check_job_payload(session, job)}
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/checks",
         payload=body,
         action=_do,
         after_commit=dispatch_response_job,
@@ -93,7 +79,7 @@ def get_style_check(
     session: Session = Depends(get_session),
 ):
     job = check_job_or_404(session, job_id)
-    return ok(check_job_payload(session, job), req_id=request_id_of(request))
+    return respond(request, check_job_payload(session, job))
 
 
 @router.post(f"{PATH_PREFIX}/checks/{{job_id}}/cancel")
@@ -117,11 +103,9 @@ def cancel_style_check(
             **check_job_payload(session, job),
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/checks/{{job_id}}/cancel",
         payload={"job_id": job_id},
         action=_do,
     )

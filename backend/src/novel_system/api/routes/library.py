@@ -4,17 +4,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.library_requests import (
+from novel_system.api.deps import get_session
+from novel_system.api.requests.library import (
     LibraryCharacterRequest,
     LibraryEntityCreateRequest,
     LibraryEntityUpdateRequest,
     LibraryRelationCreateRequest,
     LibraryTimelineEventRequest,
 )
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.response import respond
 from novel_system.services.library import LibraryService
 
 router = APIRouter(tags=["library"])
@@ -23,7 +23,7 @@ router = APIRouter(tags=["library"])
 @router.get("/api/v2/projects/{project_id}/library")
 def library_overview(project_id: str, request: Request, session: Session = Depends(get_session)):
     result = LibraryService(session).overview(project_id)
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.post("/api/v2/projects/{project_id}/library/entities")
@@ -34,11 +34,9 @@ def create_library_entity(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/library/entities",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_entity(project_id, body),
     )
@@ -53,11 +51,9 @@ def update_library_entity(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/library/entities/{entity_id}",
         payload={"project_id": project_id, "entity_id": entity_id, "body": body},
         action=lambda: LibraryService(session).update_entity(project_id, entity_id, body),
     )
@@ -71,11 +67,9 @@ def create_library_relation(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/library/relations",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_relation(project_id, body),
     )
@@ -89,11 +83,9 @@ def delete_library_relation(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}/library/relations/{relation_id}",
         payload={
             "project_id": project_id,
             "relation_id": relation_id,
@@ -110,7 +102,7 @@ def delete_library_relation(
 
 @router.get("/api/v2/projects/{project_id}/library/timeline")
 def list_library_timeline(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(LibraryService(session).list_timeline(project_id), req_id=request_id_of(request))
+    return respond(request, LibraryService(session).list_timeline(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/library/timeline")
@@ -121,11 +113,9 @@ def create_library_timeline_event(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/library/timeline",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_timeline_event(project_id, body),
     )
@@ -140,11 +130,9 @@ def update_library_timeline_event(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/library/timeline/{event_id}",
         payload={"project_id": project_id, "event_id": event_id, "body": body},
         action=lambda: LibraryService(session).update_timeline_event(project_id, event_id, body),
     )
@@ -158,11 +146,9 @@ def delete_library_timeline_event(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}/library/timeline/{event_id}",
         payload={
             "project_id": project_id,
             "event_id": event_id,
@@ -174,7 +160,7 @@ def delete_library_timeline_event(
 
 @router.get("/api/v2/projects/{project_id}/library/graph")
 def library_graph(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(LibraryService(session).graph(project_id), req_id=request_id_of(request))
+    return respond(request, LibraryService(session).graph(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/library/characters")
@@ -185,11 +171,9 @@ def create_library_character(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/library/characters",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_character(project_id, body),
     )
@@ -204,11 +188,9 @@ def update_library_character(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/library/characters/{character_id}",
         payload={"project_id": project_id, "character_id": character_id, "body": body},
         action=lambda: LibraryService(session).update_character(project_id, character_id, body),
     )
@@ -222,11 +204,9 @@ def delete_library_character(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}/library/characters/{character_id}",
         payload={
             "project_id": project_id,
             "character_id": character_id,
@@ -244,11 +224,9 @@ def delete_library_entity(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v2/projects/{project_id}/library/entities/{entity_id}",
         payload={
             "project_id": project_id,
             "entity_id": entity_id,

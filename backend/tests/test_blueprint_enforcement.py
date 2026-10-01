@@ -182,7 +182,7 @@ def test_style_candidates_api_returns_empty_list(client, session):
     """GET /scenes/{id}/style-candidates returns 200 with empty candidates for a fresh scene."""
     from tests.test_orchestrator_flow import seed_story
 
-    seed_story(client, session=session)
+    seed_story(client)
 
     resp = client.get("/api/v1/scenes/CH001_SC01/style-candidates")
     assert resp.status_code == 200

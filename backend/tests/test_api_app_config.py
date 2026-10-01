@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
+from novel_system.api.error_catalog import ERROR_MESSAGES
 from novel_system.db.base import Base
 from novel_system.env_config import DEFAULT_DATABASE_PATH
 from novel_system.db.session import engine
@@ -191,7 +192,7 @@ def test_unhandled_errors_return_request_id_without_leaking_exception_text() -> 
     payload = response.json()
     assert response.status_code == 500
     assert payload["error"]["code"] == "INTERNAL_ERROR"
-    assert payload["error"]["message"] == "internal server error"
+    assert payload["error"]["message"] == ERROR_MESSAGES["INTERNAL_ERROR"]
     assert "secret database password" not in response.text
     assert payload["request_id"].startswith("req_")
 
@@ -224,7 +225,7 @@ def test_unhandled_errors_leave_through_cors_with_the_request_id(caplog) -> None
     assert payload["ok"] is False and payload["data"] is None
     assert payload["error"] == {
         "code": "INTERNAL_ERROR",
-        "message": "internal server error",
+        "message": ERROR_MESSAGES["INTERNAL_ERROR"],
         "details": {"retryable": False},
     }
     logged = [record for record in caplog.records if record.getMessage().startswith("Unhandled API error")]
@@ -241,7 +242,10 @@ def test_unhandled_error_detail_is_exposed_only_when_configured(monkeypatch) -> 
         response = client.get("/api/v2/boom-for-test")
 
     assert response.status_code == 500
-    assert response.json()["error"]["message"] == "boom detail for the developer"
+    # 说明照常是中文；异常原文只在开了 expose_error_detail 时随 details.debug_message 带回（批准 #27）
+    error = response.json()["error"]
+    assert error["message"] == ERROR_MESSAGES["INTERNAL_ERROR"]
+    assert error["details"]["debug_message"] == "boom detail for the developer"
 
 
 def test_unhandled_errors_still_propagate_to_the_server_and_test_client() -> None:
@@ -466,13 +470,16 @@ def test_ready_checks_the_schema_structure_once_per_revision() -> None:
     _stamp_database_revision()
     statements = _ReadyStatements()
     with TestClient(create_app()) as client:
+        # 启动时 API 的库结构闸（B12-19）已经用同一份检查查过一次结构：之后的探测只读版本
+        startup_reads = statements.take()
         first = client.get("/ready")
         first_reads = statements.take()
         second = client.get("/ready")
         second_reads = statements.take()
 
     assert first.status_code == second.status_code == 200
-    assert first_reads[0] == 1 and first_reads[1] > len(Base.metadata.tables)
+    assert startup_reads[1] > len(Base.metadata.tables)
+    assert first_reads == (1, 0)
     assert second_reads == (1, 0)
 
 
@@ -512,6 +519,187 @@ def test_ready_does_not_remember_a_failed_structure_check() -> None:
     assert broken.json()["error"]["details"]["reason"] == "schema_columns_missing"
     assert repaired.status_code == 200
     assert broken_reads[1] > 0 and repaired_reads[1] > 0
+
+
+def test_api_answers_schema_upgrade_needed_while_the_database_is_behind_the_code(monkeypatch) -> None:
+    """B12-19（批准 #28）：代码比库新时 /api/* 统一回 503 与中文说明（带 CORS 与请求编号），不再各自报
+    「database operation failed」；原地升级之后不用重启就放行。/live、/ready 不受这道闸影响。"""
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    _stamp_database_revision("20260716_0072")
+    with TestClient(create_app()) as client:
+        behind = client.get("/api/v2/projects", headers={"Origin": "http://127.0.0.1:5173"})
+        ready = client.get("/ready")
+        live = client.get("/live")
+        # 结构落后时不拿旧结构跑启动恢复
+        assert started == []
+        _stamp_database_revision()
+        upgraded = client.get("/api/v2/projects")
+
+    assert behind.status_code == 503
+    payload = behind.json()
+    assert payload["error"]["code"] == "SERVICE_NOT_READY"
+    assert payload["error"]["message"] == "数据库结构需要升级：请重启后端（启动脚本会自动升级）"
+    assert payload["error"]["details"]["reason"] == "schema_revision_mismatch"
+    assert payload["error"]["details"]["current_revision"] == "20260716_0072"
+    assert payload["request_id"] == behind.headers["X-Request-Id"]
+    assert behind.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+    assert ready.status_code == 503 and ready.json()["error"]["message"] == ERROR_MESSAGES["SERVICE_NOT_READY"]
+    assert ready.json()["error"]["details"]["reason"] == "schema_revision_mismatch"
+    assert live.status_code == 200
+    assert upgraded.status_code == 200
+    # 放行的同时补跑推迟的启动恢复（下一条用例管处理器与清扫线程）
+    assert started == ["recovery"]
+
+
+def _background_threads() -> set[str]:
+    import threading
+
+    from novel_system.services.background_recovery import RUN_JOB_SWEEPER_THREAD_NAME
+    from novel_system.services.style_reference.jobs import SWEEPER_THREAD_NAME
+
+    names = {SWEEPER_THREAD_NAME, RUN_JOB_SWEEPER_THREAD_NAME}
+    return {thread.name for thread in threading.enumerate() if thread.name in names and thread.is_alive()}
+
+
+def _wait_until(predicate, *, timeout: float = 10.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return bool(predicate())
+
+
+def test_a_process_started_behind_the_schema_runs_the_deferred_startup_once_the_schema_catches_up(
+    monkeypatch,
+) -> None:
+    """复核 P09b-R1：进程启动时库结构落后，lifespan 以前整段跳过——作业处理器没登记、两条清扫线程没起；原地
+    ``alembic upgrade head`` 之后闸门放行，进程照常服务 API，派发的风格作业却一律以「no handler」失败，排队的作业
+    没人派发，场景 / 章节任务的启动恢复也不跑。现在处理器照样先登记（不碰库），启动恢复与清扫在结构跟上之后第一个
+    /api/* 请求放行前补跑，只跑一次；lifespan 结束时照常停下。"""
+    from novel_system.db.models import StyleReferenceJob
+    from novel_system.db.session import SessionLocal
+    from novel_system.services.style_reference import check_job, jobs
+
+    def new_check_job() -> str:
+        with SessionLocal() as session:
+            job = jobs.StyleJobService(session).create(
+                jobs.JOB_KIND_CHECK, params={"text": "雨城的旧信"}, allow_parallel=True
+            )
+            session.commit()
+            return job.job_id
+
+    def finished(job_id: str) -> StyleReferenceJob | None:
+        with SessionLocal() as session:
+            job = session.get(StyleReferenceJob, job_id)
+            return job if job is not None and job.state in {"failed", "succeeded", "cancelled"} else None
+
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    # 从空登记簿开始：处理器只能是这一次 lifespan 登记的
+    monkeypatch.setattr(jobs, "_HANDLERS", {})
+    _stamp_database_revision("20260716_0072")
+    assert _wait_until(lambda: _background_threads() == set()), "上一个用例的清扫线程还没停"
+    with TestClient(create_app()) as client:
+        assert client.get("/api/v2/projects").status_code == 503
+        assert started == [] and _background_threads() == set()
+        assert set(jobs._HANDLERS) == set(jobs.JOB_KINDS)
+        before = new_check_job()
+        jobs.run_job_inline(before)
+        # 对照检查的处理器真的跑了（没有绑定参考就按它自己的规则失败），不是「no handler」
+        assert finished(before).error_json["code"] == check_job.CHECK_NOT_BOUND_CODE
+
+        _stamp_database_revision()
+        assert client.get("/api/v2/projects").status_code == 200
+        assert started == ["recovery"]
+        assert _wait_until(lambda: len(_background_threads()) == 2), _background_threads()
+        assert client.get("/api/v2/projects").status_code == 200
+        assert client.get("/ready").status_code == 200
+        assert started == ["recovery"]
+        # 放行之后照路由提交后的派发（after_commit → dispatch_job）走一遍：工人线程池里同样找得到处理器
+        after = new_check_job()
+        jobs.dispatch_job(after, kind=jobs.JOB_KIND_CHECK)
+        assert _wait_until(lambda: finished(after) is not None), "派发的作业没有跑完"
+        assert finished(after).error_json["code"] == check_job.CHECK_NOT_BOUND_CODE
+
+    assert _wait_until(lambda: _background_threads() == set()), _background_threads()
+
+
+def test_ready_also_runs_the_deferred_startup_once_the_schema_catches_up(monkeypatch) -> None:
+    """启动脚本与部署探针只轮询 /ready：原地升级之后它看到库就绪，同样补跑推迟的启动（不必等第一个 /api/* 请求）。"""
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    _stamp_database_revision("20260716_0072")
+    with TestClient(create_app()) as client:
+        assert client.get("/ready").status_code == 503
+        _stamp_database_revision()
+        assert client.get("/ready").status_code == 200
+        assert started == ["recovery"]
+        assert _wait_until(lambda: len(_background_threads()) == 2), _background_threads()
+        assert client.get("/api/v2/projects").status_code == 200
+
+    assert started == ["recovery"]
+
+
+def test_a_database_newer_than_the_code_is_not_told_to_restart(monkeypatch) -> None:
+    """复核 P09b-R2：库里记着这份代码不认识的迁移（代码回退到一个迁移之前）时，重启只会让启动脚本的
+    ``alembic upgrade head`` 找不到版本而失败——/ready 与 /api/* 单独报 ``schema_revision_ahead``，请作者换回匹配的代码。"""
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    _stamp_database_revision("20991231_0999")
+    with TestClient(create_app()) as client:
+        ready = client.get("/ready")
+        api = client.get("/api/v2/projects")
+        assert started == []
+
+    for response in (ready, api):
+        assert response.status_code == 503
+        error = response.json()["error"]
+        assert error["code"] == "SERVICE_NOT_READY"
+        assert error["message"] == "数据库结构比这份代码新：请换回与数据库匹配的代码版本（重启不会让数据库降级）"
+        assert error["details"]["reason"] == "schema_revision_ahead"
+        assert error["details"]["current_revision"] == "20991231_0999"
+        assert error["details"]["expected_revision"] == SUPPORTED_DATABASE_REVISION
+
+
+def test_api_schema_gate_reports_missing_structure_at_the_current_revision() -> None:
+    _stamp_database_revision()
+    with engine().begin() as connection:
+        connection.exec_driver_sql("DROP TABLE author_preference_profiles")
+    with TestClient(create_app()) as client:
+        response = client.post("/api/v2/projects", json={"title": "雨城旧信", "outline_text": "林昭翻开旧案卷。"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["details"]["reason"] == "schema_tables_missing"
+
+
+def test_api_schema_gate_stays_open_for_databases_alembic_does_not_manage(monkeypatch) -> None:
+    """测试库用 create_all 建、没有 alembic_version：这道闸不管它（放行，也不再为每个请求查库）。"""
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.services.background_recovery.run_startup_recovery", lambda: started.append("recovery")
+    )
+    statements = _ReadyStatements()
+    with TestClient(create_app()) as client:
+        statements.take()
+        first = client.get("/api/v2/projects")
+        second = client.get("/api/v2/projects")
+        reads = statements.take()
+
+    assert first.status_code == second.status_code == 200
+    assert reads == (0, 0)
+    assert started == ["recovery"]
 
 
 def test_remote_mode_requires_token_for_loopback_proxy_peer(monkeypatch) -> None:

@@ -17,8 +17,8 @@ def _online_pipeline(monkeypatch) -> None:
     )
 
 
-def test_l3_acceptance_smoke(client, session) -> None:
-    seed_story(client, session=session)
+def test_l3_acceptance_smoke(client) -> None:
+    seed_story(client)
     run_scene = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
         headers={"X-Idempotency-Key": "acceptance-scene-1"},

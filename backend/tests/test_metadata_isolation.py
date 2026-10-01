@@ -78,6 +78,38 @@ def _normalize_sql(text: str) -> str:
 # （迁移 0075 契约），机制本身保留给未来真实待决冲突。
 _KNOWN_CHECK_DRIFT_ALLOWANCE: set[tuple[str, str]] = set()
 
+# 已知的 NOT NULL 漂移（B12-11）：ORM 声明非空、迁移建出来（也就是实库）允许 NULL 的列——实库里这些列一个 NULL 都没有。
+# 这是一道只收紧的棘轮：新的漂移会变红；某一列修好了（迁移改成非空，或列删掉了）也会变红，从这里删掉它。
+# 以后一次表结构迁移把它们改成 NOT NULL（整表重建；涉及的表都很小）。
+_KNOWN_NULLABLE_DRIFT: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("author_draft_proposals", "merge_status"),
+        ("author_draft_proposals", "proposal_kind"),
+        ("chapter_goals", "state"),
+        ("human_review_events", "details_json"),
+        ("outline_plans", "plan_json"),
+        ("review_items", "target_collection"),
+        ("revision_candidates", "apply_mode"),
+        ("scene_cards", "state"),
+        ("scene_cards", "words_current"),
+        ("scene_execution_contracts", "missing_fields_json"),
+        ("scene_execution_contracts", "payload_json"),
+        ("snowflake_artifacts", "artifact_json"),
+        ("snowflake_assistant_turns", "suggestions_json"),
+        ("snowflake_direction_briefs", "lines_json"),
+        ("snowflake_scene_plans", "beats_json"),
+        ("snowflake_scene_plans", "onstage_chars_json"),
+        ("snowflake_scene_plans", "orphaned_flag"),
+        ("snowflake_scene_triage_items", "fix_steps_json"),
+        ("snowflake_scene_triage_items", "missing_fields_json"),
+        ("snowflake_scene_triage_items", "pressure_flags_json"),
+        ("snowflake_scene_triage_items", "repair_patch_json"),
+        ("snowflake_step_runs", "draft_json"),
+        ("story_projects", "approved_chapter_ids_json"),
+        ("story_projects", "trashed_flag"),
+    }
+)
+
 
 def _schema_snapshot(engine) -> dict:
     """Reflect tables, per-table column names, named indexes, CHECK constraints,
@@ -93,6 +125,14 @@ def _schema_snapshot(engine) -> dict:
     inspector = sa.inspect(engine)
     tables = {t for t in inspector.get_table_names() if t != "alembic_version"}
     columns = {t: frozenset(c["name"] for c in inspector.get_columns(t)) for t in tables}
+    nullable = {(t, c["name"]): bool(c["nullable"]) for t in tables for c in inspector.get_columns(t)}
+    foreign_keys = {
+        t: frozenset(
+            (tuple(fk["constrained_columns"]), fk["referred_table"], tuple(fk["referred_columns"]))
+            for fk in inspector.get_foreign_keys(t)
+        )
+        for t in tables
+    }
     indexes = {}
     check_constraints = {}
     computed_columns = {}
@@ -117,6 +157,8 @@ def _schema_snapshot(engine) -> dict:
     return {
         "tables": tables,
         "columns": columns,
+        "nullable": nullable,
+        "foreign_keys": foreign_keys,
         "indexes": indexes,
         "check_constraints": check_constraints,
         "computed_columns": computed_columns,
@@ -135,10 +177,11 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
     direction of drift fails loudly: write the missing migration, or declare the
     missing index on the model.
 
-    Compared dimensions: tables, columns, named indexes (incl. uniqueness), CHECK
-    constraints (name + normalized sqltext), and computed-column expressions
-    (normalized). NOT NULL / FK reflection is intentionally not asserted — SQLite
-    under-reports it, and it does not cause runtime breaks.
+    Compared dimensions: tables, columns, foreign keys, named indexes (incl. uniqueness),
+    CHECK constraints (name + normalized sqltext), computed-column expressions
+    (normalized), and NOT NULL flags against the frozen ``_KNOWN_NULLABLE_DRIFT`` ratchet
+    (SQLite reflects NOT NULL and FKs faithfully; B12-11). Server defaults stay an
+    allowed difference: migrations write them, the ORM keeps Python-side defaults.
     """
     from alembic import command
     from alembic.config import Config
@@ -189,6 +232,33 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
         "Tables differ between migrations and ORM models. "
         f"only-in-migrations={sorted(from_migrations['tables'] - from_models['tables'])}, "
         f"only-in-models={sorted(from_models['tables'] - from_migrations['tables'])}"
+    )
+
+    foreign_key_drift = {
+        t: {
+            "only-in-migrations": sorted(from_migrations["foreign_keys"][t] - from_models["foreign_keys"][t]),
+            "only-in-models": sorted(from_models["foreign_keys"][t] - from_migrations["foreign_keys"][t]),
+        }
+        for t in from_migrations["tables"]
+        if from_migrations["foreign_keys"][t] != from_models["foreign_keys"][t]
+    }
+    assert not foreign_key_drift, (
+        "Foreign-key drift between migrations and ORM models — declare the FK on the model "
+        f"or add a migration. Drift: {foreign_key_drift}"
+    )
+
+    nullable_drift = {
+        key
+        for key, migrated_nullable in from_migrations["nullable"].items()
+        if key in from_models["nullable"] and migrated_nullable != from_models["nullable"][key]
+    }
+    assert nullable_drift - _KNOWN_NULLABLE_DRIFT == set(), (
+        "New NOT NULL drift between migrations and ORM models — make the migration and the model agree: "
+        f"{sorted(nullable_drift - _KNOWN_NULLABLE_DRIFT)}"
+    )
+    assert _KNOWN_NULLABLE_DRIFT - nullable_drift == set(), (
+        "These columns no longer drift: remove them from _KNOWN_NULLABLE_DRIFT (the ratchet only shrinks): "
+        f"{sorted(_KNOWN_NULLABLE_DRIFT - nullable_drift)}"
     )
 
     column_drift = {

@@ -20,7 +20,6 @@ dev_stop_port "$PORT"
 
 cd "$REPO_ROOT/backend"
 
-export NOVEL_SYSTEM_VECTOR_BACKEND=memory
 # This checkout's code, never whatever the venv's editable install points at (the venv may be
 # shared by several git worktrees): alembic/env.py refuses to migrate otherwise.
 export PYTHONPATH="$REPO_ROOT/backend/src"

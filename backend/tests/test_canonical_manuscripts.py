@@ -58,7 +58,7 @@ def _seed_scene(
         )
     )
     session.flush()
-    session.add(ChapterState(chapter_id=chapter_id, aggregate_block_reason="none"))
+    session.add(ChapterState(chapter_id=chapter_id))
     session.add(
         SceneCard(
             scene_id=scene_id,

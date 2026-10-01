@@ -68,7 +68,6 @@ def test_catalog_create_chapter_creates_chapter_state(session):
     for chapter in chapters:
         state = session.get(ChapterState, chapter.chapter_id)
         assert state is not None, f"冷启动章 {chapter.chapter_id} 缺少 ChapterState 运行时状态行"
-        assert state.aggregate_block_reason == "none"
 
 
 def test_archiver_survives_missing_chapter_state(session):

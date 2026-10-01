@@ -113,6 +113,54 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> 
     assert session.get(ChapterRunJob, job["job_id"]).scene_id == "CHJOB_SC01"
 
 
+def test_replaying_the_create_request_redispatches_a_job_that_is_still_queued(client, session, monkeypatch) -> None:
+    """B12-07：派发在事务提交之后、经 after_commit 做，同一个幂等键重放时再派发一次——提交与派发之间进程退出
+    （--reload、崩溃）留下的排队任务，由客户端的重试接上，不必等下一次启动恢复。已经在跑 / 已结束的任务重放不派发。
+    以前派发挂在只有真执行时才填的闭包上，重放一律不派发。"""
+    _create_chapter_and_scene(client)
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.api.routes.scenes.start_scene_run_job_worker",
+        dispatched.append,
+    )
+    headers = {"X-Idempotency-Key": "scene-job-replay"}
+
+    first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", json={}, headers=headers)
+    assert first.status_code == 200
+    job_id = first.json()["data"]["job_id"]
+    assert dispatched == [job_id]
+
+    # 派发「丢了」：任务仍在排队。客户端用同一个键重试 → 缓存的响应 + 再派发一次
+    replay = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", json={}, headers=headers)
+    assert replay.status_code == 200
+    assert replay.headers.get("X-Idempotency-Status") == "replayed"
+    assert replay.json()["data"]["job_id"] == job_id
+    assert dispatched == [job_id, job_id]
+
+    # 任务已经结束：重放只回缓存的响应，不再派发
+    with SessionLocal() as db:
+        db.get(ChapterRunJob, job_id).status = "completed"
+        db.commit()
+    again = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", json={}, headers=headers)
+    assert again.status_code == 200
+    assert again.headers.get("X-Idempotency-Status") == "replayed"
+    assert dispatched == [job_id, job_id]
+
+
+def test_start_false_never_dispatches_even_on_replay(client, monkeypatch) -> None:
+    _create_chapter_and_scene(client)
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.api.routes.scenes.start_scene_run_job_worker",
+        dispatched.append,
+    )
+    headers = {"X-Idempotency-Key": "scene-job-no-start"}
+    for _ in range(2):
+        response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false", json={}, headers=headers)
+        assert response.status_code == 200
+    assert dispatched == []
+
+
 def test_scene_run_workers_run_at_most_two_pipelines_at_once(client, monkeypatch) -> None:
     """B03-13：场景任务的工人跑在有界的守护车道上（一次最多两条管线）。修之前每个任务一条不设上限的线程，
     启动恢复扫到 N 个排队任务就在 2 核的机器上同时起 N 条管线。"""
@@ -186,22 +234,56 @@ def test_scene_run_workers_run_at_most_two_pipelines_at_once(client, monkeypatch
     assert peak == 2 and len(started) == 3
 
 
-def test_scene_run_job_idempotency_replay_does_not_start_a_second_worker(client, monkeypatch) -> None:
+def test_scene_run_job_idempotency_replay_never_runs_the_pipeline_twice(client, monkeypatch) -> None:
+    """同键重放可以把还在排队的任务再派发一次（B12-07），但同一个任务只跑一条管线：本进程里已经派发、还没跑完的
+    任务不会再进车道，已经认领的任务重放时不再派发，工人的认领本身也是条件写。"""
+    import time
+    from threading import Event
+
+    from novel_system.services import scene_run_jobs as job_module
+
     _create_chapter_and_scene(client)
-    started: list[str] = []
-    monkeypatch.setattr(
-        "novel_system.api.routes.scenes.start_scene_run_job_worker",
-        lambda job_id: started.append(job_id),
-    )
+    release = Event()
+    runs: list[str] = []
+
+    class _Pipeline:
+        def __init__(self, _session) -> None:
+            pass
+
+        def run_scene(self, scene_id: str, **_kwargs) -> dict:
+            runs.append(scene_id)
+            release.wait(30)
+            return {"scene_status": "archived"}
+
+    def wait_until(predicate, timeout: float = 20.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not predicate():
+            time.sleep(0.05)
+        return bool(predicate())
+
+    def status(job_id: str) -> str:
+        with SessionLocal() as observer:
+            return observer.get(ChapterRunJob, job_id).status
+
+    monkeypatch.setattr(job_module, "Orchestrator", _Pipeline)
     headers = {"X-Idempotency-Key": "scene-job-worker-once"}
 
     first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", headers=headers)
     replay = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", headers=headers)
-
     assert first.status_code == replay.status_code == 200
     assert replay.headers.get("X-Idempotency-Status") == "replayed"
-    assert replay.json()["data"]["job_id"] == first.json()["data"]["job_id"]
-    assert started == [first.json()["data"]["job_id"]]
+    job_id = first.json()["data"]["job_id"]
+    assert replay.json()["data"]["job_id"] == job_id
+    try:
+        assert wait_until(lambda: runs == ["CHJOB_SC01"])
+        again = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", headers=headers)
+        assert again.headers.get("X-Idempotency-Status") == "replayed"
+        time.sleep(0.3)
+        assert runs == ["CHJOB_SC01"]
+    finally:
+        release.set()
+    assert wait_until(lambda: status(job_id) == "completed")
+    assert runs == ["CHJOB_SC01"]
 
 
 @pytest.mark.parametrize(
@@ -289,7 +371,6 @@ def test_polling_a_running_scene_job_reads_its_frozen_bundle_once(session, monke
             bundle_id="bundle_SC_DRAFT_MODE_v1",
             scene_id="SC_DRAFT_MODE",
             chapter_id="CH_SCENE_JOB",
-            execution_mode="P2",
             bundle_snapshot_hash="hash",
             frozen_snapshot_json={"inline_digests": {}, "source_version_refs": {}},
         )

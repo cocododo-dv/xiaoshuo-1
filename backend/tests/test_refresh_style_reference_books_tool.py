@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.tools.refresh_style_reference_books import apply_book_refresh, main, plan_book_refresh
+from tests.support.schema import stamp_schema_revision
+
+
+@pytest.fixture(autouse=True)
+def _migrated_database() -> None:
+    """工具的 --execute 先核对库结构版本（tools/_cli.py）：测试库用 create_all 建，给它盖上代码认的版本。"""
+    stamp_schema_revision()
+
 
 _PROSE = "他把湿伞靠在墙角，没有立刻进屋，只听院门外那阵水声慢慢过去，才抬手去拨灯芯。"
 

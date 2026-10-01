@@ -1,211 +1,60 @@
+"""场景接口：作者笔记、删场、v1 场景卡建 / 改、运行（同步 run/full · 后台任务 · 取消 · 查询）、运行态与状态投影、
+关键场景的候选终选与选后续跑、生命周期预算追加、采纳归档、AI 起草台的工作台载荷。
+
+路由只做请求校验、幂等与信封；业务都在服务里（B12-01）：工作台载荷 ``services/scene_workbench.py``、候选终选
+``services/candidate_selection.py``、采纳归档 ``services/scene_adoption.py``、v1 场景卡 ``services/scene_upsert.py``、
+预算追加 ``services/scene_budget.py``、运行态视图 ``services/author_state.py``。
+
+``Orchestrator`` 与 ``start_scene_run_job_worker`` 是这个模块上的名字，由这里调用——测试在这里替换它们。
+"""
+
 from __future__ import annotations
 
-import logging
-from typing import Annotated, Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest, WriterBriefJsonInput
-from novel_system.api.response import ok
-from novel_system.db.models import (
-    AttemptTracker,
-    AuthorDraft,
-    ChapterGoal,
-    FinalScene,
-    HumanReviewEvent,
-    LlmCall,
-    QcReport,
-    RevisionCandidate,
-    SceneBundle,
-    SceneCard,
-    SceneDraft,
-    SceneMemory,
-    SceneRunState,
-    StyleReferenceProfile,
-    WriterEvaluation,
+from novel_system.api.deps import actor_ref_of, get_session
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.scenes import (
+    AdoptCurrentRequest,
+    SceneAuthorNotesSaveRequest,
+    SceneBudgetTopupRequest,
+    SceneIdsRequest,
+    SceneRunCancelRequest,
+    SceneRunCommandRequest,
+    SceneRunJobRequest,
+    SceneUpsertRequest,
+    StyleCandidateSelectRequest,
 )
-from novel_system.services.archiver import Archiver
-from novel_system.services.author_drafts import AuthorDraftService
-from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.api.response import respond
+from novel_system.db.models import ChapterRunJob
 from novel_system.services.author_instructions import normalize_author_note
-from novel_system.services.author_state import compute_author_state
-from novel_system.services.chapter_state import chapter_state_snapshot
-from novel_system.services.chapter_approval import (
-    is_chapter_approved,
-    require_chapter_mutation_allowed,
-)
-from novel_system.services.canonical_manuscripts import CanonicalSceneService
+from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.author_state import project_run_states, scene_status_payload
+from novel_system.services.candidate_selection import candidates_view, select_candidate
 from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
-from novel_system.services.near_final import (
-    NEAR_FINAL_REWRITE_TYPE,
-    NEAR_FINAL_RUBRIC_ID,
-)
-from novel_system.services.projects import ProjectService
-from novel_system.services.reference_copy_gate import (
-    check_reference_copy_for_scope,
-    copy_block_author_action,
-)
-from novel_system.services.scene_blueprint import SceneBlueprintService
-from novel_system.services.scene_budget import apply_topup, budget_unit
-from novel_system.services.scene_execution import SceneExecutionContractService
-from novel_system.services.scene_generation import latest_style_notices
+from novel_system.services.run_job_leases import STATUS_QUEUED
+from novel_system.services.scene_adoption import adopt_current
+from novel_system.services.scene_budget import apply_topup, validated_topup
 from novel_system.services.scene_notes import SceneNotesService
-from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import (
     SceneRunJobService,
     start_scene_run_job_worker,
 )
-from novel_system.services.scene_run_preflight import SceneRunPreflightService
-from novel_system.services.text_input import clean_backfill_markers, validate_user_text_payload
+from novel_system.services.scene_upsert import upsert_scene
+from novel_system.services.scene_workbench import (
+    INCLUDE_DIAGNOSTICS,
+    SceneWorkbenchService,
+    attach_style_notices,
+)
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
-from novel_system.services.writer_review import WriterReviewService
 
 router = APIRouter(tags=["scenes"])
-_LOGGER = logging.getLogger(__name__)
-INT64_MAX = (1 << 63) - 1
-
-
-class SceneUpsertRequest(BaseModel):
-    """Whitelist author-editable scene-card fields.
-
-    Run state, trash state, word rollups, and timestamps remain server-owned.
-    """
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    scene_id: str = Field(min_length=1, max_length=255)
-    chapter_id: str = Field(min_length=1, max_length=255)
-    scene_goal: str = Field(max_length=100_000)
-    project_id: str | None = Field(default=None, max_length=255)
-    outline_plan_id: str | None = Field(default=None, max_length=255)
-    scene_seq: int | None = Field(default=None, ge=1, le=INT64_MAX)
-    pov_character_id: str | None = Field(default=None, max_length=255)
-    onstage_chars_json: list[Annotated[str, Field(min_length=1, max_length=255)]] = (
-        Field(default_factory=list, max_length=256)
-    )
-    resolved_relation_id: str | None = Field(default=None, max_length=255)
-    location: str | None = Field(default=None, max_length=10_000)
-    beats_json: list[Annotated[str, Field(max_length=20_000)]] = Field(
-        default_factory=list, max_length=256
-    )
-    must_include_text: str | None = Field(default=None, max_length=100_000)
-    forbidden_text: str | None = Field(default=None, max_length=100_000)
-    exit_change: str | None = Field(default=None, max_length=20_000)
-    hook: str | None = Field(default=None, max_length=20_000)
-    # Keep the established domain-error contract for malformed writer briefs:
-    # normalize_scene_writer_brief() validates the JSON shape and returns the
-    # stable WRITER_BRIEF_INVALID / HTTP 400 response used by API clients.
-    writer_brief_json: WriterBriefJsonInput = None
-    target_length_band: str | None = Field(default=None, max_length=64)
-    scene_type: str | None = Field(default=None, max_length=64)
-    is_chapter_last: int = Field(default=0, ge=0, le=1)
-    state: str = Field(default="todo", min_length=1, max_length=64)
-    constraint_intensity: float | None = Field(default=None, ge=0.0, le=1.0)
-
-
-class ExactAuthorDraftAdoptionRequest(BaseModel):
-    """One exact browser manuscript revision to save and publish atomically."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    draft_id: str = Field(min_length=1, max_length=255)
-    base_revision_no: int = Field(ge=1, le=INT64_MAX)
-    # Required but nullable: null is the CAS value when no canonical scene exists.
-    expected_current_final_scene_row_id: str | None = Field(max_length=255)
-    content: str = Field(max_length=2_000_000)
-
-
-class AdoptCurrentRequest(BaseModel):
-    """Only exact server-issued content-safety finding codes may be acknowledged."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    accepted_warning_codes: list[
-        Annotated[str, Field(min_length=1, max_length=128)]
-    ] = Field(default_factory=list, max_length=64)
-    exact_author_draft: ExactAuthorDraftAdoptionRequest | None = None
-
-
-BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=255)]
-
-
-class SceneIdsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    scene_ids: list[BoundedIdentifier] = Field(max_length=10_000)
-
-
-class SceneRunCommandRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    # These values retain their domain validators and stable error codes.
-    author_note: Any | None = None
-    run_policy: Any | None = None
-    from_step: Any | None = None
-    resume: Any | None = None
-
-
-class SceneRunJobRequest(SceneRunCommandRequest):
-    resume_budget: bool | None = None
-
-
-class SceneRunCancelRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    reason: Any | None = None
-
-
-class StyleCandidateSelectRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    no_clear_difference: bool | None = None
-    duration_ms: int | None = Field(default=None, ge=0, le=INT64_MAX)
-    preference_tags: list[
-        Literal[
-            "style_match",
-            "rhythm",
-            "voice",
-            "imagery",
-            "dialogue",
-            "overall_quality",
-            "plot_fidelity",
-        ]
-    ] = Field(default_factory=list, max_length=7)
-
-
-_ALLOWED_PREFERENCE_TAGS = frozenset(
-    {"style_match", "rhythm", "voice", "imagery", "dialogue", "overall_quality", "plot_fidelity"}
-)
-
-
-def _normalize_preference_tags(values: Any) -> list[str]:
-    """终选时作者勾选的偏好标签:去重、只留白名单(与 StyleCandidateSelectRequest 同集合)。"""
-    tags = [str(value or "").strip() for value in (values or [])]
-    return list(dict.fromkeys(tag for tag in tags if tag in _ALLOWED_PREFERENCE_TAGS))
-
-
-class SceneBudgetTopupRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    # The endpoint deliberately reports all invalid dimensions together through
-    # INVALID_BUDGET_TOPUP, so retain raw scalar types for that domain check.
-    extra_tokens: Any = 0
-    extra_attempts: Any = 0
-    extra_provider_attempts: Any = 0
-    reason: str | None = Field(default=None, max_length=300)
-
-
-class SceneAuthorNotesSaveRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    notes: str = Field(max_length=100_000)
-    base_revision_no: int = Field(ge=0, le=INT64_MAX)
 
 
 @router.get("/api/v1/scenes/{scene_id}/author-notes")
@@ -215,7 +64,7 @@ def get_scene_author_notes(
     session: Session = Depends(get_session),
 ):
     result = SceneNotesService(session).get(scene_id)
-    return ok(result, req_id=request_id_of(request))
+    return respond(request, result)
 
 
 @router.patch("/api/v1/scenes/{scene_id}/author-notes")
@@ -226,11 +75,9 @@ def save_scene_author_notes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v1/scenes/{scene_id}/author-notes",
         payload={"scene_id": scene_id, "body": body},
         action=lambda: SceneNotesService(session).save(
             scene_id,
@@ -246,11 +93,9 @@ def trash_scenes(
 ):
     body = payload.model_dump(mode="json")
     actor_ref = actor_ref_of(request)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/trash",
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_scenes(
             body["scene_ids"], actor_ref
@@ -270,160 +115,12 @@ def create_scene(
     body["writer_brief_json"] = normalize_scene_writer_brief(
         body.get("writer_brief_json")
     )
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes",
         payload=body,
-        action=lambda: _create_scene(session, body),
+        action=lambda: upsert_scene(session, body),
     )
-
-
-def _create_scene(session: Session, payload: dict) -> dict:
-    validate_user_text_payload(payload, field_prefix="scene")
-    payload = {
-        **payload,
-        "writer_brief_json": normalize_scene_writer_brief(
-            payload.get("writer_brief_json")
-        ),
-    }
-    lifecycle = AuthorLifecycleService(session)
-    chapter_id = payload.get("chapter_id")
-    if not isinstance(chapter_id, str) or not chapter_id:
-        raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-
-    chapter = lifecycle.require_active_chapter(chapter_id)
-
-    scene = session.get(SceneCard, payload["scene_id"])
-    created = scene is None
-    effective_scene_seq = (
-        payload.get("scene_seq")
-        if payload.get("scene_seq") is not None
-        else (
-            scene.scene_seq
-            if scene is not None
-            else _next_scene_seq(session, chapter_id)
-        )
-    )
-    _assert_scene_seq_available(
-        session,
-        scene_id=payload["scene_id"],
-        chapter_id=chapter_id,
-        scene_seq=int(effective_scene_seq),
-    )
-    if scene is None:
-        require_chapter_mutation_allowed(
-            session,
-            chapter,
-            changed_fields=["scenes.create"],
-            operation="scenes.upsert_create",
-        )
-        if payload.get("scene_seq") is None:
-            payload = {
-                **payload,
-                "scene_seq": _next_scene_seq(session, chapter_id),
-            }
-        scene = SceneCard(**payload)
-        session.add(scene)
-        session.flush()
-        changed = True
-    else:
-        if scene.trashed_flag == 1:
-            raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
-        if payload["chapter_id"] != scene.chapter_id:
-            raise DomainError(
-                "SCENE_IDENTITY_IMMUTABLE",
-                "an existing scene cannot be moved to another chapter",
-                status_code=409,
-            )
-        if "project_id" in payload:
-            requested_project_id = payload["project_id"]
-            may_bind_from_chapter = (
-                scene.project_id is None
-                and requested_project_id is not None
-                and requested_project_id == chapter.project_id
-            )
-            if requested_project_id != scene.project_id and not may_bind_from_chapter:
-                raise DomainError(
-                    "SCENE_IDENTITY_IMMUTABLE",
-                    "an existing scene cannot be moved to another project",
-                    status_code=409,
-                )
-        if "outline_plan_id" in payload:
-            requested_outline_id = payload["outline_plan_id"]
-            may_bind_from_chapter = (
-                scene.outline_plan_id is None
-                and requested_outline_id is not None
-                and requested_outline_id == chapter.outline_plan_id
-            )
-            if (
-                requested_outline_id != scene.outline_plan_id
-                and not may_bind_from_chapter
-            ):
-                raise DomainError(
-                    "SCENE_IDENTITY_IMMUTABLE",
-                    "an existing scene cannot be rebound to another outline plan",
-                    status_code=409,
-                )
-        if payload.get("scene_seq") is None:
-            payload = {
-                **payload,
-                "scene_seq": scene.scene_seq,
-            }
-        changed_fields = [
-            key
-            for key, value in payload.items()
-            if key not in {"scene_id", "chapter_id"} and getattr(scene, key) != value
-        ]
-        changed = require_chapter_mutation_allowed(
-            session,
-            chapter,
-            changed_fields=changed_fields,
-            operation="scenes.upsert_update",
-        )
-        if changed:
-            for key, value in payload.items():
-                setattr(scene, key, value)
-
-    state = session.get(SceneRunState, payload["scene_id"])
-    should_create_state = state is None and (
-        created or not is_chapter_approved(session, chapter)
-    )
-    if should_create_state:
-        state = SceneRunState(scene_id=payload["scene_id"], scene_status="ready")
-        session.add(state)
-        changed = True
-    session.flush()
-    return {"scene_id": scene.scene_id, "changed": changed}
-
-
-def _assert_scene_seq_available(
-    session: Session,
-    *,
-    scene_id: str,
-    chapter_id: str,
-    scene_seq: int,
-) -> None:
-    conflict = session.execute(
-        select(SceneCard.scene_id).where(
-            SceneCard.chapter_id == chapter_id,
-            SceneCard.scene_seq == scene_seq,
-            SceneCard.trashed_flag == 0,
-            SceneCard.scene_id != scene_id,
-        )
-    ).scalar_one_or_none()
-    if conflict is not None:
-        raise DomainError(
-            "SCENE_SEQUENCE_CONFLICT",
-            "another active scene already uses this scene_seq",
-            status_code=409,
-            details={
-                "chapter_id": chapter_id,
-                "scene_seq": scene_seq,
-                "conflicting_scene_id": conflict,
-            },
-        )
 
 
 def _parse_run_policy(payload: dict | None) -> str:
@@ -466,17 +163,15 @@ def run_scene(
     author_note = normalize_author_note(body.get("author_note"))
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict；列属 Wave 3）
     run_policy = _parse_run_policy(body)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/run/full",
         payload={
             "scene_id": scene_id,
             **({"author_note": author_note} if author_note else {}),
             **({"run_policy": run_policy} if run_policy != "reliable" else {}),
         },
-        action=lambda lease: _attach_style_notices(
+        action=lambda lease: attach_style_notices(
             session,
             scene_id,
             Orchestrator(session).run_scene(
@@ -490,36 +185,6 @@ def run_scene(
     )
 
 
-def _attach_style_notices(session: Session, scene_id: str, result: Any) -> Any:
-    """2026-09 风格模仿 v2（W5，规格 §2.W5.6）：把风格链路 notices 透传到场景运行响应。
-
-    notices（STYLE_DRAFT_FALLBACK_NEUTRAL / STYLE_INJECTION_MISS / STYLE_INJECTION_DEGRADED /
-    STYLE_PLAGIARISM_HIT / STYLE_BANNED_TERM_HIT / STYLE_GATE_UNAVAILABLE）由
-    scene_generation 写进本次运行 style_draft / near_final_rewrite 的 AttemptTracker；这里
-    只读不写，结果不是 dict 时原样返回。
-
-    只读**本次运行的 bundle**：bundle id 取运行结果的 ``current_bundle_id``，退而取
-    ``SceneRunState.current_bundle_id``；两者都没有（运行在建 bundle 之前早退）时原样返回
-    ——绝不读不带 bundle 范围的「场景最近一次」，否则一次在 hard_qc 就被挡下的重跑会带上
-    上一次运行、另一个 bundle 的 STYLE_PLAGIARISM_HIT。
-    """
-    if not isinstance(result, dict):
-        return result
-    bundle_id = result.get("current_bundle_id")
-    if not isinstance(bundle_id, str) or not bundle_id:
-        state = session.get(SceneRunState, scene_id)
-        bundle_id = state.current_bundle_id if state is not None else None
-    if not isinstance(bundle_id, str) or not bundle_id:
-        return result
-    notices = latest_style_notices(session, scene_id, bundle_id=bundle_id)
-    if not notices:
-        return result
-    existing = result.get("notices")
-    merged = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
-    merged.extend(item for item in notices if item not in merged)
-    return {**result, "notices": merged}
-
-
 @router.post("/api/v1/scenes/{scene_id}/run/jobs")
 def create_scene_run_job(
     scene_id: str,
@@ -531,10 +196,8 @@ def create_scene_run_job(
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     _reject_manual_checkpoint_controls(body)
-    job_to_start: str | None = None
 
     def create_job() -> dict:
-        nonlocal job_to_start
         service = SceneRunJobService(session)
         budget_resume_parent_execution_id = (
             service.resolve_budget_resume_execution_id(scene_id)
@@ -548,31 +211,34 @@ def create_scene_run_job(
             run_policy=_parse_run_policy(body),
             budget_resume_parent_execution_id=budget_resume_parent_execution_id,
         )
-        if start and job.status == "queued":
-            job_to_start = job.job_id
         return service.serialize_job(job)
 
-    response = optional_idempotent_response(
+    def dispatch_if_queued(result: dict) -> None:
+        # 提交之后派发（B12-07）；同一个幂等键重放时也走这里：任务还在排队（提交与派发之间进程退出、--reload）
+        # 就由这次重试接上，已经在跑 / 已结束的不动。工人的认领是条件写，重复派发无害。
+        job_id = str((result or {}).get("job_id") or "")
+        if start and job_id and _run_job_status(session, job_id) == STATUS_QUEUED:
+            start_scene_run_job_worker(job_id)
+
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/run/jobs",
         payload={"scene_id": scene_id, "start": start, "body": body},
         action=create_job,
+        after_commit=dispatch_if_queued,
     )
-    # 闭包只在本请求真正执行动作时填充;持久重放直接返回缓存响应,不再拉起 worker。
-    if job_to_start is not None:
-        start_scene_run_job_worker(job_to_start)
-    return response
+
+
+def _run_job_status(session: Session, job_id: str) -> str | None:
+    """任务当前在库里的状态（列查询，不读会话里可能过期的对象）。"""
+    return session.scalar(select(ChapterRunJob.status).where(ChapterRunJob.job_id == job_id))
 
 
 @router.get("/api/v1/run-jobs/{job_id}")
 def get_run_job(job_id: str, request: Request, session: Session = Depends(get_session)):
     service = SceneRunJobService(session)
     job = service.get_job(job_id)
-    return ok(
-        service.serialize_job(job), req_id=request_id_of(request)
-    )
+    return respond(request, service.serialize_job(job))
 
 
 @router.post("/api/v1/run-jobs/{job_id}/cancel")
@@ -592,15 +258,12 @@ def cancel_run_job(
         )
         return service.serialize_job(job)
 
-    response = optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/run-jobs/{job_id}/cancel",
         payload={"job_id": job_id, "body": body},
         action=cancel,
     )
-    return response
 
 
 @router.get("/api/v1/scenes/{scene_id}/run/jobs/latest")
@@ -611,112 +274,22 @@ def get_latest_scene_run_job(
 ):
     AuthorLifecycleService(session).require_active_scene(scene_id)
     service = SceneRunJobService(session)
-    return ok(
-        service.serialize_job(service.latest_job(scene_id)),
-        req_id=request_id_of(request),
-    )
+    return respond(request, service.serialize_job(service.latest_job(scene_id)))
 
 
 @router.get("/api/v1/scene-run-states")
 def list_scene_run_states(
     project_id: str, request: Request, session: Session = Depends(get_session)
 ):
-    """项目内全部场景运行态（管线真相）。
-
-    起草台队列成员的后端派生源：换浏览器后 FE 据此恢复「哪些场进过管线」，
-    localStorage 队列退化为这份真相的读缓存（贯通轮遗留项 ①）。
-    只返回有运行态行且离开过 ready 的场——ready/无行 = 从未进管线，不参与恢复。
-    """
-    ProjectService(session).require_project(project_id)
-    rows = session.execute(
-        select(SceneRunState, SceneCard)
-        .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
-        .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
-        .order_by(SceneRunState.updated_at.desc())
-    ).all()
-    items = [
-        {
-            "scene_id": state.scene_id,
-            "chapter_id": card.chapter_id,
-            "scene_status": state.scene_status,
-            # 治理 §5.3：列表恢复面也带作者可见态（枚举），FE 不再从 scene_status 猜
-            "author_state": compute_author_state(session, state.scene_id, state)[
-                "author_state"
-            ],
-            "total_attempt_count": state.total_attempt_count,
-            "updated_at": state.updated_at,
-        }
-        for state, card in rows
-        if state.scene_status != "ready"
-    ]
-    return ok(
-        {"items": items, "count": len(items)},
-        req_id=request_id_of(request),
-    )
+    """项目内离开过 ready 的场景运行态：起草台换浏览器后据此恢复队列（见 ``author_state.project_run_states``）。"""
+    return respond(request, project_run_states(session, project_id))
 
 
 @router.get("/api/v1/scenes/{scene_id}/status")
 def scene_status(
     scene_id: str, request: Request, session: Session = Depends(get_session)
 ):
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    state = session.get(SceneRunState, scene_id)
-    if state is None:
-        # 经目录新建、从未 run 的有效场景没有运行态行——返回 ready 空态投影，
-        # 与只读 workbench 一致；GET 不为查看动作补建持久行。
-        return ok(
-            {
-                "scene_status": "ready",
-                "current_bundle_id": None,
-                "current_bundle_hash": None,
-                "current_neutral_draft_row_id": None,
-                "current_style_draft_row_id": None,
-                "current_final_scene_row_id": None,
-                "repeat_issue_key": None,
-                "repeat_issue_count": 0,
-                # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
-                **compute_author_state(session, scene_id, None),
-            },
-            req_id=request_id_of(request),
-        )
-    return ok(
-        {
-            "scene_status": state.scene_status,
-            "current_bundle_id": state.current_bundle_id,
-            "current_bundle_hash": state.current_bundle_hash,
-            "current_neutral_draft_row_id": state.current_neutral_draft_row_id,
-            "current_style_draft_row_id": state.current_style_draft_row_id,
-            "current_final_scene_row_id": state.current_final_scene_row_id,
-            "repeat_issue_key": state.repeat_issue_key,
-            "repeat_issue_count": state.repeat_issue_count,
-            # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
-            **compute_author_state(session, scene_id, state),
-        },
-        req_id=request_id_of(request),
-    )
-
-
-def _latest_selection_gate_event(
-    session: Session, scene_id: str
-) -> HumanReviewEvent | None:
-    events = (
-        session.execute(
-            select(HumanReviewEvent)
-            .where(
-                HumanReviewEvent.scene_id == scene_id,
-                HumanReviewEvent.event_source == "candidate_selection",
-            )
-            .order_by(
-                HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc()
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for event in events:
-        if (event.details_json or {}).get("gate_type") == "style_candidate_selection":
-            return event
-    return None
+    return respond(request, scene_status_payload(session, scene_id))
 
 
 @router.get("/api/v1/scenes/{scene_id}/style-candidates")
@@ -727,114 +300,10 @@ def get_scene_style_candidates(
     include_scores: bool = False,
     diagnostic: bool = False,
 ):
-    """Wave 3（治理 §5.5/§6.3）：候选终选取数——默认盲化视图。
-
-    存在终选 gate 时：按 gate 的 blinded_order 输出**完整正文**，默认剥离
-    机器分数与预选标记（按分排序展示本身就是泄漏）；`include_scores=true`
-    为作者主动展开——附分数但不改顺序。无 gate（标准场/历史诊断）保留旧的
-    按分降序形状（`diagnostic` 用途），并标 `blinded:false`。
-    """
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    from novel_system.services.literary_quality import adversarial_rank_score
-
-    state = session.get(SceneRunState, scene_id)
-    gate = _latest_selection_gate_event(session, scene_id)
-    dispersion_score = state.candidate_dispersion_score if state else None
-    criticality_info = None
-    if state and state.criticality_level:
-        criticality_info = {
-            "level": state.criticality_level,
-            "reasons": state.criticality_reasons_json or [],
-        }
-
-    if gate is not None and not diagnostic:
-        details = gate.details_json or {}
-        blinded_order = [
-            str(r)
-            for r in (
-                details.get("blinded_order") or details.get("candidate_row_ids") or []
-            )
-        ]
-        candidates = []
-        for row_id in blinded_order:
-            draft = session.get(SceneDraft, row_id)
-            if draft is None:
-                continue
-            entry: dict[str, Any] = {
-                "row_id": draft.row_id,
-                "content": draft.content,
-                "created_at": str(draft.created_at) if draft.created_at else None,
-            }
-            if include_scores:
-                # 主动展开：分数只做标注，不重排（§5.5）
-                entry["adversarial_score"] = round(
-                    adversarial_rank_score(draft.content) if draft.content else 0.0, 3
-                )
-            candidates.append(entry)
-        return ok(
-            {
-                "scene_id": scene_id,
-                "blinded": True,
-                "candidates": candidates,
-                "total": len(candidates),
-                "selection": {
-                    "decision_status": details.get("decision_status"),
-                    "selected_row_id": (
-                        details.get("selected_row_id")
-                        if details.get("decision_status") == "selected"
-                        else None
-                    ),
-                    "event_id": gate.event_id,
-                },
-                "dispersion_score": dispersion_score,
-                "criticality": criticality_info,
-            },
-            req_id=request_id_of(request),
-        )
-
-    # 无终选 gate：旧诊断形状（按分降序、带分数）——仅限非盲化诊断用途
-    drafts = list(
-        session.execute(
-            select(SceneDraft)
-            .where(
-                SceneDraft.scene_id == scene_id,
-                SceneDraft.stage == "style_draft",
-            )
-            .order_by(SceneDraft.created_at.desc())
-        )
-        .scalars()
-        .all()
-    )
-    selected_row_id = state.current_style_draft_row_id if state else None
-    candidates = []
-    for d in drafts:
-        score = adversarial_rank_score(d.content) if d.content else 0.0
-        candidates.append(
-            {
-                "row_id": d.row_id,
-                "adversarial_score": round(score, 3),
-                "content_preview": (d.content or "")[:500],
-                "content": d.content,
-                "selected": d.row_id == selected_row_id,
-                "created_at": str(d.created_at) if d.created_at else None,
-            }
-        )
-    candidates.sort(key=lambda c: c["adversarial_score"], reverse=True)
-    return ok(
-        {
-            "scene_id": scene_id,
-            "blinded": False,
-            "candidates": candidates,
-            "total": len(candidates),
-            "dispersion_score": dispersion_score,
-            "dispersion_signal": (
-                "low"
-                if dispersion_score is not None and dispersion_score < 0.15
-                else "adequate" if dispersion_score is not None else None
-            ),
-            "criticality": criticality_info,
-        },
-        req_id=request_id_of(request),
+    """候选终选取数——默认盲化视图（``include_scores`` 附分数不重排；``diagnostic`` 取无门的旧诊断形状）。"""
+    return respond(
+        request,
+        candidates_view(session, scene_id, include_scores=include_scores, diagnostic=diagnostic),
     )
 
 
@@ -846,157 +315,14 @@ def select_style_candidate(
     session: Session = Depends(get_session),
     payload: StyleCandidateSelectRequest | None = Body(default=None),
 ):
-    """Wave 3（治理 §5.5/§6.3）：作者终选——一次写入 + 锁定。
-
-    相同选择重复提交幂等返回；已存在不同终选记录时新的 select 返回
-    409 SELECTION_LOCKED；变更选择需先显式 reopen（留审计）。记录
-    选择耗时/无明显差异标记（§5.5 记录选择、放弃、无明显差异和选择耗时）。
-    """
+    """作者终选——一次写入 + 锁定：同选幂等返回，换一份 409 SELECTION_LOCKED（想换一稿就重新起草这一场）。"""
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-
-    def _select(session: Session) -> dict[str, Any]:
-        from novel_system.db.models import utcnow as now_iso
-
-        AuthorLifecycleService(session).require_active_scene(scene_id)
-        draft = session.get(SceneDraft, row_id)
-        if draft is None or draft.scene_id != scene_id:
-            raise DomainError(
-                "CANDIDATE_NOT_FOUND",
-                f"Style draft candidate {row_id} not found for scene {scene_id}",
-                status_code=404,
-            )
-        state = session.get(SceneRunState, scene_id)
-        if state is None:
-            raise DomainError(
-                "SCENE_STATE_NOT_FOUND", "Scene run state not found", status_code=404
-            )
-
-        gate = _latest_selection_gate_event(session, scene_id)
-        preference_tags = _normalize_preference_tags(body.get("preference_tags"))
-        if gate is not None:
-            details = dict(gate.details_json or {})
-            decision_status = details.get("decision_status")
-            if decision_status == "selected":
-                if details.get("selected_row_id") == row_id:
-                    # 相同选择重复提交：幂等返回（§7.4）
-                    return {
-                        "scene_id": scene_id,
-                        "selected_row_id": row_id,
-                        "decision_status": "selected",
-                        "message": "Candidate already selected",
-                    }
-                raise DomainError(
-                    "SELECTION_LOCKED",
-                    "terminal selection is locked — reopen explicitly before changing the choice",
-                    status_code=409,
-                    details={
-                        "scene_id": scene_id,
-                        "selected_row_id": details.get("selected_row_id"),
-                    },
-                )
-            candidate_row_ids = [
-                str(r) for r in (details.get("candidate_row_ids") or [])
-            ]
-            if candidate_row_ids and row_id not in candidate_row_ids:
-                raise DomainError(
-                    "CANDIDATE_NOT_IN_GATE",
-                    "candidate is not part of the terminal-selection gate",
-                    status_code=409,
-                    details={"scene_id": scene_id, "row_id": row_id},
-                )
-            # 2026-09-14 减法:终选不再生成「风格反馈」记录(作者选择 vs 机器领先者的一致性,
-            # policy_evidence_eligible 恒 False,从未被任何策略消费);只留决定历史。
-            details.pop("style_feedback", None)
-            details.pop("style_feedback_error_code", None)
-            details.pop("style_feedback_history", None)
-            details.pop("style_feedback_snapshot", None)
-            decided_at = now_iso()
-            history = list(details.get("decision_history") or [])
-            history.append(
-                {
-                    "action": "select",
-                    "row_id": row_id,
-                    "actor_ref": actor_ref,
-                    "at": decided_at,
-                    "no_clear_difference": bool(body.get("no_clear_difference")),
-                    "preference_tags": preference_tags,
-                    **(
-                        {"duration_ms": int(body["duration_ms"])}
-                        if isinstance(body.get("duration_ms"), (int, float))
-                        else {}
-                    ),
-                }
-            )
-            gate.details_json = {
-                **details,
-                "decision_status": "selected",
-                "selected_row_id": row_id,
-                "decided_at": decided_at,
-                "no_clear_difference": bool(body.get("no_clear_difference")),
-                "preference_tags": preference_tags,
-                "decision_history": history,
-            }
-            gate.status = "resolved"
-        else:
-            # 无 gate 的旧路径（标准场直接 select）：首次 select 补建已决 gate，
-            # 使终选锁定语义对所有场景生效（§6.3 补充契约）。
-            from uuid import uuid4
-
-            gate = HumanReviewEvent(
-                event_id=f"hre_sel_{uuid4().hex[:12]}",
-                scene_id=scene_id,
-                chapter_id=draft.chapter_id,
-                object_ref=f"candidate_selection:{scene_id}",
-                event_source="candidate_selection",
-                priority="high",
-                status="resolved",
-                allowed_actions_json=["select", "reopen"],
-                details_json={
-                    "gate_type": "style_candidate_selection",
-                    "candidate_row_ids": [row_id],
-                    "blinded_order": [row_id],
-                    "decision_status": "selected",
-                    "selected_row_id": row_id,
-                    "decided_at": now_iso(),
-                    "no_clear_difference": bool(body.get("no_clear_difference")),
-                    "preference_tags": preference_tags,
-                    "decision_history": [
-                        {
-                            "action": "select",
-                            "row_id": row_id,
-                            "actor_ref": actor_ref,
-                            "at": now_iso(),
-                            "no_clear_difference": bool(
-                                body.get("no_clear_difference")
-                            ),
-                            "preference_tags": preference_tags,
-                        }
-                    ],
-                    "tokens_used": int(getattr(state, "scene_tokens_used", 0) or 0),
-                },
-                default_action="select",
-            )
-            session.add(gate)
-
-        state.current_style_draft_row_id = row_id
-        # 治理 §4.3：候选选择也是「最近有效正文」的维护点
-        state.latest_valid_draft_row_id = row_id
-        session.flush()
-        return {
-            "scene_id": scene_id,
-            "selected_row_id": row_id,
-            "decision_status": "selected",
-            "message": "Candidate selected for human terminal review",
-        }
-
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
         payload={"scene_id": scene_id, "row_id": row_id, **body},
-        action=lambda: _select(session),
+        action=lambda: select_candidate(session, scene_id, row_id, actor_ref=actor_ref, body=body),
     )
 
 
@@ -1009,11 +335,9 @@ def resume_after_selection(
 ):
     """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。"""
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/resume-after-selection",
         payload={"scene_id": scene_id},
         action=lambda lease: Orchestrator(session).resume_after_selection(
             scene_id,
@@ -1032,97 +356,18 @@ def topup_scene_budget(
 ):
     """作者显式追加 token/业务尝试/provider 尝试预算；唯一扩容入口，留审计。"""
     actor_ref = actor_ref_of(request)
-    body = payload.model_dump(mode="json") if payload else {}
-    raw_extras = {
-        "extra_tokens": body.get("extra_tokens", 0),
-        "extra_attempts": body.get("extra_attempts", 0),
-        "extra_provider_attempts": body.get("extra_provider_attempts", 0),
-    }
-    invalid_fields = {
-        field: value
-        for field, value in raw_extras.items()
-        if type(value) is not int or value < 0 or value > INT64_MAX
-    }
-    if invalid_fields or not any(
-        value > 0 for value in raw_extras.values() if type(value) is int
-    ):
-        raise DomainError(
-            "INVALID_BUDGET_TOPUP",
-            "topup values must be non-negative integers and at least one must be positive",
-            status_code=422,
-            details={**raw_extras, "max_lifecycle_budget": INT64_MAX},
-        )
-    extra_tokens = raw_extras["extra_tokens"]
-    extra_attempts = raw_extras["extra_attempts"]
-    extra_provider_attempts = raw_extras["extra_provider_attempts"]
-    reason = str(body.get("reason") or "").strip()[:300]
+    topup = validated_topup(payload.model_dump(mode="json") if payload else {})
 
-    def _topup(session: Session) -> dict[str, Any]:
+    def _topup() -> dict:
         AuthorLifecycleService(session).require_active_scene(scene_id)
-        return apply_topup(
-            session,
-            scene_id,
-            extra_tokens=extra_tokens,
-            extra_attempts=extra_attempts,
-            extra_provider_attempts=extra_provider_attempts,
-            reason=reason,
-            actor_ref=actor_ref,
-        )
+        return apply_topup(session, scene_id, **topup, actor_ref=actor_ref)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/budget/topup",
-        payload={
-            "scene_id": scene_id,
-            "extra_tokens": extra_tokens,
-            "extra_attempts": extra_attempts,
-            "extra_provider_attempts": extra_provider_attempts,
-            "reason": reason,
-        },
-        action=lambda: _topup(session),
+        payload={"scene_id": scene_id, **topup},
+        action=_topup,
     )
-
-
-def _author_draft_plain_text(html: str | None) -> str:
-    """author-draft 存 HTML（<p> 分段）；归档正文按段落还原为纯文本。"""
-    import re
-
-    if not html:
-        return ""
-    text = re.sub(r"</p\s*>|<br\s*/?>", "\n", html, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    lines = [line.strip() for line in text.splitlines()]
-    return "\n".join(line for line in lines if line)
-
-
-def _scene_lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | None:
-    """Author-safe lifecycle counters used by the explicit topup UI.
-
-    The immutable basis remains server-owned; only the single-call unit needed
-    for an informed author topup is projected. No routing or credential data is
-    exposed.
-    """
-    if state.scene_token_budget is None:
-        return None
-    budget = int(state.scene_token_budget)
-    used = int(state.scene_tokens_used or 0)
-    reserved = int(state.scene_tokens_reserved or 0)
-    # 单发基线：依据里记的优先，旧依据按初始预算 ÷ 当时的倍率还原（不拿追加过的当前预算去除）
-    baseline = budget_unit(state)
-    return {
-        "scene_token_budget": budget,
-        "scene_tokens_used": used,
-        "scene_tokens_reserved": reserved,
-        "scene_tokens_remaining": max(0, budget - used - reserved),
-        "baseline_tokens": baseline,
-        "recommended_topup_tokens": baseline,
-        "attempt_budget": int(state.attempt_budget),
-        "total_attempt_count": int(state.total_attempt_count or 0),
-        "provider_attempt_budget": int(state.provider_attempt_budget),
-        "provider_attempts_used": int(state.provider_attempts_used or 0),
-    }
 
 
 @router.post("/api/v1/scenes/{scene_id}/adopt-current")
@@ -1132,1122 +377,32 @@ def adopt_current_scene(
     session: Session = Depends(get_session),
     payload: AdoptCurrentRequest | None = Body(default=None),
 ):
-    """治理 §5.2：作者采纳归档的单一服务入口。
-
-    前端「归档/置 done」动作必须打到这里——携带 exact_author_draft 时，
-    作者稿 CAS 保存与 CanonicalScene 提升在同一个幂等事务中完成，浏览器正文
-    不再与 FinalScene 分裂。兼容调用未携带 exact_author_draft 时，内容源优先级
-    仍为未归档 current_final_scene → 管线草稿（latest_valid > style > neutral）→
-    author-draft 人工稿兜底。守卫：无任何有效稿 409 NO_VALID_DRAFT；
-    确定性来源安全扫描命中 409 SOURCE_SAFETY_BLOCKED（草稿保留可重试，
-    设计红线 8：来源安全未通过可保存草稿但不能标记为已安全归档）。
-    """
+    """治理 §5.2：作者采纳归档的单一服务入口（见 ``services/scene_adoption.py``）。"""
     actor_ref = actor_ref_of(request)
     body = payload.model_dump(mode="json") if payload is not None else {}
-    accepted_warning_codes = body.get("accepted_warning_codes") or []
-    exact_author_draft = body.get("exact_author_draft")
-
-    def _adopt(session: Session) -> dict[str, Any]:
-        from uuid import uuid4
-
-        scene = AuthorLifecycleService(session).require_active_scene(scene_id)
-        state = session.get(SceneRunState, scene_id)
-        if state is None:
-            state = SceneRunState(scene_id=scene_id, scene_status="ready")
-            session.add(state)
-            session.flush()
-
-        # 兼容旧调用的已归档幂等返回。精确作者稿可能是在已归档版本之上的
-        # 新修订，必须继续走 revision + FinalScene 双 CAS，不能在这里吞掉。
-        # （如 C2 真实库中 failed@soft_qc_ready 的历史残留，作者重点一次即自愈）
-        if (
-            exact_author_draft is None
-            and state.scene_status == "archived"
-            and state.current_final_scene_row_id
-        ):
-            current_final = session.get(FinalScene, state.current_final_scene_row_id)
-            if current_final is None or current_final.scene_id != scene_id:
-                raise DomainError(
-                    "FINAL_SCENE_NOT_FOUND",
-                    "archived scene points to a missing final manuscript",
-                    status_code=409,
-                    details={"scene_id": scene_id},
-                )
-            current_memory = (
-                session.execute(
-                    select(SceneMemory).where(
-                        SceneMemory.scene_id == scene_id,
-                        SceneMemory.final_scene_row_id == current_final.row_id,
-                        SceneMemory.active_flag == 1,
-                    )
-                )
-                .scalars()
-                .first()
-            )
-            confirmation = Archiver(session).archive_final_scene(
-                scene_id,
-                current_final.row_id,
-                carry_notes_json=(
-                    list(current_memory.carry_notes_json or [])
-                    if current_memory is not None
-                    else []
-                ),
-                author_confirmed_final=True,
-                accepted_warning_codes=accepted_warning_codes,
-                fidelity_source="adopt",
-            )
-            residue_finalized = SceneRunCheckpointService(
-                session
-            ).finalize_after_author_archive(scene_id)
-            return {
-                "scene_id": scene_id,
-                "scene_status": "archived",
-                "final_scene_row_id": state.current_final_scene_row_id,
-                "already_archived": True,
-                "safe_to_archive": confirmation["safe_to_archive"],
-                "literary_warnings_unresolved": confirmation[
-                    "literary_warnings_unresolved"
-                ],
-                "author_confirmed_final": confirmation["author_confirmed_final"],
-                "finality": confirmation["finality"],
-                "run_residue_finalized": residue_finalized,
-                "author_state": compute_author_state(session, scene_id, state),
-            }
-
-        # Wave 2（治理 §5.3/§5.4）：只有真实 Q0/Q1 能阻断归档——投影为 hard_blocked
-        # （当前 QC 报告存在 verified Q0/Q1 分级条目）时拒绝采纳，正文保留（§7.2）。
-        projection = compute_author_state(session, scene_id, state)
-        if projection["author_state"] == "hard_blocked":
-            raise DomainError(
-                "HARD_BLOCKED",
-                "verified Q0/Q1 findings block adoption — resolve or revise before archiving",
-                status_code=409,
-                details={
-                    "scene_id": scene_id,
-                    "blocking_findings": projection["blocking_findings"],
-                },
-            )
-        # Wave 3（§5.5 完成门）：关键场景未终选前不可归档——adopt 旁路同样封死
-        if projection["author_state"] == "awaiting_author_choice":
-            raise DomainError(
-                "SELECTION_REQUIRED",
-                "author terminal selection is required before archiving this critical scene",
-                status_code=409,
-                details={"scene_id": scene_id},
-            )
-
-        # 浏览器精确稿路径：先以 base_revision_no 保存请求中的确定正文，再把
-        # 保存后的同一修订提升为 FinalScene。两个动作共享当前数据库事务；保存、
-        # 安全门、聚合或归档任一步失败都会整体回滚。
-        if exact_author_draft is not None:
-            draft_id = exact_author_draft["draft_id"]
-            draft = session.get(AuthorDraft, draft_id)
-            if draft is None:
-                raise DomainError(
-                    "AUTHOR_DRAFT_NOT_FOUND",
-                    "author draft not found",
-                    status_code=404,
-                    details={"draft_id": draft_id},
-                )
-            if draft.object_type != "scene" or draft.object_id != scene_id:
-                raise DomainError(
-                    "AUTHOR_DRAFT_SCENE_MISMATCH",
-                    "author draft does not belong to the scene being adopted",
-                    status_code=409,
-                    details={
-                        "draft_id": draft_id,
-                        "draft_object_type": draft.object_type,
-                        "draft_object_id": draft.object_id,
-                        "scene_id": scene_id,
-                    },
-                )
-            saved = AuthorDraftService(session).save(
-                draft_id,
-                {
-                    "content": exact_author_draft["content"],
-                    "base_revision_no": exact_author_draft["base_revision_no"],
-                    "note": "atomic scene adoption",
-                },
-                actor_ref=actor_ref,
-            )
-            saved_draft = saved.get("draft") or {}
-            saved_revision_no = saved_draft.get("revision_no")
-            if not isinstance(saved_revision_no, int):
-                raise DomainError(
-                    "AUTHOR_DRAFT_SAVE_INCOMPLETE",
-                    "saved author draft did not return a revision number",
-                    status_code=500,
-                    details={"draft_id": draft_id},
-                )
-            promoted = CanonicalSceneService(session).promote_author_draft(
-                draft_id,
-                {
-                    "base_revision_no": saved_revision_no,
-                    "expected_current_final_scene_row_id": exact_author_draft[
-                        "expected_current_final_scene_row_id"
-                    ],
-                    # Saving exact author text proves which revision was chosen;
-                    # it does not prove that story facts stayed unchanged.
-                    "narrative_effect": "requires_reconcile",
-                    "accepted_warning_codes": accepted_warning_codes,
-                },
-                actor_ref=actor_ref,
-                fidelity_source="adopt",
-            )
-            session.flush()
-            session.refresh(draft)
-            promoted["author_draft"] = AuthorDraftService.serialize_draft(
-                draft,
-                current_final_scene_row_id=promoted["final_scene_row_id"],
-            )
-            promoted["exact_author_draft"] = True
-            promoted["author_state"] = compute_author_state(session, scene_id, state)
-            return promoted
-
-        # 1) 内容源解析
-        final: FinalScene | None = None
-        if state.current_final_scene_row_id:
-            row = session.get(FinalScene, state.current_final_scene_row_id)
-            if row is not None and (row.content or "").strip():
-                final = row
-        source_draft_row_id: str | None = None
-        content: str | None = None
-        source_bundle_id: str | None = None
-        source_bundle_hash: str | None = None
-        if final is None:
-            for row_id in (
-                state.latest_valid_draft_row_id,
-                state.current_style_draft_row_id,
-                state.current_neutral_draft_row_id,
-            ):
-                if not row_id:
-                    continue
-                draft = session.get(SceneDraft, row_id)
-                if draft is not None and (draft.content or "").strip():
-                    source_draft_row_id = row_id
-                    content = draft.content
-                    source_bundle_id = draft.source_bundle_id
-                    source_bundle_hash = draft.source_bundle_hash
-                    break
-            if content is None:
-                author_draft = (
-                    session.execute(
-                        select(AuthorDraft).where(
-                            AuthorDraft.object_type == "scene",
-                            AuthorDraft.object_id == scene_id,
-                            AuthorDraft.status == "current",
-                        )
-                    )
-                    .scalars()
-                    .first()
-                )
-                text = (
-                    _author_draft_plain_text(author_draft.content)
-                    if author_draft
-                    else ""
-                )
-                if text.strip():
-                    content = text
-                    source_bundle_id = f"author_draft:{author_draft.draft_id}"
-                    source_bundle_hash = f"author_draft_rev_{author_draft.revision_no}"
-            if content is None:
-                raise DomainError(
-                    "NO_VALID_DRAFT",
-                    "no valid draft content to adopt — generate or write the scene first",
-                    status_code=409,
-                    details={"scene_id": scene_id},
-                )
-
-        # 2) 唯一抄袭门（Q0 红线；风格参考 v3）：与绑定的参考书连续 ≥12 字相同或含受保护专名即拦。
-        # 比对 bundle 冻结的绑定与这一场当前的活动绑定；归档时成稿门再过一遍同一道门（同一稿命中缓存）。
-        target_content = final.content if final is not None else (content or "")
-        bundle = (
-            session.get(SceneBundle, state.current_bundle_id)
-            if state.current_bundle_id
-            else None
-        )
-        copy_check = check_reference_copy_for_scope(
-            session,
-            target_content,
-            scope=scene,
-            bundle_snapshot=bundle.frozen_snapshot_json if bundle else None,
-        )
-        scan = copy_check.audit()
-        if copy_check.blocked:
-            raise DomainError(
-                "SOURCE_SAFETY_BLOCKED",
-                "reference copy gate blocked adoption — draft is kept and can be revised",
-                status_code=409,
-                details={
-                    "scene_id": scene_id,
-                    "reference_copy": scan,
-                    "author_action": copy_block_author_action(
-                        copy_check, target_view="writer", target_ref=f"scene:{scene_id}"
-                    ),
-                },
-            )
-
-        # 3) FinalScene 建行或提升，经归档事务统一置权威态
-        if final is None:
-            final = FinalScene(
-                row_id=f"final_scene_{scene_id}_adopt_{uuid4().hex[:10]}",
-                scene_id=scene_id,
-                chapter_id=scene.chapter_id,
-                content=content or "",
-                source_bundle_id=source_bundle_id or "author_adopt",
-                source_bundle_hash=source_bundle_hash or "author_adopt",
-            )
-            session.add(final)
-            session.flush()
-        state.current_final_scene_row_id = final.row_id
-        if source_draft_row_id:
-            state.latest_valid_draft_row_id = source_draft_row_id
-
-        carry_notes: list[dict[str, Any]] = [
-            {"kind": "author_adoption", "actor_ref": actor_ref}
-        ]
-        quality_warnings = [
-            item
-            for item in projection.get("quality_warnings") or []
-            if isinstance(item, dict)
-        ]
-        if quality_warnings:
-            # Wave 2（Wave 2 项 7）：采纳带 Q2/Q3 警告的稿 = 作者显式接受，留审计
-            carry_notes.append(
-                {
-                    "kind": "quality_warning_acceptance",
-                    "actor_ref": actor_ref,
-                    "accepted": [
-                        {
-                            "issue_key": item.get("issue_key") or item.get("kind"),
-                            "quality_level": item.get("quality_level"),
-                        }
-                        for item in quality_warnings[:10]
-                    ],
-                }
-            )
-        archive_result = Archiver(session).archive_final_scene(
-            scene_id,
-            final.row_id,
-            carry_notes_json=carry_notes,
-            author_confirmed_final=True,
-            accepted_warning_codes=accepted_warning_codes,
-            fidelity_source="adopt",
-        )
-        # C2 状态一致性债务：归档后无主执行残留（failed@soft_qc_ready 等）
-        # 在同一事务内收敛为 completed/archived，运维/展示不再被误导
-        run_residue_finalized = SceneRunCheckpointService(
-            session
-        ).finalize_after_author_archive(scene_id)
-        return {
-            "scene_id": scene_id,
-            "scene_status": archive_result["scene_status"],
-            "final_scene_row_id": final.row_id,
-            "scene_memory_row_id": archive_result["scene_memory_row_id"],
-            "safe_to_archive": archive_result["safe_to_archive"],
-            "literary_warnings_unresolved": archive_result[
-                "literary_warnings_unresolved"
-            ],
-            "author_confirmed_final": archive_result["author_confirmed_final"],
-            "finality": archive_result["finality"],
-            "source_safety_scan": scan,
-            "run_residue_finalized": run_residue_finalized,
-            "author_state": compute_author_state(session, scene_id, state),
-        }
-
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/adopt-current",
         payload={"scene_id": scene_id, **body},
-        action=lambda: _adopt(session),
+        action=lambda: adopt_current(
+            session,
+            scene_id,
+            actor_ref=actor_ref,
+            accepted_warning_codes=body.get("accepted_warning_codes") or [],
+            exact_author_draft=body.get("exact_author_draft"),
+        ),
     )
 
 
 @router.get("/api/v1/scenes/{scene_id}/workbench")
 def scene_workbench(
-    scene_id: str, request: Request, session: Session = Depends(get_session)
+    scene_id: str,
+    request: Request,
+    include: Literal["diagnostics"] | None = None,
+    session: Session = Depends(get_session),
 ):
-    scene = AuthorLifecycleService(session).require_active_scene(scene_id)
-    chapter = session.get(ChapterGoal, scene.chapter_id)
-    state = session.get(SceneRunState, scene_id)
-    chapter_state = chapter_state_snapshot(session, scene.chapter_id)
-    run_preflight = SceneRunPreflightService(session).build(scene)
-    bundle = (
-        session.get(SceneBundle, state.current_bundle_id)
-        if state is not None and state.current_bundle_id
-        else None
+    """AI 起草台一场的工作台载荷；``?include=diagnostics`` 连同诊断部分（见 ``services/scene_workbench.py``）。"""
+    return respond(
+        request,
+        SceneWorkbenchService(session).payload(scene_id, diagnostics=include == INCLUDE_DIAGNOSTICS),
     )
-    neutral = (
-        session.get(SceneDraft, state.current_neutral_draft_row_id)
-        if state is not None and state.current_neutral_draft_row_id
-        else None
-    )
-    style = (
-        session.get(SceneDraft, state.current_style_draft_row_id)
-        if state is not None and state.current_style_draft_row_id
-        else None
-    )
-    final = (
-        session.get(FinalScene, state.current_final_scene_row_id)
-        if state is not None and state.current_final_scene_row_id
-        else None
-    )
-    # 风格参考 v3：终稿过唯一抄袭门的读数（与采纳 / 归档同一道门，同一稿命中缓存）；只读展示，检查失败不拖垮工作台
-    try:
-        source_safety_scan = check_reference_copy_for_scope(
-            session,
-            final.content if final else "",
-            scope=scene,
-            bundle_snapshot=bundle.frozen_snapshot_json if bundle else None,
-        ).audit()
-    except Exception as exc:  # noqa: BLE001 — 展示用读数
-        source_safety_scan = {
-            "safe": False,
-            "error_code": "SOURCE_SAFETY_UNAVAILABLE",
-            "error_type": type(exc).__name__,
-        }
-    memory = (
-        session.execute(
-            select(SceneMemory).where(
-                SceneMemory.scene_id == scene_id, SceneMemory.active_flag == 1
-            )
-        )
-        .scalars()
-        .first()
-    )
-    attempts = (
-        session.execute(
-            select(AttemptTracker)
-            .where(AttemptTracker.scene_id == scene_id)
-            .order_by(AttemptTracker.attempt_id.asc())
-        )
-        .scalars()
-        .all()
-    )
-    blueprint_service = SceneBlueprintService(session)
-    contract_service = SceneExecutionContractService(session)
-    execution_contract = contract_service.latest(scene_id)
-    response = ok(
-        {
-            "chapter_goal": {
-                "chapter_id": chapter.chapter_id,
-                "chapter_goal": chapter.chapter_goal,
-                "main_plot_push": chapter.main_plot_push,
-                "emotional_target": chapter.emotional_target,
-                "ending_effect": chapter.ending_effect,
-            },
-            "scene_card": {
-                "scene_id": scene.scene_id,
-                "scene_goal": scene.scene_goal,
-                "beats_json": scene.beats_json,
-                "must_include_text": clean_backfill_markers(scene.must_include_text),
-                "location": scene.location,
-            },
-            "scene_run_state": {
-                "scene_status": state.scene_status if state is not None else "ready",
-                "current_bundle_id": (
-                    state.current_bundle_id if state is not None else None
-                ),
-                "current_bundle_hash": (
-                    state.current_bundle_hash if state is not None else None
-                ),
-                "current_final_scene_row_id": (
-                    state.current_final_scene_row_id if state is not None else None
-                ),
-                "lifecycle_budget": (
-                    _scene_lifecycle_budget_payload(state)
-                    if state is not None
-                    else None
-                ),
-            },
-            # 治理 §5.3：作者可见状态投影块（完整契约字段）
-            "author_state": compute_author_state(session, scene_id, state),
-            "chapter_state": chapter_state,
-            "run_preflight": run_preflight,
-            "bundle": {
-                "bundle_id": bundle.bundle_id if bundle else None,
-                "bundle_snapshot_hash": bundle.bundle_snapshot_hash if bundle else None,
-                "snapshot": bundle.frozen_snapshot_json if bundle else None,
-            },
-            "neutral_draft": (
-                {"row_id": neutral.row_id, "content": neutral.content}
-                if neutral
-                else None
-            ),
-            "style_draft": (
-                {"row_id": style.row_id, "content": style.content} if style else None
-            ),
-            "final_scene": (
-                {"row_id": final.row_id, "content": final.content} if final else None
-            ),
-            "source_safety_scan": source_safety_scan,
-            # 2026-09-22：终稿的 21 维体检不再随工作台载荷每次轮询重算——它在写作台深改面板
-            # （GET /api/v1/scenes/{id}/deep-review）里，和其他诊断来源一起、按作者的忽略清单过滤。
-            "literary_blueprint": blueprint_service.latest_payload(scene_id),
-            "execution_contract": contract_service.serialize(execution_contract),
-            "scene_memory": (
-                {"row_id": memory.row_id, "content": memory.content} if memory else None
-            ),
-            "generation_summary": (
-                _serialize_generation_summary(session, scene_id, state)
-                if state is not None
-                else None
-            ),
-            "near_final_summary": _serialize_near_final_summary(session, scene_id),
-            "hard_qc_summary": (
-                _serialize_qc_summary(
-                    _latest_qc_report(session, scene_id, state, "hard_qc")
-                )
-                if state is not None
-                else None
-            ),
-            "soft_qc_summary": (
-                _serialize_qc_summary(
-                    _latest_qc_report(session, scene_id, state, "soft_qc")
-                )
-                if state is not None
-                else None
-            ),
-            "rewrite_counters": {
-                "hard_partial_rewrite_count": (
-                    state.hard_partial_rewrite_count if state is not None else 0
-                ),
-                "hard_full_rewrite_count": (
-                    state.hard_full_rewrite_count if state is not None else 0
-                ),
-                "soft_patch_count": state.soft_patch_count if state is not None else 0,
-                "repeat_issue_key": (
-                    state.repeat_issue_key if state is not None else None
-                ),
-                "repeat_issue_count": (
-                    state.repeat_issue_count if state is not None else 0
-                ),
-            },
-            "human_review_summary": (
-                _serialize_human_review_summary(
-                    _resolve_human_review_event(session, scene_id, state)
-                )
-                if state is not None
-                else None
-            ),
-            "writer_review_summary": WriterReviewService(session).scene_summary(
-                scene_id
-            ),
-            "attempts": [_serialize_attempt(item) for item in attempts],
-        },
-        req_id=request_id_of(request),
-    )
-    return response
-
-
-def _serialize_generation_summary(
-    session: Session, scene_id: str, state: SceneRunState
-) -> dict | None:
-    llm_call = _resolve_generation_llm_call(session, scene_id, state)
-    if llm_call is None:
-        return None
-    summary = {
-        "llm_call_id": llm_call.llm_call_id,
-        "step": _display_generation_step(llm_call.step),
-        "raw_step": llm_call.step,
-        "provider": llm_call.provider,
-        "model": llm_call.model,
-        "prompt_hash": llm_call.prompt_hash,
-        "prompt_tokens": llm_call.prompt_tokens,
-        "completion_tokens": llm_call.completion_tokens,
-        "total_tokens": llm_call.total_tokens,
-        "latency_ms": llm_call.latency_ms,
-        "finish_reason": llm_call.finish_reason,
-        "error_code": llm_call.error_code,
-        "created_at": llm_call.created_at,
-        # v2（W5）：风格链路 notices（回退中性稿 / 注入未命中或降级 / 抄袭或禁用词命中 /
-        # gate 未执行）随生成摘要回读，工作台据此提示作者；无 notice 时为空列表。只读与
-        # llm_call 同一次运行（同一 bundle）的 notices。
-        "notices": _current_run_style_notices(session, scene_id, state),
-        # 2026-09-12 风格直起:本次运行的起草方式(style_first / neutral_first),工作台据此
-        # 把中性步位标成「首稿（作者手笔）」或「中性稿」。
-        "draft_mode": _current_run_draft_mode(session, scene_id, state),
-        # 2026-09-14 风格保真修补(WP4.1):本场提示里实际放入的参考书样例窗口(段落序号闭区间,
-        # 无原文;原文由 GET /api/v2/style-reference/books/{book_id}/paragraphs 按需取)。同样只读
-        # 本次运行的 bundle;没有带窗口的尝试时为 null。
-        "style_windows": _current_run_style_windows(session, scene_id, state),
-        # 风格参考 v3(P5b):本次运行的「像不像」——首稿读数、风格步的决定(不调模型 / 定向修改采用 / 保留首稿)、
-        # 修改稿读数、软补丁的去留、终稿读数、参考评审分;这次运行没有读数时为 null。
-        "style_fidelity": _current_run_style_fidelity(session, scene_id, state),
-    }
-    return summary
-
-
-def _current_run_style_fidelity(
-    session: Session, scene_id: str, state: SceneRunState
-) -> dict | None:
-    from novel_system.services.style_fidelity_view import current_run_style_fidelity
-
-    try:
-        return current_run_style_fidelity(
-            session, scene_id, _resolve_current_run_bundle_id(session, scene_id, state)
-        )
-    except Exception:  # noqa: BLE001 — 只读展示,读数取不到不影响工作台
-        return None
-
-
-def _current_run_draft_mode(
-    session: Session, scene_id: str, state: SceneRunState
-) -> str:
-    from novel_system.services.style_policy import style_policy_for_bundle
-    from novel_system.services.style_reference.binding_config import DRAFT_MODE_NEUTRAL_FIRST
-
-    bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
-    if not bundle_id:
-        return DRAFT_MODE_NEUTRAL_FIRST
-    bundle_row = session.get(SceneBundle, bundle_id)
-    if bundle_row is None:
-        return DRAFT_MODE_NEUTRAL_FIRST
-    try:
-        # 风格参考 v3：起草方式只看这次运行 bundle 的 StylePolicy（未绑定 → neutral_first）
-        return style_policy_for_bundle(bundle_row.frozen_snapshot_json).draft_mode
-    except Exception:  # noqa: BLE001 — 只读展示,不因契约解析失败影响工作台
-        return DRAFT_MODE_NEUTRAL_FIRST
-
-
-def _current_run_style_notices(
-    session: Session, scene_id: str, state: SceneRunState
-) -> list[dict]:
-    """当前运行 bundle 内的风格链路 notices；解析不出 bundle 时为空（不做无范围回读）。"""
-    bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
-    if not bundle_id:
-        return []
-    return latest_style_notices(session, scene_id, bundle_id=bundle_id)
-
-
-# WP4.1:本场参考窗口从哪几步的尝试回读,按优先级——风格稿(style_draft)是成稿前最后一次带
-# 样例的通道;风格直起下中性步位的首稿同样带窗口;近终稿重写稿作兜底。
-STYLE_WINDOW_ATTEMPT_STEPS: tuple[str, ...] = (
-    "style_draft",
-    "neutral_draft",
-    "scene_literary_rewrite",
-)
-_STYLE_WINDOW_INT_KEYS: tuple[str, ...] = ("chapter", "paragraphs", "chars")
-
-
-def _style_window_ref(item: Any) -> dict | None:
-    """把审计里的一条 few_shot_window_refs 规整成 API 形状;起止段缺失或倒置的丢弃。"""
-    if not isinstance(item, dict):
-        return None
-    start = item.get("start")
-    end = item.get("end")
-    if (
-        not isinstance(start, int)
-        or not isinstance(end, int)
-        or isinstance(start, bool)
-        or isinstance(end, bool)
-        or start < 0
-        or end < start
-    ):
-        return None
-    ref: dict[str, Any] = {
-        "start": start,
-        "end": end,
-        "position": str(item.get("position") or ""),
-        "paragraph_type": str(item.get("paragraph_type") or ""),
-    }
-    for key in _STYLE_WINDOW_INT_KEYS:
-        value = item.get(key)
-        ref[key] = value if isinstance(value, int) and not isinstance(value, bool) else 0
-    if ref["paragraphs"] <= 0:
-        ref["paragraphs"] = end - start + 1
-    # 风格参考 v3：冻结选窗的引用带窗号（持久化窗口索引里的一窗）与按哪条配额选进来的；旧审计没有窗号，形状不变
-    window_no = item.get("window_no")
-    if isinstance(window_no, int) and not isinstance(window_no, bool):
-        ref["window_no"] = window_no
-        ref["slot"] = str(item.get("slot") or "")
-        ref["situations"] = _style_window_tags(item.get("situations"))
-        # 2026-09-24 O1：窗口标签的「手法」改为这一窗最能示范的维度键（前端按 STYLE_DIMENSION_LABELS 显示）
-        ref["dimensions"] = _style_window_tags(item.get("dimensions"))
-    return ref
-
-
-def _style_window_tags(value: Any) -> list[str]:
-    return [str(tag) for tag in value if str(tag or "").strip()] if isinstance(value, (list, tuple)) else []
-
-
-def _attach_style_window_tags(session: Session, book_id: str | None, windows: list[dict]) -> None:
-    """带窗号的窗补上学习作业给它打的标签与一句话梗概（与本场预览同一份窗口索引；索引换过 / 书不在就不补）。"""
-    numbered = [window for window in windows if "window_no" in window]
-    if not book_id or not numbered:
-        return
-    from novel_system.services.style_reference.scene_preview import window_tag_rows
-
-    try:
-        rows = window_tag_rows(session, book_id, [int(window["window_no"]) for window in numbered])
-    except Exception:  # noqa: BLE001 — 只读展示：标签取不到就只给区间
-        return
-    for window in numbered:
-        tags = (rows.get(int(window["window_no"])) or {}).get("tags") or {}
-        window["situations"] = _style_window_tags(tags.get("situations")) or window.get("situations") or []
-        window["moods"] = _style_window_tags(tags.get("moods"))
-        window["dimensions"] = _style_window_tags(tags.get("dimensions")) or window.get("dimensions") or []
-        window["gist"] = str(tags.get("gist") or "")
-
-
-def _style_window_source(
-    session: Session, runtime_audit: dict
-) -> tuple[str | None, str | None]:
-    """(profile_id, book_id):样例窗口来自最具体层,契约 profile_ids 以层序排列、最具体层在末尾。"""
-    raw_ids = runtime_audit.get("profile_ids")
-    profile_ids = [str(item) for item in raw_ids if item] if isinstance(raw_ids, list) else []
-    for profile_id in reversed(profile_ids):
-        profile = session.get(StyleReferenceProfile, profile_id)
-        if profile is not None:
-            return profile.profile_id, profile.book_id
-    return (profile_ids[-1] if profile_ids else None), None
-
-
-def _current_run_style_windows(
-    session: Session, scene_id: str, state: SceneRunState
-) -> dict | None:
-    """当前运行 bundle 内实际进入提示的参考书样例窗口(WP4.1);解析不出 bundle 时为 None。
-
-    与 notices 同一范围规则:只看本次运行的 bundle。按 STYLE_WINDOW_ATTEMPT_STEPS 的优先级取
-    最近一次 completed 且 ``details_json.style_reference_runtime.few_shot_window_refs`` 非空的
-    尝试;返回 ``{step, profile_id, book_id, windows}``,窗口只有段落序号区间与读数,不含原文。
-    """
-    bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
-    if not bundle_id:
-        return None
-    for step in STYLE_WINDOW_ATTEMPT_STEPS:
-        row = (
-            session.execute(
-                select(AttemptTracker)
-                .where(
-                    AttemptTracker.scene_id == scene_id,
-                    AttemptTracker.step == step,
-                    AttemptTracker.status == "completed",
-                    AttemptTracker.source_bundle_id == bundle_id,
-                )
-                .order_by(AttemptTracker.attempt_id.desc())
-            )
-            .scalars()
-            .first()
-        )
-        if row is None:
-            continue
-        runtime_audit = (row.details_json or {}).get("style_reference_runtime")
-        if not isinstance(runtime_audit, dict):
-            continue
-        refs = runtime_audit.get("few_shot_window_refs")
-        if not isinstance(refs, list):
-            continue
-        windows = [ref for ref in (_style_window_ref(item) for item in refs) if ref]
-        if not windows:
-            continue
-        profile_id, book_id = _style_window_source(session, runtime_audit)
-        _attach_style_window_tags(session, book_id, windows)
-        return {
-            "step": step,
-            "profile_id": profile_id,
-            "book_id": book_id,
-            "windows": windows,
-        }
-    return None
-
-
-def _resolve_generation_llm_call(
-    session: Session, scene_id: str, state: SceneRunState
-) -> LlmCall | None:
-    if state.current_final_scene_row_id:
-        final_scene = session.get(FinalScene, state.current_final_scene_row_id)
-        if (
-            final_scene is not None
-            and final_scene.scene_id == scene_id
-            and final_scene.generation_llm_call_id
-        ):
-            llm_call = session.get(LlmCall, final_scene.generation_llm_call_id)
-            if llm_call is not None:
-                return llm_call
-
-    for row_id in (
-        state.current_style_draft_row_id,
-        state.current_neutral_draft_row_id,
-    ):
-        if not row_id:
-            continue
-        draft = session.get(SceneDraft, row_id)
-        if (
-            draft is None
-            or draft.scene_id != scene_id
-            or not draft.generation_llm_call_id
-        ):
-            continue
-        llm_call = session.get(LlmCall, draft.generation_llm_call_id)
-        if llm_call is not None:
-            return llm_call
-    return None
-
-
-def _display_generation_step(raw_step: str | None) -> str | None:
-    return {
-        "scene_literary_rewrite": "literary_rewrite",
-        "soft_patch": "style_patch",
-        "style_draft": "style_draft",
-        "neutral_draft": "neutral_draft",
-    }.get(raw_step, raw_step)
-
-
-def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | None:
-    latest_attempt = (
-        session.execute(
-            select(AttemptTracker)
-            .where(
-                AttemptTracker.scene_id == scene_id,
-                AttemptTracker.step == "near_final_acceptance_review",
-            )
-            .order_by(AttemptTracker.attempt_id.desc())
-        )
-        .scalars()
-        .first()
-    )
-    latest_evaluation = (
-        session.execute(
-            select(WriterEvaluation)
-            .where(
-                WriterEvaluation.object_type == "scene",
-                WriterEvaluation.object_id == scene_id,
-                WriterEvaluation.rubric_id == NEAR_FINAL_RUBRIC_ID,
-            )
-            .order_by(
-                WriterEvaluation.created_at.desc(),
-                WriterEvaluation.evaluation_id.desc(),
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if latest_attempt is None and latest_evaluation is None:
-        return None
-    details = (
-        dict(latest_attempt.details_json or {}) if latest_attempt is not None else {}
-    )
-    revision_candidate = None
-    candidate_id = details.get("revision_candidate_id")
-    if isinstance(candidate_id, str) and candidate_id.strip():
-        revision_candidate = session.get(RevisionCandidate, candidate_id)
-    if revision_candidate is None:
-        revision_candidate = (
-            session.execute(
-                select(RevisionCandidate)
-                .where(
-                    RevisionCandidate.object_type == "scene",
-                    RevisionCandidate.object_id == scene_id,
-                    RevisionCandidate.revision_type == NEAR_FINAL_REWRITE_TYPE,
-                )
-                .order_by(
-                    RevisionCandidate.created_at.desc(),
-                    RevisionCandidate.revision_id.desc(),
-                )
-            )
-            .scalars()
-            .first()
-        )
-    near_final_status = latest_attempt.status if latest_attempt is not None else None
-    if near_final_status is None and latest_evaluation is not None:
-        near_final_status = (
-            "human_review_required"
-            if latest_evaluation.requires_human_review
-            else "revision_required"
-        )
-    failure_class = details.get("failure_class") or (
-        latest_evaluation.failure_class if latest_evaluation is not None else None
-    )
-    archive_attempt = (
-        session.execute(
-            select(AttemptTracker)
-            .where(
-                AttemptTracker.scene_id == scene_id,
-                AttemptTracker.step == "archive",
-                AttemptTracker.status == "completed",
-            )
-            .order_by(AttemptTracker.attempt_id.desc())
-        )
-        .scalars()
-        .first()
-    )
-    archive_gate = (
-        (archive_attempt.details_json or {}).get("final_text_gate")
-        if archive_attempt is not None
-        else {}
-    )
-    archived_safe = archive_gate.get("safe_to_archive", archive_gate.get("archivable"))
-    author_confirmed_final = bool(archive_gate.get("author_confirmed_final"))
-    literary_warnings_unresolved = bool(
-        not author_confirmed_final
-        and (
-            archive_gate.get("literary_warnings_unresolved")
-            or near_final_status != "near_final_ready"
-            or (latest_evaluation is not None and latest_evaluation.findings_json)
-        )
-    )
-    return {
-        "rubric_id": NEAR_FINAL_RUBRIC_ID,
-        "near_final_status": near_final_status,
-        "pipeline_stage": _near_final_pipeline_stage(near_final_status),
-        "failure_class": failure_class,
-        "failure_reason": _near_final_failure_label(failure_class),
-        # 阶段 D：成稿后的场景三问（坩埚可辨 / 三拍落地 / Yes-No-Maybe），非阻断
-        "scene_story_check": details.get("scene_story_check"),
-        "auto_rewrite_eligible": (
-            bool(latest_evaluation.auto_rewrite_eligible)
-            if latest_evaluation is not None
-            and latest_evaluation.auto_rewrite_eligible is not None
-            else None
-        ),
-        "contract_field_refs": (
-            latest_evaluation.contract_field_refs_json
-            if latest_evaluation is not None
-            else {}
-        ),
-        "promotion_blockers": (
-            latest_evaluation.promotion_blockers_json
-            if latest_evaluation is not None
-            else []
-        ),
-        "evaluation_id": (
-            latest_evaluation.evaluation_id
-            if latest_evaluation is not None
-            else details.get("evaluation_id")
-        ),
-        "revision_candidate_id": (
-            revision_candidate.revision_id if revision_candidate is not None else None
-        ),
-        "revision_candidate_status": (
-            revision_candidate.status if revision_candidate is not None else None
-        ),
-        "overall_score": (
-            latest_evaluation.overall_score if latest_evaluation is not None else None
-        ),
-        "requires_human_review": (
-            bool(latest_evaluation.requires_human_review)
-            if latest_evaluation is not None
-            else False
-        ),
-        "safe_to_archive": bool(archived_safe) if archived_safe is not None else None,
-        "literary_warnings_unresolved": literary_warnings_unresolved,
-        "author_confirmed_final": author_confirmed_final,
-        "finality": {
-            "safe_to_archive": (
-                bool(archived_safe) if archived_safe is not None else None
-            ),
-            "literary_warnings_unresolved": literary_warnings_unresolved,
-            "author_confirmed_final": author_confirmed_final,
-        },
-        "findings": (
-            latest_evaluation.findings_json if latest_evaluation is not None else []
-        ),
-        "revision_brief": (
-            latest_evaluation.revision_brief_json
-            if latest_evaluation is not None
-            else []
-        ),
-        "stage_order": [
-            "Planning",
-            "Drafting",
-            "Rewriting",
-            "Acceptance Review",
-            "Near-final",
-        ],
-        "created_at": (
-            latest_evaluation.created_at
-            if latest_evaluation is not None
-            else latest_attempt.created_at
-        ),
-    }
-
-
-def _near_final_pipeline_stage(status: str | None) -> str:
-    return {
-        "near_final_ready": "Near-final",
-        "revision_required": "Acceptance Review",
-        "human_review_required": "Acceptance Review",
-    }.get(status or "", "Planning")
-
-
-def _near_final_failure_label(failure_class: Any) -> str | None:
-    if not isinstance(failure_class, str) or not failure_class:
-        return None
-    return {
-        "fact_blocker": "fact",
-        "scene_structure_failure": "structure",
-        "character_flatness": "character",
-        "prose_model_voice": "prose",
-        "ending_weakness": "prose",
-        "chapter_payoff_gap": "chapter",
-        "reference_safety": "safety",
-    }.get(failure_class, failure_class)
-
-
-def _latest_qc_report(
-    session: Session, scene_id: str, state: SceneRunState, qc_type: str
-) -> QcReport | None:
-    if state.current_qc_report_id:
-        current_report = session.get(QcReport, state.current_qc_report_id)
-        if current_report is not None and current_report.scene_id == scene_id:
-            if current_report.qc_type == qc_type:
-                return current_report
-            if current_report.source_bundle_id:
-                return _latest_qc_report_for_bundle(
-                    session, scene_id, current_report.source_bundle_id, qc_type
-                )
-
-    current_bundle_id = _resolve_current_run_bundle_id(session, scene_id, state)
-    if not current_bundle_id:
-        return None
-    return _latest_qc_report_for_bundle(session, scene_id, current_bundle_id, qc_type)
-
-
-def _latest_qc_report_for_bundle(
-    session: Session, scene_id: str, bundle_id: str, qc_type: str
-) -> QcReport | None:
-    return (
-        session.execute(
-            select(QcReport)
-            .where(
-                QcReport.scene_id == scene_id,
-                QcReport.qc_type == qc_type,
-                QcReport.source_bundle_id == bundle_id,
-            )
-            .order_by(QcReport.created_at.desc(), QcReport.qc_report_id.desc())
-        )
-        .scalars()
-        .first()
-    )
-
-
-def _resolve_current_run_bundle_id(
-    session: Session, scene_id: str, state: SceneRunState
-) -> str | None:
-    if state.current_bundle_id:
-        return state.current_bundle_id
-
-    if state.current_final_scene_row_id:
-        final_scene = session.get(FinalScene, state.current_final_scene_row_id)
-        if (
-            final_scene is not None
-            and final_scene.scene_id == scene_id
-            and final_scene.source_bundle_id
-        ):
-            return final_scene.source_bundle_id
-
-    for row_id in (
-        state.current_style_draft_row_id,
-        state.current_neutral_draft_row_id,
-    ):
-        if not row_id:
-            continue
-        draft = session.get(SceneDraft, row_id)
-        if draft is not None and draft.scene_id == scene_id and draft.source_bundle_id:
-            return draft.source_bundle_id
-
-    return None
-
-
-def _serialize_qc_summary(report: QcReport | None) -> dict | None:
-    if report is None:
-        return None
-    summary = {
-        "qc_report_id": report.qc_report_id,
-        "qc_type": report.qc_type,
-        "pass_flag": None if report.pass_flag is None else bool(report.pass_flag),
-        "resolution_code": report.resolution_code,
-        "issue_keys": _extract_issue_keys(report.issues_json or []),
-        "next_action": report.next_action,
-        "rewrite_brief": _extract_rewrite_brief(report.rewrite_brief_json or []),
-        "created_at": report.created_at,
-    }
-    if report.issues_json:
-        summary["issues"] = report.issues_json
-    evidence_spans = _extract_evidence_spans(report.issues_json or [])
-    if evidence_spans:
-        summary["evidence_spans"] = evidence_spans
-    return summary
-
-
-def _extract_issue_keys(entries: list[dict]) -> list[str]:
-    issue_keys: list[str] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        issue_key = entry.get("issue_key")
-        if isinstance(issue_key, str) and issue_key.strip():
-            issue_keys.append(issue_key.strip())
-    return issue_keys
-
-
-def _extract_evidence_spans(entries: list[dict]) -> list[dict[str, Any]]:
-    spans: list[dict[str, Any]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        entry_spans = entry.get("evidence_spans")
-        if isinstance(entry_spans, list):
-            spans.extend(span for span in entry_spans if isinstance(span, dict))
-    return spans
-
-
-def _extract_rewrite_brief(entries: list[dict]) -> list[str]:
-    rewrite_brief: list[str] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        instruction = entry.get("instruction")
-        if isinstance(instruction, str) and instruction.strip():
-            rewrite_brief.append(instruction.strip())
-            continue
-        carry_note_text = entry.get("carry_note_text")
-        if isinstance(carry_note_text, str) and carry_note_text.strip():
-            rewrite_brief.append(carry_note_text.strip())
-    return rewrite_brief
-
-
-def _resolve_human_review_event(
-    session: Session, scene_id: str, state: SceneRunState
-) -> HumanReviewEvent | None:
-    if not state.current_human_review_event_id:
-        return None
-    event = session.get(HumanReviewEvent, state.current_human_review_event_id)
-    if event is not None and event.scene_id == scene_id:
-        return event
-    return None
-
-
-def _serialize_human_review_summary(event: HumanReviewEvent | None) -> dict | None:
-    if event is None:
-        return None
-    details = dict(event.details_json or {})
-    return {
-        "event_id": event.event_id,
-        "status": event.status,
-        "event_source": event.event_source,
-        "priority": event.priority,
-        "trigger_reason": details.get("trigger_reason"),
-        "failure_reason": details.get("failure_reason"),
-        "recommended_action": details.get("recommended_action"),
-        "linked_target_ref": details.get("linked_target_ref"),
-        "created_at": event.created_at,
-    }
-
-
-def _serialize_attempt(item: AttemptTracker) -> dict:
-    return {
-        "attempt_id": item.attempt_id,
-        "step": item.step,
-        "status": item.status,
-        "source_bundle_id": item.source_bundle_id,
-        "details_json": item.details_json,
-        "created_at": item.created_at,
-    }
-
-
-def _next_scene_seq(session: Session, chapter_id: str) -> int:
-    return AuthorLifecycleService(session).next_scene_append_seq(chapter_id)

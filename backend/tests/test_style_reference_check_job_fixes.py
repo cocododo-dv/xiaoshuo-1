@@ -358,7 +358,7 @@ def test_cancel_of_a_running_check_sets_the_flag_and_the_worker_stops_at_its_nex
     assert _activity_entry(client, job_id)["status"] == "cancelled"
 
 
-def test_cancel_check_rejects_finished_missing_and_foreign_jobs(client, session, monkeypatch) -> None:
+def test_cancel_check_rejects_finished_missing_and_foreign_jobs(client, raw_client, session, monkeypatch) -> None:
     from novel_system.services.style_reference.jobs import JOB_KIND_LEARN
 
     job_id = _start_check(session, "c1_done")
@@ -384,7 +384,7 @@ def test_cancel_check_rejects_finished_missing_and_foreign_jobs(client, session,
         assert db.get(StyleReferenceJob, learn_id).state == "queued"
 
     # 幂等键是必需的
-    bare = client.post(f"{CHECKS}/{job_id}/cancel", json={})
+    bare = raw_client.post(f"{CHECKS}/{job_id}/cancel", json={})
     assert bare.status_code == 400 and bare.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 

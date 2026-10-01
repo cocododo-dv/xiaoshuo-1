@@ -18,7 +18,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterRunJob, FinalScene, QcReport, SceneDraft, SceneRunState
+from novel_system.db.models import ChapterRunJob, FinalScene, QcReport, SceneCard, SceneDraft, SceneRunState
+from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.scene_lookup import require_project
 
 # scene_status → 有稿态映射（不在表内且有稿 → draft_ready）
 # Wave 2（§5.4）：硬阻断词值只是候选——是否真 hard_blocked 由当前 QC 报告里
@@ -119,6 +121,71 @@ def compute_author_state(
         "can_edit": True,
         "can_archive": can_archive,
         "recovery_action": None,
+    }
+
+
+def project_run_states(session: Session, project_id: str) -> dict[str, Any]:
+    """项目内全部场景运行态（管线真相，``GET /api/v1/scene-run-states``）。
+
+    起草台队列成员的后端派生源：换浏览器后 FE 据此恢复「哪些场进过管线」，
+    localStorage 队列退化为这份真相的读缓存（贯通轮遗留项 ①）。
+    只返回有运行态行且离开过 ready 的场——ready/无行 = 从未进管线，不参与恢复。
+    """
+    require_project(session, project_id)
+    rows = session.execute(
+        select(SceneRunState, SceneCard)
+        .join(SceneCard, SceneCard.scene_id == SceneRunState.scene_id)
+        .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
+        .order_by(SceneRunState.updated_at.desc())
+    ).all()
+    items = [
+        {
+            "scene_id": state.scene_id,
+            "chapter_id": card.chapter_id,
+            "scene_status": state.scene_status,
+            # 治理 §5.3：列表恢复面也带作者可见态（枚举），FE 不再从 scene_status 猜
+            "author_state": compute_author_state(session, state.scene_id, state)[
+                "author_state"
+            ],
+            "total_attempt_count": state.total_attempt_count,
+            "updated_at": state.updated_at,
+        }
+        for state, card in rows
+        if state.scene_status != "ready"
+    ]
+    return {"items": items, "count": len(items)}
+
+
+def scene_status_payload(session: Session, scene_id: str) -> dict[str, Any]:
+    """一场的运行态与作者可见状态投影（``GET /api/v1/scenes/{scene_id}/status``）。"""
+    AuthorLifecycleService(session).require_active_scene(scene_id)
+    state = session.get(SceneRunState, scene_id)
+    if state is None:
+        # 经目录新建、从未 run 的有效场景没有运行态行——返回 ready 空态投影，
+        # 与只读 workbench 一致；GET 不为查看动作补建持久行。
+        return {
+            "scene_status": "ready",
+            "current_bundle_id": None,
+            "current_bundle_hash": None,
+            "current_neutral_draft_row_id": None,
+            "current_style_draft_row_id": None,
+            "current_final_scene_row_id": None,
+            "repeat_issue_key": None,
+            "repeat_issue_count": 0,
+            # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
+            **compute_author_state(session, scene_id, None),
+        }
+    return {
+        "scene_status": state.scene_status,
+        "current_bundle_id": state.current_bundle_id,
+        "current_bundle_hash": state.current_bundle_hash,
+        "current_neutral_draft_row_id": state.current_neutral_draft_row_id,
+        "current_style_draft_row_id": state.current_style_draft_row_id,
+        "current_final_scene_row_id": state.current_final_scene_row_id,
+        "repeat_issue_key": state.repeat_issue_key,
+        "repeat_issue_count": state.repeat_issue_count,
+        # 治理 §5.3：作者可见状态投影（React 只消费这层字段）
+        **compute_author_state(session, scene_id, state),
     }
 
 

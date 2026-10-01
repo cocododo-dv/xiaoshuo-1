@@ -99,7 +99,6 @@ def _v3_reference(key: str, *, types_revision: int = 0, stats_revision: int = 0,
                 finding_id=f"v3_find_{key}",
                 quote_id=f"v3_quote_{key}_{index}",
                 anchor_kind="paragraph_quote",
-                is_synthetic=0,
             )
         card = card_payload(with_evidence=True, quote_id=f"inj_quote_{key}")
         card["dimensions"][1]["lines"][0]["finding_ids"] = [f"v3_find_{key}"]

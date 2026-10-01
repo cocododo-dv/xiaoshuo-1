@@ -15,8 +15,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.response import ok
+from novel_system.api.deps import get_session
+from novel_system.api.response import respond
 from novel_system.services.style_fidelity_view import (
     project_style_fidelity,
     scene_style_fidelity,
@@ -33,7 +33,7 @@ def get_scene_style_fidelity(
     session: Session = Depends(get_session),
 ):
     scene = get_scene_or_404(session, scene_id)
-    return ok(scene_style_fidelity(session, scene), req_id=request_id_of(request))
+    return respond(request, scene_style_fidelity(session, scene))
 
 
 @router.get("/api/v1/projects/{project_id}/style-fidelity")
@@ -43,4 +43,4 @@ def get_project_style_fidelity(
     session: Session = Depends(get_session),
 ):
     require_project(session, project_id)
-    return ok(project_style_fidelity(session, project_id), req_id=request_id_of(request))
+    return respond(request, project_style_fidelity(session, project_id))

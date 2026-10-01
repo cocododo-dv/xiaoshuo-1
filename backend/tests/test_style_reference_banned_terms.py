@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.style_reference_factories import RIGHTS_STATS, make_book, make_profile
+from tests.support.api_client import AutoKeyTestClient
 
 PREFIX = "/api/v2/style-reference"
 
@@ -49,7 +48,7 @@ def _seed_book_with_profile(
 
 def test_banned_terms_crud_roundtrip() -> None:
     _, profile_id = _seed_book_with_profile("crud")
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         # 空列表
         resp = client.get(f"{PREFIX}/profiles/{profile_id}/banned-terms")
         assert resp.status_code == 200
@@ -106,7 +105,7 @@ def test_banned_terms_crud_roundtrip() -> None:
 
 def test_banned_terms_validation_and_404() -> None:
     _, profile_id = _seed_book_with_profile("val")
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         # profile 不存在
         resp = client.get(f"{PREFIX}/profiles/sr_profile_missing/banned-terms")
         assert resp.status_code == 404
@@ -150,7 +149,7 @@ def test_preset_banned_term_cannot_be_deleted() -> None:
             scope="generation",
         )
         session.commit()
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         resp = client.request(
             "DELETE",
             f"{PREFIX}/banned-terms/sr_term_bt_preset",
@@ -166,7 +165,7 @@ def test_generation_banned_term_reaches_injection_redline() -> None:
 
     # 红线只随任一块参考同注：画像要有文风卡（2026-09-24 起没有旧画像的卡替身）
     _, profile_id = _seed_book_with_profile("inject", profile_json=v3_profile_json())
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         resp = client.post(
             f"{PREFIX}/profiles/{profile_id}/banned-terms",
             json={"term": "泪如雨下", "scope": "generation"},

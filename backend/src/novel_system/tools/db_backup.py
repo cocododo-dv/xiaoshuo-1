@@ -138,7 +138,8 @@ def _snapshot_metadata(snapshot: str, source: str, *, tool: str) -> dict[str, An
     if checks["integrity"] != "ok" or checks["foreign_key_violations"]:
         raise ValueError(f"refusing to publish invalid SQLite snapshot: {checks}")
     return {
-        "source": source,
+        # 只记文件名：清单会随备份一起入库（公开仓库），不把本机的绝对路径写进去（B12-22）
+        "source": os.path.basename(source),
         "checksum": _sha256(snapshot),
         **checks,
         "created_at": _utcnow(),

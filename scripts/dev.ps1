@@ -133,7 +133,7 @@ function Resolve-AvailablePort {
 
 function Get-RecordedRootProcessIds {
     $recorded = New-Object System.Collections.Generic.List[int]
-    foreach ($pidFile in @($script:BackendPidFile, $script:FrontendPidFile, $script:ReactPidFile)) {
+    foreach ($pidFile in @($script:BackendPidFile, $script:ReactPidFile)) {
         if (-not (Test-Path $pidFile)) {
             continue
         }
@@ -195,7 +195,7 @@ function Get-DescendantProcessIds {
 }
 
 function Remove-RunState {
-    Remove-Item $script:BackendPidFile, $script:FrontendPidFile, $script:ReactPidFile, $script:BackendUrlFile, $script:FrontendUrlFile, $script:ReactUrlFile -ErrorAction SilentlyContinue
+    Remove-Item $script:BackendPidFile, $script:ReactPidFile, $script:BackendUrlFile, $script:ReactUrlFile -ErrorAction SilentlyContinue
 }
 
 function ConvertTo-SingleQuotedPowerShellLiteral {
@@ -226,7 +226,7 @@ function Resolve-DevConfigSecret {
 }
 
 function Clear-PreviousLogs {
-    Remove-Item $script:BackendOutLog, $script:BackendErrLog, $script:FrontendOutLog, $script:FrontendErrLog, $script:ReactOutLog, $script:ReactErrLog -ErrorAction SilentlyContinue
+    Remove-Item $script:BackendOutLog, $script:BackendErrLog, $script:ReactOutLog, $script:ReactErrLog -ErrorAction SilentlyContinue
 }
 
 function Stop-TrackedServices {
@@ -253,12 +253,10 @@ function Stop-TrackedServices {
 
 function Invoke-BackendBootstrap {
     $previousPythonPath = $env:PYTHONPATH
-    $previousVectorBackend = $env:NOVEL_SYSTEM_VECTOR_BACKEND
     $previousConfigSecret = $env:NOVEL_SYSTEM_CONFIG_SECRET
 
     try {
         $env:PYTHONPATH = "src"
-        $env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
         $env:NOVEL_SYSTEM_CONFIG_SECRET = Resolve-DevConfigSecret
         Invoke-NativeStep -Label "Backend migration" -WorkingDirectory $script:BackendDir -FilePath $script:PythonExe -ArgumentList @("-m", "alembic", "upgrade", "head")
         # Production startup runs migrations only; it never seeds demo projects.
@@ -269,13 +267,6 @@ function Invoke-BackendBootstrap {
         }
         else {
             $env:PYTHONPATH = $previousPythonPath
-        }
-
-        if ($null -eq $previousVectorBackend) {
-            Remove-Item Env:NOVEL_SYSTEM_VECTOR_BACKEND -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:NOVEL_SYSTEM_VECTOR_BACKEND = $previousVectorBackend
         }
 
         if ($null -eq $previousConfigSecret) {
@@ -336,8 +327,7 @@ function Show-StartupFailureDiagnostics {
     $logTargets = @(
         @{ Label = "backend.err.log"; Path = $script:BackendErrLog },
         @{ Label = "backend.out.log"; Path = $script:BackendOutLog },
-        @{ Label = "frontend-react.err.log"; Path = $script:ReactErrLog },
-        @{ Label = "frontend.err.log"; Path = $script:FrontendErrLog }
+        @{ Label = "frontend-react.err.log"; Path = $script:ReactErrLog }
     )
     foreach ($target in $logTargets) {
         if (Test-Path $target.Path) {
@@ -394,7 +384,7 @@ function Start-TrackedServices {
         Write-Step -Message "Starting backend on $script:BackendUrl"
         $configSecretLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value (Resolve-DevConfigSecret)
         $pythonLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value $script:PythonExe
-        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; & {1} -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {2} --app-dir src' -f $configSecretLiteral, $pythonLiteral, $script:BackendPort
+        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; & {1} -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {2} --app-dir src' -f $configSecretLiteral, $pythonLiteral, $script:BackendPort
         $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $script:BackendDir -RedirectStandardOutput $script:BackendOutLog -RedirectStandardError $script:BackendErrLog -PassThru
         Set-Content -Path $script:BackendPidFile -Value $backendProcess.Id
         Set-Content -Path $script:BackendUrlFile -Value $script:BackendUrl
@@ -431,16 +421,12 @@ $script:BackendDir = Join-Path $repoRoot "backend"
 $script:ReactDir = Join-Path $repoRoot "frontend-react"
 $script:RunDir = Join-Path $repoRoot ".codex-run"
 $script:BackendPidFile = Join-Path $script:RunDir "backend.pid"
-$script:FrontendPidFile = Join-Path $script:RunDir "frontend.pid"
 $script:ReactPidFile = Join-Path $script:RunDir "frontend-react.pid"
 $script:BackendUrlFile = Join-Path $script:RunDir "backend.url"
-$script:FrontendUrlFile = Join-Path $script:RunDir "frontend.url"
 $script:ReactUrlFile = Join-Path $script:RunDir "frontend-react.url"
 $script:ConfigSecretFile = Join-Path $script:RunDir "config.secret"
 $script:BackendOutLog = Join-Path $script:RunDir "backend.out.log"
 $script:BackendErrLog = Join-Path $script:RunDir "backend.err.log"
-$script:FrontendOutLog = Join-Path $script:RunDir "frontend.out.log"
-$script:FrontendErrLog = Join-Path $script:RunDir "frontend.err.log"
 $script:ReactOutLog = Join-Path $script:RunDir "frontend-react.out.log"
 $script:ReactErrLog = Join-Path $script:RunDir "frontend-react.err.log"
 $script:BackendPreferredPort = 8000

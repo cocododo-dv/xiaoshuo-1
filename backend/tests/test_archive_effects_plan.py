@@ -73,7 +73,7 @@ def _seed_volume_boundary_chapters(session) -> None:
                 runtime_eligible=1,
             )
         )
-    session.add(ChapterState(chapter_id=LAST_CHAPTER, aggregate_block_reason="none"))
+    session.add(ChapterState(chapter_id=LAST_CHAPTER))
     session.add(
         SceneCard(
             scene_id=SCENE_ID,

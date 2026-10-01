@@ -149,7 +149,6 @@ $healthUrl = "$backendUrl/ready"
 # inherit it, so migration / backend / per-suite reseed all share the same e2e DB.
 $env:PYTHONPATH = "src"
 $env:NOVEL_SYSTEM_PYTHON = $backendPython
-$env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
 $env:NOVEL_SYSTEM_DATABASE_URL = $dbUrl
 $env:NOVEL_SYSTEM_CONFIG_SECRET = $configSecret
 $env:NOVEL_SYSTEM_LLM_ENABLED = "false"
@@ -172,7 +171,7 @@ $smokeExit = 1
 try {
     # --- Start isolated backend (no --reload, so the process tree stays simple to kill) ---
     Write-Step -Message "Starting seeded backend on $backendUrl"
-    $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_DATABASE_URL = ''{0}''; $env:NOVEL_SYSTEM_CONFIG_SECRET = ''{1}''; $env:NOVEL_SYSTEM_LLM_ENABLED = ''false''; $env:NOVEL_SYSTEM_CORS_ORIGINS = ''{2}''; & ''{3}'' -m uvicorn novel_system.api.app:create_app --factory --host 127.0.0.1 --port {4} --app-dir src' -f $dbUrl, $configSecret, $reactUrl.TrimEnd("/"), ($backendPython -replace "'", "''"), $BackendPort
+    $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_DATABASE_URL = ''{0}''; $env:NOVEL_SYSTEM_CONFIG_SECRET = ''{1}''; $env:NOVEL_SYSTEM_LLM_ENABLED = ''false''; $env:NOVEL_SYSTEM_CORS_ORIGINS = ''{2}''; & ''{3}'' -m uvicorn novel_system.api.app:create_app --factory --host 127.0.0.1 --port {4} --app-dir src' -f $dbUrl, $configSecret, $reactUrl.TrimEnd("/"), ($backendPython -replace "'", "''"), $BackendPort
     $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $backendDir -RedirectStandardOutput "$runDir\backend.out.log" -RedirectStandardError "$runDir\backend.err.log" -PassThru
 
     # --- Start React (dev server; inject the e2e backend as default API base) ---

@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from novel_system.db.models import IdempotencyKey, OperationLog, SceneRunState
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
-from novel_system.services.human_review_support import structured_target
 from novel_system.services.llm_audit import (
     AUDIT_SCHEMA_VERSION,
     bounded_identifier,
@@ -495,71 +494,6 @@ def execute_with_idempotency(
     return result, None
 
 
-def execute_with_optional_idempotency(
-    session: Session,
-    *,
-    idempotency_key: str | None,
-    method: str,
-    path_template: str,
-    payload: Any,
-    action: Callable[..., dict],
-    actor_ref: str = "operator",
-) -> tuple[dict, str | None]:
-    """Honor an idempotency key without breaking legacy callers that omit it.
-
-    New browser clients attach ``X-Idempotency-Key`` to every mutation, while
-    a few older API surfaces predate that contract. Those routes can use this
-    compatibility wrapper during migration: keyed calls get durable
-    claim/replay/conflict semantics, and unkeyed calls keep their historical
-    single-execution behavior.
-
-    The action must not commit its own transaction. On the unkeyed path this
-    helper owns the commit/rollback just as ``execute_with_idempotency`` does on
-    the keyed path.
-    """
-
-    if idempotency_key:
-        return execute_with_idempotency(
-            session,
-            idempotency_key=idempotency_key,
-            method=method,
-            path_template=path_template,
-            payload=payload,
-            action=action,
-            actor_ref=actor_ref,
-        )
-
-    try:
-        result = _invoke_idempotent_action(action, _NoopIdempotencyLease())
-        session.commit()
-        return result, None
-    except Exception:
-        session.rollback()
-        raise
-
-
-@dataclass(frozen=True)
-class _NoopIdempotencyLease:
-    """Lease-shaped value for an optional action that accepts a lease."""
-
-    idempotency_key: str = ""
-    request_hash: str = ""
-    worker_id: str = ""
-    attempt_no: int = 0
-    lease_expires_at: str = ""
-    status: str = "unkeyed"
-    response_json: dict[str, Any] | None = None
-    reclaimed: bool = False
-
-    @property
-    def execution_id(self) -> str:
-        return ""
-
-    def renew(self, *, lease_seconds: int) -> str:
-        del lease_seconds
-        return ""
-
-
 def _invoke_idempotent_action(action: Callable[..., dict], lease: IdempotencyLease) -> dict:
     try:
         signature = inspect.signature(action)
@@ -755,9 +689,7 @@ def _resolve_operator_action_outcome(
 
 
 def _target(target_type: str, target_id: str) -> dict[str, str]:
-    target = structured_target(target_type, target_id)
-    assert target is not None
-    return target
+    return {"target_type": target_type, "target_id": target_id, "target_ref": f"{target_type}:{target_id}"}
 
 
 def _dedupe_targets(targets: list[dict[str, str] | None]) -> list[dict[str, str]]:

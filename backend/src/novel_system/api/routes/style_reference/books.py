@@ -7,17 +7,17 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.deps import get_session
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.style_reference import BulkDeleteRequest, ImportPathRequest, ReclassifyRequest
+from novel_system.api.response import respond
 from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
@@ -51,37 +51,6 @@ from novel_system.services.system_config import require_admin_token
 router = APIRouter(tags=ROUTE_TAGS)
 
 
-class ReclassifyRequest(BaseModel):
-    """重新分类(后台分类作业)。
-
-    - 缺省(``mode="reclassify"``):**破坏式**——先清掉这本书的全部派生数据(抽取 / 画像 / 绑定 /
-      禁用词 / 作业 / 窗口索引),再从头分类;
-    - ``mode="retype"``:**就地重标段落类型**——正文不变,派生数据与绑定全部保留,书保持可用;
-    - ``resume=true``:把最近一次失败 / 取消 / 中断的分类作业从游标续跑(进程重启之后也行)。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    resume: bool = False
-    mode: Literal["reclassify", "retype"] = "reclassify"
-
-
-class BulkDeleteRequest(BaseModel):
-    """书库多选删除:一次最多 100 本;重复的 id 只删一次。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    book_ids: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(min_length=1, max_length=100)
-
-
-class ImportPathRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    file_path: str = Field(min_length=1, max_length=2048)
-    title: str = Field(min_length=1, max_length=512)
-    author_label: str | None = Field(default=None, max_length=255)
-    cloud_policy: Literal["allow_full_cloud", "segments_only", "local_only"]
-    # Wave 7 §5.9 — 导入权属声明 {analysis_rights, send_rights, declared_by}
-    rights_declaration: BoundedJsonObject | None = None
-
-
 @router.post(f"{PATH_PREFIX}/books/import-path")
 def import_book_path(
     payload: ImportPathRequest,
@@ -111,11 +80,9 @@ def import_book_path(
         )
         return _import_response(session, result)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/import-path",
         payload=body,
         action=_do,
         after_commit=dispatch_response_job,
@@ -219,11 +186,9 @@ async def import_book_upload(
     def _run_import() -> Any:
         # 幂等边界在这里显式调用(tests/test_route_mutation_policy 按 AST 找调用点),
         # 整段在线程池里执行;分类作业在事务提交后派发。
-        return idempotent_response(
+        return mutate(
             request,
             session,
-            method="POST",
-            path_template=f"{PATH_PREFIX}/books/import-upload",
             payload=payload,
             action=_do,
             after_commit=dispatch_response_job,
@@ -240,7 +205,8 @@ def get_style_reference_runtime(request: Request):
     client, enabled = llm_client_and_enabled()
     routes = [resolve_node_endpoint(node_id, llm_client=client).as_dict() for node_id in CLASSIFY_NODE_IDS]
     llm_is_local = bool(enabled) and all(route["local"] for route in routes)
-    return ok(
+    return respond(
+        request,
         {
             "llm_enabled": bool(enabled and client is not None),
             "llm_is_local": llm_is_local,
@@ -249,7 +215,6 @@ def get_style_reference_runtime(request: Request):
             ),
             "classify_routes": routes,
         },
-        req_id=request_id_of(request),
     )
 
 
@@ -262,7 +227,7 @@ def list_books(
     """书库列表(按导入时间):每本书的状态、段落类型的来源与一致率、最近的分类 / 学习作业、画像摘要
     (``needs_relearn`` / ``relearn_reason``)与 ``applied_projects``;不带 ``stats_json``。"""
     books = StyleReferenceRepository(session).list_books(status=status)
-    return ok({"books": book_summaries(session, books)}, req_id=request_id_of(request))
+    return respond(request, {"books": book_summaries(session, books)})
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}")
@@ -275,7 +240,7 @@ def get_book(
     book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
         raise book_not_found(book_id)
-    return ok({"book": _book_payload(session, book)}, req_id=request_id_of(request))
+    return respond(request, {"book": _book_payload(session, book)})
 
 
 @router.get(f"{PATH_PREFIX}/books/{{book_id}}/classification/estimate")
@@ -292,7 +257,7 @@ def estimate_book_classification(
     book = StyleReferenceRepository(session).get_book(book_id)
     if book is None:
         raise book_not_found(book_id)
-    return ok({"estimate": estimate_classification(session, book)}, req_id=request_id_of(request))
+    return respond(request, {"estimate": estimate_classification(session, book)})
 
 
 # 2026-09-14 风格保真修补(WP4.2):本场参考窗口「展开原文」——按段落序号闭区间读参考书原文。
@@ -323,7 +288,8 @@ def get_book_paragraph_range(
         )
     effective_end = min(end, start + PARAGRAPH_RANGE_MAX - 1)
     rows = repo.paragraph_range(book_id, start, effective_end)
-    return ok(
+    return respond(
+        request,
         {
             "book_id": book_id,
             "start": start,
@@ -338,7 +304,6 @@ def get_book_paragraph_range(
                 for row in rows
             ],
         },
-        req_id=request_id_of(request),
     )
 
 
@@ -355,11 +320,9 @@ def delete_book(
         result = delete_reference_book(session, book_id)
         return {"book_id": book_id, "deleted": True, "unbound": result["unbound"]}
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}",
         payload={"book_id": book_id},
         action=_do,
     )
@@ -378,11 +341,9 @@ def bulk_delete_books(
     def _do() -> dict[str, Any]:
         return delete_reference_books(session, book_ids)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/bulk-delete",
         payload={"book_ids": book_ids},
         action=_do,
     )
@@ -428,11 +389,9 @@ def reclassify_book(
             "classification": classification_payload(job),
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
         payload={"book_id": book_id, "resume": resume, "mode": mode},
         action=_do,
         after_commit=dispatch_response_job,
@@ -468,11 +427,9 @@ def cancel_book_classification(
             "finished": job.state == "cancelled",
         }
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/books/{{book_id}}/classification/cancel",
         payload={"book_id": book_id},
         action=_do,
     )

@@ -41,7 +41,8 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
     finally:
         connection.close()
 
-    assert "manual_hold_reason" in columns
+    # 升级到头：章状态的核心列在，0098 删掉的手动挂起列不在
+    assert "current_phase" in columns and "manual_hold_reason" not in columns
     assert "trashed_flag" in chapter_goal_columns
     assert "trashed_at" in chapter_goal_columns
     assert "trashed_by" in chapter_goal_columns

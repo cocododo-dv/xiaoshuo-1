@@ -219,8 +219,9 @@ def test_ensure_and_save_scene_author_drafts_without_overwriting_runtime_outputs
     scene_draft = ensured["draft"]
     assert scene_draft["content"] == "场景运行终稿。"
     assert scene_draft["source_text_ref"] == f"final_scene:{final_row_id}"
-    # 回包只有写作台读的两样：草稿与这一场当前权威正文的指针（台面上下文已删，B08-02）
-    assert set(ensured) == {"draft", "runtime_final_ref"}
+    # 回包只有写作台读的两样：草稿与这一场当前权威正文的指针（台面上下文已删，B08-02）；
+    # actor_ref 是幂等执行给每个写接口回包带上的审计字段
+    assert set(ensured) == {"draft", "runtime_final_ref", "actor_ref"}
     assert ensured["runtime_final_ref"] == f"final_scene:{final_row_id}"
 
     save_response = client.patch(
@@ -233,7 +234,7 @@ def test_ensure_and_save_scene_author_drafts_without_overwriting_runtime_outputs
     saved = saved_payload["draft"]
     assert saved["content"] == "作者手工改过的场景稿。"
     assert saved["revision_no"] == 2
-    assert set(saved_payload) == {"draft", "runtime_final_ref", "changed", "words_rollup", "diagnosis_rollup"}
+    assert set(saved_payload) == {"draft", "runtime_final_ref", "changed", "words_rollup", "diagnosis_rollup", "actor_ref"}
 
     session.expire_all()
     assert session.get(ChapterMemory, aggregate_row_id).content == "章节最终聚合稿。"

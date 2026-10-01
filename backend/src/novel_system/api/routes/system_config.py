@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from typing import Annotated
-
 from fastapi import APIRouter, Depends, Header, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
-from novel_system.api.mutations import optional_idempotent_response
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.deps import actor_ref_of, get_session
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.system_config import (
+    LlmNodeRouteSyncRequest,
+    LlmProviderConfigRequest,
+    LlmRoleRoutesRequest,
+    ProviderProbeRequest,
+)
+from novel_system.api.response import respond
 from novel_system.services.system_config import SystemConfigService, require_admin_token
 
 router = APIRouter(tags=["system_config"])
@@ -19,61 +22,10 @@ def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
 
-class ProviderProbeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    provider: str | None = Field(default=None, max_length=64)
-    provider_type: str | None = Field(default=None, max_length=64)
-    provider_id: str | None = Field(default=None, max_length=255)
-    base_url: str | None = Field(default=None, max_length=2048)
-    api_key: str | None = Field(default=None, max_length=16_384)
-    credential_mode: str | None = Field(default=None, max_length=64)
-    api_mode: str | None = Field(default=None, max_length=64)
-    provider_options: BoundedJsonObject | None = None
-    timeout_seconds: float | None = Field(default=None, ge=0, le=3_600)
-    model: str | None = Field(default=None, max_length=255)
-    models: list[
-        Annotated[str, Field(min_length=1, max_length=255)]
-    ] | None = Field(default=None, max_length=256)
-    check_completion: bool | None = None
-
-
-class LlmProviderConfigRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    provider_id: str = Field(min_length=1, max_length=255)
-    provider_type: str = Field(min_length=1, max_length=64)
-    account_id: str | None = Field(default=None, max_length=255)
-    base_url: str | None = Field(default=None, max_length=2048)
-    enabled: bool = True
-    credential_mode: str = Field(default="api_key", max_length=64)
-    api_mode: str | None = Field(default=None, max_length=64)
-    models: list[
-        Annotated[str, Field(min_length=1, max_length=255)]
-    ] | None = Field(default=None, max_length=256)
-    provider_options: BoundedJsonObject | None = None
-    api_key: str | None = Field(default=None, max_length=16_384)
-
-
-class LlmNodeRouteSyncRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    provider_id: str | None = Field(default=None, max_length=255)
-    model: str | None = Field(default=None, max_length=255)
-    activate: bool = True
-
-
-class LlmRoleRoutesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    assignments: BoundedJsonObject
-    activate: bool = True
-
-
 @router.get("/api/v1/system-config")
 def system_config_overview(request: Request, session: Session = Depends(get_session)):
     # 摘要：运行时状态 + 各类配置的来源与活动快照版本（不带 YAML 正文与历史快照；设置页读 /llm）
-    return ok(SystemConfigService(session).overview(include_content=False), req_id=request_id_of(request))
+    return respond(request, SystemConfigService(session).overview(include_content=False))
 
 
 @router.post("/api/v1/system-config/test-provider")
@@ -85,11 +37,9 @@ def test_system_config_provider(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/test-provider",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).test_provider(payload=body),
     )
@@ -97,7 +47,7 @@ def test_system_config_provider(
 
 @router.get("/api/v1/system-config/llm")
 def system_config_llm_overview(request: Request, session: Session = Depends(get_session)):
-    return ok(SystemConfigService(session).llm_overview(), req_id=request_id_of(request))
+    return respond(request, SystemConfigService(session).llm_overview())
 
 
 @router.post("/api/v1/system-config/llm/providers")
@@ -109,11 +59,9 @@ def save_system_config_llm_provider(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/providers",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_provider(
             payload=body,
@@ -131,11 +79,9 @@ def delete_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template="/api/v1/system-config/llm/providers/{provider_id}",
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).delete_llm_provider(
             provider_id=provider_id,
@@ -153,11 +99,9 @@ def set_default_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/providers/{provider_id}/default",
         payload={"provider_id": provider_id},
         action=lambda: SystemConfigService(session, auto_commit=False).set_default_llm_provider(
             provider_id=provider_id,
@@ -175,11 +119,9 @@ def sync_missing_system_config_llm_node_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/node-routes/sync-missing",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).sync_missing_llm_node_routes(
             payload=body,
@@ -199,11 +141,9 @@ def probe_system_config_llm_provider(
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True) if payload else {}
     request_payload = {"provider_id": provider_id, **body}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/providers/{provider_id}/probe",
         payload=request_payload,
         action=lambda: SystemConfigService(session, auto_commit=False).probe_llm_provider(
             provider_id=provider_id,
@@ -214,10 +154,7 @@ def probe_system_config_llm_provider(
 
 @router.get("/api/v1/system-config/llm/provider-presets")
 def list_system_config_llm_provider_presets(request: Request, session: Session = Depends(get_session)):
-    return ok(
-        SystemConfigService(session).llm_provider_presets(),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SystemConfigService(session).llm_provider_presets())
 
 
 @router.get("/api/v1/system-config/llm/providers/{provider_id}/models")
@@ -228,10 +165,7 @@ def list_system_config_llm_provider_models(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return ok(
-        SystemConfigService(session).list_llm_provider_models(provider_id=provider_id),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SystemConfigService(session).list_llm_provider_models(provider_id=provider_id))
 
 
 @router.post("/api/v1/system-config/llm/role-routes")
@@ -243,11 +177,9 @@ def save_system_config_llm_role_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v1/system-config/llm/role-routes",
         payload=body,
         action=lambda: SystemConfigService(session, auto_commit=False).save_llm_role_routes(
             payload=body,

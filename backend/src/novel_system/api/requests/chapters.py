@@ -1,13 +1,15 @@
 """v1 章接口的请求体（建 / 改章、批量删章、章内场景排序）。"""
 from __future__ import annotations
 
-from typing import Annotated
-
 from pydantic import Field
 
-from novel_system.api.request_types import BoundedJsonObject, StrictRequestModel, WriterBriefJsonInput
-
-INT64_MAX = (1 << 63) - 1
+from novel_system.api.requests.common import (
+    INT64_MAX,
+    BoundedIdentifier,
+    BoundedJsonObject,
+    StrictRequestModel,
+    WriterBriefJsonInput,
+)
 
 
 class ChapterUpsertRequest(StrictRequestModel):
@@ -31,9 +33,6 @@ class ChapterUpsertRequest(StrictRequestModel):
     # Shape validation belongs to normalize_chapter_writer_brief() so chapter
     # and scene endpoints share WRITER_BRIEF_INVALID / HTTP 400 semantics.
     writer_brief_json: WriterBriefJsonInput = None
-
-
-BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=255)]
 
 
 class ChapterIdsRequest(StrictRequestModel):

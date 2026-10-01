@@ -542,6 +542,33 @@ def test_adopt_falls_back_to_author_draft(client, session):
     assert "手写的正文段落" in final.content
 
 
+def test_adopt_author_draft_fallback_stores_visible_text_not_html_entities(client, session):
+    """B12-21：不带精确稿的兼容路径拿作者稿当内容源时，权威正文是作者看到的字——实体还原成字符、一段一行。
+    以前正则剥标签，``&nbsp;`` / ``&quot;`` / ``&amp;`` / ``&lt;`` 原样进了终稿。"""
+    _create_chapter(client, "chapter_adopt_7")
+    _create_scene(client, "scene_adopt_7", chapter_id="chapter_adopt_7", scene_seq=1)
+    ensure = client.post("/api/v1/author-drafts/scene/scene_adopt_7/ensure", json={})
+    assert ensure.status_code == 200
+    draft = ensure.json()["data"]["draft"]
+    patched = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={
+            "content": "<p>林昭说&nbsp;&quot;旧信 &amp; 案卷&quot; &lt;别拆&gt;</p><p>雨城的第二段。</p>",
+            "base_revision_no": draft["revision_no"],
+        },
+    )
+    assert patched.status_code == 200
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_7/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-7"},
+    )
+    assert response.status_code == 200, response.text
+    final = session.get(FinalScene, response.json()["data"]["final_scene_row_id"])
+    assert final.content == '林昭说\xa0"旧信 & 案卷" <别拆>\n雨城的第二段。'
+
+
 def test_archiver_marks_final_scene_archived(session):
     """单元级：归档事务统一写 FinalScene.status=archived（词表统一）。"""
     session.add(

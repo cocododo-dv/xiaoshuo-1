@@ -7,12 +7,10 @@ from novel_system.db.models import (
     HumanReviewEvent,
     LlmCall,
     QcReport,
-    RelationProfile,
     SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneRunState,
-    VoiceProfile,
 )
 
 
@@ -83,43 +81,6 @@ def create_scene(
     assert response.status_code == 200
 
 
-def seed_voice_profile(session: Session, voice_profile_id: str = "VOICE_CHAR_A") -> None:
-    session.add(
-        VoiceProfile(
-            row_id=f"voice_profile_{voice_profile_id}_v1",
-            voice_profile_id=voice_profile_id,
-            version=1,
-            character_id=voice_profile_id.removeprefix("VOICE_"),
-            content="short clipped lines; pressure makes the tone harder",
-            active_flag=1,
-            source_note="test baseline",
-        )
-    )
-    session.commit()
-
-
-def seed_relation_profile(
-    session: Session,
-    relation_profile_id: str = "REL_CHAR_A_CHAR_B",
-    *,
-    left_character_id: str = "CHAR_A",
-    right_character_id: str = "CHAR_B",
-) -> None:
-    session.add(
-        RelationProfile(
-            row_id=f"relation_profile_{relation_profile_id}_v1",
-            relation_profile_id=relation_profile_id,
-            left_character_id=left_character_id,
-            right_character_id=right_character_id,
-            version=1,
-            content="reunion tension; B knows slightly more than A",
-            active_flag=1,
-            source_note="test baseline",
-        )
-    )
-    session.commit()
-
-
 def seed_literary_ready_state(session: Session, scene_id: str = "CH910_SC01", chapter_id: str = "CH910") -> None:
     scene = session.get(SceneCard, scene_id)
     scene.writer_brief_json = dict(SCENE_WRITER_BRIEF_V2)
@@ -147,14 +108,62 @@ def seed_literary_ready_state(session: Session, scene_id: str = "CH910_SC01", ch
     session.commit()
 
 
+# B12-02 / X01-08：起草台（ws-scene-api.js / ws-scene-derive.js）只读这些键；其余诊断部分要 ?include=diagnostics
+DESK_WORKBENCH_KEYS = {
+    "scene_run_state",
+    "author_state",
+    "bundle",
+    "neutral_draft",
+    "style_draft",
+    "final_scene",
+    "generation_summary",
+    "hard_qc_summary",
+    "soft_qc_summary",
+}
+DIAGNOSTIC_WORKBENCH_KEYS = {
+    "chapter_goal",
+    "scene_card",
+    "chapter_state",
+    "run_preflight",
+    "source_safety_scan",
+    "literary_blueprint",
+    "execution_contract",
+    "scene_memory",
+    "near_final_summary",
+    "rewrite_counters",
+    "human_review_summary",
+    "attempts",
+}
+
+
+def test_workbench_default_payload_carries_only_what_the_drafting_desk_reads(client) -> None:
+    """默认载荷不再每次现算预检、抄袭门、蓝图、准终稿摘要、尝试历史、bundle 冻结快照（界面一个都不读）。"""
+    create_chapter(client, "CH925")
+    create_scene(client, chapter_id="CH925", scene_id="CH925_SC01")
+
+    default = client.get("/api/v1/scenes/CH925_SC01/workbench")
+    assert default.status_code == 200
+    data = default.json()["data"]
+    assert set(data) == DESK_WORKBENCH_KEYS
+    assert set(data["bundle"]) == {"bundle_id", "bundle_snapshot_hash"}
+
+    full = client.get("/api/v1/scenes/CH925_SC01/workbench?include=diagnostics").json()["data"]
+    assert set(full) == DESK_WORKBENCH_KEYS | DIAGNOSTIC_WORKBENCH_KEYS
+    assert set(full["bundle"]) == {"bundle_id", "bundle_snapshot_hash", "snapshot"}
+    for key in DESK_WORKBENCH_KEYS - {"bundle"}:
+        assert full[key] == data[key]
+
+    unknown = client.get("/api/v1/scenes/CH925_SC01/workbench?include=everything")
+    assert unknown.status_code == 422
+    assert unknown.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+
+
 def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields(client, session: Session) -> None:
     create_chapter(client)
     create_scene(client)
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     seed_literary_ready_state(session)
 
-    response = client.get("/api/v1/scenes/CH910_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH910_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -190,10 +199,8 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
 def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_run(client, session: Session) -> None:
     create_chapter(client, "CH915")
     create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
-    response = client.get("/api/v1/scenes/CH915_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH915_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     data = response.json()["data"]
@@ -222,8 +229,6 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     )
     create_chapter(client, "CH921")
     create_scene(client, chapter_id="CH921", scene_id="CH921_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     bundle = SceneBundle(
         bundle_id="bundle_CH921_SC01_v1",
         scene_id="CH921_SC01",
@@ -253,7 +258,7 @@ def test_workbench_payload_scans_final_scene_for_protected_source_terms(
     session.add_all([bundle, final])
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH921_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH921_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     scan = response.json()["data"]["source_safety_scan"]
@@ -272,8 +277,6 @@ def test_workbench_payload_scans_final_scene_against_the_bound_reference(client,
 
     create_chapter(client, "CH921D")
     create_scene(client, chapter_id="CH921D", scene_id="CH921D_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     refs = seed_bound_reference(
         session,
         seed="workbench",
@@ -296,7 +299,7 @@ def test_workbench_payload_scans_final_scene_against_the_bound_reference(client,
     session.add(final)
     session.commit()
 
-    scan = client.get("/api/v1/scenes/CH921D_SC01/workbench").json()["data"]["source_safety_scan"]
+    scan = client.get("/api/v1/scenes/CH921D_SC01/workbench?include=diagnostics").json()["data"]["source_safety_scan"]
 
     assert scan["safe"] is False
     assert scan["checked_books"] == [refs["book_id"]]
@@ -314,7 +317,7 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     create_chapter(client, "CH911")
     create_scene(client, chapter_id="CH911", scene_id="CH911_SC01")
 
-    response = client.get("/api/v1/scenes/CH911_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH911_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
@@ -327,38 +330,20 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     ).status_code == 404
 
 
-def test_bundle_builds_without_voice_or_relation_cards_and_ignores_leftover_ones(
-    client, session: Session
-) -> None:
-    """缺卡时 bundle 照常构建（过去 409 BUNDLE_SOURCE_MISSING）；批准#15（重评 R8）之后库里留着的卡也不再注入：
-
-    两次构建的上下文与哈希一样，既没有这两节，也没有它们的出处。
-    """
+def test_bundle_builds_without_voice_or_relation_cards(client, session: Session) -> None:
+    """缺卡时 bundle 照常构建（过去 409 BUNDLE_SOURCE_MISSING）。批准#15（重评 R8）之后两张卡片表已经删了：bundle
+    既没有这两节，也没有它们的出处；角色身份契约照常从人物资料来。"""
     from novel_system.services.bundle_builder import BundleBuilder
 
     create_chapter(client, "CH912")
     create_scene(client, chapter_id="CH912", scene_id="CH912_SC01")
 
-    bare = BundleBuilder(session).build("CH912_SC01")
-    bare_snapshot = bare["snapshot"]
-    assert "voice_card" not in bare_snapshot["inline_digests"]
-    assert "relation_card" not in bare_snapshot["inline_digests"]
-    assert "voice_profile_id" not in bare_snapshot["source_version_refs"]
-    assert "relation_profile_id" not in bare_snapshot["source_version_refs"]
+    snapshot = BundleBuilder(session).build("CH912_SC01")["snapshot"]
+    assert "voice_card" not in snapshot["inline_digests"]
+    assert "relation_card" not in snapshot["inline_digests"]
+    assert not [key for key in snapshot["source_version_refs"] if key.startswith(("voice_profile", "relation_profile"))]
     # 角色身份契约不依赖这两张卡
-    assert "CHAR_A" in bare_snapshot["inline_digests"]["character_contract"]
-
-    seed_voice_profile(session)
-    seed_relation_profile(session)
-    carded = BundleBuilder(session).build("CH912_SC01")
-    carded_snapshot = carded["snapshot"]
-    assert "voice_card" not in carded_snapshot["inline_digests"]
-    assert "relation_card" not in carded_snapshot["inline_digests"]
-    assert not [
-        key for key in carded_snapshot["source_version_refs"] if key.startswith(("voice_profile", "relation_profile"))
-    ]
-    assert carded_snapshot["inline_digests"] == bare_snapshot["inline_digests"]
-    assert carded["bundle_snapshot_hash"] == bare["bundle_snapshot_hash"]
+    assert "CHAR_A" in snapshot["inline_digests"]["character_contract"]
 
 
 def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(client) -> None:
@@ -375,7 +360,7 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
         must_include_text="",
     )
 
-    response = client.get("/api/v1/scenes/CH913_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH913_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
@@ -396,14 +381,12 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
 def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Session) -> None:
     create_chapter(client, "CH919")
     create_scene(client, chapter_id="CH919", scene_id="CH919_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
     scene = session.get(SceneCard, "CH919_SC01")
     scene.hook = "以死亡证明作为雨夜钩子。"
     scene.forbidden_text = "死亡证明"
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH919_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH919_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     preflight = response.json()["data"]["run_preflight"]
@@ -451,8 +434,6 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
 ) -> None:
     create_chapter(client, "CH915")
     create_scene(client, chapter_id="CH915", scene_id="CH915_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     state = session.get(SceneRunState, "CH915_SC01")
     state.current_human_review_event_id = None
@@ -476,7 +457,7 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH915_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH915_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -486,8 +467,6 @@ def test_workbench_does_not_resurrect_stale_human_review_event_when_current_poin
 def test_workbench_soft_qc_summary_only_uses_reports_from_the_active_run(client, session: Session) -> None:
     create_chapter(client, "CH916")
     create_scene(client, chapter_id="CH916", scene_id="CH916_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     state = session.get(SceneRunState, "CH916_SC01")
     state.current_bundle_id = "bundle_current_CH916_SC01"
@@ -527,7 +506,7 @@ def test_workbench_soft_qc_summary_only_uses_reports_from_the_active_run(client,
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH916_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH916_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -541,8 +520,6 @@ def test_workbench_generation_summary_stays_empty_when_current_run_has_no_genera
 ) -> None:
     create_chapter(client, "CH917")
     create_scene(client, chapter_id="CH917", scene_id="CH917_SC01")
-    seed_voice_profile(session)
-    seed_relation_profile(session)
 
     session.add(
         LlmCall(
@@ -566,7 +543,7 @@ def test_workbench_generation_summary_stays_empty_when_current_run_has_no_genera
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH917_SC01/workbench")
+    response = client.get("/api/v1/scenes/CH917_SC01/workbench?include=diagnostics")
 
     assert response.status_code == 200
     payload = response.json()["data"]

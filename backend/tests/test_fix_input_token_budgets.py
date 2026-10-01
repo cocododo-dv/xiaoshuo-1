@@ -33,7 +33,6 @@ from novel_system.db.models import (
 )
 from novel_system.services import near_final as near_final_module
 from novel_system.services import qc_engine as qc_engine_module
-from novel_system.services import writer_review as writer_review_module
 from novel_system.services.context_budget import SECTION_SPECS, estimate_tokens, finalize_request_budget
 from novel_system.services.llm_client import (
     LLMRequest,
@@ -154,8 +153,16 @@ def _rich_scene_snapshot() -> dict:
     }
 
 
+def _compact_chapter_summary(text: str, limit: int = 1600) -> str:
+    """章级评审提示里的章摘要：超过 1600 字截断并注明（原写作评审服务的截断规则，随该服务删除搬到这里）。"""
+    stripped = (text or "").strip()
+    if len(stripped) <= limit:
+        return stripped
+    return f"{stripped[:limit].rstrip()}\n...[truncated for writer review prompt]..."
+
+
 def _chapter_review_snapshot(content: str) -> dict:
-    """与 WriterReviewService._chapter_review_bundle 同形：章目标 + 章 brief + 1600 字截断摘要。"""
+    """章级评审的快照形状：章目标 + 章 brief + 1600 字截断摘要。"""
     return {
         "contract_version": "WRITER_CHAPTER_REVIEW_v1",
         "stage_allowlist_name": "writer_chapter_review",
@@ -175,33 +182,8 @@ def _chapter_review_snapshot(content: str) -> dict:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            "chapter_summary": writer_review_module._compact_source_for_prompt(content),
+            "chapter_summary": _compact_chapter_summary(content),
         },
-    }
-
-
-def _diagnosis_payload() -> dict:
-    dimensions = list(writer_review_module.ALL_WRITER_REVIEW_DIMENSIONS)
-    return {
-        "scores": {dimension: 0.62 for dimension in dimensions},
-        "findings": [
-            {
-                "dimension": dimension,
-                "severity": "major" if index % 2 else "minor",
-                "issue": _zh(60, seed=200 + index),
-                "recommendation": _zh(60, seed=220 + index),
-                "evidence_excerpt": _zh(40, seed=240 + index),
-                "evidence_location": f"第{index + 2}段",
-                "why_it_matters": _zh(50, seed=260 + index),
-            }
-            for index, dimension in enumerate(dimensions[:6])
-        ],
-        "revision_brief": [
-            {"priority": index + 1, "instruction": _zh(70, seed=300 + index), "target_dimension": dimension}
-            for index, dimension in enumerate(dimensions[:4])
-        ],
-        "overall_score": 0.62,
-        "requires_human_review": False,
     }
 
 

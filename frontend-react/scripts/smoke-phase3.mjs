@@ -1,5 +1,5 @@
 // Phase 3 验收冒烟：目录统一（catalog API 唯一真相源）。
-// 前置：React dev 5174 + 后端（参数2，默认 8009，已 seed demo）。
+// 前置：React dev 5176 + 后端（参数2，默认 8009，已注入中性测试夹具）。
 // 运行：cd frontend && node ../frontend-react/scripts/smoke-phase3.mjs
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
-const BASE = process.argv[2] || "http://127.0.0.1:5174/";
+const BASE = process.argv[2] || "http://127.0.0.1:5176/";
 const API = process.argv[3] || "http://127.0.0.1:8009";
 let failed = 0;
 const errors = [];

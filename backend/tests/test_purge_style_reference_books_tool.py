@@ -21,6 +21,13 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.jobs import StyleJobService
 from novel_system.tools.purge_style_reference_books import main, purge_book, select_books
+from tests.support.schema import stamp_schema_revision
+
+
+@pytest.fixture(autouse=True)
+def _migrated_database() -> None:
+    """工具的 --execute 先核对库结构版本（tools/_cli.py）：测试库用 create_all 建，给它盖上代码认的版本。"""
+    stamp_schema_revision()
 
 
 def _seed_book(session, seed: str, *, book_id: str | None = None) -> str:

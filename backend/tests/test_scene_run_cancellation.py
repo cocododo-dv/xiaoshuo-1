@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as SqlAlchemySession
 
+from novel_system.api.error_catalog import ERROR_MESSAGES
 from novel_system.db.models import (
     ChapterGoal,
     ChapterRunJob,
@@ -1040,20 +1041,26 @@ def test_endpoint_commit_failure_leaves_no_persisted_cancel(
 ) -> None:
     job = _create_queued_job(client)
     original_commit = SqlAlchemySession.commit
-    commit_count = 0
+    injected: list[str] = []
 
-    def fail_route_commit(db) -> None:  # noqa: ANN001
-        nonlocal commit_count
-        commit_count += 1
-        if commit_count == 2:
+    def fail_the_commit_carrying_the_cancel(db) -> None:  # noqa: ANN001
+        # 按内容认提交（不按第几次）：幂等占位、取消前的空提交都放行，只让写着「已取消」的那一次失败
+        status = db.execute(
+            select(ChapterRunJob.status).where(ChapterRunJob.job_id == job["job_id"])
+        ).scalar_one_or_none()
+        if status == "cancelled" and not injected:
+            injected.append(status)
             raise RuntimeError("injected cancellation commit failure")
         original_commit(db)
 
-    monkeypatch.setattr(SqlAlchemySession, "commit", fail_route_commit)
+    monkeypatch.setattr(SqlAlchemySession, "commit", fail_the_commit_carrying_the_cancel)
 
-    with pytest.raises(RuntimeError, match="injected cancellation commit failure"):
-        client.post(f"/api/v1/run-jobs/{job['job_id']}/cancel")
+    response = client.post(f"/api/v1/run-jobs/{job['job_id']}/cancel")
 
+    assert injected == ["cancelled"]
+    # 幂等执行把任意异常收成稳定的 500（原文只进服务端日志）
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
     db = SessionLocal()
     try:
         persisted = db.get(ChapterRunJob, job["job_id"])
@@ -1085,7 +1092,7 @@ def test_endpoint_database_busy_leaves_no_persisted_cancel(
     assert response.status_code == 503
     assert response.json()["error"] == {
         "code": "DATABASE_BUSY",
-        "message": "database is busy; retry after the current long-running operation finishes",
+        "message": ERROR_MESSAGES["DATABASE_BUSY"],
         "details": {"retryable": True},
     }
 

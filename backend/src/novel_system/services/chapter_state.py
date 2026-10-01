@@ -24,7 +24,6 @@ def ensure_chapter_state(session: Session, chapter_id: str) -> ChapterState:
             chapter_id=chapter_id,
             current_phase="drafting",
             mid_aggregate_enabled_effective=0,
-            aggregate_block_reason="none",
         )
         session.add(chapter_state)
         session.flush()
@@ -41,14 +40,9 @@ def chapter_state_snapshot(session: Session, chapter_id: str) -> dict:
         "chapter_passed_scene_count": (
             int(chapter_state.chapter_passed_scene_count or 0) if chapter_state is not None else 0
         ),
-        "chapter_backfill_pending_count": 0,
         "mid_aggregate_enabled_effective": (
             int(chapter_state.mid_aggregate_enabled_effective or 0) if chapter_state is not None else 0
         ),
-        "aggregate_block_reason": (
-            chapter_state.aggregate_block_reason if chapter_state is not None else "none"
-        ),
-        "manual_hold_reason": None,
         "last_interim_memory_row_id": (
             chapter_state.last_interim_memory_row_id if chapter_state is not None else None
         ),

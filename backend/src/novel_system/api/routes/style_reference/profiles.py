@@ -12,16 +12,16 @@ check 作业与读数表接手。
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from novel_system.api.deps import get_session, request_id_of
-from novel_system.api.mutations import idempotent_response
-from novel_system.api.request_types import EmptyRequest
-from novel_system.api.response import ok
+from novel_system.api.deps import get_session
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.common import EmptyRequest
+from novel_system.api.requests.style_reference import BannedTermCreateRequest, CardLineStateRequest
+from novel_system.api.response import respond
 from novel_system.api.routes.style_reference._common import PATH_PREFIX, ROUTE_TAGS
 from novel_system.services.style_reference import banned_terms
 from novel_system.services.style_reference.binding_config import normalize_binding_config
@@ -34,22 +34,6 @@ from novel_system.services.style_reference.schemas import InjectionPreviewReques
 from novel_system.services.style_reference.summaries import profile_detail
 
 router = APIRouter(tags=ROUTE_TAGS)
-
-
-class CardLineStateRequest(BaseModel):
-    """文风卡一句的状态:``pinned`` 永远带上 / ``excluded`` 不再用 / ``null`` 清掉。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    state: Literal["pinned", "excluded"] | None = None
-
-
-class BannedTermCreateRequest(BaseModel):
-    """禁用词登记:generation=起草时不许出现(进红线);extraction=学习时滤掉含这个词的段落。"""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    term: str = Field(min_length=1, max_length=512)
-    replacement_hint: str | None = Field(default=None, max_length=2_000)
-    scope: str = Field(default="generation", min_length=1, max_length=64)
 
 
 def _profile_or_404(session: Session, profile_id: str):
@@ -67,7 +51,7 @@ def get_profile(
 ):
     """文风画像页:气质、16 维文风卡(按辨识度)与每句的 ✓ / ✗ 状态和依据引文、声音习惯、结构、各维计数。"""
     profile = _profile_or_404(session, profile_id)
-    return ok({"profile": profile_detail(session, profile)}, req_id=request_id_of(request))
+    return respond(request, {"profile": profile_detail(session, profile)})
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}")
@@ -89,11 +73,9 @@ def set_profile_card_line_state(
     def _do() -> dict[str, Any]:
         return set_card_line_state(session, profile_id, line_id, state)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}",
         payload={"profile_id": profile_id, "line_id": line_id, "state": state},
         action=_do,
     )
@@ -111,7 +93,7 @@ def list_banned_terms(
     scope: str | None = None,
     session: Session = Depends(get_session),
 ):
-    return ok({"terms": banned_terms.list_banned_terms(session, profile_id, scope=scope)}, req_id=request_id_of(request))
+    return respond(request, {"terms": banned_terms.list_banned_terms(session, profile_id, scope=scope)})
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms")
@@ -131,11 +113,9 @@ def create_banned_term(
             session, profile_id, term=term_text, scope=scope, replacement_hint=payload.replacement_hint
         )
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms",
         payload={
             "profile_id": profile_id,
             "term": term_text,
@@ -158,11 +138,9 @@ def delete_banned_term(
     def _do() -> dict[str, Any]:
         return banned_terms.delete_banned_term(session, term_id)
 
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="DELETE",
-        path_template=f"{PATH_PREFIX}/banned-terms/{{term_id}}",
         payload={"term_id": term_id},
         action=_do,
     )
@@ -211,4 +189,4 @@ def dryrun_injection_preview(
         config=normalize_binding_config(config),
         scene_id=payload.scene_id,
     )
-    return ok(data, req_id=request_id_of(request))
+    return respond(request, data)

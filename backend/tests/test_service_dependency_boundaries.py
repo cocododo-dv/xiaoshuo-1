@@ -34,7 +34,6 @@ def _depends_on(filename: str, module: str) -> bool:
 
 
 def test_removed_service_cycles_do_not_regress() -> None:
-    assert not _depends_on("bundle_builder.py", "novel_system.services.writer_review")
     assert not _depends_on("quality_classifier.py", "novel_system.services.qc_engine")
     assert not _depends_on("final_text_gate.py", "novel_system.services.qc_engine")
 

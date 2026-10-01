@@ -46,9 +46,7 @@ INDIRECTLY_PURGED_TABLES = {
 }
 
 #: 带着指向作品对象的列、却刻意不随作品永久清除的表，以及为什么
-NOT_PURGED_TABLES = {
-    "relation_profiles": "退役的关系卡（批准 #15）：产品里写不进来，表随后由迁移删除",
-}
+NOT_PURGED_TABLES: dict[str, str] = {}
 
 #: 守卫认为「可能指向作品对象」的列名后缀
 OWNERSHIP_REFERENCE_SUFFIXES = ("project_id", "chapter_id", "scene_id", "draft_id", "character_id")

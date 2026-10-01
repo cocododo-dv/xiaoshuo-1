@@ -31,6 +31,8 @@ from novel_system.services.prompt_builder import (
     reset_prompt_template_cache,
 )
 from novel_system.services.system_config import SystemConfigService, validate_config
+from tests.support.api_client import AutoKeyTestClient
+from tests.support.schema import stamp_schema_revision
 
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -287,6 +289,7 @@ def test_sync_prompt_templates_activation_is_visible_at_once(session, tmp_path, 
     _activate(session, "prompts", {"templates": {"neutral_draft": _template("快照旧版")}})
     assert load_prompt_templates()["neutral_draft"].system_prompt == "快照旧版"
 
+    stamp_schema_revision()  # 工具的 --execute 先核对库结构版本（tools/_cli.py）
     assert sync_prompt_templates.main(["--execute"]) == 0
 
     synced = load_prompt_templates()["neutral_draft"]
@@ -321,6 +324,7 @@ def test_models_snapshot_changes_reach_routing_and_lease_ttl_at_once(session) ->
     assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 1500
     assert idempotency.owner_lease_ttl_seconds() == 654
 
+    stamp_schema_revision()  # 工具的 --execute 先核对库结构版本（tools/_cli.py）
     assert raise_llm_output_budget.main(["--node", "neutral_draft", "--floor", "4096", "--execute"]) == 0
     assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 4096
 
@@ -402,7 +406,6 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
     from novel_system.services.scene_blueprint import SceneBlueprintService
     from novel_system.services.writer_deep_review import WriterDeepReviewService
-    from novel_system.services.writer_review import WriterReviewService
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("constructing a read-only service must not load prompts or runtime settings")
@@ -413,7 +416,6 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     services = [
         cls(session)
         for cls in (
-            WriterReviewService,
             WriterDeepReviewService,
             SceneBlueprintService,
             NearFinalPlanningService,
@@ -431,9 +433,9 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     with pytest.raises(AssertionError):
         runner.settings
     monkeypatch.undo()
-    assert services[2].prompt_builder.has_template("scene_blueprint")
-    assert services[2].prompt_builder is services[2].prompt_builder
-    assert services[2]._llm_runner.settings.llm_enabled is False
+    assert services[1].prompt_builder.has_template("scene_blueprint")
+    assert services[1].prompt_builder is services[1].prompt_builder
+    assert services[1]._llm_runner.settings.llm_enabled is False
 
 
 def test_injected_runner_and_builder_are_kept(session) -> None:
@@ -487,7 +489,7 @@ def _seed_scene(api: TestClient) -> None:
 
 
 READ_PATHS = (
-    "/api/v1/scenes/CH930_SC01/workbench",
+    "/api/v1/scenes/CH930_SC01/workbench?include=diagnostics",
     "/api/v1/scenes/CH930_SC01/deep-review",
     "/api/v1/scenes/CH930_SC01/diagnosis-rollup",
     "/api/v1/chapters/CH930/deep-review",
@@ -497,7 +499,7 @@ READ_PATHS = (
 
 def test_read_paths_never_reparse_config_and_never_write(monkeypatch) -> None:
     # 不进 lifespan：没有后台清扫线程，这段时间里库上的每一条语句都来自下面的请求
-    api = TestClient(create_app())
+    api = AutoKeyTestClient(create_app())
     _seed_scene(api)
     yaml_parses = _count_yaml_parses(monkeypatch)
     template_loads = _count_calls(monkeypatch, prompt_builder, "load_prompt_templates")

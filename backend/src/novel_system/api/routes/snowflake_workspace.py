@@ -3,19 +3,19 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.chapter_plan_requests import (
+from novel_system.api.requests.chapter_plan import (
     ChapterPlanPreviewRequest,
     ChapterPlanProposeRequest,
     ChapterPlanSaveRequest,
     ChapterPlanSuggestRequest,
     ChapterTitlesRequest,
 )
-from novel_system.api.deps import actor_ref_of, get_session, request_id_of
-from novel_system.api.mutations import idempotent_response, optional_idempotent_response
-from novel_system.api.project_requests import ProjectCreateRequest
-from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
-from novel_system.api.response import ok
-from novel_system.api.snowflake_requests import (
+from novel_system.api.deps import actor_ref_of, get_session
+from novel_system.api.mutations import mutate
+from novel_system.api.requests.projects import ProjectCreateRequest
+from novel_system.api.requests.common import BoundedJsonObject, EmptyRequest
+from novel_system.api.response import respond
+from novel_system.api.requests.snowflake import (
     SnowflakeAcceptStaleStepRequest,
     SnowflakeAssistantRequest,
     SnowflakeDirectionBriefRequest,
@@ -35,10 +35,7 @@ router = APIRouter(tags=["snowflake-workspace"])
 
 @router.get("/api/v2/projects")
 def list_snowflake_workspace_projects(request: Request, session: Session = Depends(get_session)):
-    return ok(
-        SnowflakeWorkspaceService(session).list_projects(),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SnowflakeWorkspaceService(session).list_projects())
 
 
 @router.post("/api/v2/projects")
@@ -48,11 +45,9 @@ def create_snowflake_workspace_project(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects",
         payload=body,
         action=lambda: SnowflakeWorkspaceService(session).create_project(body),
     )
@@ -60,10 +55,7 @@ def create_snowflake_workspace_project(
 
 @router.get("/api/v2/projects/{project_id}/snowflake-workspace")
 def get_snowflake_workspace(project_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(
-        SnowflakeWorkspaceService(session).workspace(project_id),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SnowflakeWorkspaceService(session).workspace(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate")
@@ -75,11 +67,9 @@ def generate_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).generate_step(project_id, step_key, body),
     )
@@ -94,11 +84,9 @@ def generate_workspace_step_fe_candidates(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/fe-candidates",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).fe_step_candidates(project_id, step_key, body),
     )
@@ -115,11 +103,9 @@ def update_workspace_step(
 ):
     """保存一步草稿。``include_workspace=false``：只回 ``{step, step_run}``（防抖自动保存只读 ``step``，B06-05）。"""
     body = payload or {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
         # 只在关掉工作台时进幂等指纹：默认请求的指纹与以前一样
         payload={
             "project_id": project_id,
@@ -143,11 +129,11 @@ def get_workspace_step_history(
     session: Session = Depends(get_session),
 ):
     """一步的服务端版本（新的在前）；``step_run_id`` 只取那一版（预览时按版本取草稿）。"""
-    return ok(
+    return respond(
+        request,
         SnowflakeWorkspaceService(session).step_history(
             project_id, step_key, include_draft=include_draft, step_run_id=step_run_id
         ),
-        req_id=request_id_of(request),
     )
 
 
@@ -160,11 +146,9 @@ def restore_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/restore",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).restore_step(project_id, step_key, body),
     )
@@ -179,11 +163,9 @@ def approve_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).approve_step(
             project_id, step_key, body, actor_ref=actor_ref_of(request)
@@ -200,11 +182,9 @@ def accept_workspace_stale_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/accept-stale",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).accept_stale_step(
             project_id,
@@ -223,11 +203,9 @@ def request_workspace_assistant(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/assistant",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).request_assistant(project_id, body),
     )
@@ -243,11 +221,9 @@ def update_workspace_direction_brief(
 ):
     """阶段 T：作者编辑本步意图要点（撤下 / 改写 / 加条 / 切换范围 / 恢复 / 是否继承上游）。"""
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PUT",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/direction-brief",
         payload={"project_id": project_id, "step_key": step_key, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).update_direction_brief(project_id, step_key, body),
     )
@@ -261,11 +237,9 @@ def suggest_workspace_scene_triage(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/suggest",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).suggest_scene_triage(project_id, body),
     )
@@ -279,11 +253,9 @@ def save_workspace_scene_triage(
     session: Session = Depends(get_session),
 ):
     body = payload or {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).save_scene_triage(project_id, body),
     )
@@ -298,11 +270,9 @@ def materialize_workspace_outline(
 ):
     body = payload or {}
     actor_ref = actor_ref_of(request)
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/materialize",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).materialize(project_id, body, actor_ref=actor_ref),
     )
@@ -326,11 +296,9 @@ def preview_chapter_plan(
     历史项目第一次打开面板时，因此会看到归属从「未分章」变成实际章数，这是补录不是决策。
     """
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeChapteringService(session).preview(project_id, body),
     )
@@ -349,11 +317,9 @@ def propose_chapter_plan(
     （已有章表时必须为 true）。回包是 keep_current 策略的分章预览，外加 created_chapter_count。
     """
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/propose",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeChapteringService(session).propose_from_scenes(
             project_id, body, actor_ref=actor_ref_of(request)
@@ -374,11 +340,9 @@ def suggest_chapter_plan(
     规则算出来的东西冒充建议是撒谎 —— 规则分章本来就以 spine_anchor 策略摆在面板上。
     """
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeChapteringService(session).suggest(project_id, body),
     )
@@ -398,11 +362,9 @@ def suggest_chapter_titles(
     fail-closed：LLM 没配好 409 + author_action；模型没给出可用章名 502 ``SNOWFLAKE_CHAPTER_TITLES_EMPTY``。
     """
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/titles",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeChapteringService(session).suggest_titles(project_id, body),
     )
@@ -418,11 +380,9 @@ def save_chapter_plan(
     """分章面板「只保存章表」：整张章表落库、不物化（确认写入被前面的步骤挡住时也能改章名 / 章摘要 / 章界）。"""
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="PATCH",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).save_chapter_plan(project_id, body, actor_ref=actor_ref),
     )
@@ -446,11 +406,9 @@ def resolve_orphaned_scene(
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     action = str(body.get("action") or "").strip()
     actor_ref = actor_ref_of(request)
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/orphaned-scenes/{scene_plan_id}/resolve",
         payload={"project_id": project_id, "scene_plan_id": scene_plan_id, "action": action},
         action=lambda: SnowflakeWorkspaceService(session).resolve_orphaned_scene(
             project_id, scene_plan_id, action=action, actor_ref=actor_ref
@@ -461,10 +419,7 @@ def resolve_orphaned_scene(
 @router.get("/api/v2/projects/{project_id}/snowflake-workspace/resync-status")
 def get_workspace_resync_status(project_id: str, request: Request, session: Session = Depends(get_session)):
     """阶段 X：写作台 / AI 起草台用的轻量读口——哪几场的场景卡落后于构思。"""
-    return ok(
-        SnowflakeWorkspaceService(session).resync_status(project_id),
-        req_id=request_id_of(request),
-    )
+    return respond(request, SnowflakeWorkspaceService(session).resync_status(project_id))
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/resync")
@@ -475,11 +430,9 @@ def resync_workspace_scenes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return optional_idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/resync",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).resync_materialized_scenes(
             project_id,
@@ -497,11 +450,9 @@ def approve_workspace_outline(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    return idempotent_response(
+    return mutate(
         request,
         session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/snowflake-workspace/outline/approve",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).approve_outline(project_id),
     )

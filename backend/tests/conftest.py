@@ -81,6 +81,7 @@ for _key in developer_env_keys():
     del os.environ[_key]
 
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.support.api_client import AutoKeyTestClient
 
 from novel_system.api.app import create_app
 from novel_system.cache_registry import reset_all_caches
@@ -184,8 +185,15 @@ def isolated_database(
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
-    with TestClient(create_app()) as test_client:
+    # 写请求没带幂等键时自动配一个新键（产品的写接口一律要键，见 tests/support/api_client.py）
+    with AutoKeyTestClient(create_app()) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def raw_client(client: TestClient) -> TestClient:
+    """同一个应用、不自动配幂等键的客户端：测「缺键 400」之类的边界（不再跑一遍 lifespan）。"""
+    return TestClient(client.app)
 
 
 @pytest.fixture

@@ -15,13 +15,11 @@ import pytest
 
 from novel_system.db.models import (
     OutlinePlan,
-    RelationProfile,
     SceneCard,
     SnowflakeScenePlan,
     SnowflakeStepRun,
     StoryCharacter,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.context_budget import apply_context_budget, collect_prompt_sections, compress_design_context
@@ -100,31 +98,6 @@ def _seed_workspace(session) -> SnowflakeWorkspaceService:
                 status="approved",
             )
         )
-    session.add(
-        VoiceProfile(
-            row_id="voice_profile_prj_design_c1_v1",
-            voice_profile_id=f"VOICE_{POV_ID}",
-            version=1,
-            character_id=POV_ID,
-            content="林一鸣的叙述声线克制、冷静。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
-        )
-    )
-    session.add(
-        RelationProfile(
-            row_id="relation_profile_prj_design_v1",
-            relation_profile_id=f"REL_{POV_ID}_{FOE_ID}",
-            left_character_id=POV_ID,
-            right_character_id=FOE_ID,
-            version=1,
-            content="周慎握着伪造的截图，林一鸣知道对方在等他犯程序错误。",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="direct_read",
-        )
-    )
     session.flush()
     service = SnowflakeWorkspaceService(session)
     service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": _scene_rows()}})

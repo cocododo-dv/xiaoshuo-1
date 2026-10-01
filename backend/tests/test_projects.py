@@ -14,6 +14,7 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
 )
+from novel_system.db.session import SessionLocal
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.projects import ProjectChapterFlowService
 
@@ -560,6 +561,44 @@ def test_project_chapter_run_job_reuses_existing_running_job(client, session, mo
     assert payload["run"]["job_id"] == "chapter_run_existing"
     assert payload["run"]["status"] == "running"
     assert started_jobs == []
+
+
+def test_replaying_the_run_job_request_redispatches_a_chapter_job_that_is_still_pending(
+    client, session, monkeypatch
+) -> None:
+    """B12-07：「运行本章」的派发在提交之后经 after_commit 做；同一个键重放时任务还在等（pending）就再派发一次，
+    已经结束的不派发。以前重放一律不派发，提交与派发之间进程退出留下的任务只能等下一次启动恢复。"""
+    project = _create_project(client, target_chapter_count=1, key="run-job-replay")
+    plan = _generate_plan(client, project["project_id"])
+    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+    chapter_id = approved["project"]["current_chapter_id"]
+    dispatched: list[tuple] = []
+    monkeypatch.setattr(
+        "novel_system.api.routes.projects.start_project_chapter_run_job_worker",
+        lambda *args: dispatched.append(args),
+    )
+    path = f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/run-job"
+    headers = {"X-Idempotency-Key": "run-job-replay"}
+
+    first = client.post(path, json={}, headers=headers)
+    assert first.status_code == 200, first.text
+    job_id = first.json()["data"]["run"]["job_id"]
+    assert first.json()["data"]["run"]["status"] == "pending"
+    assert dispatched == [(project["project_id"], chapter_id, job_id)]
+
+    replay = client.post(path, json={}, headers=headers)
+    assert replay.status_code == 200
+    assert replay.headers.get("X-Idempotency-Status") == "replayed"
+    assert dispatched == [(project["project_id"], chapter_id, job_id)] * 2
+
+    with SessionLocal() as db:
+        db.get(ChapterRunJob, job_id).status = "completed"
+        db.commit()
+    again = client.post(path, json={}, headers=headers)
+    assert again.status_code == 200
+    assert again.headers.get("X-Idempotency-Status") == "replayed"
+    assert len(dispatched) == 2
 
 
 def test_project_chapter_run_failure_keeps_each_path_mapping(client, session, monkeypatch) -> None:

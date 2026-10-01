@@ -140,9 +140,6 @@ def _install_fake_runner(monkeypatch):
         def chapter_state_payload(self, chapter_id: str) -> dict:
             return {
                 "chapter_id": chapter_id,
-                "chapter_backfill_pending_count": 0,
-                "aggregate_block_reason": "none",
-                "manual_hold_reason": None,
             }
 
     monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", FakeOrchestrator)

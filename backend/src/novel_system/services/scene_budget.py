@@ -655,6 +655,65 @@ def budget_unit(state: SceneRunState) -> int:
     return FALLBACK_INPUT_TOKENS + FALLBACK_OUTPUT_TOKENS
 
 
+def lifecycle_budget_payload(state: SceneRunState) -> dict[str, int] | None:
+    """Author-safe lifecycle counters used by the explicit topup UI.
+
+    The immutable basis remains server-owned; only the single-call unit needed
+    for an informed author topup is projected. No routing or credential data is
+    exposed. 预算还没初始化（从没跑过）时为 ``None``。
+    """
+    if state.scene_token_budget is None:
+        return None
+    budget = int(state.scene_token_budget)
+    used = int(state.scene_tokens_used or 0)
+    reserved = int(state.scene_tokens_reserved or 0)
+    # 单发基线：依据里记的优先，旧依据按初始预算 ÷ 当时的倍率还原（不拿追加过的当前预算去除）
+    baseline = budget_unit(state)
+    return {
+        "scene_token_budget": budget,
+        "scene_tokens_used": used,
+        "scene_tokens_reserved": reserved,
+        "scene_tokens_remaining": max(0, budget - used - reserved),
+        "baseline_tokens": baseline,
+        "recommended_topup_tokens": baseline,
+        "attempt_budget": int(state.attempt_budget),
+        "total_attempt_count": int(state.total_attempt_count or 0),
+        "provider_attempt_budget": int(state.provider_attempt_budget),
+        "provider_attempts_used": int(state.provider_attempts_used or 0),
+    }
+
+
+TOPUP_FIELDS: tuple[str, ...] = ("extra_tokens", "extra_attempts", "extra_provider_attempts")
+TOPUP_REASON_MAX_CHARS = 300
+
+
+def validated_topup(body: dict[str, Any]) -> dict[str, Any]:
+    """作者追加预算请求的三道额度与理由（``POST …/budget/topup``）。
+
+    三个额度都是 0 到有符号 64 位上限之间的整数、至少一个大于 0；不合格的一并报 422 ``INVALID_BUDGET_TOPUP``
+    （``details`` 带原值与上限）。理由去掉首尾空白、截到 300 字。
+    """
+    raw_extras = {field: body.get(field, 0) for field in TOPUP_FIELDS}
+    invalid_fields = {
+        field: value
+        for field, value in raw_extras.items()
+        if type(value) is not int or value < 0 or value > LIFECYCLE_BUDGET_MAX
+    }
+    if invalid_fields or not any(
+        value > 0 for value in raw_extras.values() if type(value) is int
+    ):
+        raise DomainError(
+            "INVALID_BUDGET_TOPUP",
+            "topup values must be non-negative integers and at least one must be positive",
+            status_code=422,
+            details={**raw_extras, "max_lifecycle_budget": LIFECYCLE_BUDGET_MAX},
+        )
+    return {
+        **raw_extras,
+        "reason": str(body.get("reason") or "").strip()[:TOPUP_REASON_MAX_CHARS],
+    }
+
+
 def can_spend(state: SceneRunState | None, estimated_tokens: int) -> bool:
     """可选支出的前置预留检查；预算未初始化不拦（渐进迁移）。"""
     if state is None or state.scene_token_budget is None:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sqlalchemy import text
 from sqlalchemy import func, select
 
 from novel_system.db.models import (
@@ -171,33 +170,6 @@ def test_fixture_runtime_is_idempotent(session) -> None:
     session.commit()
     assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
     assert _count_rows(session, ReviewItem) == 5
-
-
-def test_fixture_runtime_creates_traceable_voice_and_relation_profiles(session) -> None:
-    seed_runtime_fixture(session)
-    session.commit()
-
-    voice = session.execute(
-        text(
-            "SELECT row_id, voice_profile_id, version, active_flag, content "
-            "FROM voice_profiles WHERE row_id = 'voice_profile_VOICE_CHAR_A_v1'"
-        )
-    ).mappings().one()
-    relation = session.execute(
-        text(
-            "SELECT row_id, relation_profile_id, version, active_flag, content "
-            "FROM relation_profiles WHERE row_id = 'relation_profile_REL_CHAR_A_CHAR_B_v1'"
-        )
-    ).mappings().one()
-
-    assert voice["voice_profile_id"] == "VOICE_CHAR_A"
-    assert voice["version"] == 1
-    assert voice["active_flag"] == 1
-    assert voice["content"] == "short clipped lines; pressure makes the tone harder"
-    assert relation["relation_profile_id"] == "REL_CHAR_A_CHAR_B"
-    assert relation["version"] == 1
-    assert relation["active_flag"] == 1
-    assert relation["content"] == "reunion tension; B knows slightly more than A"
 
 
 def test_fixture_runtime_creates_scene_and_chapter_summaries(session) -> None:

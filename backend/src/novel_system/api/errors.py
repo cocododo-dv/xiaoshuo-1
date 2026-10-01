@@ -1,5 +1,8 @@
 """API 的异常处理器：每种错误都以标准信封回给前端，带上请求编号。
 
+说明文字按 ``api/error_catalog.py`` 换成作者看的中文（B12-04，批准 #27）：原说明已经是中文的原样保留；被换掉的
+英文原文（未处理异常则是异常文字）只在 ``expose_error_detail`` 打开时放进 ``details.debug_message``。
+
 四个处理器：领域错误、请求校验、数据库（忙 / 失败）、兜底的未处理异常。路由里抛出的未处理异常在 CORS 里面
 就已经由 ``novel_system.api.middleware.UnhandledErrorMiddleware`` 变成了 ``INTERNAL_ERROR`` 信封（B12-03）；
 它随后照旧往外抛，Starlette 最外层的 ``ServerErrorMiddleware`` 仍会调兜底处理器，但响应已经发出，不再发第二份，
@@ -16,6 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError
 
 from novel_system.api.deps import request_id_of
+from novel_system.api.error_catalog import localized_message
 from novel_system.api.response import error
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
@@ -28,17 +32,38 @@ _LOGGED_EXCEPTION_STATE = "unhandled_error_logged"
 
 # 不回显 Pydantic 的 ``input``：它可能是整场正文或密钥。字段路径与稳定的错误类型足够客户端改正请求。
 _VALIDATION_MESSAGES = {
-    "extra_forbidden": "unexpected field",
-    "field_required": "required field is missing",
-    "int_type": "value must be an integer",
-    "list_type": "value must be a list",
-    "string_type": "value must be a string",
-    "string_too_long": "string exceeds the allowed length",
-    "string_too_short": "string is shorter than the allowed length",
-    "too_long": "collection exceeds the allowed length",
-    "greater_than_equal": "value is below the allowed minimum",
-    "less_than_equal": "value exceeds the allowed maximum",
+    "extra_forbidden": "不认识的字段",
+    "field_required": "缺少必填字段",
+    "int_type": "要填整数",
+    "list_type": "要填列表",
+    "string_type": "要填文字",
+    "string_too_long": "文字太长",
+    "string_too_short": "文字太短",
+    "too_long": "条目太多",
+    "greater_than_equal": "小于允许的最小值",
+    "less_than_equal": "超过允许的最大值",
 }
+_VALIDATION_FALLBACK_MESSAGE = "取值不合法"
+
+
+def _envelope(
+    request: Request,
+    code: str,
+    message: str,
+    *,
+    status_code: int,
+    details: dict | None,
+    expose_error_detail: bool,
+    debug_message: str | None = None,
+) -> JSONResponse:
+    """错误信封；说明文字按错误码换成中文，被换掉的原文只在开了 ``expose_error_detail`` 时随 ``details`` 带回。"""
+
+    text, replaced = localized_message(code, message)
+    payload = dict(details or {})
+    original = debug_message if debug_message is not None else (message if replaced else None)
+    if expose_error_detail and original:
+        payload["debug_message"] = original
+    return error(code, text, status_code=status_code, details=payload, req_id=request_id_of(request))
 
 
 def internal_error_response(request: Request, exc: Exception, *, expose_error_detail: bool) -> JSONResponse:
@@ -48,24 +73,28 @@ def internal_error_response(request: Request, exc: Exception, *, expose_error_de
     if getattr(request.state, _LOGGED_EXCEPTION_STATE, None) is not exc:
         setattr(request.state, _LOGGED_EXCEPTION_STATE, exc)
         logger.error("Unhandled API error request_id=%s", req_id, exc_info=exc)
-    return error(
+    # 异常文字可能带密钥、SQL 或正文片段：只在显式打开 expose_error_detail 时随 details 带回
+    return _envelope(
+        request,
         "INTERNAL_ERROR",
-        str(exc) if expose_error_detail else "internal server error",
+        "internal server error",
         status_code=500,
         details={"retryable": False},
-        req_id=req_id,
+        expose_error_detail=expose_error_detail,
+        debug_message=str(exc),
     )
 
 
 def install_exception_handlers(app: FastAPI, *, expose_error_detail: bool) -> None:
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, exc: DomainError):
-        return error(
+        return _envelope(
+            request,
             exc.code,
             exc.message,
             status_code=exc.status_code,
             details=exc.details,
-            req_id=request_id_of(request),
+            expose_error_detail=expose_error_detail,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -80,10 +109,11 @@ def install_exception_handlers(app: FastAPI, *, expose_error_detail: bool) -> No
                 {
                     "field": ".".join(str(part) for part in item.get("loc", ())),
                     "type": issue_type,
-                    "message": _VALIDATION_MESSAGES.get(issue_type, "invalid value"),
+                    "message": _VALIDATION_MESSAGES.get(issue_type, _VALIDATION_FALLBACK_MESSAGE),
                 }
             )
-        return error(
+        return _envelope(
+            request,
             "REQUEST_VALIDATION_FAILED",
             "request validation failed",
             status_code=422,
@@ -92,25 +122,27 @@ def install_exception_handlers(app: FastAPI, *, expose_error_detail: bool) -> No
                 "issue_count": len(exc.errors()),
                 "truncated": len(exc.errors()) > len(issues),
             },
-            req_id=request_id_of(request),
+            expose_error_detail=False,
         )
 
     @app.exception_handler(OperationalError)
     async def operational_error_handler(request: Request, exc: OperationalError):
         if is_database_busy_error(exc):
-            return error(
+            return _envelope(
+                request,
                 "DATABASE_BUSY",
                 "database is busy; retry after the current long-running operation finishes",
                 status_code=503,
                 details={"retryable": True},
-                req_id=request_id_of(request),
+                expose_error_detail=False,
             )
-        return error(
+        return _envelope(
+            request,
             "DATABASE_OPERATION_FAILED",
             "database operation failed",
             status_code=500,
             details={"retryable": False},
-            req_id=request_id_of(request),
+            expose_error_detail=False,
         )
 
     @app.exception_handler(Exception)

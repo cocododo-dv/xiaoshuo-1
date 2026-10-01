@@ -14,10 +14,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from novel_system.services.system_config import SystemConfigService
 from novel_system.tools import sync_prompt_templates as tool
+from tests.support.schema import stamp_schema_revision
+
+
+@pytest.fixture(autouse=True)
+def _migrated_database() -> None:
+    """工具的 --execute 先核对库结构版本（tools/_cli.py）：测试库用 create_all 建，给它盖上代码认的版本。"""
+    stamp_schema_revision()
 
 
 def _template(**overrides) -> dict:

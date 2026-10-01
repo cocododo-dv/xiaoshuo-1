@@ -15,6 +15,7 @@ from novel_system.api.app import create_app
 from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from tests.support.api_client import AutoKeyTestClient
 
 
 SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心情,字数足以触发分段。
@@ -39,7 +40,7 @@ from tests.style_reference_route_helpers import (  # noqa: E402
 
 
 def test_legacy_reference_books_routes_are_never_exposed() -> None:
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         paths = {getattr(route, "path", "") for route in client.app.routes}
 
     assert "/api/v1/reference-books" not in paths
@@ -132,14 +133,12 @@ def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
             finding_id=finding_id,
             quote_id=f"sr_quote_route_a_{book_id[-6:]}",
             anchor_kind="paragraph_quote",
-            is_synthetic=0,
         )
         repo.create_evidence(
             evidence_id=f"sr_ev_route_b_{book_id[-6:]}",
             finding_id=finding_id,
             quote_id=f"sr_quote_route_b_{book_id[-6:]}",
             anchor_kind="counter_example",
-            is_synthetic=1,
         )
         profile_id = f"sr_profile_route_{book_id[-6:]}"
         repo.create_profile(

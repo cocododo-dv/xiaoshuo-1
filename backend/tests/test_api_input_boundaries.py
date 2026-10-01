@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from novel_system.api.app import create_app
-from novel_system.api.request_types import MAX_API_OBJECT_PROPERTIES
+from novel_system.api.requests.common import MAX_API_OBJECT_PROPERTIES
 
 
 def _headers(key: str) -> dict[str, str]:

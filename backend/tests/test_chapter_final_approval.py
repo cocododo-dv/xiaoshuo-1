@@ -136,7 +136,7 @@ def test_read_confirmation_binds_the_assembled_finals_not_a_stale_aggregate(clie
     session.flush()
     session.add(ChapterGoal(chapter_id=chapter_id, project_id=project_id, planned_scene_count=2, display_order=1, chapter_goal="旧案"))
     session.flush()
-    session.add(ChapterState(chapter_id=chapter_id, aggregate_block_reason="none"))
+    session.add(ChapterState(chapter_id=chapter_id))
     for seq in (1, 2):
         session.add(
             SceneCard(

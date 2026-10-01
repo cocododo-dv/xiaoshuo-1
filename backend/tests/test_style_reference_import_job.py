@@ -52,6 +52,7 @@ from tests.style_reference_route_helpers import (
     wait_book_status,
     wait_classification_state,
 )
+from tests.support.api_client import AutoKeyTestClient
 from tests.test_style_reference_routes import _seed_full_chain
 
 LONG_TEXT = "\n\n".join(
@@ -565,7 +566,7 @@ def test_app_startup_sweeps_and_finishes_a_job_left_by_a_dead_process(session, m
     fake = _use(monkeypatch, ScriptedClassifier())
     book_id, job_id = _ingest(session)
     _claim_as_dead_worker(job_id)
-    with TestClient(create_app()) as client:
+    with AutoKeyTestClient(create_app()) as client:
         assert jobs._SWEEPER is not None and jobs._SWEEPER.is_alive()
         # lifespan 先 install_workers() 再起清扫线程：处理器是显式登记的，不靠导入副作用
         assert jobs._HANDLERS.get("classify") is classify_run.run_classification_job

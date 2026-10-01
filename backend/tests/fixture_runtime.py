@@ -17,7 +17,6 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     HumanReviewEvent,
-    RelationProfile,
     ReviewItem,
     SceneBundle,
     SceneCard,
@@ -25,7 +24,6 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
     StoryProject,
-    VoiceProfile,
 )
 from novel_system.db.session import SessionLocal, repository_database_file
 
@@ -101,48 +99,6 @@ DEMO_SCENES = [
     },
 ]
 
-DEMO_VOICE_PROFILES = [
-    {
-        "row_id": "voice_profile_VOICE_CHAR_A_v1",
-        "voice_profile_id": "VOICE_CHAR_A",
-        "version": 1,
-        "character_id": "CHAR_A",
-        "content": "short clipped lines; pressure makes the tone harder",
-        "active_flag": 1,
-        "source_note": "demo baseline",
-    },
-    {
-        "row_id": "voice_profile_VOICE_CHAR_B_v1",
-        "voice_profile_id": "VOICE_CHAR_B",
-        "version": 1,
-        "character_id": "CHAR_B",
-        "content": "measured, observant phrasing; rarely answers directly",
-        "active_flag": 1,
-        "source_note": "demo baseline",
-    },
-]
-DEMO_RELATION_PROFILES = [
-    {
-        "row_id": "relation_profile_REL_CHAR_A_CHAR_B_v1",
-        "relation_profile_id": "REL_CHAR_A_CHAR_B",
-        "left_character_id": "CHAR_A",
-        "right_character_id": "CHAR_B",
-        "version": 1,
-        "content": "reunion tension; B knows slightly more than A",
-        "active_flag": 1,
-        "source_note": "demo baseline",
-    },
-    {
-        "row_id": "relation_profile_REL_CHAR_A_CHAR_C_v1",
-        "relation_profile_id": "REL_CHAR_A_CHAR_C",
-        "left_character_id": "CHAR_A",
-        "right_character_id": "CHAR_C",
-        "version": 1,
-        "content": "uneasy cooperation; both sides hold back a condition",
-        "active_flag": 1,
-        "source_note": "demo baseline",
-    },
-]
 DEMO_SCENE_SUMMARIES = [
     {
         "row_id": "scene_memory_CH001_SC01_summary_v1",
@@ -305,10 +261,7 @@ def _upsert_chapter(session: Any, payload: dict[str, Any]) -> None:
             "chapter_id": payload["chapter_id"],
             "current_phase": "drafting",
             "chapter_passed_scene_count": 0,
-            "chapter_backfill_pending_count": 0,
             "mid_aggregate_enabled_effective": 0,
-            "aggregate_block_reason": "none",
-            "manual_hold_reason": None,
             "last_interim_memory_row_id": None,
             "last_final_memory_row_id": None,
         },
@@ -350,8 +303,6 @@ def _upsert_review_item(session: Any, payload: dict[str, Any]) -> None:
 
 def _cleanup_demo_runtime(session: Session) -> None:
     chapter_id = DEMO_CHAPTER["chapter_id"]
-    demo_voice_ids = [item["voice_profile_id"] for item in DEMO_VOICE_PROFILES]
-    demo_relation_ids = [item["relation_profile_id"] for item in DEMO_RELATION_PROFILES]
 
     session.execute(delete(AttemptTracker).where(AttemptTracker.chapter_id == chapter_id))
     session.execute(delete(SceneBundle).where(SceneBundle.chapter_id == chapter_id))
@@ -361,8 +312,6 @@ def _cleanup_demo_runtime(session: Session) -> None:
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id == chapter_id))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id == chapter_id))
-    session.execute(delete(VoiceProfile).where(VoiceProfile.voice_profile_id.in_(demo_voice_ids)))
-    session.execute(delete(RelationProfile).where(RelationProfile.relation_profile_id.in_(demo_relation_ids)))
 
 
 def _cleanup_chapter_ops_runtime(session: Session) -> None:
@@ -463,10 +412,6 @@ def _seed_runtime_fixture(session: Session, *, fixture: str | None = None) -> di
     _upsert_chapter(session, DEMO_CHAPTER)
     for payload in DEMO_SCENES:
         _upsert_scene(session, payload)
-    for payload in DEMO_VOICE_PROFILES:
-        _upsert(session, VoiceProfile, "row_id", payload)
-    for payload in DEMO_RELATION_PROFILES:
-        _upsert(session, RelationProfile, "row_id", payload)
     for payload in DEMO_SCENE_SUMMARIES:
         _upsert(session, SceneMemory, "row_id", payload)
     for payload in DEMO_CHAPTER_SUMMARIES:

@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from novel_system.api.request_types import BoundedJsonObject, StrictRequestModel
+from novel_system.api.requests.common import BoundedJsonObject, StrictRequestModel
 
 
 SnowflakeReference = Annotated[str, Field(min_length=1, max_length=255)]
