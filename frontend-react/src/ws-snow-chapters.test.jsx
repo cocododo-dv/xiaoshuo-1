@@ -873,6 +873,56 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
+  it("存过章表之后面板换成了没存的东西（AI 建议、AI 起的章名）：「章表已保存」的回执随之撤下，不挂在没存的内容头上（复核 Q2b-R4）", async () => {
+    const chapters = (cut) => [
+      { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [1, 2, 3].slice(0, cut).map(scene) },
+      { row_uid: "c2", chapter_seq: 2, act: 1, title: "第 2 章", spine: "", chapter_goal: "", scenes: [1, 2, 3, 4].slice(cut).map(scene) },
+    ];
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => ({ ...twoChapters(null), chapters: chapters(3) })),
+      saveChapterPlan: vi.fn(async () => ({ assigned_scene_count: 4, healed_scene_plan_ids: [] })),
+      chapterSuggest: vi.fn(async () => ({ ...twoChapters(null), strategy: "llm_suggested", chapters: chapters(2) })),
+      chapterTitles: vi.fn(async () => ({ titles: [{ row_uid: "c2", title: "雨城旧案", summary: "" }], notice: null })),
+    };
+    const host = await renderPanel();
+    const click = (testId) => act(async () => { host.querySelector(`[data-testid="${testId}"]`).click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const receipt = () => host.querySelector('[data-testid="chapter-plan-save-note"]');
+
+    await click("chapter-plan-save-table");
+    expect(receipt().textContent).toContain("章表已保存");
+    // AI 建议：面板换成一份还没存的分章（第 3 场挪到了第二章）
+    await click("chapter-plan-suggest");
+    expect(window.SnowSync.chapterSuggest).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-1"]').textContent).toContain("第 3 场");
+    expect(receipt()).toBeNull();
+
+    await click("chapter-plan-save-table");
+    expect(receipt().textContent).toContain("章表已保存");
+    // AI 起章名：起出来的名字落进面板、还没存
+    await click("chapter-plan-name");
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-1"] .sf-chapterplan-title').value).toBe("雨城旧案");
+    expect(receipt()).toBeNull();
+    expect(host.textContent).toContain("有还没确认的调整");
+  });
+
+  it("换一种分法：AI 起名的回执跟着被换掉的那一份走，不留在新的预览上", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);   // 提示层没挂：换分法前那一问退回原生 confirm
+    const preview = (strategy) => ({ ...twoChapters(null), strategy, chapters: [
+      { row_uid: "c1", chapter_seq: 1, act: 1, title: "第 1 章", spine: "", chapter_goal: "", scenes: [1, 2, 3, 4].map(scene) },
+    ] });
+    window.SnowSync = {
+      chapterPreview: vi.fn(async (strategy) => preview(strategy === "auto" ? "keep_current" : strategy)),
+      chapterTitles: vi.fn(async () => ({ titles: [{ row_uid: "c1", title: "雨城旧案", summary: "" }], notice: null })),
+    };
+    const host = await renderPanel();
+    await act(async () => { host.querySelector('[data-testid="chapter-plan-name"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(host.querySelector('[data-testid="chapter-plan-name-note"]').textContent).toContain("AI 起了 1 个章名");
+    await act(async () => { host.querySelector('[data-testid="chapter-plan-strategy-from_scenes"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
+    expect(host.querySelector('[data-testid="chapter-plan-chapter-0"] .sf-chapterplan-title').value).toBe("第 1 章");
+    expect(host.querySelector('[data-testid="chapter-plan-name-note"]')).toBeNull();
+  });
+
   it("从 07 某一章的「改名」进来：按 row_uid 认章，焦点落在它的章名框上", async () => {
     window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(null)) };
     const host = await renderPanel({ focusChapter: { rowUid: "c2", index: 1 } });

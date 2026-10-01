@@ -154,6 +154,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
     }
     noteFocusReturn();
     setSaveNote("");
+    setNameNote("");   // 换了分法，AI 起的名字跟着旧的那一份走了
     load(strategy, options);
   };
   /* 撤销调整：丢掉面板里还没确认的挪章界 / 拆章 / 并章 / 改章名，回到这种分法刚算出来的样子。
@@ -212,6 +213,9 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
       pristineRef.current = shaped;
       setDraft(shaped);
       setDirty(false);
+      // 面板换成了一份还没存的建议：「章表已保存」「AI 起了 N 个章名」说的都是被换掉的那一份，不能留在它头上
+      setSaveNote("");
+      setNameNote("");
       setMaterializationGate((suggestion && suggestion.materialization_gate) || null);
     } catch (e) {
       setError((e && e.message) || "AI 分章建议不可用，请检查模型配置后重试。");
@@ -239,7 +243,8 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
       const result = await SnowSync.chapterTitles(buildChapterTitlesRequest(draft));
       // 等模型的这段时间里作者可能还在改章名：基于**此刻**的面板算，而不是点按钮时的那一份
       const { draft: next, applied } = applyChapterNames(draftRef.current || draft, (result && result.titles) || []);
-      if (applied) { setDraft(next); setDirty(true); }
+      // 起出来的名字还没存：「章表已保存」的回执随之撤下（与手改章名同一条，见 edit）
+      if (applied) { setDraft(next); setDirty(true); setSaveNote(""); }
       const notice = result && result.notice && result.notice.message;
       setNameNote(notice || (applied ? `AI 起了 ${applied} 个章名 —— 可以直接改，确认写入或只保存章表时一起存下。` : "这一次没有起出新的章名。"));
     } catch (e) {
