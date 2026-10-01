@@ -1,7 +1,7 @@
 """风格参考控制面边界：记账 / 用量不变式失败原样上抛，不包装、不重试、不降级。
 
 （2026-09-23 风格参考 v3 P5b：旧回测工人的四条同类边界测试随校验层删除；对照检查作业的同类边界见
-``tests/test_style_fidelity_pipeline_v3.py::test_check_job_keeps_control_plane_failures_distinct``。）
+``tests/test_style_fidelity_pipeline.py::test_check_job_keeps_control_plane_failures_distinct``。）
 """
 
 from __future__ import annotations

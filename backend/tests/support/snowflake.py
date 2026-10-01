@@ -241,7 +241,7 @@ def patch_llm_client_generate(monkeypatch, generate):
     )
 
 
-# ---------------------------------------------------------------- 经 API 按步生成并确认到某一步，键按作品 + 步固定（test_snowflake_closeout）
+# ---------------------------------------------------------------- 经 API 按步生成并确认到某一步，键按作品 + 步固定（test_snowflake_row_identity_and_ancestry）
 
 
 def create_closeout_project(client, *, key: str) -> dict:

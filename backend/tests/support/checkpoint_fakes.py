@@ -1,7 +1,7 @@
 """Shared fakes and seeders of the scene-run checkpoint resume tests (``test_scene_run_checkpoint_*.py``).
 
 Accounted generation clients, soft-QC / near-final / archive stubs and the resume-scene seeder.
-``test_style_fidelity_pipeline_v3.py`` reuses the fakes. The test modules route the orchestrator's default node
+``test_style_fidelity_pipeline.py`` reuses the fakes. The test modules route the orchestrator's default node
 runner through the accounted online fake with ``pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")``
 (``tests/support/fixtures.py``). Never import a ``test_*.py`` module here.
 """

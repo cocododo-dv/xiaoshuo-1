@@ -595,7 +595,7 @@ def test_check_job_keeps_control_plane_failures_distinct(client, session, monkey
 
 def test_judge_output_is_rescaled_and_drops_excluded_dimensions() -> None:
     """没给模板 schema(旧提示词快照的兜底路径):按一次回答推断量级;声明了刻度的路径见
-    ``test_style_reference_check_job_fixes.py``(2026-09-24 §8 C3)。「不学」维两条路都丢。"""
+    ``test_style_reference_check_job.py``(2026-09-24 §8 C3)。「不学」维两条路都丢。"""
     judge = check_job.normalize_judge_output(
         {
             "overall": 0.8,

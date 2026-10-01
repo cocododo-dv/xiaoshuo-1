@@ -584,7 +584,7 @@ def test_final_text_gate_literary_thresholds_defer_under_style_bound(session, mo
     from novel_system.db.models import SceneBundle
     from novel_system.services.final_text_gate import FinalTextGateService
 
-    # 风格参考 v3（V11）：有参考书校准时按校准判（见 test_style_reference_v3_pipeline）；这里守的是校准不可用时
+    # 风格参考 v3（V11）：有参考书校准时按校准判（见 test_style_reference_pipeline_guards）；这里守的是校准不可用时
     # 作者手笔直起仍整体让位的那条退路
     monkeypatch.setattr(FinalTextGateService, "_rule_calibration", lambda self, policy: None)
 
