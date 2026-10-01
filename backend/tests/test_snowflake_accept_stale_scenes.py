@@ -13,29 +13,14 @@ from sqlalchemy import select
 
 from novel_system.db.models import OperationLog, SnowflakeScenePlan
 from tests.support.snowflake import (
+    ALL_STEPS as STEPS,
     approve_generated_step as _approve_generated_step,
     create_workspace_project as _create_project,
     intent_key as _intent_key,
+    workspace_payload as _workspace,
 )
 
 pytestmark = pytest.mark.usefixtures("skeleton_snowflake")
-
-STEPS = [
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "character_sheets",
-    "short_synopsis",
-    "character_synopses",
-    "long_synopsis",
-    "character_bibles",
-    "scene_list",
-    "scene_details",
-]
-
-
-def _workspace(client, project_id: str) -> dict:
-    return client.get(f"/api/v2/projects/{project_id}/snowflake-workspace").json()["data"]
 
 
 def _blocker_kinds(workspace: dict) -> set[str]:

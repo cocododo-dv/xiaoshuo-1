@@ -23,38 +23,15 @@ from novel_system.db.models import (
     SceneCard,
     SnowflakeScenePlan,
 )
-from tests.support.chaptering import patch_step as _patch_step
+from tests.support.snowflake import approve_step as _approve_step, create_project, patch_step as _patch_step, rain_city_fields
 
 
 # --------------------------------------------------------------------------- helpers
 
 
 def _create_project(client, key: str, *, chapters: int = 12) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "Rain City Signal",
-            "genre": "Urban Mystery",
-            "target_chapter_count": chapters,
-            "target_word_count": 120000,
-            "outline_text": (
-                "An old letter pulls the heroine back to Rain City.\n"
-                "The cold case turns out to be tied to her family.\n"
-                "She must decide whether the truth is worth the cost."
-            ),
-        },
-        headers={"X-Idempotency-Key": f"identity-create-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
-
-
-def _approve_step(client, project_id: str, step_key: str) -> None:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-    )
-    assert response.status_code == 200, response.text
+    fields = rain_city_fields(target_chapter_count=chapters)
+    return create_project(client, key=f"identity-create-{key}", **fields)["project_id"]
 
 
 #: 前八步的规范草稿，字段形状抄自 ws-snow-sync.jsx 的 ``canonFromFE``。

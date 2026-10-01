@@ -1,5 +1,10 @@
 """雪花构思测试共用的造作品、生成 / 确认与假模型助手（B06-22：以前散在各测试文件、互相 import）。
 
+- 经 API 的基本动作（各文件只绑定自己的样例数据与幂等键写法）：``create_project``（建作品，回 ``project``；与
+  ``key_header`` 一起住在 ``api_client``，这里转出）、``patch_step`` / ``approve_step``（断言 200，回 ``data``）、
+  ``post_generate`` / ``post_approve``（回响应本身，用例自己看状态码）、``workspace_step``（GET 工作台取一步）。
+  ``key=None`` 由 AutoKeyTestClient 每次配新键，给了键就照用（同键同载荷即重放）。英文样例作品「雨城旧信」的
+  请求体是 ``rain_city_fields()``，十步按序是 ``ALL_STEPS``。
 - 经服务直接编作品：``seed_render_project``（三场，第 10 步带呈现方式）、``seed_synopsis_project``（空作品）。
 - 经 API 走构思：``create_workspace_project`` + ``generate_workspace_step`` / ``approve_workspace_step``（每次新意图键）；
   ``create_closeout_project`` + ``approve_through``（键按作品 + 步固定，重复调用即重放）。
@@ -17,8 +22,86 @@ from novel_system.db.models import OutlinePlan, SnowflakeScenePlan, StoryProject
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
+from novel_system.services.snowflake_scene_rows import SCENE_LIST_OWNED_FIELDS
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from tests.accounted_llm_fakes import accounted_generate_method
+from tests.support.api_client import create_project, key_header
+
+
+# ---------------------------------------------------------------- 经 API 的基本动作：建作品、存 / 确认 / 生成一步
+
+
+#: 英文样例作品「雨城旧信」的三行大纲
+RAIN_CITY_OUTLINE = (
+    "An old letter pulls the heroine back to Rain City.\n"
+    "The cold case turns out to be tied to her family.\n"
+    "She must decide whether the truth is worth the cost."
+)
+
+
+def rain_city_fields(**overrides) -> dict:
+    """「雨城旧信」的建作品请求体（两章、十二万字），``overrides`` 改其中几项。"""
+    return {
+        "title": "Rain City Signal",
+        "genre": "Urban Mystery",
+        "target_chapter_count": 2,
+        "target_word_count": 120000,
+        "outline_text": RAIN_CITY_OUTLINE,
+        **overrides,
+    }
+
+
+def step_url(project_id: str, step_key: str) -> str:
+    return f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}"
+
+
+def patch_step(
+    client, project_id: str, step_key: str, draft: dict, *, force: bool = True, lean: bool = False, key: str | None = None
+) -> dict:
+    """``PATCH …/steps/{step_key}`` 存一步草稿，回 ``data``。``force`` 与 React 客户端一样随请求体带上（服务端只读
+    ``draft``，它只进幂等指纹）；``lean`` 即 ``include_workspace=false``，只回 ``{step, step_run}``。"""
+    body = {"draft": draft, "force": True} if force else {"draft": draft}
+    url = step_url(project_id, step_key) + ("?include_workspace=false" if lean else "")
+    response = client.patch(url, json=body, headers=key_header(key))
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def post_approve(client, project_id: str, step_key: str, *, key: str | None = None):
+    """``POST …/steps/{step_key}/approve``（空请求体），回响应本身。"""
+    return client.post(f"{step_url(project_id, step_key)}/approve", json={}, headers=key_header(key))
+
+
+def approve_step(client, project_id: str, step_key: str, *, key: str | None = None) -> dict:
+    """确认一步：断言 200，回 ``data``（``step`` / ``workspace`` / ``catalog_sync`` …）。"""
+    response = post_approve(client, project_id, step_key, key=key)
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def post_generate(client, project_id: str, step_key: str, body: dict | None = None, *, key: str | None = None):
+    """``POST …/steps/{step_key}/generate``，回响应本身（失败路径的用例自己看状态码）。"""
+    return client.post(f"{step_url(project_id, step_key)}/generate", json=body or {}, headers=key_header(key))
+
+
+def workspace_step(client, project_id: str, step_key: str) -> dict:
+    """``GET`` 整个工作台，取其中一步。"""
+    return step_of(workspace_payload(client, project_id), step_key)
+
+
+#: 雪花十步，按顺序
+ALL_STEPS = (
+    "book_brief",
+    "one_sentence_summary",
+    "one_paragraph_summary",
+    "character_sheets",
+    "short_synopsis",
+    "character_synopses",
+    "long_synopsis",
+    "character_bibles",
+    "scene_list",
+    "scene_details",
+)
 
 
 # ---------------------------------------------------------------- 直接经服务编三场（主动 / 反应 / 反应）的作品，第 10 步带呈现方式（test_snowflake_rendering_mode）
@@ -78,8 +161,8 @@ def seed_render_project(session) -> SnowflakeWorkspaceService:
     return service
 
 
-#: 已有场景计划上只归 09 改的字段（第 10 步的草稿不改它们，见 snowflake_workspace.SCENE_LIST_OWNED_FIELDS）
-LIST_OWNED_FIELDS = ("primary_form", "scene_type", "pov_character_id")
+#: 已有场景计划上只归 09 改的字段（第 10 步的草稿不改它们）
+LIST_OWNED_FIELDS = SCENE_LIST_OWNED_FIELDS
 
 
 def edit_scene_plan(service: SnowflakeWorkspaceService, row_uid: str, **fields) -> None:
@@ -160,44 +243,18 @@ def create_workspace_project(
     genre: str = "Urban Mystery",
     outline_text: str | None = None,
 ) -> dict:
-    outline = outline_text or (
-        "An old letter pulls the heroine back to Rain City.\n"
-        "The cold case turns out to be tied to her family.\n"
-        "She must decide whether the truth is worth the cost."
-    )
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": title,
-            "genre": genre,
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": outline,
-        },
-        headers={"X-Idempotency-Key": f"create-v2-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    fields = rain_city_fields(title=title, genre=genre, outline_text=outline_text or RAIN_CITY_OUTLINE)
+    return create_project(client, key=f"create-v2-{key}", **fields)
 
 
 def generate_workspace_step(client, project_id: str, step_key: str, payload: dict | None = None) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json=payload or {},
-        headers={"X-Idempotency-Key": intent_key(f"generate-v2-{project_id}-{step_key}")},
-    )
+    response = post_generate(client, project_id, step_key, payload, key=intent_key(f"generate-v2-{project_id}-{step_key}"))
     assert response.status_code == 200, response.text
     return response.json()["data"]
 
 
 def approve_workspace_step(client, project_id: str, step_key: str) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": intent_key(f"approve-v2-{project_id}-{step_key}")},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return approve_step(client, project_id, step_key, key=intent_key(f"approve-v2-{project_id}-{step_key}"))
 
 
 def approve_generated_step(client, project_id: str, step_key: str) -> None:
@@ -245,43 +302,17 @@ def patch_llm_client_generate(monkeypatch, generate):
 
 
 def create_closeout_project(client, *, key: str) -> dict:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "Rain City Signal",
-            "genre": "Urban Mystery",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": (
-                "An old letter pulls the heroine back to Rain City.\n"
-                "The cold case turns out to be tied to her family.\n"
-                "She must decide whether the truth is worth the cost."
-            ),
-        },
-        headers={"X-Idempotency-Key": f"create-closeout-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return create_project(client, key=f"create-closeout-{key}", **rain_city_fields())
 
 
 def closeout_generate(client, project_id: str, step_key: str) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json={},
-        headers={"X-Idempotency-Key": f"gen-closeout-{project_id}-{step_key}"},
-    )
+    response = post_generate(client, project_id, step_key, key=f"gen-closeout-{project_id}-{step_key}")
     assert response.status_code == 200, response.text
     return response.json()["data"]
 
 
 def closeout_approve(client, project_id: str, step_key: str) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"app-closeout-{project_id}-{step_key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return approve_step(client, project_id, step_key, key=f"app-closeout-{project_id}-{step_key}")
 
 
 def workspace_payload(client, project_id: str) -> dict:
@@ -296,34 +327,12 @@ def step_of(workspace: dict, step_key: str) -> dict:
 
 def revise_and_approve(client, project_id: str, step_key: str, draft: dict) -> dict:
     """Patch a step's draft (creating a pending revision) then re-approve it."""
-    patch = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        json={"draft": draft},
-    )
-    assert patch.status_code == 200, patch.text
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"reapprove-{project_id}-{step_key}-{draft.get('_rev', 'x')}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    patch_step(client, project_id, step_key, draft, force=False)
+    return approve_step(client, project_id, step_key, key=f"reapprove-{project_id}-{step_key}-{draft.get('_rev', 'x')}")
 
 
 def approve_through(client, project_id: str, last_step: str) -> None:
-    order = [
-        "book_brief",
-        "one_sentence_summary",
-        "one_paragraph_summary",
-        "character_sheets",
-        "short_synopsis",
-        "character_synopses",
-        "long_synopsis",
-        "character_bibles",
-        "scene_list",
-        "scene_details",
-    ]
-    for step_key in order[: order.index(last_step) + 1]:
+    for step_key in ALL_STEPS[: ALL_STEPS.index(last_step) + 1]:
         closeout_generate(client, project_id, step_key)
         closeout_approve(client, project_id, step_key)
 
@@ -332,13 +341,7 @@ def approve_through(client, project_id: str, last_step: str) -> None:
 
 
 def create_brief_project(client, key: str) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={"title": "要点之书", "outline_text": "作者意图要点验证用项目。"},
-        headers={"X-Idempotency-Key": f"brief-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, key=f"brief-{key}", title="要点之书", outline_text="作者意图要点验证用项目。")["project_id"]
 
 
 def _recording_generate(captured: list, payload: dict):

@@ -7,52 +7,21 @@ from __future__ import annotations
 
 import pytest
 
+from tests.support.snowflake import ALL_STEPS, approve_generated_step as _approve_generated_step, create_project
+
 pytestmark = pytest.mark.usefixtures("skeleton_snowflake")
 
 
 def _create_project(client, key: str) -> dict:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": f"同源护栏 {key}",
-            "genre": "悬疑",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": "旧信把她拉回雨城。\n悬案与家族纠缠。\n她必须决定真相值不值得。",
-        },
-        headers={"X-Idempotency-Key": f"sss-create-{key}"},
+    return create_project(
+        client,
+        key=f"sss-create-{key}",
+        title=f"同源护栏 {key}",
+        genre="悬疑",
+        target_chapter_count=2,
+        target_word_count=120000,
+        outline_text="旧信把她拉回雨城。\n悬案与家族纠缠。\n她必须决定真相值不值得。",
     )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
-
-
-def _approve_generated_step(client, project_id: str, step_key: str) -> None:
-    generated = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json={},
-        headers={"X-Idempotency-Key": f"sss-generate-{project_id}-{step_key}"},
-    )
-    assert generated.status_code == 200, generated.text
-    approved = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"sss-approve-{project_id}-{step_key}"},
-    )
-    assert approved.status_code == 200, approved.text
-
-
-ALL_STEPS = [
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "character_sheets",
-    "short_synopsis",
-    "character_synopses",
-    "long_synopsis",
-    "character_bibles",
-    "scene_list",
-    "scene_details",
-]
 
 
 def _materialize_and_approve(client, project_id: str, key: str) -> dict:

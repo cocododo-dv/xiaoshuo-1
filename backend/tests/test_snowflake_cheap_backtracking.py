@@ -21,6 +21,7 @@ from tests.support.snowflake import (
     closeout_approve as _approve,
     closeout_generate as _generate,
     create_closeout_project as _create_project,
+    patch_step,
     revise_and_approve as _revise_and_approve,
     step_of as _step,
     workspace_payload as _workspace,
@@ -34,9 +35,7 @@ def _statuses(client, project_id: str) -> dict[str, str]:
 
 
 def _patch(client, project_id: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}", json={"draft": draft})
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return patch_step(client, project_id, step_key, draft, force=False)
 
 
 def _plans(session, project_id: str) -> list[SnowflakeScenePlan]:

@@ -12,47 +12,26 @@ from __future__ import annotations
 import pytest
 
 from novel_system.db.models import ChapterState
+from tests.support.snowflake import ALL_STEPS, create_project, post_approve, post_generate
 
 pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
-ALL_STEPS = [
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "character_sheets",
-    "short_synopsis",
-    "character_synopses",
-    "long_synopsis",
-    "character_bibles",
-    "scene_list",
-    "scene_details",
-]
-
-
 def _create_project(client, key: str) -> dict:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": f"QA3再批准 {key}",
-            "genre": "悬疑",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": "样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
-        },
-        headers={"X-Idempotency-Key": f"qa3-reappr-create-{key}"},
+    return create_project(
+        client,
+        key=f"qa3-reappr-create-{key}",
+        title=f"QA3再批准 {key}",
+        genre="悬疑",
+        target_chapter_count=2,
+        target_word_count=120000,
+        outline_text="样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
     )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
 
 
 def _generate(client, pid: str, step_key: str, payload: dict | None = None, *, attempt: int = 1) -> dict:
     # 每次生成都是一次新的作者意图：幂等键带上第几次（旧版借 force_new 字段区分，那个字段已删）
-    r = client.post(
-        f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}/generate",
-        json=payload or {},
-        headers={"X-Idempotency-Key": f"qa3-reappr-gen-{pid}-{step_key}-{attempt}"},
-    )
+    r = post_generate(client, pid, step_key, payload, key=f"qa3-reappr-gen-{pid}-{step_key}-{attempt}")
     assert r.status_code == 200, r.text
     return r.json()["data"]
 
@@ -60,11 +39,7 @@ def _generate(client, pid: str, step_key: str, payload: dict | None = None, *, a
 def _approve(client, pid: str, step_key: str, *, attempt: int = 1):
     # 再确认一次同样是新的作者意图，幂等键同样带上第几次：同键同载荷会被幂等层原样重放第一次的回包、等于没批——
     # 下面两条「再确认不 500」以前就是这样一直绿着，从没真的再确认过
-    return client.post(
-        f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"qa3-reappr-approve-{pid}-{step_key}-{attempt}"},
-    )
+    return post_approve(client, pid, step_key, key=f"qa3-reappr-approve-{pid}-{step_key}-{attempt}")
 
 
 def _drop_chapter_states(session) -> int:

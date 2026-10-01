@@ -11,41 +11,16 @@ from sqlalchemy import select
 
 from novel_system.db.models import SnowflakeChapterPlan, StoryProject
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+# 存 / 确认一步就是雪花的基本动作（patch_step 照 React 客户端带 force），分章用例照旧从这里 import
+from tests.support.snowflake import approve_step, create_project, patch_step, rain_city_fields  # noqa: F401
 
 
 # ---------------------------------------------------------------- 经 API 编一本 12 场、六章的书（test_snowflake_chaptering）
 
 
 def create_chaptering_project(client, key: str) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "Rain City Signal",
-            "genre": "Urban Mystery",
-            "target_chapter_count": 6,
-            "target_word_count": 120000,
-            "outline_text": "旧信把她拉回雨城。\n悬案与家族纠缠。\n她必须决定真相值不值得。",
-        },
-        headers={"X-Idempotency-Key": f"chp-create-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
-
-
-def patch_step(client, project_id: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        json={"draft": draft, "force": True},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def approve_step(client, project_id: str, step_key: str) -> None:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve", json={}
-    )
-    assert response.status_code == 200, response.text
+    fields = rain_city_fields(target_chapter_count=6, outline_text="旧信把她拉回雨城。\n悬案与家族纠缠。\n她必须决定真相值不值得。")
+    return create_project(client, key=f"chp-create-{key}", **fields)["project_id"]
 
 
 #: 07 长篇大纲：作者真的编出来的六章（结构化 chapters —— P2 的新契约）

@@ -20,20 +20,8 @@ from sqlalchemy import select
 
 from novel_system.db.models import SceneCard, SnowflakeScenePlan
 from tests.real_llm_fakes import install_skeleton_snowflake
+from tests.support.snowflake import ALL_STEPS, approve_step, create_project, post_generate, rain_city_fields
 
-
-ALL_STEPS = [
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "character_sheets",
-    "short_synopsis",
-    "character_synopses",
-    "long_synopsis",
-    "character_bibles",
-    "scene_list",
-    "scene_details",
-]
 
 # ws-snow.jsx structuredGenerate 发出的四种 body（require_llm 恒为 true）。
 REACT_STRUCTURED_GENERATE_BODIES = {
@@ -56,41 +44,17 @@ REACT_STRUCTURED_GENERATE_BODIES = {
 }
 
 
+# 这个文件的幂等键都按作品 + 步 + 场合拼（同一步的生成 / 确认各自一个键）
 def _create_project(client, *, key: str) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "Rain City Signal",
-            "genre": "Urban Mystery",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": (
-                "An old letter pulls the heroine back to Rain City.\n"
-                "The cold case turns out to be tied to her family.\n"
-                "She must decide whether the truth is worth the cost."
-            ),
-        },
-        headers={"X-Idempotency-Key": f"create-fix-src-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
+    return create_project(client, key=f"create-fix-src-{key}", **rain_city_fields())["project_id"]
 
 
 def _generate(client, project_id: str, step_key: str, body: dict, *, key: str):
-    return client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json=body,
-        headers={"X-Idempotency-Key": f"generate-fix-src-{project_id}-{step_key}-{key}"},
-    )
+    return post_generate(client, project_id, step_key, body, key=f"generate-fix-src-{project_id}-{step_key}-{key}")
 
 
 def _approve(client, project_id: str, step_key: str, *, key: str) -> None:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"approve-fix-src-{project_id}-{step_key}-{key}"},
-    )
-    assert response.status_code == 200, response.text
+    approve_step(client, project_id, step_key, key=f"approve-fix-src-{project_id}-{step_key}-{key}")
 
 
 # ---------------------------------------------------------------------------

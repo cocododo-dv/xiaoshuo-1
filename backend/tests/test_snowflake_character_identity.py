@@ -31,6 +31,13 @@ from novel_system.services.snowflake_character_ids import (
     present_draft,
 )
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+from tests.support.snowflake import (
+    approve_step as _approve,
+    create_project,
+    patch_step as _patch,
+    post_generate,
+    step_of as _step,
+)
 
 _KEYS = count()
 
@@ -40,35 +47,11 @@ def _key(prefix: str) -> dict[str, str]:
 
 
 def _create(client, title: str) -> str:
-    response = client.post("/api/v2/projects", json={"title": title, "outline_text": "旧信把她带回雨城。"}, headers=_key("char-id-create"))
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
-
-
-def _patch(client, project_id: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        json={"draft": draft, "force": True},
-        headers=_key("char-id-patch"),
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def _approve(client, project_id: str, step_key: str) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve", json={}, headers=_key("char-id-approve")
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+    return create_project(client, title=title, outline_text="旧信把她带回雨城。")["project_id"]
 
 
 def _skip(client, project_id: str, step_key: str) -> None:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json={"skip": True, "skip_reason": "这本书用不上这一层"},
-        headers=_key("char-id-skip"),
-    )
+    response = post_generate(client, project_id, step_key, {"skip": True, "skip_reason": "这本书用不上这一层"})
     assert response.status_code == 200, response.text
 
 
@@ -90,10 +73,6 @@ def _confirm_through_sheets(client, project_id: str, characters: list[dict], **e
     }
     _patch(client, project_id, "character_sheets", draft)
     return _approve(client, project_id, "character_sheets")
-
-
-def _step(workspace: dict, step_key: str) -> dict:
-    return next(step for step in workspace["steps"] if step["step_key"] == step_key)
 
 
 def test_two_works_with_the_same_hand_made_ids_keep_their_own_characters(client, session) -> None:

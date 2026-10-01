@@ -13,56 +13,13 @@ import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import SceneCard, SnowflakeScenePlan
+from tests.support.snowflake import (
+    ALL_STEPS,
+    approve_generated_step as _approve_generated_step,
+    create_workspace_project as _create_project,
+)
 
 pytestmark = pytest.mark.usefixtures("skeleton_snowflake")
-
-
-def _create_project(client, *, key: str) -> dict:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "Rain City Signal",
-            "genre": "Urban Mystery",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": (
-                "An old letter pulls the heroine back to Rain City.\n"
-                "The cold case turns out to be tied to her family.\n"
-                "She must decide whether the truth is worth the cost."
-            ),
-        },
-        headers={"X-Idempotency-Key": f"create-v2-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
-
-
-def _approve_generated_step(client, project_id: str, step_key: str) -> None:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json={},
-        headers={"X-Idempotency-Key": f"generate-v2-{project_id}-{step_key}"},
-    )
-    assert response.status_code == 200, response.text
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"approve-v2-{project_id}-{step_key}"},
-    )
-    assert response.status_code == 200, response.text
-
-ALL_STEPS = [
-    "book_brief",
-    "one_sentence_summary",
-    "one_paragraph_summary",
-    "character_sheets",
-    "short_synopsis",
-    "character_synopses",
-    "long_synopsis",
-    "character_bibles",
-    "scene_list",
-    "scene_details",
-]
 
 
 def test_fe_resync_sequence_end_to_end(client, session) -> None:

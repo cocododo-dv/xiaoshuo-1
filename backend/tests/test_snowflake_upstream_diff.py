@@ -9,44 +9,26 @@ from __future__ import annotations
 
 import pytest
 
+from tests.support.snowflake import (
+    approve_step as _approve,
+    create_project,
+    patch_step as _patch,
+    workspace_step as _step,
+)
+
 pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 def _create_project(client, key: str) -> str:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": f"阶段E {key}",
-            "genre": "悬疑",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": "样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
-        },
-        headers={"X-Idempotency-Key": f"phase-e-create-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]["project_id"]
-
-
-def _patch(client, project_id: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        json={"draft": draft, "force": True},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["step"]
-
-
-def _approve(client, project_id: str, step_key: str) -> dict:
-    response = client.post(f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve", json={})
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["step"]
-
-
-def _step(client, project_id: str, step_key: str) -> dict:
-    response = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace")
-    assert response.status_code == 200, response.text
-    return next(step for step in response.json()["data"]["steps"] if step["step_key"] == step_key)
+    return create_project(
+        client,
+        key=f"phase-e-create-{key}",
+        title=f"阶段E {key}",
+        genre="悬疑",
+        target_chapter_count=2,
+        target_word_count=120000,
+        outline_text="样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
+    )["project_id"]
 
 
 _BOOK_BRIEF = {
@@ -71,9 +53,9 @@ def test_stale_step_keeps_consumed_upstream_refs_and_accept_stale_leaves_a_trace
     _patch(client, project_id, "book_brief", _BOOK_BRIEF)
     _approve(client, project_id, "book_brief")
     _patch(client, project_id, "one_sentence_summary", {"summary": "林岑必须交出母本，但交出去弟弟就没了退路。"})
-    logline_v1 = _approve(client, project_id, "one_sentence_summary")
+    logline_v1 = _approve(client, project_id, "one_sentence_summary")["step"]
     _patch(client, project_id, "one_paragraph_summary", {"sentences": _FIVE, "moral_premise": "逃避代价只会放大伤害。"})
-    paragraph = _approve(client, project_id, "one_paragraph_summary")
+    paragraph = _approve(client, project_id, "one_paragraph_summary")["step"]
 
     # 确认时消费的上游版本被记在 artifact.input_refs 里
     refs = paragraph["artifact"]["input_refs"]
@@ -82,7 +64,7 @@ def test_stale_step_keeps_consumed_upstream_refs_and_accept_stale_leaves_a_trace
 
     # 上游真的改了并再次批准 → 下游置 stale，原因点名上游；input_refs 仍指向当时消费的旧版本
     _patch(client, project_id, "one_sentence_summary", {"summary": "林岑必须烧掉母本，但烧掉它养母就永远逍遥。"})
-    logline_v2 = _approve(client, project_id, "one_sentence_summary")
+    logline_v2 = _approve(client, project_id, "one_sentence_summary")["step"]
     assert logline_v2["artifact"]["step_run_id"] != logline_v1["artifact"]["step_run_id"]
 
     stale = _step(client, project_id, "one_paragraph_summary")
@@ -133,7 +115,7 @@ def test_regenerating_a_stale_step_from_new_upstream_records_the_trigger_and_ref
     _patch(client, project_id, "one_paragraph_summary", {"sentences": _FIVE, "moral_premise": "逃避代价只会放大伤害。"})
     _approve(client, project_id, "one_paragraph_summary")
     _patch(client, project_id, "one_sentence_summary", {"summary": "林岑必须烧掉母本，但烧掉它养母就永远逍遥。"})
-    logline_v2 = _approve(client, project_id, "one_sentence_summary")
+    logline_v2 = _approve(client, project_id, "one_sentence_summary")["step"]
     assert _step(client, project_id, "one_paragraph_summary")["status"] == "stale"
 
     response = client.post(
