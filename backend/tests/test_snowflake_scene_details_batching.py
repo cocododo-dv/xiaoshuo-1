@@ -253,7 +253,7 @@ def test_full_table_batches_start_at_the_first_scene_step_10_can_still_deepen(se
             if not item["goal"]:
                 item.update(goal=f"{scene_id} 新的目标", conflict="两轮受阻", setback="证人翻供", cost_requirement="信用")
             if not (scene.get("crucible") or scene.get("scene_crucible")):
-                item.update(crucible="模型补的坩埚", scene_crucible="模型补的坩埚")  # 提示词要它填，第 10 步存不进去
+                item.update(crucible="模型补的坩埚", scene_crucible="模型补的坩埚")  # 照旧填它的模型（v14 的提示词要它填）：第 10 步存不进去
             scenes.append(item)
         return _respond({"scenes": scenes})
 
@@ -269,6 +269,50 @@ def test_full_table_batches_start_at_the_first_scene_step_10_can_still_deepen(se
     plans = {row[0]: row for row in _plans_of(session, "prj-start")}
     assert plans["u7"][5] == "SC007 新的目标" and plans["u8"][5] == "SC008 新的目标"
     assert plans["u1"][4] == "", "09 的坩埚只在 09 改"
+
+
+def test_an_empty_scene_list_crucible_costs_no_completeness_repair_call(session, monkeypatch):
+    """合并胶水 G7：坩埚归 09，第 10 步存不进去（G4），模板 v15 也让模型别改它。模型照模板排好三拍、把空着的 09 坩埚
+    原样留空，那不是这一步的缺口——补全重试不为它多花一次调用（改动前会再调一次，重试照样补不上）；三拍照常落库，
+    坩埚等作者回 09 补。"""
+    calls: list[dict] = []
+
+    def responder(request):
+        payload = _payload_of(request)
+        calls.append(payload)
+        targets = _focus_ids(payload) or [scene["scene_id"] for scene in payload["current_draft"]["scenes"]]
+        return _respond({"scenes": [
+            {"scene_id": scene_id, "goal": f"{scene_id} 新的目标", "conflict": "两轮受阻", "setback": "证人翻供"}
+            for scene_id in targets
+        ]})
+
+    _install_llm(monkeypatch, responder)
+    listed = _scenes(3)
+    listed[1]["crucible"] = ""  # 第 2 场 09 的坩埚还空着
+    service = _seed_with_plans(session, "prj-empty-crucible", scenes=listed, planned=lambda index: False)
+
+    result = service.generate_step("prj-empty-crucible", "scene_details", {"source": "fe_scaffold_ai"})
+
+    assert len(calls) == 1, "空着的 09 坩埚换来了一次补全重试"
+    assert "completeness_repair" not in calls[0]
+    assert result["step"]["health"]["generation_source"] == "llm"
+    plans = {row[0]: row for row in _plans_of(session, "prj-empty-crucible")}
+    assert plans["u2"][5] == "SC002 新的目标" and plans["u2"][4] == ""
+
+
+def test_the_scene_details_prompt_treats_the_scene_list_columns_as_read_only() -> None:
+    """合并胶水 G7：事件 / 地点 / 坩埚 / 形态 / 视角归 09——模板不再要模型填它们，只当只读上下文。"""
+    import pathlib
+
+    import yaml
+
+    templates = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml").read_text(encoding="utf-8")
+    )["templates"]
+    task = templates["snowflake_generate_scene_details"]["task_prompt"]
+    assert "Step 09 (the scene list) owns" in task and "read-only context" in task
+    assert "never rewrite them" in task and "build each scene's trio on that event" in task
+    assert "Fill title, summary, location" not in task
 
 
 def test_a_mid_run_batch_failure_keeps_finished_batches_and_reports_progress(session, monkeypatch):

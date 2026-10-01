@@ -145,6 +145,10 @@ def _collect_generation_gaps(step_key: str, draft: dict[str, Any] | None) -> lis
     逐场缺字段 step_completeness 本身已下钻。"""
     payload = draft if isinstance(draft, dict) else {}
     gaps = [str(field) for field in step_completeness(step_key, payload).get("missing_fields") or []]
+    if step_key == "scene_details":
+        # 归 09 的栏（坩埚……，``SCENE_LIST_OWNED_FIELDS``）第 10 步写不进去（合并胶水 G4），提示词也让模型别改它们
+        # （模板 v15）：缺它不是这一步的缺口，补全重试为它多花一次调用只会白跑——由作者回 09 补
+        gaps = [gap for gap in gaps if "." not in gap or gap.rsplit(".", 1)[1] not in SCENE_LIST_OWNED_FIELDS]
     if step_key in _CHARACTER_COLLECTION_STEPS:
         template = _collection_template(step_key, "characters")
         checked = [field_key for field_key in template if field_key not in _SERVER_ASSIGNED_ITEM_KEYS]

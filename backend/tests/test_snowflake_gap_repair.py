@@ -56,6 +56,17 @@ def test_lead_roles_keep_their_field_level_gaps() -> None:
     assert "characters[林昭].goal" not in gaps
 
 
+def test_a_scene_list_column_is_not_a_scene_details_repair_target() -> None:
+    """合并胶水 G7：坩埚归 09——第 10 步存不进去（G4），模板 v15 也让模型别改它；场景规划的补全重试只盯第 10 步
+    自己写得进去的栏（三拍），不为空着的 09 坩埚多花一次调用。"""
+    gaps = _collect_generation_gaps(
+        "scene_details",
+        {"scenes": [{"scene_id": "SC01", "primary_form": "proactive", "crucible": "", "goal": "拿到账本", "conflict": "三轮受阻", "setback": ""}]},
+    )
+    assert gaps == ["SC01.setback"]
+    assert _collect_generation_gaps("scene_details", {"scenes": []}) == ["scenes"]
+
+
 def test_a_member_with_nothing_but_a_name_is_still_a_gap() -> None:
     gaps = _collect_generation_gaps(
         "character_bibles",
