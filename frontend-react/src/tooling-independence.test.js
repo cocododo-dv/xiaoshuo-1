@@ -36,6 +36,10 @@ function scriptSources() {
   return out;
 }
 
+// 唯一长期允许写 window 全局命名空间的模块：开发态测试接缝（契约 E2E 冒烟经 window.__wsStores 拿 store），
+// 而且只在 import.meta.env.DEV 时写（生产构建里整段被摇掉）。
+const TEST_SEAM = "ws-test-seam.js";
+
 // 仍写 window 全局的过渡模块（旧 store 的运行时接缝）。棘轮：只删不加——哪个模块不再写 window，
 // 就把它从这里删掉（测试会提醒）；其它模块一律不许写，新代码用 ES 导出 / 导入或事件。
 const KNOWN_WINDOW_WRITERS = [
@@ -133,10 +137,20 @@ describe("React 工具链独立性", () => {
       .filter((file) => /Object\.assign\(window|window\.[A-Za-z_$][A-Za-z0-9_$]*\s*=/.test(fs.readFileSync(file, "utf8")))
       .map((file) => path.relative(srcDir, file).split(path.sep).join("/"))
       .sort();
-    const unexpected = writers.filter((name) => !KNOWN_WINDOW_WRITERS.includes(name));
+    const unexpected = writers.filter((name) => name !== TEST_SEAM && !KNOWN_WINDOW_WRITERS.includes(name));
     expect(unexpected, "这些模块新写了 window：改用 ES 导出 / 导入或事件").toEqual([]);
     const fixed = KNOWN_WINDOW_WRITERS.filter((name) => !writers.includes(name));
     expect(fixed, "这些已经不写 window 了，把它们从 KNOWN_WINDOW_WRITERS 里删掉").toEqual([]);
+  });
+
+  it("测试接缝只在开发态写 window：写的只有 window.__wsStores，而且整段包在 import.meta.env.DEV 里", () => {
+    const source = fs.readFileSync(path.join(srcDir, TEST_SEAM), "utf8");
+    const writes = [...source.matchAll(/window\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=(?!=)/g)].map((match) => match[1]);
+    expect(writes).toEqual(["__wsStores"]);
+    expect(source).not.toMatch(/Object\.assign\(window/);
+    expect(source).toMatch(/if \(!import\.meta\.env\.DEV\b[^\n]*\) return;/);
+    // 一个 store 都不静态 import：静态 import 会把懒加载的 store 拉进入口块（只用 DEV 分支里的动态 import）
+    expect(source).not.toMatch(/^import\s/m);
   });
 
   it("全局对象上只有 lib/events.js 的跨重载去重登记表（Symbol 键），别的模块不往 globalThis[…] 上写", () => {

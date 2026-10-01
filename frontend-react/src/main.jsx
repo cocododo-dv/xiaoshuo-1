@@ -22,8 +22,10 @@ import "./ws-snow-chapters.css";
 import "./ws-snow-editors.css";
 
 import { App } from "./ws-app.jsx";
+import { installTestSeam } from "./ws-test-seam.js";
 import ReactDOMClient from "react-dom/client";
 
+installTestSeam(); // 只在开发态：契约 E2E 冒烟经 window.__wsStores 拿 store（生产构建里是空操作）
 ReactDOMClient.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <App />
