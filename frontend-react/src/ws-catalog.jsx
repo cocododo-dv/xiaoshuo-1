@@ -506,7 +506,4 @@ adoptModuleListeners("ws-catalog", () => {
 /* 回收站恢复了章 / 场：目录以服务端为准重读（回收站模块不 import 目录，见 ws-trash-store.js） */
 onTrashRestored(() => { catRefetch(catActiveId()); });
 
-Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore });
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsCatalog, useCatalogChapters, WsTrashStore };

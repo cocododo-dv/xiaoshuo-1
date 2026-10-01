@@ -251,9 +251,7 @@ function WsReview({ go }) {
   );
 }
 
-Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvResolveAction });
-
-/* ESM 导出（window.* 赋值过渡期保留，冒烟脚本仍读 window.rvOpenItems） */
+/* 视图 + 转出收件箱 store 的名字（旧的 import 路径；store 本身在 ws-review-store.js） */
 export {
   WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush,
   rvResolveAction, rvReady, useReviewOpenItems,

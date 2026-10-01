@@ -453,8 +453,6 @@ const SnowSync = {
    经 SnowSync 的属性调用：单测会替换它。 */
 WsCatalog.onPlanTitlesSynced((workId) => SnowSync.adoptServerChapters(workId));
 
-Object.assign(window, { SnowSync });
-
 // mergeCanon / applyCanonPatch / feFromCanon / canonFromFE 一并导出：供 store 单测
 // 直接验证「保真合并」「咨询式补丁」与「规范字段 ↔ 原型形状」的往返契约
 export { SnowSync, mergeCanon, applyCanonPatch, feFromCanon, canonFromFE, stepIsPristine };

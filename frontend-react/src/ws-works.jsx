@@ -481,7 +481,4 @@ function useActiveWorkIdentity() {
 /* 启动即拉一次后端列表（缓存影子先行渲染） */
 wsRefresh();
 
-Object.assign(window, { WsWorks, useActiveWork, useWorks, useWorksStatus, wsKey });
-
-/* ESM 导出（window.* 赋值过渡期保留；useActiveWorkIdentity 是新接口，只走 ESM） */
 export { WsWorks, useActiveWork, useActiveWorkIdentity, useWorks, useWorksStatus, wsKey };

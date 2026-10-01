@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 // 单测配置与 vite.config.js 分离：build 配置不受影响。React 插件负责 .jsx 转换。
 // 两个项目：
-//   · dom  —— 默认。store 层是挂在 window 上的运行时全局（ws-works.jsx 等），组件测试要 jsdom 的
+//   · dom  —— 默认。store 在 import 时就读写本机存储、挂窗口事件（ws-works.jsx 等），组件测试要 jsdom 的
 //             window / document / localStorage；src/test-setup.js 统一打开 React 的 act 环境、用例后清存储。
 //             单条上限 15 s：装配整间写作台 / 起草台的文件，第一条用例要付模块转换的冷启动，主机负载高时
 //             默认的 5 s 会间歇超时（以前八个文件各自写一行 vi.setConfig）。
