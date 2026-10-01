@@ -52,8 +52,9 @@ function ManuDiff({ picked, chapter }) {
   const [diffError, setDiffError] = useState("");
   const [historyRetry, setHistoryRetry] = useState(0);
   const [diffRetry, setDiffRetry] = useState(0);
-  const sidRef = useRef(sid);
-  sidRef.current = sid;
+  /* 版本列表的「代」：换一场 / 重试就是新的一代。「更早的版本」读回来时代已经换了，这一页、它的失败和它的「读取中…」
+     都不属于眼下这一份列表——过去换场时只丢了这一页，忙碌状态却留着，按钮在每一场都卡在「读取中…」（复核 Q1c-R2） */
+  const listGen = useRef(0);
 
   useEffect(() => {
     if (scenes.length && !scenes.some((s) => s.sid === sid)) setSid(scenes[0].sid);
@@ -61,7 +62,8 @@ function ManuDiff({ picked, chapter }) {
 
   useEffect(() => {
     let on = true;
-    setVers(null); setNextCursor(null); setDiff(null); setSelNew(null); setSelOld(null); setHistoryError(""); setDiffError("");
+    listGen.current += 1;
+    setVers(null); setNextCursor(null); setMoreBusy(false); setDiff(null); setSelNew(null); setSelOld(null); setHistoryError(""); setDiffError("");
     if (!sid) { setVers([]); return undefined; }
     listVersions(WrDocVersions, sid).then((page) => {
       if (!on) return;
@@ -94,10 +96,11 @@ function ManuDiff({ picked, chapter }) {
   /* 接着取更早的一页，接在列表后面（已选的两版不动） */
   const loadMore = () => {
     if (!sid || !nextCursor || moreBusy) return;
-    const forSid = sid;
+    const gen = listGen.current;
+    const current = () => gen === listGen.current;
     setMoreBusy(true);
-    WrDocVersions.list(forSid, { cursor: nextCursor }).then((page) => {
-      if (forSid !== sidRef.current) return;
+    WrDocVersions.list(sid, { cursor: nextCursor }).then((page) => {
+      if (!current()) return;
       const older = (page && page.items) || [];
       setVers((prev) => {
         const seen = new Set((prev || []).map((v) => v.revisionNo));
@@ -105,8 +108,8 @@ function ManuDiff({ picked, chapter }) {
       });
       setNextCursor((page && page.nextCursor) || null);
     }).catch((error) => {
-      if (forSid === sidRef.current) setHistoryError(versionErrorText(error, "更早的版本加载失败。"));
-    }).finally(() => { if (forSid === sidRef.current) setMoreBusy(false); });
+      if (current()) setHistoryError(versionErrorText(error, "更早的版本加载失败。"));
+    }).finally(() => { if (current()) setMoreBusy(false); });
   };
 
   const ready = vers && vers.length >= 2;

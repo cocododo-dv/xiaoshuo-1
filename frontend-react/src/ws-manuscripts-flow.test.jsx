@@ -366,6 +366,44 @@ describe("成稿中心权威章节流", () => {
     expect(host.querySelector('[data-testid="manuscript-diff-more"]')).toBeNull();
   });
 
+  it("「更早的版本」还在读时换了一场：新的那一场照常能点、取它自己的下一页，上一场读回来的那一页不混进来（复核 Q1c-R2）", async () => {
+    let releaseFirst = null;
+    versionsFx.list.mockImplementation(async (sid, opts) => {
+      if (opts && opts.cursor === "cur-ch01s1") {
+        return new Promise((ok) => { releaseFirst = () => ok({ items: [{ revisionNo: 1, at: "2026-09-19T09:00:00", words: 900 }], nextCursor: null }); });
+      }
+      if (opts && opts.cursor) return { items: [{ revisionNo: 40, at: "2026-09-18T09:00:00", words: 800 }], nextCursor: null };
+      const [newer, older] = sid === "ch01s1" ? [3, 2] : [42, 41];
+      return { items: [
+        { revisionNo: newer, at: "2026-09-21T14:05:00", words: 1200 },
+        { revisionNo: older, at: "2026-09-20T10:00:00", words: 1100 },
+      ], nextCursor: `cur-${sid}` };
+    });
+    const ch = chapter("review");
+    ch.scenes = [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "done" }, { sid: "ch01s2", backendId: "s2", title: "雨夜的信", state: "done" }];
+    const host = await renderPage([ch]);
+    await click([...host.querySelectorAll("button")].find((node) => node.textContent === "对比"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await click(host.querySelector('[data-testid="manuscript-diff-more"]'));
+    expect(host.querySelector('[data-testid="manuscript-diff-more"]').disabled).toBe(true);   // 第一场的下一页还在读
+    const sceneSelect = host.querySelector('select[aria-label="选择场景"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(sceneSelect, "ch01s2");
+      sceneSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { releaseFirst(); await Promise.resolve(); await Promise.resolve(); });
+    const olderOptions = () => [...host.querySelectorAll('select[aria-label="旧版本"] option')].map((o) => o.value);
+    expect(olderOptions()).toEqual(["41"]);
+    const more = host.querySelector('[data-testid="manuscript-diff-more"]');
+    expect(more.disabled).toBe(false);
+    expect(more.textContent).toBe("更早的版本");
+    await click(more);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(versionsFx.list).toHaveBeenLastCalledWith("ch01s2", { cursor: "cur-ch01s2" });
+    expect(olderOptions()).toEqual(["41", "40"]);
+  });
+
   it("版本历史请求失败会显示错误并可重试", async () => {
     versionsFx.list
       .mockRejectedValueOnce(new Error("版本服务暂时不可用"))
