@@ -137,10 +137,11 @@ export function wrBlockSlice(block, range) {
   return { start, end: start + text.length, text };
 }
 
-/* 本场字数：去掉空白后的字符数，按码点计（与服务端 count_words 同口径：一个生僻字 / 表情算一个）。
+/* 本场字数：lib/text 的 countChars（去掉空白、按码点计，与服务端 count_words 同口径：一个生僻字 / 表情算一个；
+   AI 起草台采纳时记的字数也是它，两边对得上）。
    读 textContent 而不是 innerText：innerText 每敲一个字都要对整篇稿子做一次样式和布局计算，
    空白反正要去掉，编辑器里也没有隐藏的子节点。占位不在 DOM 里了，不必再特判。 */
 export function wrCountText(el) {
   if (!el) return 0;
-  return Array.from(String(el.textContent || "").replace(/\s/g, "")).length;
+  return countChars(el.textContent);
 }
