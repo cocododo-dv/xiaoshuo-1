@@ -42,11 +42,7 @@ from novel_system.services.scene_generation import (
     latest_style_notices,
 )
 from tests.real_llm_fakes import ScenePipelineOnlineFake
-from tests.test_qc_engine_style_validation_gate import (
-    COPIED_SENTENCE,
-    REFERENCE_PARAGRAPH,
-    _seed_style_binding,
-)
+from tests.support.style_gate import COPIED_SENTENCE, REFERENCE_PARAGRAPH, seed_style_binding as _seed_style_binding
 
 
 CHAPTER_ID = "CHNF01"

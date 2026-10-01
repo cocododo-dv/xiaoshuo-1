@@ -22,7 +22,7 @@ from novel_system.services.scene_structure_brief import (
     render_scene_structure_brief,
     scene_has_structure,
 )
-from novel_system.services.snowflake_chaptering import _rhythm_report
+from novel_system.services.snowflake_chaptering import rhythm_report
 from novel_system.services.snowflake_scene_brief import scene_writer_brief
 from novel_system.services.snowflake_steps import (
     SCENE_FIELD_EXAMPLES,
@@ -33,13 +33,15 @@ from novel_system.services.snowflake_steps import (
     step_completeness,
     step_guidance,
 )
-from novel_system.services.snowflake_workspace import (
-    EXCLUDED_TRIAGE_STATUSES,
-    SnowflakeWorkspaceService,
-    _coerce_triage_status,
-)
+from novel_system.services.snowflake_triage import EXCLUDED_TRIAGE_STATUSES, coerce_triage_status
+from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.snowflake_workspace_llm import _normalize_triage_output
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _materialize, _plan, _seed
+from tests.support.snowflake import (
+    RENDER_PROJECT_ID as PROJECT_ID,
+    materialize_render_project as _materialize,
+    scene_plan as _plan,
+    seed_render_project as _seed,
+)
 
 _PROMPTS = pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts.yaml"
 
@@ -170,8 +172,8 @@ def _verdict(service: SnowflakeWorkspaceService, session, row_uid: str, status: 
 
 
 def test_cut_is_an_author_only_status() -> None:
-    assert _coerce_triage_status("cut") == "cut"
-    assert _coerce_triage_status("CUT ") == "cut"
+    assert coerce_triage_status("cut") == "cut"
+    assert coerce_triage_status("CUT ") == "cut"
     assert EXCLUDED_TRIAGE_STATUSES == frozenset({"rewrite", "cut"})
     draft = {"scenes": [{"scene_id": "SC1", "primary_form": "proactive", "crucible": "困", "goal": "g", "conflict": "c", "setback": "s"}]}
     normalized = _normalize_triage_output({"items": [{"scene_id": "SC1", "status": "cut", "notes": "模型想删"}]}, draft)
@@ -274,7 +276,7 @@ def test_design_context_skips_a_cut_neighbour_but_keeps_a_rewrite_one(session) -
 
 
 def test_rhythm_report_counts_excluded_scenes_as_nothing() -> None:
-    report = _rhythm_report(
+    report = rhythm_report(
         [{"act": 1, "scene_count": 3, "scenes": [{"rendering_mode": "full"}, {"rendering_mode": "full", "excluded": True}, {"rendering_mode": "summary"}]}]
     )
     assert report["weighted_scene_counts"] == [1.5]

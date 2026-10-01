@@ -8,7 +8,12 @@
 from __future__ import annotations
 
 from novel_system.db.models import SnowflakeSceneTriageItem
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _materialize, _plan, _seed
+from tests.support.snowflake import (
+    RENDER_PROJECT_ID as PROJECT_ID,
+    materialize_render_project as _materialize,
+    scene_plan as _plan,
+    seed_render_project as _seed,
+)
 
 
 def _triage_row(plan, triage_id: str, status: str, *, created_at: str, updated_at: str) -> SnowflakeSceneTriageItem:

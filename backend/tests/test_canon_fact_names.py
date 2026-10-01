@@ -126,7 +126,7 @@ def test_ids_without_a_known_name_are_printed_as_before(session) -> None:
 
 def test_name_and_taxonomy_modules_stay_leaves() -> None:
     """人物名与叙事分类表是谁都能引的叶子：只依赖表模型（分类表连表模型都不依赖）。"""
-    from tests.test_service_architecture import PACKAGE_ROOT, _imports, _modules_under
+    from tests.support.import_graph import PACKAGE_ROOT, imports_of as _imports, modules_under as _modules_under
 
     modules = {module: path for path, module in _modules_under(PACKAGE_ROOT).items()}
     allowed = {

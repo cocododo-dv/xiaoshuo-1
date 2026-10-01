@@ -34,7 +34,7 @@ from novel_system.services.style_reference.paragraph_root import ensure_paragrap
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.style_reference_inject_helpers import card_payload, seed_reference, seed_scene
 from tests.style_reference_route_helpers import fake_import_llm, wait_book_status
-from tests.test_style_reference_windows import synthetic_rows
+from tests.support.style_reference import synthetic_rows
 
 PREFIX = "/api/v2/style-reference"
 _KEYS = iter(range(10_000))

@@ -11,7 +11,6 @@ import pathlib
 
 import pytest
 
-from tests.real_llm_fakes import install_skeleton_snowflake
 import yaml
 
 from novel_system.services.scene_execution import SceneExecutionContractService
@@ -20,12 +19,14 @@ from novel_system.services.snowflake_steps import (
     diagnose_step_pressure,
     merge_step_draft,
 )
-from tests.test_snowflake_closeout import _approve_through, _create_project, _step, _workspace
+from tests.support.snowflake import (
+    approve_through as _approve_through,
+    create_closeout_project as _create_project,
+    step_of as _step,
+    workspace_payload as _workspace,
+)
 
-
-@pytest.fixture(autouse=True)
-def _skeleton_snowflake_generate(monkeypatch):
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 # ---------------------------------------------------------------------------

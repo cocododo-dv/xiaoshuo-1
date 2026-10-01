@@ -11,20 +11,17 @@ import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
-    ChapterGoal,
-    FinalScene,
     SceneCard,
-    SceneRunState,
-    StoryProject,
-    StyleReferenceBook,
-    StyleReferenceInjectionBinding,
     StyleReferenceMetricEvent,
-    StyleReferenceProfile,
-    StyleReferenceRun,
 )
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
 from novel_system.services.style_reference import style_continuity as sc
-from novel_system.services.style_reference import voice_signature as vs
+from tests.support.style_reference import (
+    add_final_scene as _add_final_scene,
+    seed_style_binding as seed_binding,
+    seed_work,
+    short_dense_reference,
+)
 
 # 「偏长句、少逗号」成稿：每句四十余字、几乎没有逗号，≥300 可见字。
 LONG_SENTENCE_TEXT = "\n\n".join(
@@ -36,119 +33,6 @@ LONG_SENTENCE_TEXT = "\n\n".join(
     ]
     * 3
 )
-
-
-def _reference_features(**overrides: float) -> dict[str, float]:
-    """以「一般中文小说」基线均值为底、只改写几个节奏特征的参考画像声音签名。"""
-    baseline = vs.load_voice_baseline()
-    features = {name: float(baseline["features"][name]["mean"]) for name in vs.FEATURE_NAMES}
-    features.update(overrides)
-    return features
-
-
-def short_dense_reference() -> dict[str, float]:
-    """短句、密集停顿的参考：句均十字、逗号极密。"""
-    return _reference_features(
-        sent_len_mean=10.0,
-        sent_len_p90=18.0,
-        punct_comma_per_1k=120.0,
-        sent_pauses_mean=3.5,
-        clause_len_mean=5.0,
-    )
-
-
-def seed_work(session, *, project_id: str, chapters: int = 1, scenes_per_chapter: int = 3) -> None:
-    session.add(StoryProject(project_id=project_id, title="v2 continuity", outline_text="", planning_mode="snowflake"))
-    for chapter_index in range(1, chapters + 1):
-        chapter_id = f"{project_id}_CH{chapter_index:02d}"
-        session.add(
-            ChapterGoal(
-                chapter_id=chapter_id,
-                project_id=project_id,
-                planned_scene_count=scenes_per_chapter,
-                chapter_goal=f"Chapter {chapter_index} goal.",
-                display_order=chapter_index,
-            )
-        )
-        for seq in range(1, scenes_per_chapter + 1):
-            scene_id = f"{chapter_id}_SC{seq:02d}"
-            session.add(
-                SceneCard(
-                    scene_id=scene_id,
-                    chapter_id=chapter_id,
-                    project_id=project_id,
-                    scene_seq=seq,
-                    onstage_chars_json=[],
-                    scene_goal=f"Scene {seq} goal.",
-                    is_chapter_last=1 if seq == scenes_per_chapter else 0,
-                )
-            )
-            session.add(SceneRunState(scene_id=scene_id))
-    session.commit()
-
-
-def seed_binding(
-    session,
-    *,
-    project_id: str,
-    seed: str,
-    profile_json: dict,
-    scope: str = "project",
-    config_json: dict | None = None,
-) -> str:
-    session.add(
-        StyleReferenceBook(
-            book_id=f"sr_book_{seed}",
-            title="Public domain source",
-            source_kind="path",
-            cloud_policy="segments_only",
-            text_checksum=f"checksum-{seed}",
-            stats_json={"rights_declaration": {"declared": True, "send_rights": True}},
-        )
-    )
-    session.add(StyleReferenceRun(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done"))
-    session.add(
-        StyleReferenceProfile(
-            profile_id=f"sr_profile_{seed}",
-            book_id=f"sr_book_{seed}",
-            run_id=f"sr_run_{seed}",
-            title="Audited profile",
-            status="active",
-            profile_json=profile_json,
-        )
-    )
-    session.add(
-        StyleReferenceInjectionBinding(
-            binding_id=f"sr_bind_{seed}",
-            profile_id=f"sr_profile_{seed}",
-            scope=scope,
-            scope_ref_id=project_id,
-            task_type="scene_generation",
-            strategy="A",
-            config_json=dict(config_json or {}),
-            status="active",
-        )
-    )
-    session.commit()
-    return f"sr_profile_{seed}"
-
-
-def _add_final_scene(session, *, scene_id: str, content: str, status: str = "archived") -> str:
-    chapter_id = scene_id.rsplit("_SC", 1)[0]
-    row_id = f"final_{scene_id}"
-    session.add(
-        FinalScene(
-            row_id=row_id,
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-            content=content,
-            status=status,
-            source_bundle_id=f"bundle_{scene_id}",
-            source_bundle_hash="h",
-        )
-    )
-    session.commit()
-    return row_id
 
 
 def _layer(scope: str, deliberate: bool | None, order: int = 0) -> dict:

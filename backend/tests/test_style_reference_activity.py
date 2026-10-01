@@ -24,7 +24,7 @@ from novel_system.db.models import StyleReferenceJob, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.style_reference_route_helpers import fake_import_llm, install_fake_classifier, wait_book_status
-from tests.test_style_reference_routes import _import_book, _seed_full_chain
+from tests.support.style_reference import import_sample_book as _import_book, seed_full_chain as _seed_full_chain
 
 PREFIX = "/api/v2/style-reference"
 

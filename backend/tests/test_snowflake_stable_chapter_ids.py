@@ -22,9 +22,17 @@ from novel_system.services.snowflake_chaptering import (
     chapter_target_id,
     match_chunks_to_chapters,
 )
-from tests.test_catalog_book_spine import _base, _catalog, _materialized, _preview
-from tests.test_snowflake_chaptering import _create_project, _pass_triage, _seed
-from tests.test_snowflake_chaptering_story_order import _confirm, _payload
+from tests.support.chaptering import (
+    catalog_chapters as _catalog,
+    confirm_chaptering as _confirm,
+    confirm_payload as _payload,
+    create_chaptering_project as _create_project,
+    materialized_project as _materialized,
+    pass_triage as _pass_triage,
+    preview_from_scenes as _preview,
+    seed_chaptering as _seed,
+    workspace_base as _base,
+)
 
 
 # ------------------------------------------------------------------ 1. 还是不是同一章
@@ -79,7 +87,11 @@ def test_a_reproposed_chunk_is_the_old_chapter_when_at_least_half_of_both_is_sha
 def test_a_chapter_recut_into_small_pieces_keeps_its_row_on_the_opening_piece(session) -> None:
     """17 场、四章（5 / 7 / 3 / 2）换成每章约 2 场：5 场和 7 场的两章被切成谁都不过半的小段——原来的章计划
     （连同作者起的章名、它钉着的目录章）留在开头那一段上，不是整行作废另起一批新章。"""
-    from tests.test_snowflake_chaptering_story_order import PROJECT_ID, _seed as seed_story, _uids
+    from tests.support.chaptering import (
+        STORY_ORDER_PROJECT_ID as PROJECT_ID,
+        preview_uids as _uids,
+        seed_story_order as seed_story,
+    )
 
     seed_story(session)
     chaptering = SnowflakeChapteringService(session)

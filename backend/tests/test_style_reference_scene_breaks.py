@@ -193,7 +193,11 @@ def test_exemplar_windows_never_cross_a_scene_break() -> None:
 
 
 def test_chaptering_uses_the_reference_chapter_scale_when_the_author_set_nothing(session) -> None:
-    from tests.test_snowflake_chapters_after_scenes import PROJECT_ID, _chapters, _seed
+    from tests.support.chaptering import (
+        AFTER_SCENES_PROJECT_ID as PROJECT_ID,
+        live_chapter_plans as _chapters,
+        seed_after_scenes as _seed,
+    )
     from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
 
     from novel_system.services.snowflake_chaptering import SnowflakeChapteringService

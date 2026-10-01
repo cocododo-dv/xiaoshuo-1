@@ -9,7 +9,12 @@
 from __future__ import annotations
 
 from novel_system.services.snowflake_workspace_llm import _collect_generation_gaps
-from tests.test_snowflake_method_contract import _install_llm, _payload_of, _respond, _seed_synopsis_project
+from tests.support.snowflake import (
+    install_snowflake_llm as _install_llm,
+    llm_payload_response as _respond,
+    seed_synopsis_project as _seed_synopsis_project,
+    working_payload_of as _payload_of,
+)
 
 
 def _sheet(name: str, role: str, **fields: object) -> dict:

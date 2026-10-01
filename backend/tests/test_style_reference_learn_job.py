@@ -70,6 +70,8 @@ from tests.learn_fakes import (
     paragraphs_of,
 )
 
+pytestmark = pytest.mark.usefixtures("style_workers")
+
 PREFIX = "/api/v2/style-reference"
 NAMES = ("韩小暖", "程铁", "苏半夏")
 PLACES = ("铁灰城", "雾港")
@@ -77,14 +79,6 @@ ORG = "雾港同盟"
 PROTECTED = ("韩小暖", "程铁", "苏半夏", "铁灰城", ORG)
 KINDS = {"铁灰城": "place", ORG: "organization"}
 RIGHTS = {"rights_declaration": {"declared": True, "send_rights": True, "analysis_rights": True}}
-
-
-@pytest.fixture(autouse=True)
-def _style_workers_installed() -> None:
-    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
-    from novel_system.services.style_reference.workers import install_workers
-
-    install_workers()
 
 
 def learn_rows(chapters: int = 6, per_chapter: int = 40, seed: str = "learn") -> list[dict]:

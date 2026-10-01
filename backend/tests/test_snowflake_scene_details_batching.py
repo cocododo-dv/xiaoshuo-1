@@ -13,17 +13,19 @@
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from novel_system.db.models import SnowflakeStepRun, StoryProject
 from novel_system.services.errors import DomainError
-from novel_system.services.llm_client import LLMResponse
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.snowflake_workspace_llm import (
     SCENE_DETAIL_BATCH_SIZE,
     SCENE_DETAIL_MAX_BATCHES_PER_RUN,
+)
+from tests.support.snowflake import (
+    install_snowflake_llm as _install_llm,
+    llm_payload_response as _respond,
+    working_payload_of as _payload_of,
 )
 
 
@@ -54,24 +56,6 @@ def _seed(session, project_id: str, *, scene_count: int) -> None:
     session.flush()
 
 
-def _install_llm(monkeypatch, responder):
-    from novel_system.services import snowflake_workspace_llm as mod
-
-    monkeypatch.setattr(mod, "execute_accounted_call",
-                        lambda session, client, request, context, *, llm_call_id: responder(request))
-    # 记账父行由上面的桩件跳过了，清洗失败的标记路径不能反过来把真实错误吃掉
-    monkeypatch.setattr(mod, "mark_postprocess_failure",
-                        lambda session, llm_call_id, **kwargs: None)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
-
-
-def _payload_of(request) -> dict:
-    prompt = "\n".join(str(m.get("content", "")) for m in request.messages)
-    return json.loads(prompt.split("Working payload:\n", 1)[1].rsplit("\n\nRequired top-level", 1)[0])
-
-
 def _deep(scene_id: str) -> dict:
     """一份「深化过」的场景——每个契约字段都有实质内容。"""
     return {
@@ -81,14 +65,6 @@ def _deep(scene_id: str) -> dict:
         "cost_requirement": "失去父亲遗物", "exit_change": "退路断了", "hook": "门外脚步声",
         "target_length_band": "medium", "must_include_text": "账本", "beats_json": ["起", "承", "转"],
     }
-
-
-def _respond(payload: dict) -> LLMResponse:
-    return LLMResponse(
-        request_id="r", provider="p", model="m", text=json.dumps(payload, ensure_ascii=False),
-        structured_output=payload, response_format="json_object", raw_response={}, usage={},
-        finish_reason="stop",
-    )
 
 
 def _focus_ids(payload: dict) -> list[str]:

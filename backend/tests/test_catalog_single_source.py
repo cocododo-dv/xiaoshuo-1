@@ -5,16 +5,9 @@ materialize / outline approve 创建的 ChapterGoal/SceneCard 必须能被目录
 """
 from __future__ import annotations
 
+import pytest
 
-import pytest as _pytest_sk
-from tests.real_llm_fakes import install_skeleton_snowflake as _install_skeleton_snowflake
-
-
-@_pytest_sk.fixture(autouse=True)
-def _auto_skeleton_snowflake(monkeypatch):
-    """假生成已退役：雪花 generate_step 走规划器骨架直通（仅回归物化/失效/收口链路）。"""
-    _install_skeleton_snowflake(monkeypatch)
-
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake")
 
 
 def _create_project(client, key: str) -> dict:

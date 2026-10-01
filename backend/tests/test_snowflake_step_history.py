@@ -14,7 +14,7 @@ import pytest
 from novel_system.db.models import SnowflakeStepRun
 from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _seed
+from tests.support.snowflake import RENDER_PROJECT_ID as PROJECT_ID, seed_render_project as _seed
 
 
 def _chapter(title: str, **extra) -> dict:
@@ -30,7 +30,7 @@ def test_restoring_an_older_07_keeps_the_live_chapter_table(session) -> None:
 
     from novel_system.db.models import SnowflakeScenePlan
     from novel_system.services.snowflake_chapter_table import live_chapter_plans
-    from tests.test_snowflake_chaptering_story_order import _payload
+    from tests.support.chaptering import confirm_payload as _payload
 
     service = _seed(session)
     # 一版确认过的旧 07：只有一章，前端写穿缓存里也是那时候的一章（直接落库——示例作品的前六步没有确认）

@@ -12,14 +12,9 @@ from __future__ import annotations
 import pytest
 
 from novel_system.db.models import ChapterState
-from tests.real_llm_fakes import install_skeleton_snowflake
 
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
-@pytest.fixture(autouse=True)
-def _skeleton_snowflake_generate(monkeypatch):
-    """假生成已退役：本文件只回归物化/再批准链路，不关心生成质量——
-    把 generate_step 打成「规划器骨架直通」（与旧离线 fallback 同形），并开 llm_enabled 过路由闸。"""
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
 
 ALL_STEPS = [
     "book_brief",

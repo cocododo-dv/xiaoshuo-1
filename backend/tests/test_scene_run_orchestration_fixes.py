@@ -23,17 +23,20 @@ from novel_system.services.scene_generation import StyleGenerationResult
 from tests.real_llm_fakes import install_online_pipeline
 from tests.support.checkpoint_fakes import _seed_resume_scene
 from tests.support.style_first_fixtures import install_readings, reading
-from tests.test_candidate_selection_gate import (
+from tests.support.candidate_gate import (
+    make_orchestrator as _make_gate_orchestrator,
     ORIGIN_EXECUTION_ID as GATE_ORIGIN_EXECUTION_ID,
+    SCENE_ID as GATE_SCENE_ID,
+    seed_scene as _seed_gate_scene,
+    selection_gate as _selection_gate,
 )
-from tests.test_candidate_selection_gate import SCENE_ID as GATE_SCENE_ID
-from tests.test_candidate_selection_gate import _make_orchestrator as _make_gate_orchestrator
-from tests.test_candidate_selection_gate import _seed_scene as _seed_gate_scene
-from tests.test_candidate_selection_gate import _selection_gate
-from tests.test_qc_grading_reliable_mode import SCENE_ID as STRICT_SCENE_ID
-from tests.test_qc_grading_reliable_mode import FakeSequenceQcClient, _near_final_fail
-from tests.test_qc_grading_reliable_mode import _make_orchestrator as _make_strict_orchestrator
-from tests.test_qc_grading_reliable_mode import _seed_scene as _seed_strict_scene
+from tests.support.strict_qc import (
+    FakeSequenceQcClient,
+    make_orchestrator as _make_strict_orchestrator,
+    near_final_fail as _near_final_fail,
+    SCENE_ID as STRICT_SCENE_ID,
+    seed_scene as _seed_strict_scene,
+)
 
 SCENE_ID = "CH_RESUME_SC01"
 

@@ -23,7 +23,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.archiver import Archiver
 from novel_system.services.errors import DomainError
-from tests.test_chapter_manuscripts import _create_chapter, _create_scene
+from tests.support.catalog import create_v1_chapter as _create_chapter, create_v1_scene as _create_scene
 
 
 def _seed_style_draft(session, scene_id: str, chapter_id: str, *, content: str, row_id: str | None = None) -> str:

@@ -27,8 +27,12 @@ from novel_system.db.models import (
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.projects import AUTO_TRASHED_EMPTY_CHAPTER
 from novel_system.services.scene_rehome import NOT_REHOMED_TABLES, REHOMED_MODELS, rehome_scenes
-from tests.test_catalog_book_spine import _catalog, _materialized, _preview
-from tests.test_snowflake_chaptering_story_order import _confirm
+from tests.support.chaptering import (
+    catalog_chapters as _catalog,
+    confirm_chaptering as _confirm,
+    materialized_project as _materialized,
+    preview_from_scenes as _preview,
+)
 
 
 #: 带 CHECK 约束的必填列给一个合法值（其余必填列随便填）

@@ -12,67 +12,9 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
 )
-from novel_system.services.llm_task_runner import LLMNodeRunner
-from tests.real_llm_fakes import ScenePipelineOnlineFake
+from tests.support.scene_pipeline import seed_story
 
-
-@pytest.fixture(autouse=True)
-def _online_pipeline(monkeypatch) -> None:
-    """假生成已退役：API 驱动的整链场景运行统一注入在线记账测试替身。
-
-    注入 OnlineAccountedExecution 替身即绕过 llm_enabled 闸（见 llm_task_runner
-    ._assert_online_execution_available），无需再设环境变量。"""
-    monkeypatch.setattr(
-        "novel_system.services.orchestrator.LLMNodeRunner",
-        lambda session: LLMNodeRunner(session, llm_client=ScenePipelineOnlineFake()),
-    )
-
-
-def seed_story(client) -> None:
-    project_response = client.post(
-        "/api/v1/projects",
-        json={
-            "title": "orchestrator flow",
-            "outline_text": "A reunion opens an old-letter mystery.",
-        },
-        headers={"X-Idempotency-Key": "orchestrator-project-seed"},
-    )
-    project_id = project_response.json()["data"]["project"]["project_id"]
-    client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": "CH001",
-            "project_id": project_id,
-            "planned_scene_count": 3,
-            "chapter_goal": "重逢与试探成立",
-            "main_plot_push": "旧信线索被正式打开",
-            "emotional_target": "由迟疑转为警觉",
-            "ending_effect": "留有余波",
-        },
-        headers={"X-Idempotency-Key": "chapter-seed"},
-    )
-    client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": "CH001_SC01",
-            "chapter_id": "CH001",
-            "project_id": project_id,
-            "scene_seq": 1,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A", "CHAR_B"],
-            "location": "旧城门廊",
-            "scene_goal": "让两人重新见面并建立张力",
-            "beats_json": ["重逢", "试探", "留钩子"],
-            # This suite exercises archive/provenance mechanics with the offline
-            # deterministic prose stub; hard-text constraints have dedicated QC
-            # and final-text-gate coverage.
-            "must_include_text": "",
-            "target_length_band": "short",
-            "scene_type": "reunion",
-            "is_chapter_last": 0,
-        },
-        headers={"X-Idempotency-Key": "scene-seed-1"},
-    )
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -> None:

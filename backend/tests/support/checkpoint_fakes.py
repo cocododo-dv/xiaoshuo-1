@@ -1,15 +1,15 @@
 """Shared fakes and seeders of the scene-run checkpoint resume tests (``test_scene_run_checkpoint_*.py``).
 
-Accounted generation clients, soft-QC / near-final / archive stubs, the resume-scene seeder and the autouse
-fixture that routes default pipeline nodes through the accounted online fake (a test module enables it by
-importing it). ``test_style_fidelity_pipeline_v3.py`` reuses the fakes. Never import a ``test_*.py`` module here.
+Accounted generation clients, soft-QC / near-final / archive stubs and the resume-scene seeder.
+``test_style_fidelity_pipeline_v3.py`` reuses the fakes. The test modules route the orchestrator's default node
+runner through the accounted online fake with ``pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")``
+(``tests/support/fixtures.py``). Never import a ``test_*.py`` module here.
 """
 
 from __future__ import annotations
 
 import json
 
-import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
@@ -26,30 +26,24 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse, OnlineAccountedExecution
-from novel_system.services.llm_task_runner import LLMNodeRunner
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NearFinalPlanningService
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.qc_engine import SoftQcDecision
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.scene_blueprint import SceneBlueprintService
-from tests.real_llm_fakes import ScenePipelineOnlineFake
-
-
-@pytest.fixture(autouse=True)
-def _accounted_online_default_orchestrator_runner(monkeypatch) -> None:
-    """Exercise default pipeline nodes through an accounted online test provider."""
-
-    monkeypatch.setattr(
-        "novel_system.services.orchestrator.LLMNodeRunner",
-        lambda session: LLMNodeRunner(
-            session,
-            llm_client=ScenePipelineOnlineFake(),
-        ),
-    )
 
 
 class _AccountedTestClient(OnlineAccountedExecution):
+    """Accounted fake whose settlement differs from ``tests.accounted_llm_fakes.AccountedGenerateMixin`` on purpose.
+
+    The mixin coerces a response that carries ``usage`` but no ``raw_usage`` / ``usage_present`` into a complete usage
+    report, so the ledger settles at the reported tokens. These checkpoint fakes answer with ``_response`` below
+    (``usage`` only), and this hook hands the response over untouched: the ledger settles at the request *estimate*
+    (``usage_is_estimate``), which the scene budgets and the checkpoint golden files of these tests were written
+    against. Only ``Exception`` is reported through ``after_error`` (the mixin reports any ``BaseException``).
+    Dispatch kind is ``initial`` in both."""
+
     def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
         handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
         try:

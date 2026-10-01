@@ -14,24 +14,16 @@ from fastapi.testclient import TestClient
 from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-
-
-SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心情,字数足以触发分段。
-
-他说:"今天天气不错。"
-
-我心里想着昨天的事情,觉得有些不安。
-
-记得那年她还在的时候。
-
-雪花从天空飘落。
-""".encode("utf-8")
+from tests.support.style_reference import (
+    SAMPLE_TXT,
+    import_sample_book as _import_book,
+    seed_full_chain as _seed_full_chain,
+)
 
 
 PREFIX = "/api/v2/style-reference"
 from tests.style_reference_route_helpers import (  # noqa: E402
     fake_import_llm,
-    import_book,
     install_fake_classifier,
     wait_book_status,
 )
@@ -40,11 +32,6 @@ from tests.style_reference_route_helpers import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _import_book(client: TestClient, fake: Any | None = None) -> str:
-    """2026-09-15 严格 LLM:导入必须有 LLM——用假分类器顶替运行时客户端,并等后台分类完成。"""
-    return import_book(client, text=SAMPLE_TXT, fake=fake)
 
 
 def test_import_upload_rejects_malformed_rights_json(client: TestClient) -> None:
@@ -64,89 +51,6 @@ def test_import_upload_rejects_malformed_rights_json(client: TestClient) -> None
         response.json()["error"]["code"]
         == "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID"
     )
-
-
-def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
-    """直接用 service 层快速建 run + finding(含 2 evidence)+ profile,绕过 LLM 调用。"""
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        run_id = f"sr_run_route_{book_id[-6:]}"
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        extraction_id = f"sr_ext_route_{book_id[-6:]}"
-        repo.create_extraction(
-            extraction_id=extraction_id,
-            book_id=book_id,
-            run_id=run_id,
-            layer="language",
-            sub_dimension="language.rhetoric",
-            raw_payload_json={},
-            status="done",
-            validation_errors_json=[],
-            purpose="extract",
-        )
-        finding_id = f"sr_find_route_{book_id[-6:]}"
-        repo.create_finding(
-            finding_id=finding_id,
-            book_id=book_id,
-            run_id=run_id,
-            extraction_id=extraction_id,
-            sub_dimension="language.rhetoric",
-            finding_kind="observation",
-            statement="测试 observation 描述",
-            confidence="high",
-            status="pending",
-        )
-        # 2 evidence(≥2 强约束):1 条真实段落引文 + 1 条合成反例
-        paragraphs = repo.list_paragraphs(book_id)
-        repo.create_quote(
-            quote_id=f"sr_quote_route_a_{book_id[-6:]}",
-            book_id=book_id,
-            paragraph_id=paragraphs[0].paragraph_id if paragraphs else None,
-            span_start=0,
-            span_end=10,
-            quote_text="真实段落引文文本",
-            illustrates_dims=["language.rhetoric"],
-            extracted_features={},
-        )
-        repo.create_quote(
-            quote_id=f"sr_quote_route_b_{book_id[-6:]}",
-            book_id=book_id,
-            paragraph_id=None,
-            span_start=0,
-            span_end=8,
-            quote_text="合成反例文本",
-            illustrates_dims=["language.rhetoric"],
-            extracted_features={},
-        )
-        repo.create_evidence(
-            evidence_id=f"sr_ev_route_a_{book_id[-6:]}",
-            finding_id=finding_id,
-            quote_id=f"sr_quote_route_a_{book_id[-6:]}",
-            anchor_kind="paragraph_quote",
-        )
-        repo.create_evidence(
-            evidence_id=f"sr_ev_route_b_{book_id[-6:]}",
-            finding_id=finding_id,
-            quote_id=f"sr_quote_route_b_{book_id[-6:]}",
-            anchor_kind="counter_example",
-        )
-        profile_id = f"sr_profile_route_{book_id[-6:]}"
-        repo.create_profile(
-            profile_id=profile_id,
-            book_id=book_id,
-            run_id=run_id,
-            title="测试 profile",
-            status="draft",
-            profile_json={
-                "narrative_summary": "ns",
-                "scene_samples_index": {},
-                "calibration_guidance": ["calib A"],
-            },
-            coverage_json={},
-            source_finding_ids_json=[finding_id],
-        )
-        session.commit()
-    return run_id, finding_id, profile_id
 
 
 # ---------------------------------------------------------------------------

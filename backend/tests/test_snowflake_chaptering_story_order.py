@@ -33,71 +33,15 @@ from novel_system.services.snowflake_chaptering import (
     spine_from_role,
 )
 from novel_system.services.snowflake_staleness import semantic_payload
-from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.snowflake_workspace_llm import enrich_structured_schema
-
-PROJECT_ID = "prj-story-order"
-
-#: 真实项目的形状：17 场，灾难只写在功能标签里（spine 列是空的）
-_ROLES = {5: "灾难一·一幕高潮", 9: "中点逆转/道德抉择", 12: "灾难二·二幕高潮", 15: "灾难三·三幕高潮"}
-
-
-def _rows(count: int = 17, *, roles: dict[int, str] | None = None) -> list[dict]:
-    marks = _ROLES if roles is None else roles
-    return [
-        {
-            "row_uid": f"u{index:02d}",
-            "scene_seq": index,  # 前端 09 发的是全书序 i + 1
-            "summary": f"第 {index} 场",
-            "primary_form": "proactive",
-            "scene_type": "proactive",
-            "location": "林场",
-            "crucible": "退不出的困局",
-            "pov_character_id": "c1",
-            "chapter_role": marks.get(index, "推进"),
-            "spine": "",
-        }
-        for index in range(1, count + 1)
-    ]
-
-
-def _seed(session, *, chapters: list[dict] | None = None, count: int = 17) -> SnowflakeWorkspaceService:
-    session.add(
-        StoryProject(
-            project_id=PROJECT_ID,
-            title="何来",
-            outline_text="大纲",
-            planning_mode="snowflake",
-            snowflake_workflow_mode="explore",
-            target_word_count=100000,
-        )
-    )
-    session.flush()
-    service = SnowflakeWorkspaceService(session)
-    service.update_step(
-        PROJECT_ID, "long_synopsis", {"draft": {"paragraphs": ["一", "二", "三", "四", "五"], "chapters": chapters or []}}
-    )
-    service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": _rows(count)}})
-    return service
-
-
-def _uids(preview: dict) -> list[list[str]]:
-    return [[scene["row_uid"] for scene in chapter["scenes"]] for chapter in preview["chapters"]]
-
-
-def _payload(preview: dict) -> dict:
-    return {
-        "replace_chapters": True,
-        "chapters": [
-            {"row_uid": c["row_uid"], "title": c["title"], "act": c["act"], "spine": c["spine"],
-             "chapter_goal": c["chapter_goal"], "summary": c["summary"]}
-            for c in preview["chapters"]
-        ],
-        "assignments": [
-            {"scene_plan_id": s["scene_plan_id"], "chapter_row_uid": c["row_uid"]}
-            for c in preview["chapters"] for s in c["scenes"]
-        ],
-    }
+from tests.support.chaptering import (
+    STORY_ORDER_PROJECT_ID as PROJECT_ID,
+    confirm_chaptering as _confirm,
+    confirm_payload as _payload,
+    preview_uids as _uids,
+    seed_story_order as _seed,
+    story_order_rows as _rows,
+)
 
 
 # ------------------------------------------------------------------ 灾难标记
@@ -414,9 +358,9 @@ def test_chaptering_fields_on_scene_rows_are_not_story_content() -> None:
 
 
 def test_confirming_a_chaptering_does_not_send_the_scene_list_back_to_review(client, session) -> None:
-    from tests.test_snowflake_chaptering import _create_project, _seed as seed_project
+    from tests.support.chaptering import create_chaptering_project as _create_project, seed_chaptering as seed_project
 
-    from tests.test_snowflake_chaptering import _approve
+    from tests.support.chaptering import approve_step as _approve
 
     project_id = _create_project(client, "no-flip")
     seed_project(client, project_id)
@@ -446,23 +390,13 @@ def test_confirming_a_chaptering_does_not_send_the_scene_list_back_to_review(cli
 # ------------------------------------------------------------------ 落进目录
 
 
-def _confirm(client, project_id: str, preview: dict, key: str) -> dict:
-    materialize = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/materialize",
-        json=_payload(preview), headers={"X-Idempotency-Key": f"{key}-mat"},
-    )
-    assert materialize.status_code == 200, materialize.text
-    approve = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/outline/approve",
-        json={}, headers={"X-Idempotency-Key": f"{key}-approve"},
-    )
-    assert approve.status_code == 200, approve.text
-    return approve.json()["data"]
-
-
 def test_materializing_next_to_a_hand_made_chapter_does_not_500(client, session) -> None:
     """目录里作者手建过一章（display_order = 1）：新章接在它后面，不撞唯一索引、不动那一章。"""
-    from tests.test_snowflake_chaptering import _create_project, _pass_triage, _seed as seed_project
+    from tests.support.chaptering import (
+        create_chaptering_project as _create_project,
+        pass_triage as _pass_triage,
+        seed_chaptering as seed_project,
+    )
 
     project_id = _create_project(client, "hand-made")
     seed_project(client, project_id)
@@ -496,7 +430,11 @@ def test_materializing_next_to_a_hand_made_chapter_does_not_500(client, session)
 
 def test_rematerializing_after_rechaptering_moves_cards_without_a_constraint_error(client, session) -> None:
     """重新分章后再「确认写入」：场景卡跨章搬动，作者手加在章里的场跟着它原来的前一场走。"""
-    from tests.test_snowflake_chaptering import _create_project, _pass_triage, _seed as seed_project
+    from tests.support.chaptering import (
+        create_chaptering_project as _create_project,
+        pass_triage as _pass_triage,
+        seed_chaptering as seed_project,
+    )
 
     project_id = _create_project(client, "remat")
     seed_project(client, project_id)
@@ -563,7 +501,13 @@ def _cards(session, project_id: str) -> dict[str, list[str]]:
 
 def test_reordering_the_scene_list_after_materializing_resyncs_without_a_constraint_error(client, session) -> None:
     """09 里把两场对调 → 回流要在同一章里交换两张卡的序号：逐张 UPDATE 必撞 (chapter_id, scene_seq) 唯一索引。"""
-    from tests.test_snowflake_chaptering import _create_project, _pass_triage, _patch, _scene, _seed as seed_project
+    from tests.support.chaptering import (
+        create_chaptering_project as _create_project,
+        pass_triage as _pass_triage,
+        patch_step as _patch,
+        scene_row as _scene,
+        seed_chaptering as seed_project,
+    )
 
     project_id = _create_project(client, "resync-order")
     seed_project(client, project_id)
@@ -584,7 +528,7 @@ def test_reordering_the_scene_list_after_materializing_resyncs_without_a_constra
 
     # 09：第 2、3 场对调
     order = [1, 3, 2, *range(4, 13)]
-    from tests.test_snowflake_chaptering import _SPINE_AT
+    from tests.support.chaptering import SPINE_AT as _SPINE_AT
     _patch(client, project_id, "scene_list", {"scenes": [_scene(f"S{i:02d}", i, f"事件{i}", _SPINE_AT.get(i, "")) for i in order]})
     status = client.get(base).json()["data"]["resync_status"]
     drifting = {item["scene_id"][-3:]: item["changed_fields"] for item in status["pending_scenes"]}

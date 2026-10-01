@@ -20,26 +20,19 @@ from novel_system.services.projects import AUTO_TRASHED_EMPTY_CHAPTER
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, is_auto_chapter_title
 from novel_system.services.snowflake_staleness import FIELDS_CONSUMED
 from novel_system.services.snowflake_workspace_llm import clean_chapter_title
-from tests.test_snowflake_chaptering import (
-    _CHAPTERS,
-    _approve,
-    _create_project,
-    _install_llm,
-    _pass_triage,
-    _patch,
-    _seed,
+from tests.support.chaptering import (
+    approve_step as _approve,
+    CHAPTERS as _CHAPTERS,
+    confirm_chaptering as _confirm,
+    confirm_payload as _payload,
+    create_chaptering_project as _create_project,
+    pass_triage as _pass_triage,
+    patch_step as _patch,
+    preview_from_scenes as _preview,
+    seed_chaptering as _seed,
+    workspace_base as _base,
 )
-from tests.test_snowflake_chaptering_story_order import _confirm, _payload
-
-
-def _base(project_id: str) -> str:
-    return f"/api/v2/projects/{project_id}/snowflake-workspace"
-
-
-def _preview(client, project_id: str, **body) -> dict:
-    response = client.post(f"{_base(project_id)}/chapter-plan/preview", json={"strategy": "from_scenes", **body})
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+from tests.support.snowflake import install_snowflake_llm as _install_llm
 
 
 def _llm(payload_for) -> tuple[list[dict], callable]:

@@ -180,7 +180,7 @@ def test_cost_requirement_advisory_for_explicit_scenes(session):
 
 def test_style_candidates_api_returns_empty_list(client, session):
     """GET /scenes/{id}/style-candidates returns 200 with empty candidates for a fresh scene."""
-    from tests.test_orchestrator_flow import seed_story
+    from tests.support.scene_pipeline import seed_story
 
     seed_story(client)
 

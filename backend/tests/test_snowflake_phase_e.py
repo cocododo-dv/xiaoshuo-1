@@ -9,14 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.real_llm_fakes import install_skeleton_snowflake
-
-
-@pytest.fixture(autouse=True)
-def _skeleton_snowflake_generate(monkeypatch):
-    """假生成已退役：本文件只回归失效 / 复核 / 重展的链路，不关心生成质量——把 generate_step 打成
-    规划器骨架直通，并开 llm_enabled 过路由闸。"""
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 def _create_project(client, key: str) -> str:

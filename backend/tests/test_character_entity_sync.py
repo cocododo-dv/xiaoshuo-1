@@ -23,12 +23,8 @@ from sqlalchemy import select
 
 from novel_system.db.models import StoryCharacter
 from novel_system.services.project_runtime_invalidation import SnowflakeImpactAnalyzer
-from tests.real_llm_fakes import install_skeleton_snowflake
 
-
-@pytest.fixture(autouse=True)
-def _skeleton(monkeypatch):
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 # --------------------------------------------------------------------------- #

@@ -31,44 +31,25 @@ from novel_system.services.catalog import focus_scene_payload, normalize_act, sh
 from novel_system.services.catalog_placeholders import AUTO_TRASHED_PLACEHOLDER_CHAPTER
 from novel_system.services.scene_design_ownership import PLAN_OWNED_SCENE_FIELDS
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, misplaced_scene_plan_ids
-from tests.test_snowflake_chaptering import (
-    _approve,
-    _create_project,
-    _detail,
-    _pass_triage,
-    _patch,
-    _seed,
+from tests.support.chaptering import (
+    approve_step as _approve,
+    catalog_chapters as _catalog,
+    confirm_chaptering as _confirm,
+    confirm_payload as _payload,
+    create_chaptering_project as _create_project,
+    detail_row as _detail,
+    materialized_project as _materialized,
+    pass_triage as _pass_triage,
+    patch_step as _patch,
+    preview_from_scenes as _preview,
+    seed_chaptering as _seed,
+    workspace_base as _base,
 )
-from tests.test_snowflake_chaptering_story_order import _confirm, _payload
-
-
-def _base(project_id: str) -> str:
-    return f"/api/v2/projects/{project_id}/snowflake-workspace"
-
-
-def _preview(client, project_id: str, **body) -> dict:
-    response = client.post(f"{_base(project_id)}/chapter-plan/preview", json={"strategy": "from_scenes", **body})
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def _catalog(client, project_id: str) -> list[dict]:
-    response = client.get(f"/api/v2/projects/{project_id}/catalog")
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["chapters"]
 
 
 def _scene_ids(client, project_id: str) -> list[str]:
     """目录里的场景 id，按全书顺序（场景 id 由 row_uid 铸，不含位置——测试不去猜它的形状）。"""
     return [scene["scene_id"] for chapter in _catalog(client, project_id) for scene in chapter["scenes"]]
-
-
-def _materialized(client, key: str, **preview_body) -> str:
-    project_id = _create_project(client, key)
-    _seed(client, project_id)
-    _pass_triage(client, project_id)
-    _confirm(client, project_id, _preview(client, project_id, **preview_body), key)
-    return project_id
 
 
 def _placeholder_chapter(client, project_id: str, title: str = "第 1 章") -> dict:
@@ -467,7 +448,7 @@ def test_the_order_of_snowflake_scenes_is_the_story_order(client, session) -> No
 def test_the_chapter_planning_ai_does_not_fill_the_design_of_a_snowflake_scene(client, session) -> None:
     """章节规划 AI 的补丁是「只填空」——但雪花的场上那个空是构思里的空：在目录里填了，下一次回流就按构思的空值
     盖回去。所以设计槽一律不填（``design_owned_by_plan``），追加新场、填占位题名照常。"""
-    from novel_system.services.chapter_plan_llm import _empty_slot_gaps, sanitize_plan_patch
+    from novel_system.services.chapter_plan_llm import empty_slot_gaps, sanitize_plan_patch
 
     project_id = _materialized(client, "spine-owner-ai", scenes_per_chapter=3)
     _edit_scene_details(client, project_id, {1: {"setback": ""}})
@@ -498,7 +479,7 @@ def test_the_chapter_planning_ai_does_not_fill_the_design_of_a_snowflake_scene(c
     cards = list(session.execute(
         select(SceneCard).where(SceneCard.chapter_id == chapter["chapter_id"], SceneCard.trashed_flag == 0)
     ).scalars())
-    gaps = _empty_slot_gaps(cards, plan_owned_scene_ids={scene_id})
+    gaps = empty_slot_gaps(cards, plan_owned_scene_ids={scene_id})
     assert any(scene_id in line and "在构思第 10 步补" in line for line in gaps)
     # 结构化的一份（S1 21）说得一样：这一场去构思第 10 步补
     from novel_system.services.chapter_plan_llm import empty_slot_gap_items

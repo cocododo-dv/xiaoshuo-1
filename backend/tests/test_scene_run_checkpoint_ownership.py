@@ -30,9 +30,9 @@ from novel_system.services.scene_run_checkpoint import (
     scene_job_execution_id,
 )
 
-# Importing the autouse fixture runs every test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import _seed_resume_scene
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_checkpoint_draft_invalid_ledger_returns_domain_error_instead_of_name_error(monkeypatch) -> None:

@@ -40,17 +40,11 @@ from tests.support.checkpoint_fakes import (
     _SequencedSoftQc,
     _seed_resume_scene,
 )
-from tests.test_style_fidelity_v3 import PACING_OUT, _install_readings, _reading
+from tests.support.style_first_fixtures import PACING_OUT, install_readings as _install_readings, reading as _reading
+
+pytestmark = pytest.mark.usefixtures("style_workers")
 
 SCENE_ID = "CH_RESUME_SC01"
-
-
-@pytest.fixture(autouse=True)
-def _style_workers_installed() -> None:
-    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
-    from novel_system.services.style_reference.workers import install_workers
-
-    install_workers()
 
 
 @pytest.fixture(autouse=True)
@@ -487,7 +481,7 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
 
 def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) -> None:
     from novel_system.db.models import FinalScene
-    from tests.test_style_fidelity_v3 import _bound_scene
+    from tests.support.style_first_fixtures import bound_scene as _bound_scene
 
     scene, _bundle, _book, _profile = _bound_scene(session, "fid_check_scene")
     text = "潮水退去以后，他在闸门前站了很久，才把手里的灯放下。" * 30

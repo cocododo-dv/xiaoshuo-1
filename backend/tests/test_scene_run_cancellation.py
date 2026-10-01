@@ -24,7 +24,7 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
-from tests.test_scene_run_jobs import _create_chapter_and_scene
+from tests.support.catalog import create_job_chapter_and_scene as _create_chapter_and_scene
 
 
 def _seed_owned_scene(session) -> None:

@@ -17,7 +17,13 @@ from novel_system.db.models import SceneCard, SnowflakeStepRun, StoryCharacter, 
 from novel_system.services.scene_design_context import render_scene_design_context
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _edit_plan, _materialize, _plan, _seed
+from tests.support.snowflake import (
+    RENDER_PROJECT_ID as PROJECT_ID,
+    edit_scene_plan as _edit_plan,
+    materialize_render_project as _materialize,
+    scene_plan as _plan,
+    seed_render_project as _seed,
+)
 
 
 def _fill_u1(session, service: SnowflakeWorkspaceService) -> None:

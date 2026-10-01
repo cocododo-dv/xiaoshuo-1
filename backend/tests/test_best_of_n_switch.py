@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.models import SceneCard, SceneRunState
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
@@ -15,9 +17,9 @@ from novel_system.services.scene_criticality import SceneCriticality
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.settings import get_settings
 
-# Importing the autouse fixture runs the pipeline test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import _CountingGenerationClient, _HardPassClient, _seed_resume_scene
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def _criticality(level: str, *, initial: int, human_gate: bool) -> SceneCriticality:

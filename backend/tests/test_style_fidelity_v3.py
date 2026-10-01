@@ -25,12 +25,14 @@ from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.style_reference import readings as R
 from novel_system.services.style_reference import style_step as S
 from tests.style_reference_inject_helpers import bind, seed_reference
-from tests.support.style_first_fixtures import PACING_OUT
-from tests.support.style_first_fixtures import bound_scene as _bound_scene
-from tests.support.style_first_fixtures import seed_scene as _seed_scene
-from tests.support.style_first_fixtures import install_readings as _install_readings
-from tests.support.style_first_fixtures import reading as _reading
-from tests.test_style_first_draft import _Runner
+from tests.support.style_first_fixtures import (
+    bound_scene as _bound_scene,
+    install_readings as _install_readings,
+    PACING_OUT,
+    reading as _reading,
+    seed_scene as _seed_scene,
+)
+from tests.support.llm_fakes import ScriptedStepRunner as _Runner
 
 LONG_FIRST = ("窗外的雨下了一整夜，他把茶杯推到桌角，信封就压在杯底。" * 30)
 REVISED = ("雨下了一夜。他把茶杯往桌角一推，信封压在杯底，谁也没去碰。" * 30)
@@ -988,7 +990,7 @@ def test_archive_hook_records_the_final_reading_and_is_idempotent(session) -> No
 
 
 def test_adopt_route_records_an_adopt_reading(client, session) -> None:
-    from tests.test_chapter_manuscripts import _create_chapter, _create_scene
+    from tests.support.catalog import create_v1_chapter as _create_chapter, create_v1_scene as _create_scene
 
     _create_chapter(client, "chapter_fid_adopt")
     _create_scene(client, "scene_fid_adopt", chapter_id="chapter_fid_adopt", scene_seq=1)

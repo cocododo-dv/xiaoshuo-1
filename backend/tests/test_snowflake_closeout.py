@@ -24,102 +24,21 @@ from novel_system.services.snowflake_steps import (
 )
 import pytest
 
-from tests.real_llm_fakes import install_skeleton_snowflake
+from tests.support.snowflake import (
+    approve_through as _approve_through,
+    closeout_approve as _approve,
+    closeout_generate as _generate,
+    create_closeout_project as _create_project,
+    revise_and_approve as _revise_and_approve,
+    step_of as _step,
+    workspace_payload as _workspace,
+)
 
-
-@pytest.fixture(autouse=True)
-def _skeleton_snowflake_generate(monkeypatch):
-    """假生成已退役：本文件回归收口三项（行级不可变身份/三幕单向派生/祖先快照失效），
-    不关心生成质量——把 generate_step 打成「规划器骨架直通」，并开 llm_enabled 过路由闸。"""
-    install_skeleton_snowflake(monkeypatch, llm_enabled=True)
-
-
-def _create_project(client, *, key: str) -> dict:
-    response = client.post(
-        "/api/v2/projects",
-        json={
-            "title": "Rain City Signal",
-            "genre": "Urban Mystery",
-            "target_chapter_count": 2,
-            "target_word_count": 120000,
-            "outline_text": (
-                "An old letter pulls the heroine back to Rain City.\n"
-                "The cold case turns out to be tied to her family.\n"
-                "She must decide whether the truth is worth the cost."
-            ),
-        },
-        headers={"X-Idempotency-Key": f"create-closeout-{key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
-
-
-def _generate(client, project_id: str, step_key: str) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
-        json={},
-        headers={"X-Idempotency-Key": f"gen-closeout-{project_id}-{step_key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def _approve(client, project_id: str, step_key: str) -> dict:
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"app-closeout-{project_id}-{step_key}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def _workspace(client, project_id: str) -> dict:
-    response = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace")
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake_llm_on")
 
 
 def _scene_list_step(workspace: dict) -> dict:
     return next(step for step in workspace["steps"] if step["step_key"] == "scene_list")
-
-
-def _step(workspace: dict, step_key: str) -> dict:
-    return next(step for step in workspace["steps"] if step["step_key"] == step_key)
-
-
-def _revise_and_approve(client, project_id: str, step_key: str, draft: dict) -> dict:
-    """Patch a step's draft (creating a pending revision) then re-approve it."""
-    patch = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        json={"draft": draft},
-    )
-    assert patch.status_code == 200, patch.text
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"reapprove-{project_id}-{step_key}-{draft.get('_rev', 'x')}"},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
-
-
-def _approve_through(client, project_id: str, last_step: str) -> None:
-    order = [
-        "book_brief",
-        "one_sentence_summary",
-        "one_paragraph_summary",
-        "character_sheets",
-        "short_synopsis",
-        "character_synopses",
-        "long_synopsis",
-        "character_bibles",
-        "scene_list",
-        "scene_details",
-    ]
-    for step_key in order[: order.index(last_step) + 1]:
-        _generate(client, project_id, step_key)
-        _approve(client, project_id, step_key)
 
 
 # ----------------------------------------------------------------------------- #

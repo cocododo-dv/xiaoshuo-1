@@ -33,14 +33,11 @@ from novel_system.services.style_reference.runtime_contract import (
     resolve_draft_mode,
     validate_style_runtime_contract,
 )
-from tests.real_llm_fakes import install_online_pipeline
 from tests.style_reference_inject_helpers import bind_profile as _bind, seed_full as _seed_full
 from tests.support.style_first_fixtures import frozen_bundle as _frozen_bundle
+from tests.support.llm_fakes import ScriptedStepRunner as _Runner
 
-
-@pytest.fixture(autouse=True)
-def _auto_online_pipeline(monkeypatch):
-    install_online_pipeline(monkeypatch)
+pytestmark = pytest.mark.usefixtures("online_pipeline")
 
 
 _NEUTRAL_TEXT = "门外的脚步停住了。他把信封放到桌上，等对面的人先开口。她没有伸手去接。"
@@ -128,21 +125,6 @@ def _force_readings(monkeypatch, *, first: str, first_distance: float = 1.5, oth
         return _reading(other_distance, 60.0, [])
 
     monkeypatch.setattr(readings, "reading_for_text", fake)
-
-
-class _Runner:
-    def __init__(self, outputs: dict[str, str], default: str) -> None:
-        self.outputs = outputs
-        self.default = default
-        self.calls: list[dict[str, object]] = []
-
-    def run(self, **kwargs):  # noqa: ANN003
-        self.calls.append(kwargs)
-        text = self.outputs.get(str(kwargs.get("step")), self.default)
-        return SimpleNamespace(
-            llm_call_id=f"llm_call_sfd_{len(self.calls)}",
-            response=SimpleNamespace(structured_output={"scene_text": text}),
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -38,16 +38,16 @@ from novel_system.services.scene_diagnosis import (
     rule_calibration_from_reference,
     summarize_counts,
 )
-from tests.test_scene_diagnosis import (
+from tests.support.diagnosis import (
     CHAPTER_ID,
     PROJECT_ID,
     SCENE2_ID,
     SCENE_ID,
-    _add_second_scene,
-    _distinct_chars,
-    _finding,
-    _scripted_runner,
-    _seed_scene,
+    add_second_scene as _add_second_scene,
+    distinct_chars as _distinct_chars,
+    finding_of as _finding,
+    scripted_runner as _scripted_runner,
+    seed_scene as _seed_scene,
 )
 
 

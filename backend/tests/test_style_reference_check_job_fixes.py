@@ -32,13 +32,7 @@ from novel_system.services.style_reference.jobs import (
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.style_reference_inject_helpers import seed_reference
 
-
-@pytest.fixture(autouse=True)
-def _style_workers_installed() -> None:
-    """处理器由 install_workers() 显式登记（lifespan 会调用）；不经应用、直接跑作业的用例自己登记一次。"""
-    from novel_system.services.style_reference.workers import install_workers
-
-    install_workers()
+pytestmark = pytest.mark.usefixtures("style_workers")
 
 
 def _routes(monkeypatch, local_nodes: set[str] | None) -> None:
@@ -229,7 +223,7 @@ OTHER_PROJECT = "proj_other_work"
 
 def _scene_with_final(session, key: str):
     from novel_system.db.models import FinalScene, SceneRunState, StoryProject
-    from tests.test_style_fidelity_v3 import _bound_scene
+    from tests.support.style_first_fixtures import bound_scene as _bound_scene
 
     scene, _bundle, _book, profile_id = _bound_scene(session, key)
     text = "潮水退去以后，他在闸门前站了很久，才把手里的灯放下。" * 30

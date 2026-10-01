@@ -25,7 +25,11 @@ from novel_system.db.models import (
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.style_reference import policy as policy_module
 from novel_system.services.style_reference.errors import CloudPolicyBlockedError
-from tests.test_scene_blueprint import PROJECT_ID, SCENE_ID, _seed_scene
+from tests.support.scene_pipeline import (
+    BLUEPRINT_PROJECT_ID as PROJECT_ID,
+    BLUEPRINT_SCENE_ID as SCENE_ID,
+    seed_blueprint_scene as _seed_scene,
+)
 
 
 def _blocked(*_args, **_kwargs):

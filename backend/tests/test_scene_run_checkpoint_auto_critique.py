@@ -23,8 +23,6 @@ from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService, StyleGenerationResult
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
-# Importing the autouse fixture runs every test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import (
     _CountingGenerationClient,
     _FailAutoCritiquePatchClient,
@@ -33,6 +31,8 @@ from tests.support.checkpoint_fakes import (
     _FailAfterStyle,
     _seed_resume_scene,
 )
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_auto_critique_patch_is_durable_soft_input_subcheckpoint(session, monkeypatch) -> None:

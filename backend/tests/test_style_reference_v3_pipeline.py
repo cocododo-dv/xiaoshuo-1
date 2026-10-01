@@ -300,12 +300,12 @@ def _judge_output(**overrides) -> dict:
 
 
 def test_soft_qc_reference_judge_scores_are_validated_rescaled_and_persisted(session, monkeypatch) -> None:
-    from tests.test_qc_engine_style_validation_gate import (
+    from tests.support.style_gate import (
         CLEAN_TEXT,
         REFERENCE_PARAGRAPH,
-        _run_soft_qc,
-        _seed_soft_scene,
-        _seed_style_binding,
+        run_soft_qc as _run_soft_qc,
+        seed_soft_scene as _seed_soft_scene,
+        seed_style_binding as _seed_style_binding,
     )
 
     captured: list[dict] = []
@@ -378,12 +378,12 @@ def test_soft_qc_scores_follow_the_scale_the_template_declares() -> None:
 
 def test_soft_qc_run_uses_the_declared_scale_end_to_end(session, monkeypatch) -> None:
     """L5：真实软 QC 走一遍——模型在 0–10 的模板下给了全在 1 以下的分，落库的参考评审是十分之一的分，不是满分。"""
-    from tests.test_qc_engine_style_validation_gate import (
+    from tests.support.style_gate import (
         CLEAN_TEXT,
         REFERENCE_PARAGRAPH,
-        _run_soft_qc,
-        _seed_soft_scene,
-        _seed_style_binding,
+        run_soft_qc as _run_soft_qc,
+        seed_soft_scene as _seed_soft_scene,
+        seed_style_binding as _seed_style_binding,
     )
 
     _seed_style_binding(project_id="proj_v3_scale", seed="v3_scale", paragraphs=[REFERENCE_PARAGRAPH])
@@ -402,7 +402,7 @@ def test_unbound_soft_qc_never_records_a_reference_judge(session) -> None:
     """L6：没绑定的场景（润色口径）模型顺手给了一个 style_score——那不是「像不像」的评分，不记成参考评审总分；
     场景的「像不像」接口也不给没绑定的场景评审分。"""
     from novel_system.services.style_fidelity_view import scene_style_fidelity
-    from tests.test_qc_engine_style_validation_gate import CLEAN_TEXT, _run_soft_qc, _seed_soft_scene
+    from tests.support.style_gate import CLEAN_TEXT, run_soft_qc as _run_soft_qc, seed_soft_scene as _seed_soft_scene
 
     scene = _seed_soft_scene(session, project_id="proj_v3_unbound_judge", draft_content=CLEAN_TEXT)
     output = _judge_output(style_score=8.0)

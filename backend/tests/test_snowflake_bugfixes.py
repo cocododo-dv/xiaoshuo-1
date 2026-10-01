@@ -16,7 +16,7 @@ from novel_system.db.models import ChapterGoal, SceneCard
 from novel_system.services.scene_generation import _style_first_length_slack
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
 from novel_system.services.snowflake_workspace_llm import _sanitize_scene_list_items
-from tests.test_snowflake_rendering_mode import PROJECT_ID, _plan, _seed
+from tests.support.snowflake import RENDER_PROJECT_ID as PROJECT_ID, scene_plan as _plan, seed_render_project as _seed
 
 
 def test_resync_cross_chapter_move_keeps_the_source_chapter_goal_and_recomputes_chapter_last(session) -> None:

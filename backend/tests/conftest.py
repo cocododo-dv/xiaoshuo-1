@@ -89,6 +89,10 @@ from novel_system.db.base import Base
 from novel_system.db.session import SessionLocal, reset_engine
 from novel_system.services.style_reference.jobs import SWEEPER_THREAD_NAME, shutdown_job_workers
 
+# 按需启用的具名夹具（online_pipeline / skeleton_snowflake / style_workers …）：测试文件写
+# ``pytestmark = pytest.mark.usefixtures("…")``，不再各自包一个一行的 autouse 夹具
+pytest_plugins = ["tests.support.fixtures"]
+
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """会话结束再查一遍：整个会话导入过的 novel_system 模块都来自本检出。"""

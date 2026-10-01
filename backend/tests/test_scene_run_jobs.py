@@ -19,6 +19,7 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
+from tests.support.catalog import create_job_chapter_and_scene as _create_chapter_and_scene
 
 
 def _seed_job_scene(
@@ -42,40 +43,6 @@ def _seed_job_scene(
             )
         )
         session.flush()
-
-
-def _create_chapter_and_scene(client) -> None:
-    chapter_response = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": "CHJOB",
-            "planned_scene_count": 1,
-            "chapter_goal": "Run scene through background job",
-            "main_plot_push": "Exercise job API",
-            "emotional_target": "Keep operator unblocked",
-            "ending_effect": "Pollable status",
-        },
-        headers={"X-Idempotency-Key": "chapter-job-create"},
-    )
-    assert chapter_response.status_code == 200
-    scene_response = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": "CHJOB_SC01",
-            "chapter_id": "CHJOB",
-            "scene_seq": 1,
-            "pov_character_id": "",
-            "onstage_chars_json": [],
-            "location": "Control room",
-            "scene_goal": "Start a pollable run",
-            "beats_json": ["start", "poll"],
-            "target_length_band": "short",
-            "scene_type": "test",
-            "is_chapter_last": 1,
-        },
-        headers={"X-Idempotency-Key": "scene-job-create"},
-    )
-    assert scene_response.status_code == 200
 
 
 def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> None:

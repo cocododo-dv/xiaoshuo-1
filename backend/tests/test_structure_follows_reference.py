@@ -543,9 +543,9 @@ def test_reference_titles_payload_needs_an_active_project_binding(session) -> No
     assert payload["profile_id"] == "sr_profile_titles" and payload["count"] == 4 and payload["named_count"] == 3
     assert set(payload["samples"]) == {"铁门", "河边的信", "夜航船"} and payload["marker_style"] == "第X章式"
     assert "照这位作家起题名的方式来起" in payload["how_to_use"]
-    from novel_system.services.snowflake_chaptering import _reference_chapter_titles
+    from novel_system.services.snowflake_chaptering.scale import reference_chapter_titles
 
-    assert _reference_chapter_titles(session, project_id)["samples"] == payload["samples"]
+    assert reference_chapter_titles(session, project_id)["samples"] == payload["samples"]
 
 
 def test_chapter_title_suggestions_carry_the_reference_and_reject_copied_samples(session, monkeypatch) -> None:

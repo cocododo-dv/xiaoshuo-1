@@ -16,8 +16,6 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 
-# Importing the autouse fixture runs every test here against the accounted online fake provider.
-from tests.support.checkpoint_fakes import _accounted_online_default_orchestrator_runner  # noqa: F401
 from tests.support.checkpoint_fakes import (
     _CountingGenerationClient,
     _HardPassClient,
@@ -26,6 +24,8 @@ from tests.support.checkpoint_fakes import (
     _FailNearFinal,
     _seed_resume_scene,
 )
+
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_soft_qc_checkpoint_resume_does_not_repeat_qc_or_generation(session) -> None:

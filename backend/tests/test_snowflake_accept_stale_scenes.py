@@ -12,8 +12,13 @@ import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import OperationLog, SnowflakeScenePlan
-from tests.real_llm_fakes import install_skeleton_snowflake
-from tests.test_snowflake_workspace_v2 import _approve_generated_step, _create_project, _intent_key
+from tests.support.snowflake import (
+    approve_generated_step as _approve_generated_step,
+    create_workspace_project as _create_project,
+    intent_key as _intent_key,
+)
+
+pytestmark = pytest.mark.usefixtures("skeleton_snowflake")
 
 STEPS = [
     "book_brief",
@@ -27,11 +32,6 @@ STEPS = [
     "scene_list",
     "scene_details",
 ]
-
-
-@pytest.fixture(autouse=True)
-def _skeleton(monkeypatch):
-    install_skeleton_snowflake(monkeypatch)
 
 
 def _workspace(client, project_id: str) -> dict:

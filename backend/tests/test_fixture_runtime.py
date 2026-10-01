@@ -23,19 +23,9 @@ from novel_system.db.models import (
 import pytest
 
 from novel_system.db import session as db_session
-from novel_system.services.llm_task_runner import LLMNodeRunner
 from tests.fixture_runtime import main, seed_runtime_fixture
-from tests.real_llm_fakes import ScenePipelineOnlineFake
 
-
-@pytest.fixture(autouse=True)
-def _accounted_online_default_orchestrator_runner(monkeypatch) -> None:
-    """假生成已退役：跑真实管线的用例统一注入在线记账测试替身。"""
-
-    monkeypatch.setattr(
-        "novel_system.services.orchestrator.LLMNodeRunner",
-        lambda session: LLMNodeRunner(session, llm_client=ScenePipelineOnlineFake()),
-    )
+pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def _count_rows(session, model) -> int:

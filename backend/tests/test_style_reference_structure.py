@@ -18,10 +18,7 @@ from novel_system.db.models import (
     SceneRunState,
     SnowflakeStepRun,
     StoryProject,
-    StyleReferenceBook,
     StyleReferenceInjectionBinding,
-    StyleReferenceProfile,
-    StyleReferenceRun,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_client import LLMResponse
@@ -40,6 +37,12 @@ from novel_system.services.style_reference.structure import (
 )
 from novel_system.services.style_reference.text_utils import normalize_text, split_paragraphs
 from novel_system.services.style_reference.validation.plagiarism import BookNgramIndex
+from tests.support.style_reference import (
+    profile_json_with_structure as _profile_json_with_structure,
+    seed_style_binding as _seed_style_binding,
+    structure_rows as _synthetic_rows,
+    voice_shares as _voice,
+)
 
 GOLDEN_CORPUS = (
     Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus" / "luxun_short_stories.txt"
@@ -55,96 +58,8 @@ SCENE_ID = "STRUCT_CH01_SC01"
 # ---------------------------------------------------------------------------
 
 
-def _synthetic_rows(*, markers: bool = True) -> list[dict]:
-    """五章合成书：第 n 章有 2n+2 段正文（首段 + n 组对白/叙述 + 末段），末章带落款日期行。"""
-    rows: list[dict] = []
-
-    def add(text: str, ptype: str) -> None:
-        rows.append({"paragraph_index": len(rows), "text": text, "paragraph_type": ptype})
-
-    for n in range(1, 6):
-        if markers:
-            add(f"第{n}章 灯下", "transition")
-        add(f"第{n}章的开头：老周把账本合上，坐了很久。", "description_env" if n == 3 else "narration")
-        for i in range(n):
-            add(f"他说：“第{n}章第{i}句。”", "dialogue")
-            add(f"第{n}章第{i}段叙述，账本上的数字还是对不上。", "narration")
-        if n % 2:
-            add(f"第{n}章的结尾，他说：“走吧。”", "dialogue")
-        else:
-            add(f"第{n}章的结尾：灯灭了，屋里只剩风声。", "narration")
-        if n == 5:
-            add("一九二四年二月七日", "narration")
-    return rows
-
-
 def _synthetic_book_text() -> str:
     return "\n\n".join(row["text"] for row in _synthetic_rows())
-
-
-def _voice(first: float, second: float, third: float) -> dict:
-    return {
-        "version": "voice_signature_v1",
-        "features": {
-            "person_first_share": first,
-            "person_second_share": second,
-            "person_third_share": third,
-        },
-        "habits": [],
-    }
-
-
-def _profile_json_with_structure(**overrides) -> dict:
-    payload = {
-        "style_features": ["短句克制"],
-        "structure_card": compute_structure_card(_synthetic_rows(), voice_signature=_voice(0.7, 0.1, 0.2)),
-        "planning_guidance": ["对白：对白短促，常以一句反问收束", "情绪基调：冷而不哀"],
-    }
-    payload.update(overrides)
-    return payload
-
-
-def _seed_style_binding(
-    session,
-    *,
-    project_id: str,
-    profile_json: dict,
-    send_rights: bool = True,
-    seed: str = "st",
-) -> None:
-    session.add(
-        StyleReferenceBook(
-            book_id=f"sr_book_{seed}",
-            title="Public domain source",
-            source_kind="path",
-            cloud_policy="segments_only",
-            text_checksum=f"checksum-{seed}",
-            stats_json={"rights_declaration": {"declared": True, "send_rights": send_rights}},
-        )
-    )
-    session.add(StyleReferenceRun(run_id=f"sr_run_{seed}", book_id=f"sr_book_{seed}", status="done"))
-    session.add(
-        StyleReferenceProfile(
-            profile_id=f"sr_profile_{seed}",
-            book_id=f"sr_book_{seed}",
-            run_id=f"sr_run_{seed}",
-            title="Audited profile",
-            status="active",
-            profile_json=profile_json,
-        )
-    )
-    session.add(
-        StyleReferenceInjectionBinding(
-            binding_id=f"sr_bind_{seed}",
-            profile_id=f"sr_profile_{seed}",
-            scope="project",
-            scope_ref_id=project_id,
-            task_type="scene_generation",
-            strategy="A",
-            status="active",
-        )
-    )
-    session.commit()
 
 
 def _seed_scene(session) -> None:
