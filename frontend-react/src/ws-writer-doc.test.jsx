@@ -547,3 +547,14 @@ describe("写作台 · @ 唤档案", () => {
     expect(editor().querySelector(".wr-entity").getAttribute("data-lib-id")).toBe("e2");
   }, LONG);
 });
+
+describe("写作台 · 提升被作者自己的采纳赶在前面", () => {
+  it("错误上标着 replacedByAdoption（码照旧是冲突）：说的是那次采纳，不说「在别处更新」", async () => {
+    const { canonicalPromotionErrorMessage } = await import("./ws-writer-doc.js");
+    const replaced = Object.assign(new Error("replaced"), { code: "AUTHOR_DRAFT_CONFLICT", replacedByAdoption: true });
+    expect(canonicalPromotionErrorMessage(replaced)).toContain("AI 起草台采纳归档的稿");
+    expect(canonicalPromotionErrorMessage(replaced)).not.toContain("在别处");
+    expect(canonicalPromotionErrorMessage({ code: "AUTHOR_DRAFT_CONFLICT" })).toContain("在别处更新");
+  });
+});
+

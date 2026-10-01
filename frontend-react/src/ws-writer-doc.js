@@ -312,7 +312,8 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
 /* ---------------- 权威正文 ---------------- */
 
 export function canonicalPromotionErrorMessage(error) {
-  const code = error && error.code;
+  // 换稿的是作者自己在 AI 起草台的采纳（WrDocs 在错误上标 replacedByAdoption；码照旧可能是冲突）：说的是那次采纳，不说「在别处更新」
+  const code = error && error.replacedByAdoption ? "AUTHOR_DRAFT_ADOPTED" : error && error.code;
   if (code === "CANONICAL_BASE_CONFLICT" || code === "AUTHOR_DRAFT_CONFLICT") {
     return "草稿或权威正文已在别处更新。请刷新、比较最新版本后再提升。";
   }
@@ -433,7 +434,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
           return;
         }
       }
-      setCanonicalStatus(failedCanonicalStatus(activeScene, code));
+      setCanonicalStatus(failedCanonicalStatus(activeScene, e && e.replacedByAdoption ? "AUTHOR_DRAFT_ADOPTED" : code));
       storeAlert(null, canonicalPromotionErrorMessage(e));
     }
   });
@@ -481,7 +482,7 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
         setCanonicalStatus("review");
       } else {
         setReview(null);
-        setCanonicalStatus(failedCanonicalStatus(review.sid, e && e.code));
+        setCanonicalStatus(failedCanonicalStatus(review.sid, e && e.replacedByAdoption ? "AUTHOR_DRAFT_ADOPTED" : e && e.code));
         storeAlert(null, canonicalPromotionErrorMessage(e));
       }
     } finally {
