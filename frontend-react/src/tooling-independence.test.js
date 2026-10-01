@@ -184,6 +184,22 @@ describe("React 工具链独立性", () => {
     }
   });
 
+  it("本地 Windows 闸（verify_windows.ps1，verify_release 也跑它）与 CI 前端任务按同样的顺序跑同样的 npm 脚本", () => {
+    // CI 加了 lint 而本地闸没加时，hooks 规则的错误在本地发布闸里放过、到 GitHub 才红
+    // 只比 package.json 里的脚本（npm ci / npm audit 这类装依赖、查漏洞的命令两边各管各的）
+    const pkg = JSON.parse(fs.readFileSync(path.join(frontendRoot, "package.json"), "utf8"));
+    const scriptsOnly = (names) => names.filter((name) => Object.hasOwn(pkg.scripts, name));
+    const ci = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+    const job = ci.split(/^(?= {2}[\w-]+:)/m).find((chunk) => chunk.startsWith("  frontend-react:")) || "";
+    const ciGates = scriptsOnly([...job.matchAll(/^\s+run: npm (?:run )?([\w:-]+)\s*$/gm)].map((match) => match[1]));
+    expect(ciGates).toContain("lint");
+    const lane = fs.readFileSync(path.join(repoRoot, "scripts", "verify_windows.ps1"), "utf8");
+    const laneGates = scriptsOnly([...lane.matchAll(/-FilePath "npm\.cmd" -ArgumentList @\(([^)]*)\)/g)]
+      .map((match) => [...match[1].matchAll(/"([^"]+)"/g)].map((arg) => arg[1]))
+      .map((args) => (args[0] === "run" ? args[1] : args[0])));
+    expect(laneGates).toEqual(ciGates);
+  });
+
   it("静态 ESM 依赖图没有循环", () => {
     const modules = sourceModules();
     const knownModules = new Set(modules.map((file) => path.normalize(file)));
