@@ -222,15 +222,10 @@ function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
    否则写后补读会并进写入之前那一次，回来的是写入前的服务端状态，刚改的标题在屏上退回去（审计 F01-05）。 */
 const catLoader = createKeyedLoader({
   async fetch(workId) {
-    // 每一次读取带编号：回包丢了的新建场只等它记下之后的第一次读取，那一次读失败就作罢（复核 Q1c-R1，见 ws-catalog-diff.js）
+    // 每一次读取带编号：回包丢了的新建场只等它记下之后的第一次读取，那一次读失败或作废就作罢（复核 Q1c-R1 / R4，见 ws-catalog-diff.js）
     const readNo = catWriter.readStarted(workId);
-    try {
-      const data = await apiGet(catApiBase(workId));
-      return { readNo, chapters: ((data && data.chapters) || []).map(catFromApiChapter) };
-    } catch (e) {
-      catWriter.readFailed(workId, readNo);
-      throw e;
-    }
+    const data = await apiGet(catApiBase(workId));
+    return { readNo, chapters: ((data && data.chapters) || []).map(catFromApiChapter) };
   },
   apply(workId, { readNo, chapters: mapped }) {
     // 2026-09-19 的场景编号迁移（位置式 sid → 稳定的 scene_id）照计划再留一轮（重评 R16）

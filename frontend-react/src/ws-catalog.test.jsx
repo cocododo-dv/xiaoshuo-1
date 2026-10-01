@@ -478,6 +478,106 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(mod.WsCatalog.sceneById(tmp)).toBeNull();
   });
 
+  /* 复核 Q1c-R4：待认只等它记下之后发出的第一次目录读取。那一次的结果作废了（回来时本机另一笔目录写入还没写完，或在路上时
+     目录被要求以服务端为准重读：回收站恢复、方案落地、物化、重新同步）也就此作罢——作废之后的那一次重读晚于这些事，多出来的
+     那一场可能正是它们带进来的。下面每一条，作废之后的重读里都恰好在 A 乐观时的位置上多出一场同名同形态的，却不是 A。 */
+  // 把下一次目录读取扣在路上：它在服务端读到的是此刻的那一章；release() 放它回来
+  function holdNextCatalogRead(client, chapter) {
+    const routeGet = client.apiGet.getMockImplementation();
+    const held = { release: null };
+    client.apiGet.mockImplementation((url) => {
+      if (!held.release && /\/catalog$/.test(url)) {
+        const snapshot = JSON.parse(JSON.stringify(chapter));
+        return new Promise((resolve) => { held.release = () => resolve({ chapters: [snapshot] }); });
+      }
+      return routeGet(url);
+    });
+    return held;
+  }
+  const busy = () => Object.assign(new Error("数据库正忙"), { status: 503, code: "DATABASE_BUSY" });
+
+  it("写后那一次重读回来时本机改章名还没写完（结果作废）：A 就此作罢——之后另一处在 A 的位置上加的一场不认成 A（复核 Q1c-R4）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let rejectA = null;
+    let releaseRename = null;
+    client.apiPost.mockImplementation((url) => (ownCreate(url) ? new Promise((_ok, reject) => { rejectA = reject; }) : Promise.resolve({})));
+    client.apiPatch.mockImplementation(() => new Promise((resolve) => { releaseRename = () => resolve({}); }));
+    const read = holdNextCatalogRead(client, chapter);
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(rejectA).toBeTruthy(), T);
+    rejectA(busy());                                                              // A 没建成（5xx：也许建成了，记待认）
+    await vi.waitFor(() => expect(read.release).toBeTruthy(), T);                 // 写后那一次重读在路上
+    mod.WsCatalog.set(mod.WsCatalog.get().map((c) => ({ ...c, title: `${c.title}·改` })));   // 作者这时改了章名
+    await vi.waitFor(() => expect(releaseRename).toBeTruthy(), T);
+    read.release();                                                               // 回来时改名还没写完：结果作废
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    chapter.scenes = [...chapter.scenes, sceneRow("s-other")];                    // 另一个标签页在 A 的位置上加了一场
+    releaseRename();                                                              // 改名写完：以服务端为准再读一次
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-other"]), T);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+    await expect(mod.WsCatalog.backendSceneId(tmpA)).resolves.toBeFalsy();
+  });
+
+  it("写后那一次重读在路上时回收站恢复了一场（同名、落在 A 的位置）：作废之后再读一次，恢复回来的那一场不认成 A（复核 Q1c-R4）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let rejectA = null;
+    client.apiPost.mockImplementation((url) => {
+      if (ownCreate(url)) return new Promise((_ok, reject) => { rejectA = reject; });
+      if (/\/api\/v2\/trash\/[^/]+\/restore$/.test(url)) chapter.scenes = [...chapter.scenes, sceneRow("s-restored")];
+      return Promise.resolve({});
+    });
+    const read = holdNextCatalogRead(client, chapter);
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(rejectA).toBeTruthy(), T);
+    rejectA(busy());
+    await vi.waitFor(() => expect(read.release).toBeTruthy(), T);                 // 写后那一次重读已在服务端读完，回包在路上
+    mod.WsTrashStore.restore("scene:s-restored");                                // 回收站恢复了一场 → 目录以服务端为准重读
+    await vi.waitFor(() => expect(chapter.scenes.map((s) => s.scene_id)).toContain("s-restored"), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));                      // 恢复的回包到了：在飞的那一次重读作废
+    read.release();
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-restored"]), T);
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
+  it("写后那一次重读在路上时作者又加了一场 B（B 先落到服务端、回包后到）：A 的临时 sid 不认成 B（复核 Q1c-R4：不拿作废的读取去认）", async () => {
+    const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
+    const { mod, client } = await loadCatalog({ catalog: [chapter] });
+    let creates = 0;
+    let rejectA = null;
+    let answerB = null;
+    client.apiPost.mockImplementation((url) => {
+      if (!ownCreate(url)) return Promise.resolve({});
+      creates += 1;
+      if (creates === 1) return new Promise((_ok, reject) => { rejectA = reject; });
+      // B 落到服务端：那一章此刻只有一场，B 排第二——正是 A 乐观时的位置；B 的回包还在路上
+      chapter.scenes = [...chapter.scenes, sceneRow("s-b")];
+      return new Promise((resolve) => { answerB = () => resolve({ scene: { scene_id: "s-b", slug: "s-b" } }); });
+    });
+    const routeGet = client.apiGet.getMockImplementation();
+    let releaseRead = null;
+    client.apiGet.mockImplementation((url) => (
+      !releaseRead && /\/catalog$/.test(url) ? new Promise((resolve) => { releaseRead = resolve; }) : routeGet(url)
+    ));
+    mod.WsCatalog.addScene("ch01");
+    const tmpA = mod.WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(rejectA).toBeTruthy(), T);
+    rejectA(busy());
+    await vi.waitFor(() => expect(releaseRead).toBeTruthy(), T);                  // A 写后那一次重读在路上
+    mod.WsCatalog.addScene("ch01");                                               // 作者又加了一场
+    const tmpB = mod.WsCatalog.get()[0].scenes[2].sid;
+    await vi.waitFor(() => expect(answerB).toBeTruthy(), T);
+    releaseRead({ chapters: [JSON.parse(JSON.stringify(chapter))] });             // 那一次在 B 落地之后才在服务端读：里面有 B
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    answerB();
+    await vi.waitFor(() => expect(mod.WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-b"]), T);
+    expect(mod.WsCatalog.sceneById(tmpB)).toMatchObject({ scene: { sid: "s-b" } });
+    expect(mod.WsCatalog.sceneById(tmpA)).toBeNull();
+  });
+
   it("addChapter 是唯一的新建配方：不带张力 / 线索 / 占位 / 4000 字目标，接在指定章后面，只建一场空白场", async () => {
     const second = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", title: "第二章", current: false, act: "act2",
       scenes: [{ ...DEFAULT_CHAP.scenes[0], slug: "ch02s1", scene_id: "s2" }] };

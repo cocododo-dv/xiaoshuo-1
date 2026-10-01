@@ -11,8 +11,8 @@ import { catChapterPatch, catSceneCreateBody, catScenePatch } from "./ws-catalog
      catWrite(workId, run)        = catLoader.write：写入期间回来的读取不写缓存，写完重读
      catRecover(error)            写失败的提示
      catPlanTitleHooks            章名写穿到章计划后要 await 的登记（雪花缓存接章表）
-   返回 { dispatchDiff, backendChapterId, backendSceneId, readStarted, readFailed, reconcileCreates }
-   （后三个是目录读取器的收尾：认回包丢了的新建场，见 unconfirmedCreates）。
+   返回 { dispatchDiff, backendChapterId, backendSceneId, readStarted, reconcileCreates }
+   （后两个是目录读取器的开头与收尾：认回包丢了的新建场，见 unconfirmedCreates）。
    ========================================================== */
 
 /* 建场请求失败了，场景却也许建好了：断网 / 超时（没有状态码）、5xx、服务端说可以重试的（同一个幂等键的原请求还在跑）。
@@ -37,12 +37,15 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
      认出它来就记成它的别名，写作台跟着把那几句挪过去（复核 W1-R7B-1）。认错了比认不出糟得多：写作台会把这一场写下的字挪进
      别的场、存上服务端，同步与恢复里什么也没有（复核 Q1c-R1）。所以只认「确实是它」的那一场：
        · 只记也许建成了的失败（createMayHaveLanded，或回包里没有 scene）；服务端明确拒绝的没建成，不记；
-       · 只等它记下之后发出的第一次目录读取：那一次读失败了就作罢（后端重启时多半如此），不拿一份过时的「建之前」去比
-         之后别处、别的建场加进来的场；
+       · 只等它记下之后发出的第一次目录读取，而且那一次要写进缓存：读失败了（后端重启时多半如此）、回来时作废了（本机另一笔
+         目录写入还没写完，或在路上时目录被要求以服务端为准重读——回收站恢复、方案落地、物化、重新同步）都就此作罢（readStarted），
+         不拿一份过时的「建之前」去比之后别处、别的建场、这些事加进来的场（复核 Q1c-R4）。代价：回包丢了、那一次又没写进缓存的，
+         认不出，照实进同步与恢复；
        · 那一章重读时多出来的场里，除掉建之前就有的、这一页已经认得的（别的建场拿到了回包、缓存里已有后端 id 的）——剩下恰好一场；
        · 它就在乐观时的位置上，题名与形态正是这一页发出去的那样（服务端照存题名，空题名存成「新场景」）；
        · 同一章里不止一次待认：认不准哪一场是哪一份，都不认。
-     认不准就不记：写作台照旧把那几句留进同步与恢复，照实说是新建这一场时写下的字。 */
+     认不准就不记：写作台照旧把那几句留进同步与恢复，照实说是新建这一场时写下的字。剩下的窗口：建场失败到那一次读取在服务端
+     读完之间，另一个标签页恰好在这个位置上加了同名同形态的一场——要第二个人在一次读取的往返里动手，接受。 */
   let unconfirmedCreates = [];   // { workId, sid, chapterId, at, before, title, kind, readNo }
   const catReadNos = {};         // workId → 目录读取已发出几次（readStarted 计数；待认记下时的读数在 readNo）
   const catAnsweredSceneIds = {}; // workId → 这一页从建场回包里认得的 scene_id（目录被 reset 清掉缓存时也还认得）
@@ -148,14 +151,15 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
     return trackCreate(s.sid, p);
   }
 
-  /* 目录读取器（ws-catalog.jsx）每发出一次读取先调 readStarted，拿到这一次的编号；读取失败调 readFailed：
-     在这一次之前记下的待认就此作罢（见 unconfirmedCreates）。 */
+  /* 目录读取器（ws-catalog.jsx）每发出一次读取先调 readStarted，拿到这一次的编号（写进缓存时 reconcileCreates 凭它认）。
+     发出之前先摘掉「第一次读取已经发出过」的待认：那一次写进了缓存的已经认过、摘掉了（reconcileCreates）；还留着的，那一次就是
+     失败了或回来时作废了——就此作罢，不留给之后的读取去认（见 unconfirmedCreates，复核 Q1c-R1 / R4）。
+     同一部作品的读取一次接一次（读取器按作品合并在飞请求，上一次结束之后才发下一次），编号就是先后。 */
   function readStarted(workId) {
-    catReadNos[workId] = (catReadNos[workId] || 0) + 1;
+    const prior = catReadNos[workId] || 0;
+    unconfirmedCreates = unconfirmedCreates.filter((c) => c.workId !== workId || c.readNo >= prior);
+    catReadNos[workId] = prior + 1;
     return catReadNos[workId];
-  }
-  function readFailed(workId, readNo) {
-    unconfirmedCreates = unconfirmedCreates.filter((c) => c.workId !== workId || c.readNo >= readNo);
   }
 
   /* 目录重读之后（ws-catalog.jsx 的装载收尾，第 readNo 次读取；known = 这一次写进缓存之前的那一份）：没拿到回包的新建场
@@ -318,6 +322,6 @@ export function createCatalogWriter({ catLoad, catActiveId, catResolveScene, cat
 
   return {
     dispatchDiff: catDispatchDiff, backendChapterId: catBackendChapterId, backendSceneId: catBackendSceneId,
-    readStarted, readFailed, reconcileCreates,
+    readStarted, reconcileCreates,
   };
 }

@@ -656,7 +656,7 @@ describe("WrDocs × 目录：回包丢了的新建场里写下的字（复核 Q1
   afterEach(() => vi.restoreAllMocks());
 
   /* 世界：目录里一章（c1 / s1）；作者稿服务端按 scene_id 各一份（ensure 建 d-<scene_id>，PATCH 按修订号比对）；
-     POST …/chapters/c1/scenes 由用例的 create(第几次) 回答。→ { WsCatalog, mod, drafts, chapter, creates() } */
+     POST …/chapters/c1/scenes 由用例的 create(第几次) 回答。→ { WsCatalog, WsTrashStore, mod, client, drafts, chapter, creates() } */
   async function loadWorld(create) {
     const chapter = { ...DEFAULT_CHAP, scenes: [...DEFAULT_CHAP.scenes] };
     const client = await import("./lib/client.js");
@@ -686,11 +686,11 @@ describe("WrDocs × 目录：回包丢了的新建场里写下的字（复核 Q1
       d.content = body.content;
       return Promise.resolve({ draft: { draft_id: d.id, revision_no: d.revision, content: d.content } });
     });
-    const { WsCatalog } = await import("./ws-catalog.jsx");
+    const { WsCatalog, WsTrashStore } = await import("./ws-catalog.jsx");
     await settleActive("prj-main");
     await vi.waitFor(() => expect(WsCatalog.get().length).toBeGreaterThan(0), T);
     const mod = await import("./wr-doc-store.jsx");
-    return { WsCatalog, mod, drafts, chapter, creates: () => creates };
+    return { WsCatalog, WsTrashStore, mod, client, drafts, chapter, creates: () => creates };
   }
   const sceneRow = (id) => ({ ...DEFAULT_CHAP.scenes[0], slug: id, scene_id: id, title: "新场景" });
   const typedIn = (html) => String(html || "").includes("头几句");
@@ -748,6 +748,58 @@ describe("WrDocs × 目录：回包丢了的新建场里写下的字（复核 Q1
     comeBack();
     await vi.waitFor(() => expect(typedIn(drafts["s-a"] && drafts["s-a"].content)).toBe(true), T);
     expect(mod.WrRecovery.list().filter((entry) => typedIn(entry.html))).toEqual([]);
+  });
+
+  it("A 没建成；写后那一次目录重读在路上时回收站恢复了一场同名的、落在 A 的位置：头几句不进恢复回来的那一场，照实进同步与恢复（复核 Q1c-R4）", async () => {
+    let rejectA = null;
+    const { WsCatalog, WsTrashStore, mod, client, drafts, chapter, creates } = await loadWorld(() => (
+      new Promise((_ok, reject) => { rejectA = reject; })
+    ));
+    // 回收站里的那一场有自己的作者稿
+    const RESTORED = "<p>恢复回来的那一场原有的正文。</p>";
+    drafts["s-restored"] = { id: "d-s-restored", revision: 3, content: RESTORED };
+    const postWorld = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body) => {
+      if (!/\/api\/v2\/trash\/[^/]+\/restore$/.test(url)) return postWorld(url, body);
+      chapter.scenes = [...chapter.scenes, sceneRow("s-restored")];             // 恢复回来，排在这一章末尾——正是 A 乐观时的位置
+      return Promise.resolve({});
+    });
+    // 写后那一次目录重读扣在路上：它在服务端读到的是此刻的那一章
+    const getWorld = client.apiGet.getMockImplementation();
+    let releaseRead = null;
+    client.apiGet.mockImplementation((url) => {
+      if (releaseRead || !/\/catalog$/.test(url)) return getWorld(url);
+      const snapshot = JSON.parse(JSON.stringify(chapter));
+      return new Promise((resolve) => { releaseRead = () => resolve({ chapters: [snapshot] }); });
+    });
+
+    WsCatalog.addScene("ch01");
+    const tmpA = WsCatalog.get()[0].scenes[1].sid;
+    await vi.waitFor(() => expect(creates()).toBe(1), T);
+    mod.WrDocs.load(tmpA);
+    void mod.WrDocs.save(tmpA, A_TEXT).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    rejectA(Object.assign(new Error("数据库正忙"), { status: 503, code: "DATABASE_BUSY" }));   // A 没建成
+    await vi.waitFor(() => expect(releaseRead).toBeTruthy(), T);
+    WsTrashStore.restore("scene:s-restored");                                   // 回收站恢复 → 在飞的那一次目录重读作废、再读一次
+    await vi.waitFor(() => expect(chapter.scenes.map((s) => s.scene_id)).toContain("s-restored"), T);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    releaseRead();
+    await vi.waitFor(() => expect(WsCatalog.get()[0].scenes.map((s) => s.sid)).toEqual(["ch01s1", "s-restored"]), T);
+    mod.WrDocs.load("s-restored");                                              // 写作台随后打开恢复回来的那一场
+    comeBack();
+    await vi.waitFor(() => expect(mod.WrRecovery.list().some((entry) => typedIn(entry.html))).toBe(true), T);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(WsCatalog.sceneById(tmpA)).toBeNull();
+    expect(drafts["s-restored"]).toMatchObject({ revision: 3, content: RESTORED });
+    const kept = mod.WrRecovery.list().filter((entry) => typedIn(entry.html));
+    expect(kept).toEqual([expect.objectContaining({ sid: tmpA, type: "unsynced" })]);
+    expect(window.alert.mock.calls.some(([message]) => String(message).includes("新建这一场时写下"))).toBe(true);
+    expect(window.alert.mock.calls.some(([message]) => String(message).includes("在别处被修改过"))).toBe(false);
+    // 「恢复」不往恢复回来的那一场里存：照实说认不出是哪一场
+    await expect(mod.WrRecovery.restore(kept[0].id)).rejects.toMatchObject({ code: "RECOVERY_SCENE_UNAVAILABLE" });
+    expect(drafts["s-restored"]).toMatchObject({ revision: 3, content: RESTORED });
   });
 });
 
