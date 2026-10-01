@@ -873,6 +873,21 @@ describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
     expect(mod.WsTrashStore.list().map((x) => x.id)).toEqual(["scene:o1"]);
   });
 
+  it("恢复整部作品：后端恢复成功后重读书架（作品回到切换器里），不发目录的恢复通知", async () => {
+    const workTrash = { ...DEFAULT_TRASH, id: "work:p9", kind: "work", title: "被删的作品" };
+    const { mod, client } = await loadTrash([workTrash]);
+    const projectGets = () => client.apiGet.mock.calls.filter(([url]) => url === "/api/v2/projects").length;
+    const before = projectGets();
+    const catalogGets = () => client.apiGet.mock.calls.filter(([url]) => /\/catalog$/.test(url)).length;
+    const catalogBefore = catalogGets();
+
+    mod.WsTrashStore.restore("work:p9");
+
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v2/trash/work%3Ap9/restore", {}), T);
+    await vi.waitFor(() => expect(projectGets()).toBe(before + 1), T);
+    expect(catalogGets()).toBe(catalogBefore);
+  });
+
   it("restore 失败时告警", async () => {
     const { mod, client } = await loadTrash();
     client.apiPost.mockRejectedValueOnce(new Error("restore failed"));

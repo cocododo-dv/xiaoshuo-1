@@ -430,7 +430,7 @@ const WsWorks = {
     if (scope === "projects") return wsRefresh();
     return wsLoadHome(id || WS_ACTIVE_ID);
   },
-  /* —— FE-ALIGN 内部接缝（非契约面）：统计派生字段的只读注入 + 手动刷新 —— */
+  /* —— FE-ALIGN 内部接缝（非契约面）：统计派生字段的只读注入（重读书架用公开的 retry("projects")） —— */
   __applyDerived(id, fields) {
     const allowed = {};
     if ("wordsTotal" in (fields || {})) allowed.wordsTotal = fields.wordsTotal;
@@ -442,7 +442,6 @@ const WsWorks = {
     wsSaveCache();
     wsNotify();
   },
-  __refresh: wsRefresh,
 };
 
 /* ---- per-work storage namespace ----
