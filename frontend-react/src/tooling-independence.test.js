@@ -66,11 +66,14 @@ describe("React 工具链独立性", () => {
     }
   });
 
-  it("QA2 uses the live project-list contract to discover its single-chapter fixture", () => {
+  it("QA2 runs every check on the fixture work it names: go() waits until that work is the current one", () => {
+    // 书架（/api/v2/projects）只列雪花作品，不在上面的作品打开时应用退回第一部。以前为了一条从 v1 列表找单章项目的
+    // 检查（AUTHOR-04，它找到的项目书架从来打不开，等于空过；已删），go() 只等应用装好、不认当前作品，
+    // 别的检查也就可能悄悄跑在别的作品上
     const source = fs.readFileSync(path.join(scriptsDir, "qa2-ui.mjs"), "utf8");
-    expect(source).toContain("${API}/api/v1/projects");
-    expect(source).not.toContain("${API}/api/v2/projects`");
-    expect(source).toContain("catalog.chapters.length === 1");
+    const go = source.match(/^async function go\(work, view\) \{[\s\S]*?^\}/m)?.[0] || "";
+    expect(go).toContain("await waitForApp({ work });");
+    expect(source).not.toContain("${API}/api/v1/projects");
   });
 
   it("前端启动脚本先查 Node（下限与 package.json engines 一致）再停旧实例，也不改写操作者的 NODE_OPTIONS", () => {
