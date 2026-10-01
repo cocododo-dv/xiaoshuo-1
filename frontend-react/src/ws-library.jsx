@@ -66,7 +66,7 @@ function WsLibrary({ go }) {
 
   const entries = useLbMemo(
     () => libLive().entries.map(e => (e.id in pinOverride ? { ...e, pinned: pinOverride[e.id] } : e)),
-    [libraryRevision, pinOverride] // eslint-disable-line react-hooks/exhaustive-deps
+    [libraryRevision, pinOverride]
   );
   const byId       = useLbMemo(() => entries.reduce((m, e) => { m[e.id] = e; return m; }, {}), [entries]);
   const backlinks  = useLbMemo(() => LIB_buildBacklinks(entries), [entries]);

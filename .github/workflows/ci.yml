@@ -125,6 +125,10 @@ jobs:
       - name: Audit production dependency tree
         run: npm audit --omit=dev --audit-level=high
 
+      # rules-of-hooks errors fail the job; exhaustive-deps warnings are printed but do not fail it (owner decision #26b)
+      - name: Lint React hooks (ESLint)
+        run: npm run lint
+
       - name: Run React unit tests (vitest)
         run: npm test
 

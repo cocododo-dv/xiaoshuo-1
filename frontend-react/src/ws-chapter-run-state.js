@@ -196,7 +196,7 @@ export function useChapterRun({ chapter, onCatalogRefresh, pollIntervalMs = 1200
       return;
     }
     void hydrateStatus({ token, projectId, chapterId, chapterKey });
-  }, [chapter && chapter.id, chapter && chapter.backendId]); // eslint-disable-line
+  }, [chapter && chapter.id, chapter && chapter.backendId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const retryHydration = () => {
     const chapterId = chapter && chapter.backendId;

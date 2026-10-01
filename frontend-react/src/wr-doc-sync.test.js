@@ -1515,7 +1515,6 @@ describe("复核三 · 断网写了几分钟：回包丢了的自己那一稿不
     // 连接一直断着：又写了四稿，一稿也没到服务端
     for (const html of ["<p>起点，一，二</p>", "<p>起点，一，二，三</p>", "<p>起点，一，二，三，四</p>", "<p>起点，一，二，三，四，五</p>"]) {
       shared.hooks.patch = () => { shared.hooks.patch = null; return Promise.reject(offlineError()); };
-      // eslint-disable-next-line no-await-in-loop
       await expect(mod.WrDocs.save("ch01s1", html)).rejects.toMatchObject({ code: "NETWORK_ERROR" });
     }
     // 连上了：下一稿带着 rev 1 撞上 409 {2}——服务端上的是作者自己那第一稿
@@ -2005,7 +2004,6 @@ describe("复核三 · 采纳前的预检把停着的一稿再发一次（W1-R3B
     client.apiPost.mockImplementation((url, body) => (/adopt-current$/.test(url) ? Promise.reject(serverError()) : post(url, body)));
     const api = await import("./ws-scene-api.js");
     for (let i = 0; i < 3; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       expect(await api.scnAdoptToDoc("ch01s1", AI_DRAFT, null, { mode: "overwrite", confirmed: true })).toMatchObject({ ok: false });
     }
     expect(mod.WrRecovery.list().filter((entry) => entry.type === "backup")).toEqual([

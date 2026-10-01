@@ -87,7 +87,7 @@ export function useChapterActionStatus(pickedId) {
     const left = leftRef.current;
     leftRef.current = pickedId;
     if (left && left !== pickedId) patch(left, (s) => (s.message ? { ...s, message: null } : s));
-  }, [pickedId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pickedId]);
 
   const begin = (scope) => {
     const id = pickedId;
