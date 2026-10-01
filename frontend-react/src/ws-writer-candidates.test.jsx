@@ -22,6 +22,15 @@ describe("writer candidate sentence adoption", () => {
     expect(wrPickedParas(sentences, [1, 0])).toEqual(["她推开门。屋里没人。"]);
   });
 
+  it("句与句之间的空白留着：英文 / 数字句子挑出来不粘在一起，只修掉拼好的一段首尾的空白（W1-R6B-6 / INV-R6）", () => {
+    const sentences = wrCandSentences(["Run! Go now! Stay?", "  他回头。 她没动。"]);
+
+    expect(wrPickedParas(sentences, [0, 1])).toEqual(["Run! Go now!"]);
+    expect(wrPickedParas(sentences, [1, 2])).toEqual(["Go now! Stay?"]);
+    expect(wrPickedParas(sentences, [3, 4])).toEqual(["他回头。 她没动。"]);
+    expect(wrPickedParas(sentences, [4])).toEqual(["她没动。"]);
+  });
+
   it("keeps marked prose as plain text without leaking markup", () => {
     expect(wrPlainText("<mark>潮水</mark> &amp; 月光")).toBe("潮水 & 月光");
   });
