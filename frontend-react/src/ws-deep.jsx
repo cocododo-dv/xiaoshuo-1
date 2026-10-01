@@ -8,13 +8,13 @@ import {
   wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips, wrDxSnapshot, wrDxWithIgnored,
 } from "./ws-deep-prefs.js";
 import { useWrInert } from "./ws-writer-hooks.js";
-import { qSevLabel, qSevTone } from "./ws-quality-model.js";
+import { findingLabel, findingSeverityLabel, findingSeverityTone } from "./labels/finding.js";
 import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    ws-deep — 写作台深改面板（2026-09-22 场景诊断统一）
    ----------------------------------------------------------
-   诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把 21 维规则体检、段落节奏
+   诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把规则维度体检（QUALITY_DIMENSIONS）、段落节奏
    （贴邻叠句 / 段落偏长 / 句首重复——原先是这里三条本地正则）、起草台的准定稿评审和 AI 深评
    合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
    evidence{paragraph_index,start,end,excerpt}），文学质量视图读的也是这份，所以一条发现从那边
@@ -108,7 +108,7 @@ function DxFindingRow({ finding, active, onPick }) {
   const calibrated = !!(finding.calibrated && finding.calibrated.kind);
   return (
     <button type="button" className={`wr-dxd-row ${active ? "is-active" : ""}`} aria-pressed={active} onClick={() => onPick(finding.signal_id)}>
-      <span className={`wr-dxd-mark ${sevClass(finding.severity)}`} title={`严重程度：${qSevLabel(finding.severity)}`}>{finding.label || finding.dimension}</span>
+      <span className={`wr-dxd-mark ${sevClass(finding.severity)}`} title={`严重程度：${findingSeverityLabel(finding.severity)}`}>{findingLabel(finding)}</span>
       <span className="wr-dxd-body">
         <span className="wr-dxd-t">{finding.issue}</span>
         <span className="wr-dxd-h">
@@ -364,7 +364,7 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
               <ul className="wr-dxd-ignored-list">
                 {ignoredList.map((f) => (
                   <li key={f.signal_id}>
-                    <Tag tone={qSevTone(f.severity)}>{f.label || f.dimension}</Tag>
+                    <Tag tone={findingSeverityTone(f.severity)}>{findingLabel(f)}</Tag>
                     <span className="wr-dxd-ignored-t">{f.issue}</span>
                     <button type="button" className="btn btn-quiet btn-sm" onClick={() => onRestore(f)}>恢复</button>
                   </li>

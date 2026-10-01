@@ -4,9 +4,10 @@ import { useCatalogChapters } from "./ws-catalog.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner, StatTile, Tag } from "./ws-ui.jsx";
 import { FindingLine, findingPlainText, writerIntents } from "./ws-finding-ui.jsx";
 import { chapterLabel, chapterLabelById, findSceneByBackendId } from "./labels/catalog.js";
+import { findingSeverityLabel } from "./labels/finding.js";
 import {
   QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_MIN_SEVERITIES, QUALITY_TEXT_LAYERS, Q_ITEM_LAYER,
-  qDimLabel, qDimensionOptions, qObjectLabel, qPct, qRiskDims, qScore, qSevLabel,
+  qDimLabel, qDimensionOptions, qObjectLabel, qPct, qRiskDims, qScore,
 } from "./ws-quality-model.js";
 import {
   qAnalyzeText, qChapterSetReview, qLoadOverview, qScopeFilters, qSnapshot, useQualityState,
@@ -104,7 +105,7 @@ function QualityOverview({ go, filters, setFilters, draft, setDraft }) {
           <span>最低级别</span>
           <select className="select" value={filters.min_severity} onChange={(e) => setF("min_severity", e.target.value)}>
             <option value="">全部</option>
-            {QUALITY_MIN_SEVERITIES.map((s) => <option key={s} value={s}>{qSevLabel(s)}</option>)}
+            {QUALITY_MIN_SEVERITIES.map((s) => <option key={s} value={s}>{findingSeverityLabel(s)}</option>)}
           </select>
         </label>
         <button type="button" className="btn btn-accent btn-sm q-run" onClick={reload} disabled={st.loading}>
