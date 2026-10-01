@@ -8,10 +8,12 @@ on:
       - master
       - "codex/**"
 
-# A newer push to the same pull request supersedes the running checks; runs on the long-lived
-# branches finish (B12-22).
+# A newer push to the same pull request supersedes the running checks (B12-22). Push runs get one
+# group per commit: a group holds one running and one pending run and cancels the older pending run
+# when a newer one queues, so a per-branch group would queue pushes to main behind each other and
+# report an intermediate commit as cancelled.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
