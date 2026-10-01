@@ -433,6 +433,7 @@ describe("构思 · 历史 · 服务器版本预览只说恢复真会换掉的�
     const version = { scenes: [{ row_uid: "row_a", summary: "林昭去码头取旧信", primary_form: "proactive", goal: "旧的目标甲" }] };
     let view = await renderDiff("planning", version, scaffolds);
     expect(view.body).toContain("这一版之后才加的场不动");
+    expect(view.body).toContain("场本身（事件、地点、坩埚、形态、视角）仍以 09 为准");   // 坩埚只在 09 里改，第 10 步不换它
     expect(view.restore.disabled).toBe(false);
     expect(view.old).toContain("目标：旧的目标甲");
     expect(view.old).toContain("目标：现在的目标乙");
