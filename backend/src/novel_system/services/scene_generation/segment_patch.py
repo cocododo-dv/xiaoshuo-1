@@ -13,7 +13,7 @@ from typing import Any, Sequence
 from novel_system.db.models import SceneCard
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_client import LLMResponse
-from novel_system.services.qc_constraints import constraint_terms
+from novel_system.services.qc_constraints import required_groups
 from novel_system.services.scene_generation.contracts import SceneGenerationPostprocessError
 from novel_system.services.scene_generation.length_policy import LengthPolicy, _style_repair_working_window
 from novel_system.services.scene_generation.text_gates import (
@@ -517,7 +517,9 @@ def _style_length_patch_instruction(
             "For each selected segment_id, new_text replaces that one source segment and must be shorter. "
             "Delete only repetition or decorative description; do not replace omitted text with an ellipsis."
         )
-    required_terms = constraint_terms(scene.must_include_text or "")
+    # 必写组与起草的确定性门、硬质检、成稿门同一口径（批准#11）：分不出 ≥2 字的组时整段算一组——
+    # 一个字的必写（「信」）以前在这里被 constraint_terms 丢掉，合同里一个必写组都不提（S2 3）
+    required_terms = required_groups(scene.must_include_text)
     required_rule = (
         " Do not alter or remove any required constraint group: "
         + "；".join(required_terms)
@@ -555,7 +557,7 @@ def _style_salvage_instruction(
             f"{segment_id}={max(20, math.floor(visible_chars * 0.50))}-"
             f"{max(20, math.ceil(visible_chars * 1.35))} visible characters"
         )
-    required_terms = constraint_terms(scene.must_include_text or "")
+    required_terms = required_groups(scene.must_include_text)  # 同上：与各道门同一组规则
     required_rule = (
         " Preserve every required constraint group wherever it appears: "
         + "；".join(required_terms)

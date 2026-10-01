@@ -16,11 +16,16 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.qc_constraints import strip_reference_policy
+from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_form import form_alias
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
+    chapter_title_candidates,
+    is_retired_chapter_goal,
     normalize_story_slot,
     normalize_story_slot_mapping,
+    planned_beats,
+    planned_chapter_goal,
 )
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.style_policy import style_policy_live
@@ -167,6 +172,11 @@ class SceneExecutionContractService:
         blueprint_json = dict(blueprint.blueprint_json or {}) if blueprint is not None else {}
         scene_mode = _infer_scene_mode(scene, brief)
         explicit_scene_contract = _is_explicit_structured_scene(scene, brief)
+        # 场目标 / 节拍 / 章的主线推进只在作者规划过时才兜底：旧物化给没写摘要的场、没写目标的章补的
+        # 「推进本章：<章名>」不是作者的（story_slots.planned_chapter_goal，S2 1）
+        scene_goal = planned_chapter_goal(scene.scene_goal, chapter)
+        main_plot_push = planned_chapter_goal(chapter.main_plot_push, chapter)
+        beats = planned_beats(scene.beats_json, chapter)
         common_payload = {
             "scene_mode": scene_mode,
             "pov_character_id": _first_text(scene.pov_character_id),
@@ -178,8 +188,8 @@ class SceneExecutionContractService:
                 blueprint_json.get("choice_under_pressure") if not explicit_scene_contract else None,
                 blueprint_json.get("concrete_obstacle"),
                 brief.get("obstacle"),
-                scene.scene_goal if not explicit_scene_contract else None,
-                chapter.main_plot_push if not explicit_scene_contract else None,
+                scene_goal if not explicit_scene_contract else None,
+                main_plot_push if not explicit_scene_contract else None,
             ),
             "timebox": _first_text(brief.get("timebox"), scene.target_length_band, "single_scene"),
             "expected_reader_emotion": _first_text(
@@ -251,8 +261,8 @@ class SceneExecutionContractService:
                     brief.get("reaction"),
                     brief.get("emotional_turn"),
                     blueprint_json.get("emotional_turn"),
-                    _beat_text(scene, 0) if not explicit_scene_contract else None,
-                    scene.scene_goal if not explicit_scene_contract else None,
+                    _beat_text(beats, 0) if not explicit_scene_contract else None,
+                    scene_goal if not explicit_scene_contract else None,
                 ),
                 "dilemma": _first_text(
                     brief.get("dilemma"),
@@ -260,14 +270,14 @@ class SceneExecutionContractService:
                     blueprint_json.get("choice_under_pressure"),
                     blueprint_json.get("concrete_obstacle"),
                     brief.get("obstacle"),
-                    _beat_text(scene, 1) if not explicit_scene_contract else None,
+                    _beat_text(beats, 1) if not explicit_scene_contract else None,
                 ),
                 "decision": _first_text(
                     brief.get("decision"),
                     brief.get("irreversible_change") if not explicit_scene_contract else None,
                     blueprint_json.get("irreversible_consequence"),
                     scene.exit_change if not explicit_scene_contract else None,
-                    _last_beat(scene) if not explicit_scene_contract else None,
+                    _last_beat(beats) if not explicit_scene_contract else None,
                     brief.get("reader_question"),
                 ),
             }
@@ -276,13 +286,13 @@ class SceneExecutionContractService:
                 "goal": _first_text(
                     brief.get("goal"),
                     blueprint_json.get("character_current_desire"),
-                    scene.scene_goal,
+                    scene_goal,
                 ),
                 "conflict": _first_text(
                     brief.get("conflict"),
                     blueprint_json.get("concrete_obstacle"),
                     brief.get("obstacle"),
-                    _beat_text(scene, 1) if not explicit_scene_contract else None,
+                    _beat_text(beats, 1) if not explicit_scene_contract else None,
                     scene.hook if not explicit_scene_contract else None,
                 ),
                 "setback_or_victory": _first_text(
@@ -293,12 +303,17 @@ class SceneExecutionContractService:
                     blueprint_json.get("information_release"),
                     blueprint_json.get("irreversible_consequence"),
                     scene.exit_change if not explicit_scene_contract else None,
-                    _last_beat(scene) if not explicit_scene_contract else None,
+                    _last_beat(beats) if not explicit_scene_contract else None,
                     scene.hook if not explicit_scene_contract else None,
                 ),
             }
         payload = {**common_payload, **mode_payload}
         missing_fields = self._missing_fields(payload)
+        if "goal" in missing_fields and _goal_was_canned(scene, chapter):
+            # S1 9 的护栏：拿掉样板不能让一道闸门开始失败。这样的主动场以前从不缺目标——样板「推进本章：<章名>」
+            # 顶着，契约放行；现在目标如实空着（payload 与提示里都没有目标），缺目标只提醒、不挡起草。
+            # 别的场（手加的场、写了脚手架占位的场）缺目标照旧挡：那里从来没有样板顶过。
+            missing_fields = ["goal(advisory)" if field == "goal" else field for field in missing_fields]
         blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
         return payload, missing_fields, blocking_fields
 
@@ -338,11 +353,12 @@ class SceneExecutionContractService:
         blueprint: SceneBlueprint | None,
         reference_rules: dict[str, list[str]],
     ) -> dict[str, Any]:
+        # 来源快照与 payload 同一口径：旧物化补的样板目标算没规划——快照随之变，带样板的旧契约在下一次运行时重建
         return {
             "scene": {
                 "scene_id": scene.scene_id,
                 "scene_type": scene.scene_type,
-                "scene_goal": normalize_story_slot(scene.scene_goal),
+                "scene_goal": normalize_story_slot(planned_chapter_goal(scene.scene_goal, chapter)),
                 "location": normalize_story_slot(scene.location),
                 "exit_change": normalize_story_slot(scene.exit_change),
                 "hook": normalize_story_slot(scene.hook),
@@ -352,8 +368,8 @@ class SceneExecutionContractService:
             },
             "chapter": {
                 "chapter_id": chapter.chapter_id,
-                "chapter_goal": normalize_story_slot(chapter.chapter_goal),
-                "main_plot_push": normalize_story_slot(chapter.main_plot_push),
+                "chapter_goal": normalize_story_slot(planned_chapter_goal(chapter.chapter_goal, chapter)),
+                "main_plot_push": normalize_story_slot(planned_chapter_goal(chapter.main_plot_push, chapter)),
                 "emotional_target": normalize_story_slot(chapter.emotional_target),
                 "writer_brief_json": normalize_story_slot_mapping(
                     chapter.writer_brief_json or {}
@@ -399,6 +415,16 @@ def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bo
     return bool(_declared_scene_forms(scene, brief))
 
 
+def _goal_was_canned(scene: SceneCard, chapter: ChapterGoal) -> bool:
+    """这一场的目标以前是不是由「整理为章节结构」补的样板顶着（S2 1）：卡上还是那句「推进本章：<所在章的名字>」
+    （旧行），或者是雪花物化 / 回流出来的卡、场目标空着——09 没写摘要和题名、章也没有目标，样板以前正好补在
+    这里，现在物化如实存空串；改名 / 搬场 / 确认写入清掉旧行的样板之后也是空串。"""
+    goal = str(scene.scene_goal or "").strip()
+    if not goal:
+        return is_snowflake_origin(scene.writer_brief_json)
+    return is_retired_chapter_goal(goal, chapter_title_candidates(chapter))
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         if isinstance(value, str) and normalize_story_slot(value):
@@ -410,15 +436,15 @@ def _has_text(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
-def _beat_text(scene: SceneCard, index: int) -> str:
-    beats = [str(item).strip() for item in list(scene.beats_json or []) if str(item).strip()]
-    if index < 0 or index >= len(beats):
+def _beat_text(beats: list[Any], index: int) -> str:
+    texts = [str(item).strip() for item in beats if str(item).strip()]
+    if index < 0 or index >= len(texts):
         return ""
-    return beats[index]
+    return texts[index]
 
 
-def _last_beat(scene: SceneCard) -> str:
-    beats = [str(item).strip() for item in list(scene.beats_json or []) if str(item).strip()]
-    return beats[-1] if beats else ""
+def _last_beat(beats: list[Any]) -> str:
+    texts = [str(item).strip() for item in beats if str(item).strip()]
+    return texts[-1] if texts else ""
 
 

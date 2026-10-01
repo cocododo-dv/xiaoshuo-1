@@ -43,7 +43,7 @@ from novel_system.services.scene_budget import lifecycle_budget_payload
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
-from novel_system.services.story_slots import planned_text
+from novel_system.services.story_slots import planned_beats, planned_chapter_goal, planned_text
 from novel_system.services.text_input import clean_backfill_markers
 
 # ``GET …/workbench?include=diagnostics``：连同诊断部分一起给（测试与排障用）
@@ -178,16 +178,18 @@ class SceneWorkbenchService:
         return {
             "chapter_goal": {
                 "chapter_id": chapter.chapter_id,
-                "chapter_goal": chapter.chapter_goal,
-                "main_plot_push": chapter.main_plot_push,
-                # 作者写了才有值；雪花物化以前写的样板句算「没规划」（story_slots.planned_text）
+                # 作者写了才有值；雪花物化以前写的样板句（S1 9）与给没目标的章补的「推进本章：<章名>」（S2 1）
+                # 算「没规划」（story_slots.planned_text / planned_chapter_goal）
+                "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
+                "main_plot_push": planned_chapter_goal(chapter.main_plot_push, chapter) or None,
                 "emotional_target": planned_text(chapter.emotional_target),
                 "ending_effect": planned_text(chapter.ending_effect),
             },
             "scene_card": {
                 "scene_id": scene.scene_id,
-                "scene_goal": scene.scene_goal,
-                "beats_json": scene.beats_json,
+                # 同上：旧物化给没写摘要的场补的本章样板目标（也当唯一一拍）算没规划
+                "scene_goal": planned_chapter_goal(scene.scene_goal, chapter),
+                "beats_json": planned_beats(scene.beats_json, chapter),
                 "must_include_text": clean_backfill_markers(scene.must_include_text),
                 "location": scene.location,
             },

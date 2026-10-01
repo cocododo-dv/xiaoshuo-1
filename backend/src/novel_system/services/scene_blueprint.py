@@ -19,6 +19,7 @@ from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNode
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.scene_sections import attach_scene_sections
+from novel_system.services.story_slots import planned_beats, planned_chapter_goal
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.style_prompt_injection import (
@@ -284,11 +285,12 @@ class SceneBlueprintService:
                 {"slot": "scene_writer_brief", "ref_id": scene.scene_id, "digest_key": "scene_writer_brief"},
             ],
             "inline_digests": {
-                "chapter_goal": chapter.chapter_goal or "",
+                # 章目标 / 场目标 / 节拍只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
+                "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
                 "scene_card": json.dumps(
                     {
-                        "scene_goal": scene.scene_goal or "",
-                        "beats": scene.beats_json or [],
+                        "scene_goal": planned_chapter_goal(scene.scene_goal, chapter),
+                        "beats": planned_beats(scene.beats_json, chapter),
                         "exit_change": scene.exit_change or "",
                         "hook": scene.hook or "",
                     },

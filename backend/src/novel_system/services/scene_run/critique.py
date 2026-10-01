@@ -21,6 +21,7 @@ from novel_system.services import auto_critique as _auto_critique
 from novel_system.services.llm_accounting import LLMAccountingError, LLMCallContext, validate_product_call
 from novel_system.services.scene_generation import SceneGenerationPostprocessError, StepKeys
 from novel_system.services.scene_run_checkpoint import checkpoint_corrupt
+from novel_system.services.story_slots import planned_chapter_goal
 from novel_system.settings import get_settings
 
 
@@ -745,9 +746,12 @@ class AutoCritiqueCheckpointMixin:
         payload = getattr(contract, "payload_json", None) or {}
         brief = getattr(scene, "writer_brief_json", None) or {}
         tension = brief.get("tension_target")
+        # 场目标只给作者规划过的：旧物化给没写摘要的场补的本章样板目标「推进本章：<章名>」不算（S2 1）
+        chapter_id = getattr(scene, "chapter_id", None)
+        chapter = self.session.get(ChapterGoal, chapter_id) if chapter_id else None
         return _auto_critique.SceneContext(
             scene_goal=str(
-                getattr(scene, "scene_goal", "") or payload.get("scene_goal") or ""
+                planned_chapter_goal(getattr(scene, "scene_goal", ""), chapter) or payload.get("scene_goal") or ""
             ),
             tension_target=tension if isinstance(tension, int) else None,
             cost_requirement=str(

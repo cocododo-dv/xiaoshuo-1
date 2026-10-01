@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, OutlinePlan, QcReport, SceneCard, StoryProject
-from novel_system.services.story_slots import planned_text
+from novel_system.services.story_slots import planned_beats, planned_chapter_goal, planned_text
 
 
 def project_summary_payload(project: StoryProject) -> dict[str, Any]:
@@ -76,26 +76,29 @@ def chapter_payload(session: Session, chapter: ChapterGoal) -> dict[str, Any]:
         "chapter_id": chapter.chapter_id,
         "project_id": chapter.project_id,
         "outline_plan_id": chapter.outline_plan_id,
-        "chapter_goal": chapter.chapter_goal,
-        "main_plot_push": chapter.main_plot_push,
-        # 没规划就是 None：旧的物化样板句不当作者写的（story_slots.planned_text）
+        # 没规划：章目标是空串（列不可空），其余是 None。旧的物化样板句（S1 9）与给没目标的章补的
+        # 「推进本章：<章名>」（S2 1）不当作者写的（story_slots.planned_text / planned_chapter_goal）
+        "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
+        "main_plot_push": planned_chapter_goal(chapter.main_plot_push, chapter) or None,
         "emotional_target": planned_text(chapter.emotional_target),
         "ending_effect": planned_text(chapter.ending_effect),
         "must_not": planned_text(chapter.must_not),
         "planned_scene_count": chapter.planned_scene_count,
-        "scenes": [scene_payload(scene) for scene in scenes],
+        "scenes": [scene_payload(scene, chapter) for scene in scenes],
     }
 
 
-def scene_payload(scene: SceneCard) -> dict[str, Any]:
+def scene_payload(scene: SceneCard, chapter: ChapterGoal | None = None) -> dict[str, Any]:
+    """v1 场景载荷。``chapter``：这一场所在的章——旧物化给没写摘要的场补的本章样板目标（也当唯一一拍）按它的章名
+    认出来，算没规划（S2 1）；不给就按场景卡原值（空串 / 旧界面脚手架照样算没规划）。"""
     return {
         "scene_id": scene.scene_id,
         "chapter_id": scene.chapter_id,
         "project_id": scene.project_id,
         "outline_plan_id": scene.outline_plan_id,
         "scene_seq": scene.scene_seq,
-        "scene_goal": scene.scene_goal,
-        "beats_json": list(scene.beats_json or []),
+        "scene_goal": planned_chapter_goal(scene.scene_goal, chapter),
+        "beats_json": planned_beats(scene.beats_json, chapter),
         "must_include_text": scene.must_include_text,
         "forbidden_text": scene.forbidden_text,
         "exit_change": scene.exit_change,

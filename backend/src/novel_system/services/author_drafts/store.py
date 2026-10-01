@@ -22,6 +22,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import sanitize_manuscript_html
 from novel_system.services.scene_lookup import scene_project_id
 from novel_system.services.scene_text import current_author_draft
+from novel_system.services.story_slots import planned_beats, planned_chapter_goal
 from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
@@ -338,11 +339,12 @@ class AuthorDraftStoreMixin:
             "project_id": scene.project_id or chapter.project_id,
             "chapter_id": scene.chapter_id,
             "scene_id": scene.scene_id,
-            "chapter_goal": chapter.chapter_goal or "",
+            # 续写提示读的目标只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
+            "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
             "chapter_writer_brief": normalize_chapter_writer_brief(chapter.writer_brief_json),
             "scene_card": {
-                "scene_goal": scene.scene_goal or "",
-                "beats": scene.beats_json or [],
+                "scene_goal": planned_chapter_goal(scene.scene_goal, chapter),
+                "beats": planned_beats(scene.beats_json, chapter),
                 "location": scene.location or "",
                 "exit_change": scene.exit_change or "",
                 "hook": scene.hook or "",

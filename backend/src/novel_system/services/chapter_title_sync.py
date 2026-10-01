@@ -1,4 +1,4 @@
-"""章名只有一个（阶段 Z，2026-09-20）。叶子模块：只依赖 ORM 与章表叶子——目录服务、分章服务、雪花工作台都引用它。
+"""章名只有一个（阶段 Z，2026-09-20）。叶子模块：只依赖 ORM、章表叶子与 story_slots——目录服务、分章服务、雪花工作台都引用它。
 
 一章的名字有两扇门：「整理章节结构」面板、章节编排；07 的章节表是分章结果的只读镜像（R11，2026-09-30——
 以前它是第三扇门）。过去章节编排改的是目录里的**另一份**：分章面板和 09 的章头还挂着旧名，「AI 起章名」会给
@@ -21,7 +21,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, OperationLog, SnowflakeChapterPlan, SnowflakeScenePlan
+from novel_system.db.models import ChapterGoal, OperationLog, SceneCard, SnowflakeChapterPlan, SnowflakeScenePlan
+from novel_system.services.story_slots import forget_retired_chapter_goal
 
 # 章名规则、活章表与 07 镜像的实现在章表叶子 snowflake_chapter_table（B07-05）；目录服务照旧从这里 import。
 from novel_system.services.snowflake_chapter_table import (  # noqa: F401
@@ -126,4 +127,8 @@ def _seed_catalog_title(session: Session, catalog_chapter_id: str, title: str) -
         return
     brief = dict(row.writer_brief_json or {})
     if brief.get("chapter_title") != title:
+        # 旧物化给没规划的章 / 场补的「推进本章：<章名>」只按这一章的名字认（上一次播下去的名字就在这里）：
+        # 换名之后就认不出来、又被当成作者写的目标印进提示——换名之前先从这一章和章里的场景卡上去掉（S2 1）
+        cards = session.execute(select(SceneCard).where(SceneCard.chapter_id == row.chapter_id)).scalars().all()
+        forget_retired_chapter_goal(row, cards)
         row.writer_brief_json = {**brief, "chapter_title": title}

@@ -41,7 +41,7 @@ from novel_system.services.chapter_architecture import (  # noqa: F401 — 旧�
     latest_chapter_architecture,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.story_slots import normalize_story_slot
+from novel_system.services.story_slots import normalize_story_slot, planned_chapter_goal
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.scene_design_ownership import plan_owned_scene_ids
@@ -132,7 +132,7 @@ class ChapterPlanningContextBuilder:
                 "genre": project.genre,
             },
             "chapter_card": self._chapter_card_slot(chapter, index),
-            "scene_cards_current": [self._scene_slot(scene) for scene in scenes],
+            "scene_cards_current": [self._scene_slot(scene, chapter) for scene in scenes],
             "neighbor_handoff": self._neighbor_slot(chapters, index),
         }
 
@@ -197,7 +197,7 @@ class ChapterPlanningContextBuilder:
             "drama": dict(narrative.get("drama") or {}),
         }
 
-    def _scene_slot(self, scene: SceneCard) -> dict[str, Any]:
+    def _scene_slot(self, scene: SceneCard, chapter: ChapterGoal) -> dict[str, Any]:
         kind = scene_kind(scene)
         brief_json = dict(scene.writer_brief_json or {})
         keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
@@ -208,7 +208,8 @@ class ChapterPlanningContextBuilder:
         return {
             "scene_id": scene.scene_id,
             "seq": scene.scene_seq,
-            "title": scene_title(scene),
+            # 没起题名的场拿场目标当题名；旧物化补的本章样板目标不算（S2 1）
+            "title": _scene_title(scene, chapter),
             "kind": kind,
             "state": str(scene.state or "todo"),
             "brief": {key: str(brief_json.get(key) or "") for key in keys},
@@ -229,7 +230,7 @@ class ChapterPlanningContextBuilder:
             last_scene = self._catalog.scene_rows(prev_row.chapter_id)[-1:]
             if last_scene:
                 prev_payload["last_scene"] = {
-                    "title": scene_title(last_scene[0]),
+                    "title": _scene_title(last_scene[0], prev_row),
                     "exit_change": str(last_scene[0].exit_change or ""),
                     "hook": str(last_scene[0].hook or ""),
                 }
@@ -242,7 +243,7 @@ class ChapterPlanningContextBuilder:
                 brief = dict(first_scene[0].writer_brief_json or {})
                 opening_key = SCENE_BRIEF_GCS[0] if kind == "proactive" else SCENE_BRIEF_RDD[0]
                 next_payload["first_scene"] = {
-                    "title": scene_title(first_scene[0]),
+                    "title": _scene_title(first_scene[0], next_row),
                     "kind": kind,
                     "first_beat": str(brief.get(opening_key) or ""),
                 }
@@ -392,6 +393,11 @@ class ChapterPlanningContextBuilder:
             "must_not": normalize_story_slot(chapter.must_not),
             "notes": str(drama.get("notes") or ""),
         }
+
+
+def _scene_title(scene: SceneCard, chapter: ChapterGoal) -> str:
+    """规划提示里的场景题名：起过的题名，否则场目标——旧物化补的本章样板目标「推进本章：<章名>」不算（S2 1）。"""
+    return scene_title(scene, goal=planned_chapter_goal(scene.scene_goal, chapter))
 
 
 def _truncate_value(value: Any, budget: int) -> Any:

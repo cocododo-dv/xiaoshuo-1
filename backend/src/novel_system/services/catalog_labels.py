@@ -103,23 +103,28 @@ def chapter_title(chapter: ChapterGoal) -> str:
     return (goal.splitlines()[0][:24] if goal else "") or chapter.chapter_id
 
 
-def scene_title(scene: SceneCard) -> str:
+def scene_title(scene: SceneCard, *, goal: str | None = None) -> str:
+    """场景题名：起过的题名；没有就是场目标；都没有就是场景 id。
+
+    ``goal``：调用方按「没规划」口径读过的场目标（``story_slots.planned_chapter_goal``——旧物化给没写摘要的场补的
+    「推进本章：<章名>」不算），代替场景卡上的原值；缺省读原值（本模块是叶子，不认章名）。"""
     brief = dict(scene.writer_brief_json or {})
     if str(brief.get("title") or "").strip():
         return str(brief["title"]).strip()
-    return str(scene.scene_goal or "").strip() or scene.scene_id
+    return str((scene.scene_goal if goal is None else goal) or "").strip() or scene.scene_id
 
 
-def scene_display_title(scene: SceneCard) -> str:
+def scene_display_title(scene: SceneCard, *, goal: str | None = None) -> str:
     """目录载荷里的场景题名：作者 / 构思起的题名原样用；没有题名时从摘要里取一个短题。
 
     雪花场景卡的 ``scene_goal`` 是 09 的整句摘要（六七十字）——拿它当题名，大纲、队列、命令面板
     每一行都是一整段话。整句另以 ``summary`` 给出，:func:`scene_title` 的口径（规划上下文、回收站）不变。
+    ``goal`` 同 :func:`scene_title`。
     """
     brief = dict(scene.writer_brief_json or {})
     if str(brief.get("title") or "").strip():
         return str(brief["title"]).strip()
-    return short_scene_title(scene.scene_goal) or scene.scene_id
+    return short_scene_title(scene.scene_goal if goal is None else goal) or scene.scene_id
 
 
 def focus_scene_payload(scenes: list[dict[str, Any]]) -> dict[str, Any] | None:

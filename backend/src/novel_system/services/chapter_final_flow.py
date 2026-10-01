@@ -45,6 +45,7 @@ from novel_system.services.run_job_leases import (
     unmark_dispatched,
 )
 from novel_system.services.scene_lookup import require_project
+from novel_system.services.story_slots import planned_chapter_goal
 from novel_system.settings import get_settings
 
 
@@ -400,10 +401,11 @@ class ProjectChapterFlowService:
             if body_hash
             else None
         )
-        scene_reviews = self._scene_reviews(chapter.chapter_id)
+        scene_reviews = self._scene_reviews(chapter)
         return {
             "chapter_id": chapter.chapter_id,
-            "chapter_goal": chapter.chapter_goal,
+            # 没规划（空串、旧物化补的「推进本章：<章名>」）就是空串（S2 1）
+            "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
             "body": body,
             "body_hash": body_hash,
             "read_confirmation": read_confirmation,
@@ -502,7 +504,8 @@ class ProjectChapterFlowService:
             }
         return None
 
-    def _scene_reviews(self, chapter_id: str) -> list[dict[str, Any]]:
+    def _scene_reviews(self, chapter: ChapterGoal) -> list[dict[str, Any]]:
+        chapter_id = chapter.chapter_id
         scenes = (
             self.session.execute(
                 select(SceneCard)
@@ -528,7 +531,8 @@ class ProjectChapterFlowService:
                 {
                     "scene_id": scene.scene_id,
                     "scene_seq": scene.scene_seq,
-                    "title": scene.scene_goal or scene.hook or scene.scene_id,
+                    # 旧物化给没写摘要的场补的本章样板目标不当题名（S2 1）
+                    "title": planned_chapter_goal(scene.scene_goal, chapter) or scene.hook or scene.scene_id,
                     "body_excerpt": excerpt[:240],
                     "char_count": len(body or ""),
                     "missing": not bool(body),

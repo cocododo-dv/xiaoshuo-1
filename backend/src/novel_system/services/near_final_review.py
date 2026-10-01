@@ -50,6 +50,7 @@ from novel_system.services.near_final_payload import (
 from novel_system.services.planning_queries import current_final_scenes
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import active_chapter_scenes, require_chapter, require_scene
+from novel_system.services.story_slots import planned_chapter_goal
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
@@ -499,7 +500,8 @@ class NearFinalAcceptanceService:
                 {"slot": "chapter_summary", "ref_id": source.get("source_text_ref"), "digest_key": "chapter_summary"},
             ],
             "inline_digests": {
-                "chapter_goal": chapter.chapter_goal or "",
+                # 章目标只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
+                "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
                 "chapter_writer_brief": json.dumps(
                     normalize_chapter_writer_brief(chapter.writer_brief_json),
                     ensure_ascii=False,

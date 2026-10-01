@@ -28,6 +28,7 @@ from novel_system.services.scene_rehome import rehome_scenes
 from novel_system.services.snowflake_scene_brief import followed_scene_title, real_scene_title, scene_card_beats
 from novel_system.services.snowflake_scene_rows import scene_plan_payload
 from novel_system.services.snowflake_step_catalog import SUMMARY_LENGTH_BAND, effective_rendering_mode
+from novel_system.services.story_slots import planned_beats, without_retired_chapter_goal
 
 #: 一条 ``IN`` 查询最多带多少个 id（远低于 SQLite 的变量上限）
 _IN_CHUNK = 500
@@ -48,7 +49,12 @@ class SnowflakeCatalogResyncMixin:
             scene = cards.get(plan.scene_id)
             if scene is None:
                 continue  # 还没物化的场：进目录走「整理为章节结构」
-            patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
+            patch = self._scene_card_resync_patch(
+                plan,
+                scene,
+                excluded=plan.scene_plan_id in excluded,
+                leaving=self._chapter_left_behind(project_id, plan, scene),
+            )
             diff = self._scene_card_diff(scene, patch)
             if scene.scene_id in order_drift:
                 diff["scene_order"] = order_drift[scene.scene_id]
@@ -164,7 +170,12 @@ class SnowflakeCatalogResyncMixin:
             if scene is None:
                 prepared.append((plan, None, {}, None))
                 continue
-            scene_patch = self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
+            scene_patch = self._scene_card_resync_patch(
+                plan,
+                scene,
+                excluded=plan.scene_plan_id in excluded,
+                leaving=self._chapter_left_behind(project.project_id, plan, scene),
+            )
             blocked_move = self._unmaterialized_chapter_move(project.project_id, scene, scene_patch)
             if blocked_move:
                 # 搬不动就别搬：``SceneCard.chapter_id`` 是指向 chapter_goals 的外键，
@@ -421,6 +432,16 @@ class SnowflakeCatalogResyncMixin:
             "reason": "chapter_not_in_catalog",
         }
 
+    def _chapter_left_behind(self, project_id: str, plan: SnowflakeScenePlan, scene: SceneCard) -> ChapterGoal | None:
+        """回流会把这张卡搬进别的章（目录里已经有那一章）时，它离开的那一章；不搬、或搬不动（目标章还没物化，
+        见 :meth:`_unmaterialized_chapter_move`）返回 None。回流、待同步清单与确认即同步按同一个判定算补丁。"""
+        target = str(plan.chapter_id or "").strip()
+        if not target or target == scene.chapter_id:
+            return None
+        if self._unmaterialized_chapter_move(project_id, scene, {"chapter_id": target}) is not None:
+            return None
+        return self.session.get(ChapterGoal, scene.chapter_id)
+
     def _resync_status(
         self,
         project_id: str,
@@ -437,9 +458,13 @@ class SnowflakeCatalogResyncMixin:
             scene = cards.get(plan.scene_id)
             if scene is None:
                 continue
-            diff = self._scene_card_diff(
-                scene, self._scene_card_resync_patch(plan, scene, excluded=plan.scene_plan_id in excluded)
+            patch = self._scene_card_resync_patch(
+                plan,
+                scene,
+                excluded=plan.scene_plan_id in excluded,
+                leaving=self._chapter_left_behind(project_id, plan, scene),
             )
+            diff = self._scene_card_diff(scene, patch)
             if scene.scene_id in order_drift:
                 diff["scene_order"] = order_drift[scene.scene_id]
             if not diff:
@@ -489,7 +514,14 @@ class SnowflakeCatalogResyncMixin:
                 card.is_chapter_last = 1 if card is last else 0
 
     @staticmethod
-    def _scene_card_resync_patch(plan: SnowflakeScenePlan, scene: SceneCard, *, excluded: bool = False) -> dict[str, Any]:
+    def _scene_card_resync_patch(
+        plan: SnowflakeScenePlan,
+        scene: SceneCard,
+        *,
+        excluded: bool = False,
+        leaving: ChapterGoal | None = None,
+    ) -> dict[str, Any]:
+        """``leaving``：这张卡要搬出去的那一章（:meth:`_chapter_left_behind`），不搬时为 None。"""
         # 阶段 C：呈现方式与篇幅带同物化一个口径——summary 场回流也拿数值带。
         rendering_mode = effective_rendering_mode(plan.scene_type, plan.rendering_mode)
         # 阶段 N：作者裁定该重写 / 待删的场与「略过」同路——卡进回收站，改回裁定时取回。
@@ -541,10 +573,15 @@ class SnowflakeCatalogResyncMixin:
             trash_patch["trashed_flag"] = 1
         elif int(scene.trashed_flag or 0) and bool((scene.writer_brief_json or {}).get("skipped_by_plan")):
             trash_patch["trashed_flag"] = 0
+        # 规划行没有目标 / 节拍可给时沿用卡上的旧值。旧物化给没写摘要的场补的「推进本章：<章名>」只按所在章的
+        # 名字认（story_slots）：卡搬去别的章之后就认不出来、又被当成作者写的目标——搬走时先去掉（S2 1）。
+        # 不搬的卡原样沿用：那句话照旧认得出来，也不因此多报一场「待同步」。
+        stored_goal = scene.scene_goal if leaving is None else without_retired_chapter_goal(scene.scene_goal, leaving)
+        stored_beats = list(scene.beats_json or []) if leaving is None else planned_beats(scene.beats_json, leaving)
         return {
             **trash_patch,
-            "scene_goal": plan.summary or plan.goal or scene.scene_goal,
-            "beats_json": beats or list(scene.beats_json or []),
+            "scene_goal": plan.summary or plan.goal or stored_goal,
+            "beats_json": beats or stored_beats,
             "must_include_text": plan.must_include_text or scene.must_include_text,
             "exit_change": plan.exit_change or plan.setback or plan.decision or scene.exit_change,
             "hook": plan.hook or scene.hook,

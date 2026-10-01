@@ -51,6 +51,7 @@ from novel_system.services.character_continuity import (
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.scene_sections import attach_scene_sections
+from novel_system.services.story_slots import planned_chapter_goal
 from novel_system.services.style_reference.budget_config import injection_budget
 from novel_system.services.style_reference.inject.bindings import (
     ordered_character_ids,
@@ -226,8 +227,11 @@ class BundleBuilder:
             # 来源画像必须进入冻结 bundle 的版本引用：归档/回放时据此加载动态
             # protected_terms / scene_bridges，不能只在 prompt 注入侧短暂可见。
             sections.ref("reference_profile_ids", reference_profile_ids)
-        sections.add("chapter_goal", ref_id=chapter.chapter_id, text=chapter.chapter_goal)
-        sections.add("scene_card", ref_id=scene.scene_id, text=scene_card_digest(scene))
+        # 章目标 / 场目标只印作者规划过的：没规划（空串，或旧物化补的「推进本章：<章名>」）就没有这一行（S2 1）
+        sections.add(
+            "chapter_goal", ref_id=chapter.chapter_id, text=planned_chapter_goal(chapter.chapter_goal, chapter)
+        )
+        sections.add("scene_card", ref_id=scene.scene_id, text=scene_card_digest(scene, chapter))
         # 2026-09-13 阶段 A：雪花 / 章节编排写下的场景结构（形态、坩埚、三拍、代价）直读
         # 原始键进入 bundle，作为与 scene_card 同级的事实 section。此前它只经 v2 简报的
         # 归一化通道到达写作，而那条通道会把这些键全部丢掉——起草模型从未见过作者的三拍。

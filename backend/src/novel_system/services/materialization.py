@@ -33,11 +33,11 @@ from novel_system.services.project_payloads import optional_text, outline_plan_p
 from novel_system.services.project_status import (
     PLAN_STATUS_APPROVED,
     PROJECT_STATUS_CHAPTER_READY,
-    REFERENCE_SAFETY_RULES,
 )
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_rehome import rehome_scenes
+from novel_system.services.story_slots import forget_retired_chapter_goal
 
 
 def planned_scene_id(chapter_id: str, index: int, scene_plan: dict[str, Any]) -> str:
@@ -319,7 +319,6 @@ class _MaterializationRun:
         plan_json = plan.plan_json or {}
         self.chapters: list[dict[str, Any]] = list(plan_json.get("chapters") or [])
         self.source = plan_json.get("source") or "project_outline_plan"
-        self.reference_safety = list(plan_json.get("reference_safety") or REFERENCE_SAFETY_RULES)
         self.target_chapter_ids = {str(item.get("chapter_id") or "").strip() for item in self.chapters}
         self.created_chapter_count = 0
         self.created_scene_count = 0
@@ -344,7 +343,22 @@ class _MaterializationRun:
         return self._finish(placement)
 
     def _prepare(self) -> None:
-        """落位之前：移走手建的空白占位章，取回随旧章一起进了回收站的计划内场景卡。"""
+        """落位之前：清掉旧物化补的样板目标，移走手建的空白占位章，取回随旧章一起进了回收站的计划内场景卡。"""
+        # 旧物化给没规划的章 / 场补的「推进本章：<章名>」只按「所在章现在的名字」认（story_slots）。这一次落位会给章
+        # 改名、把计划外的卡跟着锚点搬去别的章，之后就认不出来了；计划内的卡下面整张重写，计划外的卡（略过 / 待删的场）
+        # 不会——趁每一行还在它点名的那一章里，先把全作品的这句话清掉：确认写入之后不再留一句（S2 1）。
+        chapters = self.session.execute(
+            select(ChapterGoal).where(ChapterGoal.project_id == self.project.project_id)
+        ).scalars().all()
+        cards_by_chapter: dict[str, list[SceneCard]] = {}
+        for card in self.session.execute(
+            select(SceneCard)
+            .join(ChapterGoal, SceneCard.chapter_id == ChapterGoal.chapter_id)
+            .where(ChapterGoal.project_id == self.project.project_id)
+        ).scalars():
+            cards_by_chapter.setdefault(str(card.chapter_id), []).append(card)
+        for chapter in chapters:
+            forget_retired_chapter_goal(chapter, cards_by_chapter.get(chapter.chapter_id, ()))
         # 阶段 X：雪花的章进目录之前，先把手建的空白占位章（「第 1 章 / 开场」，一个字没写）移入回收站——
         # 必须在落位之前：章序（settle_chapter_order）是按那一刻还活跃的章排的，占位章留着就会排在雪花的章前面。
         # 只对雪花计划做；作者写过东西的章不动。
@@ -411,11 +425,9 @@ class _MaterializationRun:
         chapter.outline_plan_id = plan.plan_id
         chapter.planned_scene_count = len(chapter_plan.get("scenes") or [])
         chapter.mid_aggregate_enabled = 0
-        chapter.chapter_goal = str(
-            chapter_plan.get("chapter_goal")
-            or chapter_plan.get("title")
-            or chapter_id
-        )
+        # 计划里没有章目标就存空串（列是 NOT NULL）：不拿章名 / 章 id 冒充章目标——起草提示会把它当作者定的目标印出来，
+        # 章节编排会把它当章目标给作者看（S2 1）。读的地方把空当「没规划」。
+        chapter.chapter_goal = str(chapter_plan.get("chapter_goal") or "")
         # 目录侧读章名的首选字段是 narrative_json["title"]（catalog_labels.chapter_title）。
         # 雪花物化以前不写它，于是作者在 07 里起的章名到不了目录，用户看到的是章 id
         # 字符串。这里补上 —— 但**只在新建章时播种**：narrative_json / display_order
@@ -452,12 +464,13 @@ class _MaterializationRun:
         chapter.ending_effect = optional_text(chapter_plan.get("ending_effect"))
         chapter.must_not = optional_text(chapter_plan.get("must_not"))
         chapter.notes = optional_text(chapter_plan.get("notes"))
+        # 简报里不再抄那份固定的「参考书安全规则」清单（S2 2）：没有人写过，也没有哪一处读它；旧行上的清单原样留着，
+        # 下一次确认写入整张换掉简报时随之消失。
         chapter.writer_brief_json = {
             "source": self.source,
             "project_id": project.project_id,
             "outline_plan_id": plan.plan_id,
             "chapter_title": chapter_plan.get("title"),
-            "reference_safety": list(self.reference_safety),
             **dict(chapter_plan.get("writer_brief_json") or {}),
         }
         # ChapterState/SceneCard both carry immediate SQLite FKs to this row.
@@ -507,9 +520,10 @@ class _MaterializationRun:
         scene.scene_goal = str(
             scene_plan.get("scene_goal") or chapter.chapter_goal
         )
-        scene.beats_json = string_list(scene_plan.get("beats_json")) or [
-            scene.scene_goal
-        ]
+        # 没有节拍就拿场目标当唯一一拍；场目标也没规划（空串）就没有节拍——不写一个空拍
+        scene.beats_json = string_list(scene_plan.get("beats_json")) or (
+            [scene.scene_goal] if scene.scene_goal.strip() else []
+        )
         scene.must_include_text = optional_text(
             scene_plan.get("must_include_text")
         )
@@ -530,7 +544,6 @@ class _MaterializationRun:
             "source": self.source,
             "project_id": project.project_id,
             "outline_plan_id": plan.plan_id,
-            "reference_safety": list(self.reference_safety),
             **dict(scene_plan.get("writer_brief_json") or {}),
         }
         # 阶段 X：作者在台子上给这一场改过的题名（≠ 上次物化播下去的）跨重新物化保留；

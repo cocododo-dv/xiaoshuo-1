@@ -34,6 +34,7 @@ from novel_system.services.chapter_structure_ownership import (
 from novel_system.services.chapter_title_sync import is_auto_chapter_title
 from novel_system.services.scene_design_ownership import design_owned_by_plan, is_snowflake_origin, live_plan_scene_ids
 from novel_system.services.scene_lookup import active_chapter_scenes, require_project
+from novel_system.services.story_slots import planned_chapter_goal
 
 
 class CatalogReader:
@@ -137,8 +138,9 @@ class CatalogReader:
             story_checks = self.story_checks([s.scene_id for s in scenes])
         title = chapter_title(chapter)
         origin = "snowflake" if is_snowflake_origin(brief) else "manual"
-        goal = str(chapter.chapter_goal or "").strip()
-        summary = str(chapter.main_plot_push or "").strip()
+        # 没规划（空串、旧物化补的「推进本章：<章名>」）就是空：章节编排显示平常的空状态（S2 1）
+        goal = planned_chapter_goal(chapter.chapter_goal, chapter).strip()
+        summary = planned_chapter_goal(chapter.main_plot_push, chapter).strip()
         return {
             "chapter_id": chapter.chapter_id,
             "slug": slug,
@@ -163,6 +165,7 @@ class CatalogReader:
                     chapter_slug=slug,
                     story_check=story_checks.get(scene.scene_id),
                     context=context,
+                    chapter=chapter,
                 )
                 for scene in scenes
             ],
@@ -234,12 +237,15 @@ class CatalogReader:
         chapter_slug: str,
         story_check: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
+        chapter: ChapterGoal | None = None,
     ) -> dict[str, Any]:
         kind = scene_kind(scene)
         brief_json = dict(scene.writer_brief_json or {})
         keys = SCENE_BRIEF_GCS if kind == "proactive" else SCENE_BRIEF_RDD
         names = (context or {}).get("character_names")
         pov_id = str(scene.pov_character_id or "")
+        # 场目标（整句摘要）只给作者规划过的：旧物化给没写摘要的场补的本章样板目标不算（按 ``chapter`` 的章名认）
+        goal = planned_chapter_goal(scene.scene_goal, chapter)
         return {
             "scene_id": scene.scene_id,
             "chapter_id": scene.chapter_id,
@@ -247,8 +253,8 @@ class CatalogReader:
             "slug": scene.scene_id,
             "legacy_slug": f"{chapter_slug}s{scene.scene_seq}",
             "seq": scene.scene_seq,
-            "title": scene_display_title(scene),
-            "summary": str(scene.scene_goal or "").strip(),
+            "title": scene_display_title(scene, goal=goal),
+            "summary": goal.strip(),
             "kind": kind,
             "state": str(scene.state or "todo"),
             "words": int(scene.words_current or 0),
@@ -351,4 +357,5 @@ class CatalogReader:
             scene,
             chapter_slug=f"ch{index + 1:02d}",
             story_check=self.story_checks([scene.scene_id]).get(scene.scene_id),
+            chapter=chapter,
         )
