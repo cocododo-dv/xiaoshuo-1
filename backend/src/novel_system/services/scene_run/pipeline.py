@@ -22,6 +22,7 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services import scene_budget
+from novel_system.services.candidate_selection import SCORES_WITHHELD_STYLE_FIRST
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
 from novel_system.services.literary_quality import adversarial_rank_score
@@ -465,7 +466,9 @@ class PipelineMixin:
         ctx.style_generation = style_generation
         # 标准场景：机器下限 + 受约束风格信号继续管线；关键场景在下一阶段暂停终选。
         # 从 checkpoint 恢复时也重建同一摘要，避免审计信息因一次进程中断消失。
-        ctx.candidate_summaries = self._candidate_summaries(candidates)
+        ctx.candidate_summaries = self._candidate_summaries(
+            candidates, house_taste_withheld=style_policy_for_bundle(bundle).defers_house_taste()
+        )
         if style_ready:
             return
         style_candidate_rankings = [
@@ -568,31 +571,43 @@ class PipelineMixin:
     @staticmethod
     def _candidate_summaries(
         candidates: list[StyleGenerationResult],
+        *,
+        house_taste_withheld: bool = False,
     ) -> list[dict[str, Any]]:
-        """运行结果的 ``style_candidates``：每份候选的排名、分数与排序审计（第一份是选中的）。"""
+        """运行结果的 ``style_candidates``：每份候选的排名、分数与排序审计（第一份是选中的）。
+
+        作者手笔直起的场景（``house_taste_withheld``：策略让位给参考）不附房风分 ``adversarial_score``、也不为它现算
+        ——像不像以参考作者为准，只给读数，并标 ``scores_withheld``（与终选视图 ``candidate_selection`` 同一条，重评 R2
+        复核补充 5）；排序审计里存着的 ``quality_score`` 是检查点产品，原样留着。其余场景照旧给分：审计里存着就用
+        存着的，没存（只一份候选的运行）才现算。
+        """
         summaries: list[dict[str, Any]] = []
         for idx, cand in enumerate(candidates):
             ranking: RankingAudit = cand.ranking_audit or {}
-            cand_score = ranking.get("quality_score")
-            if not isinstance(cand_score, (int, float)):
-                cand_score = adversarial_rank_score(cand.content)
             rerank_audit = (
                 ranking.get("rerank") if isinstance(ranking.get("rerank"), dict) else {}
             )
-            summary = {
-                "row_id": cand.row_id,
-                "rank": idx,
-                "adversarial_score": round(cand_score, 3),
-                "style_score": ranking.get("style_score"),
-                "style_confidence": ranking.get("style_confidence"),
-                "style_rerank_mode": rerank_audit.get("applied_mode"),
-                "plagiarism_passed": ranking.get("plagiarism_passed"),
-                "selection_reason": ranking.get(
-                    "selection_reason", "quality_order"
-                ),
-                "content_preview": (cand.content or "")[:300],
-                "selected": idx == 0,
-            }
+            summary: dict[str, Any] = {"row_id": cand.row_id, "rank": idx}
+            if house_taste_withheld:
+                summary["scores_withheld"] = SCORES_WITHHELD_STYLE_FIRST
+            else:
+                cand_score = ranking.get("quality_score")
+                if not isinstance(cand_score, (int, float)):
+                    cand_score = adversarial_rank_score(cand.content)
+                summary["adversarial_score"] = round(cand_score, 3)
+            summary.update(
+                {
+                    "style_score": ranking.get("style_score"),
+                    "style_confidence": ranking.get("style_confidence"),
+                    "style_rerank_mode": rerank_audit.get("applied_mode"),
+                    "plagiarism_passed": ranking.get("plagiarism_passed"),
+                    "selection_reason": ranking.get(
+                        "selection_reason", "quality_order"
+                    ),
+                    "content_preview": (cand.content or "")[:300],
+                    "selected": idx == 0,
+                }
+            )
             if "fidelity_distance" in ranking:
                 # 风格参考 v3（P5b）：作者手笔直起时候选按读数排序（distance 越小越像）
                 summary["fidelity_distance"] = ranking.get("fidelity_distance")

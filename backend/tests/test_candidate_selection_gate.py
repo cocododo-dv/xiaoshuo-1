@@ -493,6 +493,67 @@ def test_style_first_candidates_never_carry_the_house_taste_score(client, sessio
     assert set(blinded) <= {draft.row_id for draft in drafts}
 
 
+def test_style_first_run_result_candidate_summaries_carry_no_house_taste_score(session, monkeypatch) -> None:
+    """重评 R2 复核补充 5 的第三处——运行结果里的候选摘要（``style_candidates``）：作者手笔直起的场景只给像不像
+    读数，不附房风分，也不为它现算（两个终选视图 P09b 已经收了，这一处在 scene_run 里；I7 合并胶水 G4）。
+    排序审计里存着的 quality_score 是检查点产品的一部分，原样留着。"""
+    from novel_system.services.scene_run import pipeline as pipeline_module
+
+    def _no_house_taste_score(*_args, **_kwargs):
+        raise AssertionError("作者手笔直起的候选摘要不该为房风分现算")
+
+    monkeypatch.setattr(pipeline_module, "adversarial_rank_score", _no_house_taste_score)
+    _seed_scene(session, constraint_intensity=0.5)  # standard：两份候选，不停下终选，一路归档
+    result = _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
+    session.commit()
+
+    assert result["scene_status"] == "archived"
+    summaries = result["style_candidates"]
+    assert len(summaries) == 2
+    assert not [summary for summary in summaries if "adversarial_score" in summary]
+    assert {summary["scores_withheld"] for summary in summaries} == {"style_first"}
+    assert all(summary["fidelity_distance"] is not None for summary in summaries)
+    assert [summary["selected"] for summary in summaries] == [True, False]
+    # 存进检查点的排序审计不变：仍带 quality_score
+    rankings = session.get(SceneRunState, SCENE_ID).run_checkpoint_json["artifact_refs"]["style_candidate_rankings"]
+    assert len(rankings) == 2 and all(isinstance(ranking.get("quality_score"), float) for ranking in rankings)
+
+
+def test_candidate_summaries_elsewhere_keep_the_house_taste_score_and_reuse_a_stored_one(monkeypatch) -> None:
+    """不是作者手笔直起的场景照旧给 adversarial_score：排序审计里存着分就用存着的、不再现算；只有没存分的（一份
+    候选的运行）才现算。"""
+    from novel_system.services.scene_generation import StyleGenerationResult
+    from novel_system.services.scene_run import pipeline as pipeline_module
+    from novel_system.services.scene_run.pipeline import PipelineMixin
+
+    scored: list[str] = []
+
+    def _score(text: str) -> float:
+        scored.append(text)
+        return 0.4567
+
+    monkeypatch.setattr(pipeline_module, "adversarial_rank_score", _score)
+
+    def _candidate(row_id: str, content: str, ranking: dict | None) -> StyleGenerationResult:
+        return StyleGenerationResult(
+            row_id=row_id,
+            content=content,
+            llm_call_id=f"call_{row_id}",
+            bundle_id="bundle_w3",
+            bundle_hash="hash_w3",
+            ranking_audit=ranking,
+        )
+
+    stored = _candidate("cand_stored", "排过序的一份。", {"quality_score": 0.81234, "selection_reason": "quality_order"})
+    unscored = _candidate("cand_single", "只有一份候选的运行。", None)
+    summaries = PipelineMixin._candidate_summaries([stored, unscored])
+
+    assert [summary["adversarial_score"] for summary in summaries] == [0.812, 0.457]
+    assert scored == ["只有一份候选的运行。"], "存着分的那一份不再现算"
+    assert not [summary for summary in summaries if "scores_withheld" in summary]
+    assert list(summaries[0])[:3] == ["row_id", "rank", "adversarial_score"]
+
+
 def test_candidate_views_carry_no_dispersion_reading(client, session) -> None:
     """重评 R2：候选离散度不再写（补写那一套随先中性后润色删了），两个 GET 都不再带它的读数。"""
     _seed_scene(session)
