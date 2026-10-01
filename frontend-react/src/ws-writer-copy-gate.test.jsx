@@ -206,7 +206,7 @@ describe("写作台 · 选区改写", () => {
     expect(alert.mock.calls[0][0]).toBe("刚替换进正文的那句改写：第 1–12 字与参考书原文连续相同。把这几处改成你自己的说法——这次替换没有记成采纳，定稿时同样会被拦下。");
     expect(editor.textContent).toContain("改写出来的一句");
 
-    // 不是抄袭门的失败（断网）：只影响偏好学习，不弹提示
+    // 不是抄袭门的失败（断网）：只是这一次候选的去留没记上，不弹提示
     const { wrDecidePatch } = await import("./ws-writer-requests.js");
     accept = () => Promise.reject(Object.assign(new Error("down"), { code: "NETWORK_ERROR" }));
     await wrDecidePatch({ patchId: "p1", options: [{ option_id: "o1" }] }, 0, true);
