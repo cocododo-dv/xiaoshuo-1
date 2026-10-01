@@ -222,13 +222,16 @@ export function useDocBinding({ activeScene, editorRef, counter, decorate, after
     };
     /* 读缓存换成了别的版本：作者正在写的就是这份底稿（文字一样）时接着写，下一次保存带新的修订号；否则换稿。
        force（服务端拒绝了本机的字 / 章已锁定 / 采纳时还有没存上的字）：接着写也存不上——照样换，正在写的那几句先留。
-       换上的正文还在等保存（恢复稿）或没存上时，状态照 WrDocs 的说；章已锁定换回的是终稿正文（「终稿已锁定」） */
+       换上的正文还在等保存（恢复稿）或没存上时，状态照 WrDocs 的说；章已锁定换回的是终稿正文（「终稿已锁定」）。
+       章一直锁着、换稿之后后台又读到别处存上的更新版本（不是 locked 的那一次换稿）：状态仍是「终稿已锁定」——
+       这一场什么都不会再存，不改说「草稿已保存」（与 onState 同一条规则，复核 I3-6） */
     const onLoaded = (detail) => {
       const typing = editVersionRef.current !== handedRef.current;
       if (!detail.force && typing && sameManuscriptText(detail.html, baseRef.current)) return;
       replaceEditor(detail.html, detail.reason || "server");
-      if (detail.reason === "locked") setSaved("locked");
-      else setSaved(detail.force ? "loaded" : saveStatusOf(detail, typing ? "loaded" : "saved"));
+      if (detail.reason === "locked") { setSaved("locked"); return; }
+      const next = detail.force ? "loaded" : saveStatusOf(detail, typing ? "loaded" : "saved");
+      setSaved((prev) => (prev === "locked" && wrSceneIsApproved(sid) ? prev : next));
     };
     const onResolved = (detail) => {
       replaceEditor(detail.html, detail.reason || "conflict");

@@ -2585,3 +2585,62 @@ describe("复核七 · 采纳还在回包时回到写作台、立刻动笔；后
     expect(r.editor().textContent).toBe(ADOPTED_TEXT);
   }, LONG);
 });
+
+/* ==========================================================
+   复核 I3-6：章一直锁着，换回已存上的正文之后、后台读到另一台设备存上的更新版本——
+   编辑器换成那一版，状态仍是「终稿已锁定」（不改说「草稿已保存」：这一场什么都不会再存）。
+   两种走法：这一页有一稿回包丢了（V1），或只是敲了还没到自动保存的几句（V2）。服务端同复核三（casServer3）。
+   ========================================================== */
+describe("复核 I3-6 · 章一直锁着，换稿之后又读到另一台设备的更新版本：状态停在「终稿已锁定」", () => {
+  const OTHER = "<p>起点正文，另一台设备接着写的几句</p>";
+
+  it("V1 这一页有一稿回包丢了：编辑器最后是另一台设备的那一版，状态「终稿已锁定」，本机那一稿在同步与恢复", async () => {
+    const chap = twoScenes();
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    srv.hooks.patch = () => { srv.hooks.patch = null; return Promise.reject(offline()); };   // 这一稿发出去，回包丢了
+    await r.type("<p>起点正文，这一页写的一句</p>");
+    await vi.waitFor(() => expect(ctx.WrDocs.state("ch01s1").lastSaveError).toBeTruthy(), T);
+    srv.drafts.s1.revision = 5;                                                // 另一台设备接着存了几版，又批准了本章
+    srv.drafts.s1.content = OTHER;
+    srv.locked = true;
+    chap.state = "approved";
+    await act(async () => { await window.WsCatalog.refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    await openScene("ch01s2");                                                  // 离开再回来：停着的那一稿换稿前先读一次服务端
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("第二场"), T);
+    await openScene("ch01s1");
+    await vi.waitFor(() => expect(r.editor().textContent).toBe("起点正文，另一台设备接着写的几句"), T);
+    await wait(300);
+    expect(r.status()).toBe("终稿已锁定");
+    expect(r.recoveryHas("这一页写的一句")).toBe(true);
+    expect(host.querySelector(".wr-final-lock")).not.toBeNull();
+    expect(srv.drafts.s1).toMatchObject({ revision: 5, content: OTHER });
+  }, LONG);
+
+  it("V2 只是敲了还没存的几句：锁定后那几句进同步与恢复，读到另一台设备的版本，状态仍是「终稿已锁定」", async () => {
+    const chap = twoScenes();
+    const ctx = await loadWriter({ catalog: [chap] });
+    const srv = casServer3(ctx.client);
+    const { host } = await render(<WriterRoom0 ctx={ctx} />);
+    const r = room(ctx, () => host);
+    await vi.waitFor(() => expect(r.editor().textContent).toContain("起点正文"), T);
+    await r.type("<p>起点正文，还没到自动保存的一句</p>");
+    srv.drafts.s1.revision = 5;
+    srv.drafts.s1.content = OTHER;
+    srv.locked = true;
+    chap.state = "approved";
+    await act(async () => { await window.WsCatalog.refresh(); });
+    await vi.waitFor(() => expect(ctx.WrDocs.locked("ch01s1")).toBe(true), T);
+    await wait(1300);                                                          // 自动保存的计时到了：那一句交给了 WrDocs
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await vi.waitFor(() => expect(r.editor().textContent).toBe("起点正文，另一台设备接着写的几句"), T);
+    await wait(300);
+    expect(r.status()).toBe("终稿已锁定");
+    expect(r.recoveryHas("还没到自动保存的一句")).toBe(true);
+    expect(srv.drafts.s1).toMatchObject({ revision: 5, content: OTHER });
+  }, LONG);
+});
