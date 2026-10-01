@@ -57,11 +57,13 @@ def _generate(client, pid: str, step_key: str, payload: dict | None = None, *, a
     return r.json()["data"]
 
 
-def _approve(client, pid: str, step_key: str):
+def _approve(client, pid: str, step_key: str, *, attempt: int = 1):
+    # 再确认一次同样是新的作者意图，幂等键同样带上第几次：同键同载荷会被幂等层原样重放第一次的回包、等于没批——
+    # 下面两条「再确认不 500」以前就是这样一直绿着，从没真的再确认过
     return client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/{step_key}/approve",
         json={},
-        headers={"X-Idempotency-Key": f"qa3-reappr-approve-{pid}-{step_key}"},
+        headers={"X-Idempotency-Key": f"qa3-reappr-approve-{pid}-{step_key}-{attempt}"},
     )
 
 
@@ -111,8 +113,9 @@ def test_reapprove_upstream_step_after_materialization_does_not_500(client, sess
     #    BUG-1：263-loop 与 _apply_block 各建一遍同一 chapter 的 ChapterState → flush 撞 UNIQUE → 500。
     #    修复（263-loop 后 flush）后应 200。
     _generate(client, pid, "book_brief", attempt=2)
-    resp = _approve(client, pid, "book_brief")
+    resp = _approve(client, pid, "book_brief", attempt=2)
     assert resp.status_code == 200, f"re-approve 上游步在已物化项目上崩溃: {resp.status_code} {resp.text}"
+    assert resp.headers.get("X-Idempotency-Status") != "replayed", "再确认被幂等层重放成了第一次的回包，等于没批"
 
     body = resp.json()
     assert body["ok"] is True
@@ -144,8 +147,9 @@ def test_reapprove_scoped_step_after_materialization_does_not_500(client, sessio
     _drop_chapter_states(session)
 
     _generate(client, pid, "scene_details", attempt=2)
-    resp = _approve(client, pid, "scene_details")
+    resp = _approve(client, pid, "scene_details", attempt=2)
     assert resp.status_code == 200, f"re-approve scene_details 崩溃: {resp.status_code} {resp.text}"
+    assert resp.headers.get("X-Idempotency-Status") != "replayed", "再确认被幂等层重放成了第一次的回包，等于没批"
 
 
 def test_repatch_identical_approved_draft_does_not_revert(client, session):
