@@ -1,8 +1,9 @@
 """API 外壳的 ASGI 中间件（都装在 CORS 里面，回给浏览器的错误信封照常带跨域头与请求编号）。
 
 ``SchemaGateMiddleware``（B12-19，批准 #28）：库结构落后于代码时，``/api/*`` 统一回 503 ``SERVICE_NOT_READY`` 与一句
-中文说明（「数据库结构需要升级：请重启后端」）、``details.reason``；以前是每个接口各自报 ``database operation failed``。
-结构确认跟得上之后这个进程不再查（``api.readiness.schema_gate_error``）。
+中文说明（「数据库结构需要升级：请重启后端」；库比代码新时是「请换回与数据库匹配的代码版本」）、``details.reason``；
+以前是每个接口各自报 ``database operation failed``。结构确认跟得上之后这个进程不再查，进程启动时推迟的启动恢复与
+后台清扫在放行前补跑一次（``api.readiness.schema_gate_error``）。
 
 ``UnhandledErrorMiddleware``（B12-03）：路由抛出的未处理异常以前由 Starlette 最外层的 ``ServerErrorMiddleware``
 接住——它在 CORS 与请求编号中间件之外，500 回到浏览器时既没有 ``Access-Control-Allow-Origin`` 也没有

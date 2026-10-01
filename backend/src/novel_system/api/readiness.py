@@ -7,20 +7,25 @@
 下一次探测就就绪。
 
 失败统一抛 ``DomainError("SERVICE_NOT_READY", 503)``，``details.reason`` ∈ ``database_probe_failed`` /
-``schema_revision_mismatch`` / ``schema_tables_missing`` / ``schema_columns_missing``。
+``schema_revision_mismatch``（库落后于代码）/ ``schema_revision_ahead``（库里记的迁移版本这份代码不认识：库比代码新）/
+``schema_tables_missing`` / ``schema_columns_missing``。
+
+进程启动时库结构跟不上代码，lifespan 把启动恢复与后台清扫推迟到这里（``defer_startup_until_schema_ready``）：原地升级
+之后第一个看到结构跟上了的 ``/api/*`` 请求或 ``/ready`` 探测补跑一次。
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 
 from sqlalchemy import inspect as sqlalchemy_inspect, text
 
 from novel_system.cache_registry import register_cache_reset
 from novel_system.db import models  # noqa: F401 — 把全部表登记进 Base.metadata
 from novel_system.db.base import Base
-from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
+from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION, revision_unknown_to_code
 from novel_system.db.session import engine
 from novel_system.services.errors import DomainError
 
@@ -104,19 +109,23 @@ def _readiness_error(*, log: bool) -> DomainError | None:
     if revisions != (SUPPORTED_DATABASE_REVISION,):
         _remember_structure(database, None)
         current_revision = revisions[0] if len(revisions) == 1 else None
+        # 库里记着这份代码不认识的迁移：库比代码新（代码回退了 / 库来自别的分支）。这时重启也没用——启动脚本的
+        # ``alembic upgrade head`` 找不到那个版本，会直接失败——要换回与库匹配的代码，所以单独报（复核 P09b-R2）
+        ahead = any(revision_unknown_to_code(revision) for revision in revisions)
         if log:
             logger.error(
-                "Readiness schema revision mismatch expected=%s actual=%s",
+                "Readiness schema revision %s expected=%s actual=%s",
+                "ahead of the code" if ahead else "mismatch",
                 SUPPORTED_DATABASE_REVISION,
                 revisions,
             )
         return DomainError(
             "SERVICE_NOT_READY",
-            "database schema revision is not ready",
+            SCHEMA_AHEAD_MESSAGE if ahead else "database schema revision is not ready",
             status_code=503,
             details={
                 "retryable": False,
-                "reason": "schema_revision_mismatch",
+                "reason": "schema_revision_ahead" if ahead else "schema_revision_mismatch",
                 "expected_revision": SUPPORTED_DATABASE_REVISION,
                 "current_revision": current_revision,
             },
@@ -168,24 +177,29 @@ def _readiness_error(*, log: bool) -> DomainError | None:
 
 
 def check_database_ready() -> None:
-    """库就绪就返回；否则抛 ``SERVICE_NOT_READY``（503）。"""
+    """库就绪就返回（进程启动时推迟的启动这时补跑）；否则抛 ``SERVICE_NOT_READY``（503）。"""
 
     error = _readiness_error(log=True)
     if error is not None:
         raise error
+    _run_deferred_startup()
 
 
 # ---------------------------------------------------------------- API 的库结构闸（B12-19，批准 #28）
 # 代码比库新（``--reload`` 在 ``alembic upgrade head`` 之前热加载了新模型）时，以前每个接口都各自报
 # 「database operation failed」。现在 ``/api/*`` 统一回 503 ``SERVICE_NOT_READY``、一句中文说明与 ``details.reason``。
-SCHEMA_NOT_READY_REASONS = frozenset({"schema_revision_mismatch", "schema_tables_missing", "schema_columns_missing"})
+# 反过来库比代码新（代码回退到一个迁移之前）时重启升不了级，说明换成「换回与库匹配的代码」（复核 P09b-R2）。
+SCHEMA_NOT_READY_REASONS = frozenset(
+    {"schema_revision_mismatch", "schema_revision_ahead", "schema_tables_missing", "schema_columns_missing"}
+)
 SCHEMA_UPGRADE_MESSAGE = "数据库结构需要升级：请重启后端（启动脚本会自动升级）"
+SCHEMA_AHEAD_MESSAGE = "数据库结构比这份代码新：请换回与数据库匹配的代码版本（重启不会让数据库降级）"
 
 # 库的 URL：这个进程里已经确认结构跟得上代码，或者这个库根本不归 Alembic 管（没有 alembic_version 表，
 # 例如测试用 create_all 建的库）——之后的请求不再查
 _SCHEMA_GATE_OPEN: set[str] = set()
 _SCHEMA_GATE_LOCK = threading.Lock()
-# 结构落后时每个请求都会查一次（升级之后不用重启就放行）：同一个原因每个进程只记一次日志
+# 结构落后时每个请求都会查一次（原地升级之后不用重启就放行，推迟的启动随之补跑）：同一个原因每个进程只记一次日志
 _SCHEMA_GATE_LOGGED: set[tuple[str, str]] = set()
 
 
@@ -227,6 +241,8 @@ def schema_gate_error() -> DomainError | None:
         return None
     error = _readiness_error(log=False)
     if error is None:
+        # 先补跑推迟的启动、再放行：同时到的请求在 _run_deferred_startup 里等它跑完
+        _run_deferred_startup()
         with _SCHEMA_GATE_LOCK:
             _SCHEMA_GATE_OPEN.add(database)
         return None
@@ -240,17 +256,63 @@ def schema_gate_error() -> DomainError | None:
         logger.error("API schema gate closed: %s details=%s", reason, error.details)
     return DomainError(
         "SERVICE_NOT_READY",
-        SCHEMA_UPGRADE_MESSAGE,
+        SCHEMA_AHEAD_MESSAGE if reason == "schema_revision_ahead" else SCHEMA_UPGRADE_MESSAGE,
         status_code=503,
         details=dict(error.details),
     )
 
 
+# ---------------------------------------------------------------- 推迟的启动（复核 P09b-R1）
+# 进程启动时库结构跟不上代码：lifespan 照样登记作业处理器（不碰库），但不拿旧结构去跑启动恢复与两条后台清扫，把它们
+# 登记在这里。原地 ``alembic upgrade head`` 之后，第一个看到结构跟上了的 ``/api/*`` 请求（``schema_gate_error``）或
+# ``/ready`` 探测（``check_database_ready``）补跑一次，同时到的请求等它跑完——以前闸门放行了，进程却既没有启动恢复、
+# 也没有清扫线程，排队的风格作业没人派发。lifespan 结束时撤销还没跑的那一个。
+_DEFERRED_STARTUP: Callable[[], None] | None = None
+# 补跑期间一直拿着：别的线程（同时到的请求、lifespan 的撤销）在这里等它跑完。可重入：补跑的启动万一在同一个线程里
+# 又走到这里，只会看到已经取走的空位，不会自己等自己
+_DEFERRED_STARTUP_LOCK = threading.RLock()
+
+
+def defer_startup_until_schema_ready(start: Callable[[], None]) -> None:
+    """登记推迟的启动（lifespan 在库结构跟不上代码时调用；同一时间只有一个）。"""
+
+    global _DEFERRED_STARTUP
+    with _DEFERRED_STARTUP_LOCK:
+        _DEFERRED_STARTUP = start
+
+
+def cancel_deferred_startup() -> None:
+    """撤销还没跑的推迟启动；正在补跑的等它跑完再返回（lifespan 随后照常停清扫线程）。"""
+
+    global _DEFERRED_STARTUP
+    with _DEFERRED_STARTUP_LOCK:
+        _DEFERRED_STARTUP = None
+
+
+def _run_deferred_startup() -> None:
+    # 不在锁外先看一眼：取走之后、跑完之前那一段，同时到的请求也得在锁上等（只有闸门放行之前与 /ready 走到这里）
+    global _DEFERRED_STARTUP
+    with _DEFERRED_STARTUP_LOCK:
+        start, _DEFERRED_STARTUP = _DEFERRED_STARTUP, None
+        if start is None:
+            return
+        logger.warning(
+            "database schema caught up with the code: running the deferred startup recovery and background sweepers"
+        )
+        try:
+            start()
+        except Exception:  # noqa: BLE001 — 在请求线程里补跑：失败只记日志，不让这个请求替它报 500
+            logger.exception("deferred startup failed; restart the backend")
+
+
 __all__ = [
+    "SCHEMA_AHEAD_MESSAGE",
     "SCHEMA_NOT_READY_REASONS",
     "SCHEMA_UPGRADE_MESSAGE",
     "SUPPORTED_DATABASE_REVISION",
+    "cancel_deferred_startup",
     "check_database_ready",
+    "defer_startup_until_schema_ready",
     "schema_gate_error",
     "schema_gate_open",
 ]

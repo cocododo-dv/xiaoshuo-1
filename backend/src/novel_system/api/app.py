@@ -15,7 +15,9 @@ from novel_system.api.errors import install_exception_handlers
 from novel_system.api.middleware import SchemaGateMiddleware, UnhandledErrorMiddleware
 from novel_system.api.readiness import (  # noqa: F401 — SUPPORTED_DATABASE_REVISION 仍从这里导出
     SUPPORTED_DATABASE_REVISION,
+    cancel_deferred_startup,
     check_database_ready,
+    defer_startup_until_schema_ready,
     schema_gate_error,
 )
 from novel_system.api.response import error
@@ -49,47 +51,52 @@ from novel_system.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def _lifespan(_app: FastAPI):
-    # 库结构落后于代码（``--reload`` 先于 ``alembic upgrade head`` 加载了新模型）：不拿旧结构去跑启动恢复与后台
-    # 清扫——接口统一回「数据库结构需要升级」（SchemaGateMiddleware），升级后重启就都起来了（B12-19）。
-    schema_problem = schema_gate_error()
-    if schema_problem is not None:
-        logger.error(
-            "database schema is behind the code (%s); startup recovery and background sweepers are not started "
-            "— restart the backend (the launchers run alembic upgrade head)",
-            schema_problem.details.get("reason"),
-        )
-        yield
-        return
+def _start_background_runtime() -> None:
+    """启动恢复 + 两条常驻清扫线程（lifespan 启动时跑；库结构跟不上代码时推迟到结构跟上的那一刻）。"""
+
     # Discovery is synchronous and quick; actual generation remains in the
     # existing background workers.  Every dispatched worker still has to win
     # its durable CAS, so concurrent ASGI worker startups cannot execute the
     # same job twice.
-    from novel_system.services.background_recovery import run_startup_recovery
+    from novel_system.services.background_recovery import run_startup_recovery, start_run_job_sweeper
+    from novel_system.services.style_reference.jobs import start_job_sweeper
 
     run_startup_recovery()
-    # 风格参考 v3 统一作业表:先显式登记三种作业的处理器与维护任务(install_workers);常驻清扫线程启动时
-    # 先清扫一次(心跳过期的 running → queued)并派发全部排队作业,之后每 30 s 一次——重启 /
-    # --reload 留下的作业不需要人工介入。
-    from novel_system.services.style_reference.jobs import (
-        shutdown_job_workers,
-        start_job_sweeper,
-    )
-    from novel_system.services.style_reference.workers import install_workers
+    # 风格参考作业的常驻清扫线程启动时先清扫一次(心跳过期的 running → queued)并派发全部排队作业,之后每 30 s
+    # 一次——重启 / --reload 留下的作业不需要人工介入。
+    start_job_sweeper()
     # 场景 / 章节运行任务：进程还活着时每分钟收拾一次租约过期的孤儿；lifespan 结束时把本进程持有的租约就地
     # 到期，重启后的启动恢复立刻接着跑（B03-01）。
-    from novel_system.services.background_recovery import (
-        shutdown_run_job_workers,
-        start_run_job_sweeper,
-    )
-
-    install_workers()
-    start_job_sweeper()
     start_run_job_sweeper()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    from novel_system.services.background_recovery import shutdown_run_job_workers
+    from novel_system.services.style_reference.jobs import shutdown_job_workers
+    from novel_system.services.style_reference.workers import install_workers
+
+    # 风格参考 v3 统一作业表：先显式登记三种作业的处理器与维护任务。只是登记、不碰库，库结构跟不上代码时也照登——
+    # 不登记的话，原地升级之后派发的作业一律以「no handler」失败（复核 P09b-R1）。
+    install_workers()
+    # 库结构跟不上代码（``--reload`` 先于 ``alembic upgrade head`` 加载了新模型）：不拿旧结构去跑启动恢复与后台
+    # 清扫——接口统一回「数据库结构需要升级」（SchemaGateMiddleware，B12-19）。重启时启动脚本会先升级；原地升级的话，
+    # 结构跟上之后第一个 /api/* 请求或 /ready 探测补跑这一段（api.readiness）。
+    schema_problem = schema_gate_error()
+    if schema_problem is None:
+        _start_background_runtime()
+    else:
+        logger.error(
+            "database schema does not match the code (%s: %s); startup recovery and background sweepers are "
+            "deferred until it does",
+            schema_problem.details.get("reason"),
+            schema_problem.message,
+        )
+        defer_startup_until_schema_ready(_start_background_runtime)
     try:
         yield
     finally:
+        cancel_deferred_startup()
         shutdown_run_job_workers()
         shutdown_job_workers(wait=False)
 
