@@ -17,6 +17,8 @@ import { dramaFieldLabel } from "./labels/catalog.js";
      CHAPTER_PLAN_LLM_NOT_CONFIGURED + details.author_action（作者 2026-09-15「没有模型就不兜底」：
      不再有 200 + source:"fallback" 的规则结果冒充 AI）。这里把 author_action 挂进桶，界面给「去系统配置」；
    · GET plan/gaps —— 待补清单：按空槽列出的，不是 AI 的结果、不需要模型。一键补全碰上没有模型时读它；
+     界面照结构化的 items 画（第几场、中文栏名、构思侧拥有设计的场给「去构思第 10 步补」），旧的一行一条的
+     gaps 只在后端还没给 items 时兜底（留一个版本）；
    · POST plan/apply —— 咨询补丁经作者确认后的原子回写；成功后重拉目录收敛
 
    状态按「后端 chapter_id」分桶；所有键都是后端 id（视图层负责
@@ -35,7 +37,7 @@ const CP_EMPTY = Object.freeze({
   candidates: null,          // {items, degraded, llmCallId} | null
   fill: null,                // {patch, notes, gaps, dropped, degraded, llmCallId} | null
   review: null,              // {findings, degraded} | null
-  gaps: null,                // 待补清单 {source: "rules", gaps: [...]} | null（一键补全碰上没有模型时读）
+  gaps: null,                // 待补清单 {source: "rules", gaps: [...], items: [...] | null} | null（一键补全碰上没有模型时读）
   authorAction: null,        // 最近一次「没有可用模型」的 author_action
   applied: null,             // 最近一次 apply 的 {scenes, appended, skipped}
 });
@@ -223,7 +225,12 @@ export const WsAuthorAi = {
     try {
       const data = await apiGet(`${cpBase(pid, chapterId)}/plan/gaps`);
       bucket.fill = null;
-      bucket.gaps = { source: (data && data.source) || "rules", gaps: (data && data.gaps) || [] };
+      bucket.gaps = {
+        source: (data && data.source) || "rules",
+        gaps: (data && data.gaps) || [],
+        /* 结构化的一份：[{scope, scene_id, scene_label, fields: [{key, label}], fill_in}]；旧后端没有它时是 null */
+        items: data && Array.isArray(data.items) ? data.items : null,
+      };
     } catch (e) {
       bucket.gaps = null;
     }

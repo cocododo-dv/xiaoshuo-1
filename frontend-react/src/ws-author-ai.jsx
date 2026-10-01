@@ -197,6 +197,35 @@ function ArrAiBlueprint({ ch, locked, active, draft, setDraft }) {
   );
 }
 
+/* 待补清单（GET plan/gaps，按空槽算的，不是 AI）：照结构化的 items 画——哪一张卡（章节戏剧卡 / 第 N 场 · 题名）、
+   还空着哪几栏（中文栏名）；构思侧拥有设计的场给一扇「去构思第 10 步补」的门（那些场的设计只在构思里改）。
+   旧后端只给一行一条的 gaps 时照旧列出来（留一个版本）。 */
+function ArrAiGaps({ gaps, onEditPlanScene }) {
+  const items = gaps.items;
+  if (items ? !items.length : !gaps.gaps.length) return "戏剧卡与场景卡都没有空着的格子。";
+  return (
+    <>
+      还空着的格子（按空槽列出，不是 AI 的建议）：
+      <ul className="arr-ai-bullets">
+        {items
+          ? items.map((g, i) => (
+            <li key={`${g.scope}:${g.scene_id || i}`} data-testid="arr-ai-gap">
+              {g.scene_label}：{(g.fields || []).map((f) => f.label).join("、")}
+              {g.fill_in === "snowflake_step_10" && g.scene_id && onEditPlanScene ? (
+                <>
+                  {" "}
+                  <button type="button" className="btn btn-quiet btn-sm" data-testid="arr-ai-gap-plan"
+                    onClick={() => onEditPlanScene(g.scene_id)}>去构思第 10 步补 ↗</button>
+                </>
+              ) : null}
+            </li>
+          ))
+          : gaps.gaps.map((g, i) => <li key={i}>{g}</li>)}
+      </ul>
+    </>
+  );
+}
+
 const ARR_AI_TABS = [
   { id: "blueprint", label: "蓝图" },
   { id: "directions", label: "方向" },
@@ -206,7 +235,7 @@ const ARR_AI_TABS = [
 /* ==========================================================
    ArrAiArrange — 「AI 编排」卡（蓝图 / 方向 / 补全）
    ========================================================== */
-function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
+function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel, onEditPlan }) {
   const chapterId = ch && ch.backendId;
   const snap = useAuthorAi(chapterId);
   const [tab, setTab] = useStP("blueprint");
@@ -219,6 +248,10 @@ function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
     const scene = (ch.scenes || []).find((s) => s.backendId === backendSceneId);
     return scene ? scene.title : "已不在本章的场";
   };
+  /* 待补清单里构思侧拥有设计的场：去构思第 10 步那一场补（目录里找得到就给整张卡，找不到给它的后端 id） */
+  const editPlanScene = onEditPlan
+    ? (backendSceneId) => onEditPlan((ch.scenes || []).find((s) => s.backendId === backendSceneId) || { backendId: backendSceneId })
+    : null;
 
   /* 换章才清蓝图草稿（以前开合折叠区也会清，没保存的改动悄悄没了） */
   useEfP(() => {
@@ -328,14 +361,7 @@ function ArrAiArrange({ ch, locked, sectionRef, onConfigureModel }) {
           <ArrAiError snap={snap} kinds={["fill", "apply"]} />
           {!fill && snap.gaps && (
             <div className="arr-sync" data-testid="arr-ai-gaps">
-              {snap.gaps.gaps.length ? (
-                <>
-                  还空着的格子（按空槽列出，不是 AI 的建议）：
-                  <ul className="arr-ai-bullets">
-                    {snap.gaps.gaps.map((g, i) => <li key={i}>{g}</li>)}
-                  </ul>
-                </>
-              ) : "戏剧卡与场景卡都没有空着的格子。"}
+              <ArrAiGaps gaps={snap.gaps} onEditPlanScene={editPlanScene} />
             </div>
           )}
           {fill && (

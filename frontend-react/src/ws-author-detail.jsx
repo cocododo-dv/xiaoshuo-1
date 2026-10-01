@@ -173,7 +173,7 @@ function ArrEditor({
         <ArrHandoffStrip prev={prev} ch={ch} next={next} numOf={numOf} onJump={onJump} sectionRef={refs.handoff} />
         <ArrDramaCard ch={ch} locked={locked} onPatchDrama={onPatchDrama} sectionRef={refs.drama} />
         {/* AI 编排：蓝图 / 方向 / 补全，咨询式补丁经作者逐条确认后原子回写目录 */}
-        <ArrAiArrange ch={ch} locked={locked} sectionRef={refs.ai} onConfigureModel={onConfigureModel} />
+        <ArrAiArrange ch={ch} locked={locked} sectionRef={refs.ai} onConfigureModel={onConfigureModel} onEditPlan={editInPlan} />
       </div>
     </section>
   );
