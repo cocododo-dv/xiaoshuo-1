@@ -1,10 +1,11 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-// 分章面板从 ws-snow-sync.jsx import SnowSync；每个用例把自己的假 SnowSync 挂在 window 上，这里转发过去
+// 分章面板从 ws-snow-sync.jsx import SnowSync；每个用例把自己的假 SnowSync 放进 fakeSnow.current，这里转发过去
 // （用例没给的方法读出来是 undefined，面板照「同步模块尚未就绪」处理）。
+const fakeSnow = vi.hoisted(() => ({ current: null }));
 vi.mock("./ws-snow-sync.jsx", () => ({
-  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+  SnowSync: new Proxy({}, { get: (_target, name) => (fakeSnow.current ? fakeSnow.current[name] : undefined) }),
 }));
 
 import {
@@ -34,7 +35,7 @@ afterEach(async () => {
     host.remove();
   }
   vi.restoreAllMocks();
-  try { delete window.SnowSync; } catch (e) {}
+  fakeSnow.current = null;
 });
 
 const panelPreview = (gate = null) => ({
@@ -306,7 +307,7 @@ describe("分章面板 · AI 起章名（阶段 W）", () => {
       named_count: 2, remaining_count: 0, notice: null,
     }));
     const materialize = vi.fn(async () => ({ created_chapter_count: 2 }));
-    window.SnowSync = { chapterPreview: vi.fn(async () => preview), chapterTitles, materialize };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => preview), chapterTitles, materialize };
     const host = await renderPanel();
     const button = host.querySelector('[data-testid="chapter-plan-name"]');
     expect(button.disabled).toBe(false);
@@ -327,7 +328,7 @@ describe("分章面板 · AI 起章名（阶段 W）", () => {
   });
 
   it("面板：LLM 没配好时如实报错，章名原样不动", async () => {
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => ({ ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
         chapters: [{ row_uid: "c1", chapter_seq: 1, act: 1, title: "第 1 章", spine: "", chapter_goal: "",
           scenes: [{ scene_plan_id: "sp1", story_index: 1, title: "第 1 场", primary_form: "proactive", planned: true }] }] })),
@@ -451,7 +452,7 @@ describe("分章面板 · 幕分段", () => {
 
 describe("分章面板 · 物化闸门衔接", () => {
   it("StrictMode 重放挂载副作用时复用同一预览请求，不触发幂等在途冲突", async () => {
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => {
         await new Promise(resolve => setTimeout(resolve, 20));
         return panelPreview({ status: "ready", blockers: [], warnings: [], items: [] });
@@ -461,7 +462,7 @@ describe("分章面板 · 物化闸门衔接", () => {
     const host = await renderPanel({}, { strict: true });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
 
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledTimes(1);
     expect(host.textContent).not.toContain("同一请求");
     expect(host.querySelector('[data-testid="chapter-plan-confirm"]')).toBeTruthy();
   });
@@ -477,9 +478,9 @@ describe("分章面板 · 物化闸门衔接", () => {
       chapter_table: { count: 2, authored: false, saved: false },
       replaces_chapter_count: 2,
     });
-    window.SnowSync = { chapterPreview: vi.fn(async (strategy, options) => fromScenes((options && options.scenesPerChapter) || 12)) };
+    fakeSnow.current = { chapterPreview: vi.fn(async (strategy, options) => fromScenes((options && options.scenesPerChapter) || 12)) };
     const host = await renderPanel();
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledWith("auto", {});
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledWith("auto", {});
     const scale = host.querySelector('[data-testid="chapter-plan-scale"]');
     expect(scale.textContent).toContain("参考书一章约 1.8 万字 ≈ 12 场");
     expect(scale.textContent).toContain("至少 4 章");
@@ -511,7 +512,7 @@ describe("分章面板 · 物化闸门衔接", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => { host.querySelector('[data-testid="chapter-plan-rescale"]').click(); await new Promise(resolve => setTimeout(resolve, 10)); });
-    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", { scenesPerChapter: 4 });
+    expect(fakeSnow.current.chapterPreview).toHaveBeenLastCalledWith("from_scenes", { scenesPerChapter: 4 });
     expect(host.querySelector('[data-testid="chapter-plan-scale"]').textContent).toContain("按你填的每章约 4 场");
   });
 
@@ -528,7 +529,7 @@ describe("分章面板 · 物化闸门衔接", () => {
       chapter_table: { count: 2, authored: true, saved: true },
     };
     const materialize = vi.fn(async () => ({ created_chapter_count: 2 }));
-    window.SnowSync = { chapterPreview: vi.fn(async () => preview), materialize };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => preview), materialize };
     const onDone = vi.fn();
     const host = await renderPanel({ onDone });
     // 有真章名的章：章名框左边写「第 N 章」
@@ -547,7 +548,7 @@ describe("分章面板 · 物化闸门衔接", () => {
   });
 
   it("后端报「章不是连续的一段」时，提醒旁边就有「按场景重新分章」", async () => {
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => ({
         ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
         strategy: "keep_current",
@@ -559,12 +560,12 @@ describe("分章面板 · 物化闸门衔接", () => {
     const fix = host.querySelector('[data-testid="chapter-plan-fix-order"]');
     expect(fix).toBeTruthy();
     await act(async () => { fix.click(); await new Promise(resolve => setTimeout(resolve, 10)); });
-    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
+    expect(fakeSnow.current.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
   });
 
   it("预览返回必修阻断时禁用确认，并提供回到具体雪花步骤的动作", async () => {
     const onGoToStep = vi.fn();
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => panelPreview({
         status: "blocked",
         blockers: ["场景细化需要先确认。"],
@@ -609,7 +610,7 @@ describe("分章面板 · 物化闸门衔接", () => {
         },
       },
     });
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => panelPreview({ status: "ready", blockers: [], warnings: [], items: [] })),
       materialize: vi.fn(async () => { throw error; }),
     };
@@ -634,7 +635,7 @@ describe("分章面板 · 物化闸门衔接", () => {
       ],
       chapter_table: { count: 1, authored: true, saved: true },
     };
-    window.SnowSync = { chapterPreview: vi.fn(async () => preview) };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => preview) };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const onClose = vi.fn();
     const host = await renderPanel({ onClose });
@@ -687,7 +688,7 @@ describe("分章面板 · 物化闸门衔接", () => {
   });
 
   it("拆章之后按下的剪刀随场消失：焦点不掉到 body，落在新章的章名框上", async () => {
-    window.SnowSync = { chapterPreview: vi.fn(async () => ({
+    fakeSnow.current = { chapterPreview: vi.fn(async () => ({
       ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
       strategy: "keep_current",
       chapters: [
@@ -726,7 +727,7 @@ describe("分章面板 · 物化闸门衔接", () => {
 
   it("方向键换分法：加载中整组单选照样可用（只标 aria-busy），预览回来后焦点停在新选中的那一种", async () => {
     let release;
-    window.SnowSync = { chapterPreview: vi.fn(async (strategy) => {
+    fakeSnow.current = { chapterPreview: vi.fn(async (strategy) => {
       if (strategy === "auto") return threeScenePreview("keep_current");
       await new Promise(resolve => { release = resolve; });
       return threeScenePreview(strategy);
@@ -735,7 +736,7 @@ describe("分章面板 · 物化闸门衔接", () => {
     const group = host.querySelector(".sf-chapterplan-strategies");
     radio(host, "keep_current").focus();
     await pressKey(radio(host, "keep_current"), "ArrowRight"); // 末项 → 循环到第一项「按场景分章」
-    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
+    expect(fakeSnow.current.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
     expect(group.getAttribute("aria-busy")).toBe("true");
     expect([...group.querySelectorAll('[role="radio"]')].some(r => r.disabled)).toBe(false);
     expect(document.activeElement).toBe(radio(host, "from_scenes"));
@@ -746,7 +747,7 @@ describe("分章面板 · 物化闸门衔接", () => {
   });
 
   it("有调整时方向键换分法、作者在确认框里说「不」：选中项不变，焦点回到仍然选中的那一种", async () => {
-    window.SnowSync = { chapterPreview: vi.fn(async () => threeScenePreview("keep_current")) };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => threeScenePreview("keep_current")) };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const host = await renderPanel();
     await act(async () => host.querySelector('[data-testid="chapter-plan-split-0-2"]').click());
@@ -754,13 +755,13 @@ describe("分章面板 · 物化闸门衔接", () => {
     await pressKey(radio(host, "keep_current"), "ArrowLeft");
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(confirm).toHaveBeenCalledTimes(1);
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledTimes(1);
     expect(radio(host, "keep_current").getAttribute("aria-checked")).toBe("true");
     expect(document.activeElement).toBe(radio(host, "keep_current"));
   });
 
   it("「撤销调整」：拆过的章回到这种分法刚算出来的样子，不再请求一次；作者说「不」就什么都不动", async () => {
-    window.SnowSync = { chapterPreview: vi.fn(async () => threeScenePreview("keep_current")) };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => threeScenePreview("keep_current")) };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const host = await renderPanel();
     const chapters = () => host.querySelectorAll('[data-testid^="chapter-plan-chapter-"]').length;
@@ -776,11 +777,11 @@ describe("分章面板 · 物化闸门衔接", () => {
     expect(chapters()).toBe(1);
     expect(host.querySelector('[data-testid="chapter-plan-revert"]')).toBeNull();
     expect(host.textContent).not.toContain("有还没确认的调整");
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
   it("同步模块意外未装配时显示中文恢复提示，不泄漏原始 TypeError", async () => {
-    window.SnowSync = {};
+    fakeSnow.current = {};
     const host = await renderPanel();
     expect(host.textContent).toContain("雪花同步模块尚未就绪，请刷新页面后重试。");
     expect(host.textContent).not.toContain("Cannot read properties of undefined");
@@ -815,7 +816,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
   it("「确认写入」被前面的步骤挡住时也能存：整张章表交 SnowSync.saveChapterPlan、不物化；面板留着并按已保存的分章重拉，回执不说目录已经换了", async () => {
     const saveChapterPlan = vi.fn(async () => ({ assigned_scene_count: 4, healed_scene_plan_ids: [], workspace: {} }));
     const materialize = vi.fn();
-    window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(blockedGate)), saveChapterPlan, materialize };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => twoChapters(blockedGate)), saveChapterPlan, materialize };
     const onDone = vi.fn();
     const onClose = vi.fn();
     const host = await renderPanel({ onDone, onClose });
@@ -837,7 +838,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     // 面板不关、不报「已写入」：按已保存的分章重拉（新章此刻有了真身份），调整都已落库
     expect(onDone).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("keep_current", {});
+    expect(fakeSnow.current.chapterPreview).toHaveBeenLastCalledWith("keep_current", {});
     expect(host.textContent).not.toContain("有还没确认的调整");
     const note = host.querySelector('[data-testid="chapter-plan-save-note"]');
     expect(note.getAttribute("role")).toBe("status");
@@ -850,16 +851,16 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
   });
 
   it("还有场没分到章时不能只保存章表（与确认写入同一条）；保存失败如实报错，面板里的调整留着", async () => {
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => ({ ...twoChapters(null), unassigned: [scene(5)] })),
       saveChapterPlan: vi.fn(),
     };
     let host = await renderPanel();
     expect(host.querySelector('[data-testid="chapter-plan-save-table"]').disabled).toBe(true);
     await act(async () => host.querySelector('[data-testid="chapter-plan-save-table"]').click());
-    expect(window.SnowSync.saveChapterPlan).not.toHaveBeenCalled();
+    expect(fakeSnow.current.saveChapterPlan).not.toHaveBeenCalled();
 
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => twoChapters(null)),
       saveChapterPlan: vi.fn(async () => { throw Object.assign(new Error("分章里引用了不存在的章。"), { code: "SNOWFLAKE_CHAPTER_PLAN_NOT_FOUND" }); }),
     };
@@ -870,7 +871,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     expect(host.querySelector('[data-testid="chapter-plan-save-note"]')).toBeNull();
     expect(host.querySelector('[data-testid="chapter-plan-chapter-0"] .sf-chapterplan-title').value).toBe("改过的章名");
     expect(host.textContent).toContain("有还没确认的调整");
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
   it("存过章表之后面板换成了没存的东西（AI 建议、AI 起的章名）：「章表已保存」的回执随之撤下，不挂在没存的内容头上（复核 Q2b-R4）", async () => {
@@ -878,7 +879,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
       { row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [1, 2, 3].slice(0, cut).map(scene) },
       { row_uid: "c2", chapter_seq: 2, act: 1, title: "第 2 章", spine: "", chapter_goal: "", scenes: [1, 2, 3, 4].slice(cut).map(scene) },
     ];
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => ({ ...twoChapters(null), chapters: chapters(3) })),
       saveChapterPlan: vi.fn(async () => ({ assigned_scene_count: 4, healed_scene_plan_ids: [] })),
       chapterSuggest: vi.fn(async () => ({ ...twoChapters(null), strategy: "llm_suggested", chapters: chapters(2) })),
@@ -892,7 +893,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     expect(receipt().textContent).toContain("章表已保存");
     // AI 建议：面板换成一份还没存的分章（第 3 场挪到了第二章）
     await click("chapter-plan-suggest");
-    expect(window.SnowSync.chapterSuggest).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterSuggest).toHaveBeenCalledTimes(1);
     expect(host.querySelector('[data-testid="chapter-plan-chapter-1"]').textContent).toContain("第 3 场");
     expect(receipt()).toBeNull();
 
@@ -910,7 +911,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     const preview = (strategy) => ({ ...twoChapters(null), strategy, chapters: [
       { row_uid: "c1", chapter_seq: 1, act: 1, title: "第 1 章", spine: "", chapter_goal: "", scenes: [1, 2, 3, 4].map(scene) },
     ] });
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async (strategy) => preview(strategy === "auto" ? "keep_current" : strategy)),
       chapterTitles: vi.fn(async () => ({ titles: [{ row_uid: "c1", title: "雨城旧案", summary: "" }], notice: null })),
     };
@@ -918,19 +919,19 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
     await act(async () => { host.querySelector('[data-testid="chapter-plan-name"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(host.querySelector('[data-testid="chapter-plan-name-note"]').textContent).toContain("AI 起了 1 个章名");
     await act(async () => { host.querySelector('[data-testid="chapter-plan-strategy-from_scenes"]').click(); await new Promise(resolve => setTimeout(resolve, 0)); });
-    expect(window.SnowSync.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
+    expect(fakeSnow.current.chapterPreview).toHaveBeenLastCalledWith("from_scenes", {});
     expect(host.querySelector('[data-testid="chapter-plan-chapter-0"] .sf-chapterplan-title').value).toBe("第 1 章");
     expect(host.querySelector('[data-testid="chapter-plan-name-note"]')).toBeNull();
   });
 
   it("从 07 某一章的「改名」进来：按 row_uid 认章，焦点落在它的章名框上", async () => {
-    window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(null)) };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => twoChapters(null)) };
     const host = await renderPanel({ focusChapter: { rowUid: "c2", index: 1 } });
     expect(document.activeElement).toBe(host.querySelector('[data-testid="chapter-plan-chapter-1"] .sf-chapterplan-title'));
   });
 
   it("认不出要改名的那一章（行身份对不上）：不按位置去猜、不抢焦点", async () => {
-    window.SnowSync = { chapterPreview: vi.fn(async () => twoChapters(null)) };
+    fakeSnow.current = { chapterPreview: vi.fn(async () => twoChapters(null)) };
     await renderPanel({ focusChapter: { rowUid: "gone", index: 0 } });
     expect(document.activeElement && document.activeElement.classList.contains("sf-chapterplan-title")).toBe(false);
   });
@@ -941,7 +942,7 @@ describe("分章面板 · 只保存章表 / 从 07 改名进来（重评 R11）"
 describe("分章面板 · 追问用应用内的确认框（批准 #18c）", () => {
   it("有调整时 Esc 关面板：先弹应用内确认框（不调 window.confirm）；「回到面板」或在确认框里按 Esc 都留着面板，「关掉面板」才关", async () => {
     const { WsToastHost } = await import("./ws-notify.jsx");
-    window.SnowSync = { chapterPreview: vi.fn(async () => ({
+    fakeSnow.current = { chapterPreview: vi.fn(async () => ({
       ...panelPreview({ status: "ready", blockers: [], warnings: [], items: [] }),
       strategy: "keep_current",
       chapters: [{ row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "",

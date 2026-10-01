@@ -12,7 +12,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -95,13 +95,16 @@ function installWorld(client, w) {
   return w;
 }
 
+/* 被测代码用的那一份目录 store：每次 loadWriter（vi.resetModules 之后）重新取（以前读 WsCatalog） */
+let WsCatalog = null;
+
 async function loadWriter(w, { needScene = null } = {}) {
   const client = await import("./lib/client.js");
   installWorld(client, w);
-  await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog.ready()).toBe(true), T);
-  if (needScene) await vi.waitFor(() => expect(window.WsCatalog.sceneById(needScene)).toBeTruthy(), T);
+  ({ WsCatalog } = await import("./ws-catalog.jsx"));
+  await settleActiveWork("prj-main", T);
+  await vi.waitFor(() => expect(WsCatalog.ready()).toBe(true), T);
+  if (needScene) await vi.waitFor(() => expect(WsCatalog.sceneById(needScene)).toBeTruthy(), T);
   const store = await import("./wr-doc-store.jsx");
   const writer = await import("./ws-writer.jsx");
   return { client, w, ...writer, ...store };
@@ -186,7 +189,7 @@ afterEach(async () => {
 async function createFirstChapterAndType(ctx, r, html, { beforeRelease } = {}) {
   await vi.waitFor(() => expect(r.createButton()).toBeTruthy(), T);
   await act(async () => { r.createButton().click(); });
-  const writing = () => { const hit = window.WsCatalog.writingScene(); return hit && hit.scene ? hit.scene.sid : null; };
+  const writing = () => { const hit = WsCatalog.writingScene(); return hit && hit.scene ? hit.scene.sid : null; };
   await vi.waitFor(() => expect(String(writing() || "")).toMatch(/^tmp_/), T);
   const tmp = writing();
   await wait(100);
@@ -195,7 +198,7 @@ async function createFirstChapterAndType(ctx, r, html, { beforeRelease } = {}) {
   await wait(300);                                                          // 远在 900 ms 的自动保存之前
   if (beforeRelease) beforeRelease();
   await act(async () => { ctx.w.gate.resolve(); });
-  await vi.waitFor(() => expect(window.WsCatalog.sceneById("s9")).toBeTruthy(), T);
+  await vi.waitFor(() => expect(WsCatalog.sceneById("s9")).toBeTruthy(), T);
   await vi.waitFor(() => expect(ctx.w.ensures.length).toBeGreaterThan(0), T);
   return { tmp, typedNode };
 }
@@ -286,12 +289,12 @@ describe("复核六 · 创建第一章后马上动笔、这一章没建成，目
     const r = room(ctx, host);
     await vi.waitFor(() => expect(r.createButton()).toBeTruthy(), T);
     await act(async () => { r.createButton().click(); });
-    await vi.waitFor(() => expect(String((window.WsCatalog.writingScene() || { scene: {} }).scene.sid || "")).toMatch(/^tmp_/), T);
+    await vi.waitFor(() => expect(String((WsCatalog.writingScene() || { scene: {} }).scene.sid || "")).toMatch(/^tmp_/), T);
     await wait(100);
     await r.type("<p>建章还没回来，先写下的第一段。</p>");
     await wait(1400);                                                       // 900 ms 的自动保存把它交给了 WrDocs（它在等后端 id）
     await act(async () => { w.gate.resolve(); });
-    await vi.waitFor(() => expect(window.WsCatalog.get().length).toBe(0), T);
+    await vi.waitFor(() => expect(WsCatalog.get().length).toBe(0), T);
     await vi.waitFor(() => expect(ctx.WrRecovery.list().some((entry) => plain(entry.html).includes("先写下的第一段"))).toBe(true), T);
     // 乐观新建的场：新建也许没成、也许建好了只是这里认不出——照实说是新建时写下的字，不说「不在目录里了」（复核七 W1-R7B-1）
     expect(alerts().filter((message) => message.includes("新建这一场时写下"))).toHaveLength(1);
@@ -320,12 +323,12 @@ describe("复核七 · 创建第一章后马上动笔；场景建到了服务端
     const r = room(ctx, host);
     await vi.waitFor(() => expect(r.createButton()).toBeTruthy(), T);
     await act(async () => { r.createButton().click(); });
-    await vi.waitFor(() => expect(String((window.WsCatalog.writingScene() || { scene: {} }).scene.sid || "")).toMatch(/^tmp_/), T);
+    await vi.waitFor(() => expect(String((WsCatalog.writingScene() || { scene: {} }).scene.sid || "")).toMatch(/^tmp_/), T);
     await wait(100);
     await r.type("<p>第一句写在新场景里。</p>");
     await wait(1400);                                                       // 900 ms 的自动保存把它交给了 WrDocs（它在等后端 id）
     await act(async () => { w.gate.resolve(); });
-    await vi.waitFor(() => expect(window.WsCatalog.sceneById("s9")).toBeTruthy(), T);
+    await vi.waitFor(() => expect(WsCatalog.sceneById("s9")).toBeTruthy(), T);
     await vi.waitFor(() => expect(ctx.WrRecovery.list().some((entry) => plain(entry.html).includes("第一句"))).toBe(true), T);
     await wait(300);
     expect(alerts().filter((message) => message.includes("不在目录里了"))).toEqual([]);
@@ -342,7 +345,7 @@ describe("复核七 · 创建第一章后马上动笔，建章还在路上时刷
     const r = room(ctx, first.host);
     await vi.waitFor(() => expect(r.createButton()).toBeTruthy(), T);
     await act(async () => { r.createButton().click(); });
-    const writing = () => { const hit = window.WsCatalog.writingScene(); return hit && hit.scene ? hit.scene.sid : null; };
+    const writing = () => { const hit = WsCatalog.writingScene(); return hit && hit.scene ? hit.scene.sid : null; };
     await vi.waitFor(() => expect(String(writing() || "")).toMatch(/^tmp_/), T);
     const tmp = writing();
     await wait(100);
@@ -375,7 +378,7 @@ describe("换了名字的场：批注与本场笔记的本机键跟过去（W1 �
     let tmpSid = null;
     await createFirstChapterAndType(ctx, r, "<p>第一句写在新场景里。</p>", {
       beforeRelease: () => {
-        tmpSid = window.WsCatalog.writingScene().scene.sid;
+        tmpSid = WsCatalog.writingScene().scene.sid;
         window.localStorage.setItem(`wr-anno:${tmpSid}::prj-main`, JSON.stringify({ v: 1, items: [
           { id: "a1", quote: "新场景", prefix: "第一句写在", suffix: "里。", note: "这里再冷一点", createdAt: 1, updatedAt: 1 },
         ] }));

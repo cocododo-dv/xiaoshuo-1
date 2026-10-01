@@ -1,7 +1,7 @@
 // WsReview store 层单测：投递 / 处理（乐观移除 + resolve 端点）/ 处理失败告警。
 // 断言取向同 ws-catalog.test.jsx：只断可观测结果 + 非去重写动词；waitFor 给足超时耐负载。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_REVIEW_CARD } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_REVIEW_CARD, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -12,8 +12,10 @@ vi.mock("./lib/client.js", () => ({
 
 const T = { timeout: 5000, interval: 25 };
 
+let WsWorks = null; // 被测代码用的那一份书架 store（每次 vi.resetModules 之后由 settleActive 重新取）
+
 async function settleActive() {
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  ({ WsWorks } = await settleActiveWork("prj-main", T));
 }
 
 async function loadReview(opts) {
@@ -80,7 +82,7 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
     await settleActive();
     await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v1/review-items?state=open&project_id=prj-main"), T);
 
-    window.WsWorks.setActive("prj-other");
+    WsWorks.setActive("prj-other");
     // 去抖（600 ms）之后才拉新作品；上一部的请求此时还在飞
     await new Promise((resolve) => setTimeout(resolve, 700));
     releaseMain({ items: [{ ...DEFAULT_REVIEW_CARD, id: "rv-main" }] });

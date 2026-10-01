@@ -3,7 +3,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CHAP, installApiRouter } from "./test-helpers.js";
+import { DEFAULT_CHAP, installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -40,8 +40,8 @@ async function loadWriter(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const store = await import("./wr-doc-store.jsx");
   const writer = await import("./ws-writer.jsx");
   return { client, ...writer, ...store };
@@ -376,6 +376,7 @@ describe("useDocBinding · 保存还在路上时换场", () => {
 describe("useDocBinding · 字数以服务端 words_rollup 为准（F03-08）", () => {
   it("保存回包带回的场景 / 章节字数不被本机计数盖掉", async () => {
     const { client, WriterRoom } = await loadWriter();
+    const { WsCatalog } = await import("./ws-catalog.jsx");
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
         return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } });
@@ -392,7 +393,7 @@ describe("useDocBinding · 字数以服务端 words_rollup 为准（F03-08）", 
     await typeInto(editor(), "<p>起点加五个字</p>");
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
     await vi.waitFor(() => expect(host.querySelector('[data-testid="draft-save-status"]').textContent).toContain("已保存"), T);
-    const hit = window.WsCatalog.sceneById("ch01s1");
+    const hit = WsCatalog.sceneById("ch01s1");
     expect(hit.scene.words).toBe(321);
     expect(hit.chapter.words.cur).toBe(654);
   }, LONG);
@@ -434,6 +435,7 @@ describe("写作台 · 当前段标记（F03-09）", () => {
 describe("写作台 · 目录只改了字数（F03-10）", () => {
   it("自动保存回写的字数不让整间写作台重渲染；目录里这一场的设计变了，页头照样跟着变", async () => {
     const { client, WriterRoom } = await loadWriter();
+    const { WsCatalog } = await import("./ws-catalog.jsx");
     client.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/s1\/ensure$/.test(url)
       ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } })
       : Promise.resolve({})));
@@ -449,9 +451,9 @@ describe("写作台 · 目录只改了字数（F03-10）", () => {
     await vi.waitFor(() => expect(card().textContent).toContain("替父亲点名"), T);
     await wait(300);
     const settled = commits;
-    await act(async () => { window.WsCatalog.recordSceneWords("ch01s1", 4321); });
+    await act(async () => { WsCatalog.recordSceneWords("ch01s1", 4321); });
     await wait(100);
-    expect(window.WsCatalog.sceneById("ch01s1").scene.words).toBe(4321);
+    expect(WsCatalog.sceneById("ch01s1").scene.words).toBe(4321);
     expect(commits).toBe(settled);
 
     const base = client.apiGet.getMockImplementation();
@@ -459,7 +461,7 @@ describe("写作台 · 目录只改了字数（F03-10）", () => {
     client.apiGet.mockImplementation((url) => (/\/api\/v2\/projects\/[^/]+\/catalog(\?|$)/.test(url)
       ? Promise.resolve({ chapters: [{ ...DEFAULT_CHAP, scenes: [{ ...scene, brief: { ...scene.brief, goal: "替父亲去码头点名" } }] }] })
       : base(url)));
-    await act(async () => { await window.WsCatalog.refresh(); });
+    await act(async () => { await WsCatalog.refresh(); });
     await vi.waitFor(() => expect(card().textContent).toContain("替父亲去码头点名"), T);
   }, LONG);
 });

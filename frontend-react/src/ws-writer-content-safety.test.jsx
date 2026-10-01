@@ -1,7 +1,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CHAP, DEFAULT_PROJECT, installApiRouter } from "./test-helpers.js";
+import { DEFAULT_CHAP, DEFAULT_PROJECT, installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -27,8 +27,8 @@ async function loadWriter(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const store = await import("./wr-doc-store.jsx");
   const writer = await import("./ws-writer.jsx");
   return { ...writer, ...store };
@@ -217,6 +217,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
   it("切换作品时立即清除旧场景，目录装载完成前不允许在旧稿上继续写", async () => {
     const secondProject = { ...DEFAULT_PROJECT, project_id: "project-2", title: "第二部作品" };
     const { WriterRoom, WrDocs } = await loadWriter({ projects: [DEFAULT_PROJECT, secondProject] });
+    const { WsWorks } = await import("./ws-works.jsx");
     vi.spyOn(WrDocs, "load").mockImplementation((sid) => `<p>${sid} 的正文</p>`);
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.textContent).toContain("ch01s1 的正文"), T);
@@ -230,7 +231,7 @@ describe("WriterRoom canonical 内容风险复核接缝", () => {
     ));
 
     await act(async () => {
-      window.WsWorks.setActive("project-2");
+      WsWorks.setActive("project-2");
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(host.textContent).toContain("正在从服务端加载章节与正文");

@@ -239,7 +239,8 @@ describe("AI 起草台 · 只认后端（2026-09-21）", () => {
       await click(button);
 
       await vi.waitFor(() => expect(go).toHaveBeenCalledWith("writer", [{ type: "ws:writer-scene", detail: "ch01s1" }]), T);
-      const candidates = window.WrRecovery.list().filter(item => item.type === "candidate");
+      const { WrRecovery } = await import("./wr-doc-store.jsx");
+      const candidates = WrRecovery.list().filter(item => item.type === "candidate");
       expect(candidates).toHaveLength(1);
       expect(candidates[0].html).toContain("交给写作台的那一稿。");
       expect(opened).toHaveBeenCalledTimes(1);

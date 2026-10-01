@@ -7,7 +7,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -52,7 +52,7 @@ async function loadSync(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   const mod = await import("./ws-snow-sync.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  await settleActiveWork("prj-main", T);
   return { mod, client };
 }
 
@@ -837,7 +837,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "scene_list", steps: [] } });
     window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
     // 目录装载（installApiRouter 默认一章一场）——强制重拉的前置条件
-    await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+    await settleCatalog(T);
     expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(0);
 
     // 此后的 workspace GET 返回「1 场待同步」——模拟 9 步改动已在服务端形成 diff

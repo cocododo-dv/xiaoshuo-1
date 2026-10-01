@@ -5,7 +5,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -89,7 +89,7 @@ async function boot({ versions = VERSIONS, restore = null, workspace = WORKSPACE
     return { step: step(key, { status: st.status, revised_after_approval: st.revised, draft: body.draft }) };
   });
   const sync = await import("./ws-snow-sync.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(WORK), T);
+  await settleActiveWork(WORK, T);
   await sync.SnowSync.refetch(WORK);
   expect(sync.SnowSync.hydrated(WORK)).toBe(true);
   const { WsSnowflake } = await import("./ws-snow.jsx");

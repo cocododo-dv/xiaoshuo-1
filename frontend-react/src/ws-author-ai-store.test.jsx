@@ -4,7 +4,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -37,7 +37,7 @@ async function loadStore() {
   installApiRouter(client);
   client.apiPut.mockResolvedValue({});
   const mod = await import("./ws-author-ai-store.js");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  await settleActiveWork("prj-main", T);
   return { mod, client };
 }
 

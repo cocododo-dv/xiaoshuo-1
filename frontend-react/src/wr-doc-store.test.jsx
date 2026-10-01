@@ -1,11 +1,11 @@
 // WrDocs / WrDocVersions store 层单测：save(ensure+PATCH 带 base_revision_no) +
 // words_rollup 回流 + 409 冲突重水合 + 非409只留底 + 跨作品 sid 前缀防污染 + 修订映射 + 句级 diff。
 //
-// 依赖链：WrDocs 经 window.WsCatalog.backendSceneId(slug)→scene_id、
-//        缓存键经 window.wsKey 加 ::<activeId> 后缀、docMeta 经 metaKeyOf 加作品前缀。
-// 故先 import ws-catalog（装 window.WsCatalog + 间接装 ws-works），settle 后再 import wr-doc-store。
+// 依赖链：WrDocs 经 WsCatalog.backendSceneId(slug)→scene_id、
+//        缓存键经 wsKey 加 ::<activeId> 后缀、docMeta 经 metaKeyOf 加作品前缀。
+// 故先 import ws-catalog（间接 import ws-works），settle 后再 import wr-doc-store。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -46,17 +46,26 @@ function stopWarmHydrate(mod) {
   vi.spyOn(mod.WrDocs, "hydrateActive").mockImplementation(() => {});
 }
 
+/* 被测代码用的那一份书架 / 目录 store：每次 vi.resetModules 之后由 settleActive / settleChapters 重新取 */
+let WsWorks = null;
+let WsCatalog = null;
+let wsKey = null;
+
 async function settleActive(id = "prj-main") {
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(id), T);
+  ({ WsWorks, wsKey } = await settleActiveWork(id, T));
+}
+
+async function settleChapters() {
+  ({ WsCatalog } = await settleCatalog(T));
 }
 
 async function loadDocs(opts = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);   // /api/v2/projects + catalog(DEFAULT_CHAP: ch01s1→s1) + dashboard
   wireDrafts(client);
-  await import("./ws-catalog.jsx"); // 装 window.WsCatalog（间接 import ws-works）
+  await import("./ws-catalog.jsx"); // 目录 store（间接 import ws-works）
   await settleActive("prj-main");
-  await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleChapters();
   const mod = await import("./wr-doc-store.jsx");
   return { mod, client };
 }
@@ -84,7 +93,7 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
 
   it("save 成功把 words_rollup 经 WsCatalog.applyWordsRollup 回流", async () => {
     const { mod } = await loadDocs();
-    const spy = vi.spyOn(window.WsCatalog, "applyWordsRollup");
+    const spy = vi.spyOn(WsCatalog, "applyWordsRollup");
     await mod.WrDocs.save("ch01s1", "<p>x</p>");
     await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(
       "ch01s1", { chapter_words: 120, scene_words: 120 }), T);
@@ -225,7 +234,7 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
     const snapshotOf = (id) => ({ draft: { draft_id: id, revision_no: drafts[id].revision, content: drafts[id].content } });
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
-        return Promise.resolve(snapshotOf(window.WsWorks.activeId() === "prj-second" ? "d-second" : "d-main"));
+        return Promise.resolve(snapshotOf(WsWorks.activeId() === "prj-second" ? "d-second" : "d-main"));
       }
       return Promise.resolve({});
     });
@@ -245,9 +254,9 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
       { content: "<p>潮汐的正文</p>", base_revision_no: 1 }), T);
 
     // —— 切到作品 prj-second（真实 setActive，使 WS_ACTIVE_ID 切换，wsKey/metaKeyOf 同步）——
-    window.WsWorks.setActive("prj-second");
+    WsWorks.setActive("prj-second");
     await settleActive("prj-second");
-    await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+    await settleChapters();
 
     // 缓存键隔离（wsKey）：prj-second 下读不到 prj-main 的正文
     expect(mod.WrDocs.load("ch01s1")).toBeNull();
@@ -262,7 +271,7 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
       { content: "<p>盐镇的正文</p>", base_revision_no: 1 }), T);
 
     // —— 切回 prj-main：正文互不覆盖 ——
-    window.WsWorks.setActive("prj-main");
+    WsWorks.setActive("prj-main");
     await settleActive("prj-main");
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>潮汐的正文</p>");
   });
@@ -317,7 +326,7 @@ describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
       });
       await import("./ws-catalog.jsx");
       await settleActive("prj-main");
-      await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+      await settleChapters();
       const mod = await import("./wr-doc-store.jsx");
       return { mod, client };
     })();
@@ -417,8 +426,8 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
       expect.objectContaining({ sid: "ch01s1", type: "conflict", durable: false, html: "<p>不能丢的本地稿</p>" }),
     ]);
     expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("本次会话"));
-    expect(window.localStorage.getItem(window.wsKey("wr-doc:ch01s1"))).toBe("<p>不能丢的本地稿</p>");
-    expect(window.localStorage.getItem(window.wsKey("wr-doc-pending:ch01s1"))).not.toBeNull();
+    expect(window.localStorage.getItem(wsKey("wr-doc:ch01s1"))).toBe("<p>不能丢的本地稿</p>");
+    expect(window.localStorage.getItem(wsKey("wr-doc-pending:ch01s1"))).not.toBeNull();
     expect(client.apiPatch).toHaveBeenCalledTimes(1);
 
     // 作者腾出了空间、刷新了页面：跨会话的路径把本机稿持久地放进同步与恢复，服务端版本上屏
@@ -431,19 +440,19 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
       : Promise.resolve({})));
     await import("./ws-catalog.jsx");
     await settleActive("prj-main");
-    await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+    await settleChapters();
     const mod2 = await import("./wr-doc-store.jsx");
     mod2.WrDocs.load("ch01s1");
     await vi.waitFor(() => expect(mod2.WrDocs.cachedHTML("ch01s1")).toBe("<p>另一台设备的正文</p>"), T);
     expect(mod2.WrRecovery.list()).toEqual([
       expect.objectContaining({ sid: "ch01s1", type: "conflict", durable: true, html: "<p>不能丢的本地稿</p>" }),
     ]);
-    expect(window.localStorage.getItem(window.wsKey("wr-doc-pending:ch01s1"))).toBeNull();
+    expect(window.localStorage.getItem(wsKey("wr-doc-pending:ch01s1"))).toBeNull();
   });
 
   it("正文缓存触发 quota 时以内存中的新稿为准，不让旧 localStorage 值回盖", async () => {
     const { mod, client } = await loadDocs();
-    const docKey = window.wsKey("wr-doc:ch01s1");
+    const docKey = wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(docKey, "<p>旧缓存</p>");
     const originalSetItem = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
@@ -472,12 +481,12 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
 
   it("跨作品查看恢复记录时，与记录所属作品的同名场景比较", async () => {
     const { mod } = await loadDocs({ projects: [DEFAULT_PROJECT, SALT_PROJECT] });
-    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>潮汐作者稿</p>");
+    window.localStorage.setItem(wsKey("wr-doc:ch01s1"), "<p>潮汐作者稿</p>");
     const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>潮汐 AI 候选</p>");
 
-    window.WsWorks.setActive("prj-second");
+    WsWorks.setActive("prj-second");
     await settleActive("prj-second");
-    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>盐镇作者稿</p>");
+    window.localStorage.setItem(wsKey("wr-doc:ch01s1"), "<p>盐镇作者稿</p>");
 
     const diff = mod.WrRecovery.diff(entry.id);
     expect(diff.current).toBe("<p>潮汐作者稿</p>");
@@ -486,7 +495,7 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
 
   it("恢复不同正文前自动备份当前作者稿，恢复后仍可撤销", async () => {
     const { mod } = await loadDocs();
-    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>恢复前的作者正文</p>");
+    window.localStorage.setItem(wsKey("wr-doc:ch01s1"), "<p>恢复前的作者正文</p>");
     const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>准备恢复的候选正文</p>");
 
     const result = await mod.WrRecovery.restore(entry.id);

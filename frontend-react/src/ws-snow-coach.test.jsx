@@ -17,10 +17,11 @@ vi.mock("./ws-works.jsx", () => ({
   wsKey: (base) => `${base}::coach-book`,
   WsWorks: { activeId: () => "coach-book", active: () => ({ id: "coach-book", title: "方向之书" }) },
 }));
-// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 挂在 window 上，
+// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 放进 fakeSnow.current，
 // 这里的模块 mock 转发过去（用例没给的方法读出来是 undefined）。
+const fakeSnow = vi.hoisted(() => ({ current: null }));
 vi.mock("./ws-snow-sync.jsx", () => ({
-  SnowSync: new Proxy({}, { get: (_target, name) => (window.SnowSync ? window.SnowSync[name] : undefined) }),
+  SnowSync: new Proxy({}, { get: (_target, name) => (fakeSnow.current ? fakeSnow.current[name] : undefined) }),
 }));
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(async () => ({})),
@@ -106,7 +107,7 @@ function installApi({ history = [], health = {} } = {}) {
     }
     return {};
   });
-  window.SnowSync = {
+  fakeSnow.current = {
     directionBrief: vi.fn(() => BRIEF),
     briefUsage: vi.fn(() => ({ hasBrief: true, stale: true, disabled: false, usedRevision: 1, currentRevision: 2 })),
     saveDirectionBrief: vi.fn(async () => BRIEF),
@@ -135,7 +136,7 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
       host.remove();
     }
     vi.restoreAllMocks();
-    try { delete window.SnowSync; } catch (e) {}
+    fakeSnow.current = null;
   });
 
   it("编辑页 AI 工具条：「AI 生成本步」直接生成（不带方向、不带 use_direction_brief）；提示本稿出处与要点落后", async () => {
@@ -289,28 +290,28 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     await act(async () => setValue(host.querySelector(".sf-coach-input textarea"), "结局苦乐参半"));
     const send = Array.from(host.querySelectorAll(".sf-coach-input button")).find(b => (b.textContent || "").includes("发送"));
     await act(async () => send.click());
-    await vi.waitFor(() => expect(window.SnowSync.setDirectionBrief).toHaveBeenCalledTimes(1), T);
-    expect(window.SnowSync.setDirectionBrief.mock.calls[0][1]).toBe("paragraph");
-    expect(window.SnowSync.setDirectionBrief.mock.calls[0][2].revision).toBe(3);
+    await vi.waitFor(() => expect(fakeSnow.current.setDirectionBrief).toHaveBeenCalledTimes(1), T);
+    expect(fakeSnow.current.setDirectionBrief.mock.calls[0][1]).toBe("paragraph");
+    expect(fakeSnow.current.setDirectionBrief.mock.calls[0][2].revision).toBe(3);
     // F02-10：教练的底稿与生成 / 方向同一份（pushCanon：服务端镜像 ⊕ 本地脚手架），不再是不带服务端键的 canonDraft
     const coachCall = client.apiPost.mock.calls.find(c => String(c[0]).endsWith("/assistant"));
     expect(coachCall[1]).toMatchObject({ step_key: "one_paragraph_summary", message: "结局苦乐参半", draft_override: { sentences: ["她回到雨城。", "", "", "", ""] } });
-    expect(window.SnowSync.canonDraft).not.toHaveBeenCalled();
+    expect(fakeSnow.current.canonDraft).not.toHaveBeenCalled();
   });
 
   it("F02-11：教练页先读同步层的教练日志镜像，不再另拉一整份工作台；日志记回镜像", async () => {
     installApi({ history: [] });
-    window.SnowSync.assistantHistory = vi.fn(() => [CHAT_TURN]);
-    window.SnowSync.rememberAssistantHistory = vi.fn();
+    fakeSnow.current.assistantHistory = vi.fn(() => [CHAT_TURN]);
+    fakeSnow.current.rememberAssistantHistory = vi.fn();
     const host = await renderSnow("paragraph");
     const workspaceGets = () => client.apiGet.mock.calls.filter(([url]) => String(url).includes("/snowflake-workspace")).length;
     const before = workspaceGets();
     await openCoach(host);
     await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-coach-turn"]')).toBeTruthy(), T);
     expect(host.querySelector('[data-testid="snow-coach-turn"]').textContent).toContain("先把主角的被动写实。");
-    expect(window.SnowSync.assistantHistory).toHaveBeenCalledWith("coach-book");
+    expect(fakeSnow.current.assistantHistory).toHaveBeenCalledWith("coach-book");
     expect(workspaceGets()).toBe(before);
-    await vi.waitFor(() => expect(window.SnowSync.rememberAssistantHistory).toHaveBeenCalledWith("coach-book", [CHAT_TURN]), T);
+    await vi.waitFor(() => expect(fakeSnow.current.rememberAssistantHistory).toHaveBeenCalledWith("coach-book", [CHAT_TURN]), T);
   });
 
   it("教练回复里的 markdown 排成段落 / 粗体 / 斜体 / 列表，不再把星号印出来；「按此生成本步」仍把原文交给模型", async () => {
@@ -346,24 +347,24 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     expect(card.querySelector('[data-testid="snow-brief-stale"]')).toBeTruthy();
 
     await act(async () => lines[0].querySelector('[data-testid="snow-brief-dismiss"]').click());
-    const [workId, feKey, payload] = window.SnowSync.saveDirectionBrief.mock.calls[0];
+    const [workId, feKey, payload] = fakeSnow.current.saveDirectionBrief.mock.calls[0];
     expect(workId).toBe("coach-book");
     expect(feKey).toBe("paragraph");
     expect(payload.lines.map(l => l.line_id)).toEqual(["dl_2"]);
 
     await act(async () => card.querySelector('[data-testid="snow-brief-dismissed-toggle"]').click());
     await act(async () => card.querySelector('[data-testid="snow-brief-restore"]').click());
-    expect(window.SnowSync.saveDirectionBrief.mock.calls[1][2].lines.find(l => l.line_id === "dl_3")).toMatchObject({ status: "active", text: "不要热血" });
+    expect(fakeSnow.current.saveDirectionBrief.mock.calls[1][2].lines.find(l => l.line_id === "dl_3")).toMatchObject({ status: "active", text: "不要热血" });
 
     await act(async () => setValue(card.querySelector('[data-testid="snow-brief-add-text"]'), "第一章不出现凶手"));
     await act(async () => card.querySelector('[data-testid="snow-brief-add"]').click());
-    const added = window.SnowSync.saveDirectionBrief.mock.calls[2][2].lines;
+    const added = fakeSnow.current.saveDirectionBrief.mock.calls[2][2].lines;
     expect(added[added.length - 1]).toMatchObject({ kind: "decision", scope: "step", text: "第一章不出现凶手", status: "active" });
 
     await act(async () => card.querySelectorAll('[data-testid="snow-brief-scope"]')[0].click());
-    expect(window.SnowSync.saveDirectionBrief.mock.calls[3][2].lines[0]).toMatchObject({ line_id: "dl_1", scope: "book" });
+    expect(fakeSnow.current.saveDirectionBrief.mock.calls[3][2].lines[0]).toMatchObject({ line_id: "dl_1", scope: "book" });
     await act(async () => card.querySelector('[data-testid="snow-brief-inherit"]').click());
-    expect(window.SnowSync.saveDirectionBrief.mock.calls[4][2]).toMatchObject({ inherit_upstream: false });
+    expect(fakeSnow.current.saveDirectionBrief.mock.calls[4][2]).toMatchObject({ inherit_upstream: false });
 
     await act(async () => card.querySelector('[data-testid="snow-brief-regen"]').click());
     await vi.waitFor(() => expect(generateCalls().length).toBe(1), T);
@@ -378,7 +379,7 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: {
       paragraph: { premiseF: "谎言能护住所爱的人", premiseT: "只有说出真相才护得住", setup: "旧", d1: "", d2: "", d3: "", resolution: "" },
     } }));
-    window.SnowSync.applyServerStep = vi.fn(() => ({ scaffold: {
+    fakeSnow.current.applyServerStep = vi.fn(() => ({ scaffold: {
       premiseF: "", premiseT: "只有说出真相才护得住", setup: "她回到雨城。", d1: "旧信寄到。", d2: "", d3: "", resolution: "" } }));
     const host = await renderSnow("paragraph");
     await act(async () => host.querySelector('[data-testid="snow-ai-generate"]').click());
@@ -399,7 +400,7 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
         { id: "S02", type: "reactive", line: "main", pov: "", place: "旅馆", event: "消化", crucible: "", fn: "", spine: "" },
       ] },
     } }));
-    window.SnowSync.applyServerStep = vi.fn(() => ({ scaffold: { lines: [], list: [
+    fakeSnow.current.applyServerStep = vi.fn(() => ({ scaffold: { lines: [], list: [
       { id: "S01", type: "proactive", line: "main", pov: "", place: "码头", event: "她在码头取到旧信", crucible: "退路被断", fn: "", spine: "" },
       { id: "S09", type: "proactive", line: "main", pov: "", place: "旧屋", event: "新的一场", crucible: "", fn: "", spine: "" },
     ] } }));
@@ -434,8 +435,8 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
 
   it("F02-19：AI 分诊（底稿同源、存档、历史）→ 应用修复补丁（三拍进 10、坩埚回写 09、应用前留底）", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
-    window.SnowSync.pushCanon = vi.fn((key) => ({ scenes: [{ row_uid: "S01", marker: `canon-${key}` }] }));
-    window.SnowSync.refetch = vi.fn();
+    fakeSnow.current.pushCanon = vi.fn((key) => ({ scenes: [{ row_uid: "S01", marker: `canon-${key}` }] }));
+    fakeSnow.current.refetch = vi.fn();
     withRoutes({
       "/scene-triage/suggest": () => ({ source: "llm", items: [{ row_uid: "S01", scene_id: "SC1", scene_plan_id: "sp1", status: "maybe", score: 60,
         notes: "坩埚空着", fix_steps: ["补上坩埚"], missing_fields: ["crucible"], repair_patch: { crucible: "退路被断", conflict: "三方堵截" } }] }),
@@ -447,7 +448,7 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     const suggest = client.apiPost.mock.calls.find(c => String(c[0]).endsWith("/scene-triage/suggest"));
     expect(suggest[0]).toBe("/api/v2/projects/coach-book/snowflake-workspace/scene-triage/suggest");
     expect(suggest[1]).toEqual({ draft_override: { scenes: [{ row_uid: "S01", marker: "canon-planning" }] } });
-    expect(window.SnowSync.pushCanon).toHaveBeenCalledWith("planning", expect.objectContaining({ scaffolds: expect.objectContaining({ planning: expect.any(Object) }) }), "coach-book");
+    expect(fakeSnow.current.pushCanon).toHaveBeenCalledWith("planning", expect.objectContaining({ scaffolds: expect.objectContaining({ planning: expect.any(Object) }) }), "coach-book");
     const saved = client.apiPost.mock.calls.find(c => String(c[0]).endsWith("/scene-triage"));
     expect(saved[1].items[0]).toMatchObject({ scene_plan_id: "sp1", recommended_status: "maybe" });
     expect(host.querySelector(".sf-triage-badge").textContent).toBe("需修补");
@@ -465,7 +466,7 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
 
   it("B06-20：AI 分诊 fail-closed——没接好模型（409 + author_action）时回执写全原话、带「去系统配置」的门；不存档、不记历史、不出分诊结果", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
-    window.SnowSync.pushCanon = vi.fn(() => ({ scenes: [{ row_uid: "S01" }] }));
+    fakeSnow.current.pushCanon = vi.fn(() => ({ scenes: [{ row_uid: "S01" }] }));
     const message = "雪花工作台的 AI 生成需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。";
     withRoutes({
       "/scene-triage/suggest": () => { throw Object.assign(new Error(message), { status: 409, code: "SNOWFLAKE_LLM_NOT_CONFIGURED",
@@ -503,8 +504,8 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
 
   it("B06-20：分诊成功只有 AI 一条路——历史记「AI」，回执不再提「规则诊断」", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(castAndScenes()));
-    window.SnowSync.pushCanon = vi.fn(() => ({ scenes: [{ row_uid: "S01" }] }));
-    window.SnowSync.refetch = vi.fn();
+    fakeSnow.current.pushCanon = vi.fn(() => ({ scenes: [{ row_uid: "S01" }] }));
+    fakeSnow.current.refetch = vi.fn();
     withRoutes({
       "/scene-triage/suggest": () => ({ items: [{ row_uid: "S01", scene_plan_id: "sp1", status: "pass", score: 90, notes: "" }] }),
       "/scene-triage": () => ({ items: [{ scene_plan_id: "sp1", triage_id: "t1" }] }),
@@ -521,8 +522,8 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     const patchTurn = { ...CHAT_TURN, turn_id: "turn-p", step_key: "character_sheets", reply: "改好了。",
       candidate_patch: { characters: [{ character_id: "c2", goal: "替恩师顶罪" }] }, candidate_label: "许言的目标", brief_delta: null };
     installApi({ history: [patchTurn] });
-    window.SnowSync.pushCanon = vi.fn((key) => ({ characters: [{ character_id: "c2", marker: `canon-${key}` }] }));
-    window.SnowSync.applyServerStep = vi.fn(() => ({ scaffold: { sel: "c1", chars: {
+    fakeSnow.current.pushCanon = vi.fn((key) => ({ characters: [{ character_id: "c2", marker: `canon-${key}` }] }));
+    fakeSnow.current.applyServerStep = vi.fn(() => ({ scaffold: { sel: "c1", chars: {
       c1: { name: "林昭（模型改了）", role: "主角", goal: "别的", ambition: "", values: "", conflict: "", epiphany: "" },
       c2: { name: "许言", role: "配角", goal: "AI 写的目标", ambition: "", values: "", conflict: "", epiphany: "" },
     } } }));
@@ -537,12 +538,12 @@ describe("阶段 U · 教练 · 要点 · 方向 · 生成", () => {
     expect(hist().slice(0, 2).map(h => h.action)).toEqual(["AI 补全角色「许言」", "AI 补全角色「许言」"]);
     expect(hist()[1].snap.scaffold.chars.c2.goal).toBe("");
 
-    window.SnowSync.applyCanonPatch = vi.fn((key, doc) => ({ scaffold: { ...doc.scaffolds.characters,
+    fakeSnow.current.applyCanonPatch = vi.fn((key, doc) => ({ scaffold: { ...doc.scaffolds.characters,
       chars: { ...doc.scaffolds.characters.chars, c2: { ...doc.scaffolds.characters.chars.c2, goal: "替恩师顶罪" } } } }));
     await openCoach(host);
     await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-coach-patch"]')).toBeTruthy(), T);
     await act(async () => host.querySelector('[data-testid="snow-coach-patch"]').click());
-    expect(window.SnowSync.applyCanonPatch).toHaveBeenCalledWith("characters",
+    expect(fakeSnow.current.applyCanonPatch).toHaveBeenCalledWith("characters",
       expect.objectContaining({ drafts: expect.any(Object), scaffolds: expect.objectContaining({ characters: expect.any(Object) }) }),
       patchTurn.candidate_patch, null);
     await vi.waitFor(() => expect(readCache().scaffolds.characters.chars.c2.goal).toBe("替恩师顶罪"), T);

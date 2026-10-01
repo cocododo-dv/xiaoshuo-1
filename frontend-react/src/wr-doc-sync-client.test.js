@@ -3,7 +3,7 @@
 // ensure 回服务端眼下的草稿。网络故障：lost = 服务端办完了、回包没回来（fetch 抛 TypeError）；down = 根本没到服务端。
 // 每一条断言的都是安全的结果：回包丢了的那一次 ensure 不会被服务端按同一个键重放给之后的读取（核对、冲突之后读服务端版本）。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
+import { DEFAULT_CHAP, DEFAULT_PROJECT, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 const T = { timeout: 5000, interval: 20 };
 
@@ -83,8 +83,8 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 async function loadDocs() {
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const mod = await import("./wr-doc-store.jsx");
   const events = [];
   mod.WrDocs.subscribe((kind, detail) => events.push({ kind, html: detail && detail.html }));

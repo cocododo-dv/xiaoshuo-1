@@ -5,7 +5,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -127,8 +127,8 @@ async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch 
   /* 偏好 PATCH：像服务端那样把身体回显、修订号 +1（默认的 {} 会把本机忽略清单冲成空） */
   client.apiPatch.mockImplementation((url, body) => Promise.resolve({ ...(body || {}), revision_no: Number((body && body.base_revision_no) || 0) + 1 }));
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const store = await import("./wr-doc-store.jsx");
   const writer = await import("./ws-writer.jsx");
   return { ...writer, ...store, client };

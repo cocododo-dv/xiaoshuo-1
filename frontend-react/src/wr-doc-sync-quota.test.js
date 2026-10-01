@@ -2,7 +2,7 @@
 // 提示说它「本机缓存里也还留着一份，直到这一场再保存」，那么在作者再保存之前，后台的复核 / 水合不得把它盖掉。
 // 单独一个文件：同一文件里前一个用例留下的旧 store 实例可能在下一个用例开头水合这一场、改写预先放好的读缓存。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -32,8 +32,8 @@ async function loadDocs(shared, { cas = false } = {}) {
     return Promise.resolve({ draft: { draft_id: "d1", revision_no: shared.revision, content: body.content } });
   });
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const mod = await import("./wr-doc-store.jsx");
   const events = [];
   mod.WrDocs.subscribe((kind, detail) => events.push({ kind, ...(detail || {}) }));

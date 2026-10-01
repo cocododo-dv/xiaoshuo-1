@@ -5,7 +5,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, vi } from "vitest";
-import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT, settleActiveWork } from "./test-helpers.js";
 
 export const T = { timeout: 5000, interval: 25 };
 
@@ -26,7 +26,7 @@ export const TWO_SCENE_CHAP = {
 };
 
 export async function settleActive(projectId = "prj-main") {
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(projectId), T);
+  await settleActiveWork(projectId, T);
 }
 
 /* 在 installApiRouter 之上叠一层 scene-run-states 路由（贯通轮惯用法：包装现有实现） */
