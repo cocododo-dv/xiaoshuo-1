@@ -12,6 +12,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.snowflake_character_ids import canonical_character_id, mint_character_id
 from novel_system.services.snowflake_draft_merge import apply_member_patch, patch_id_key
+from novel_system.services.snowflake_scene_rows import SCENE_LIST_OWNED_FIELDS
 from novel_system.services.snowflake_step_catalog import (
     CHARACTER_STEPS,
     LONG_SYNOPSIS_PARAGRAPHS,
@@ -53,6 +54,10 @@ _SCENE_CONTENT_KEYS = (
     "goal", "conflict", "setback", "reaction", "dilemma", "decision",
     "cost_requirement", "must_include_text", "exit_change", "hook", "beats_json",
 )
+
+#: 空转防线只量**第 10 步写得进去**的那几栏：已有场景计划上归 09 的栏（事件 / 地点 / 坩埚……，``SCENE_LIST_OWNED_FIELDS``）
+#: 第 10 步的写入一律不收，存下的草稿也照场上的样子写回（合并胶水 G4）——模型只改了它们，场上什么都没变（复核 I6-R1）
+_DETAIL_PROGRESS_KEYS = tuple(key for key in _SCENE_CONTENT_KEYS if key not in SCENE_LIST_OWNED_FIELDS)
 
 
 def _assert_scene_details_advanced(
@@ -103,7 +108,7 @@ def _assert_scene_details_advanced(
             continue
         inspected += 1
         before = base_by_id.get(str(scene.get("scene_id") or scene.get("row_uid") or "")) or {}
-        for key in _SCENE_CONTENT_KEYS:
+        for key in _DETAIL_PROGRESS_KEYS:
             if normalize(scene.get(key)) != normalize(before.get(key)):
                 advanced = True
                 break

@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from novel_system.db.models import StoryProject
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
+from novel_system.services.snowflake_scene_rows import SCENE_LIST_OWNED_FIELDS
 from novel_system.services.snowflake_step_catalog import CONFIRMED_STEP_STATUSES, STEP_ORDER, step_definition_views
 from novel_system.services.snowflake_step_drafts import merge_step_draft
 from novel_system.services.snowflake_step_diagnosis import diagnose_scene_detail
@@ -321,6 +322,8 @@ def _scene_detail_batches(draft: dict[str, Any]) -> tuple[list[list[str]], int]:
     深化到一半时就是上次断掉的地方（作者点的按钮本来就叫「全部补全」）。
     注意剩余不足一批时**仍然分批**——那正是续深场景，退回整表通道会把已经
     深化好的场连带重做一遍，既烧 token 又可能改写作者已认可的内容。
+    缺的若只是归 09 的栏（坩埚，``SCENE_LIST_OWNED_FIELDS``）不算：第 10 步的写入补不上它（合并胶水 G4），
+    从那里起批只会白跑一批、被空转防线拒收（复核 I6-R1），后面真缺三拍的场反倒轮不到。
 
     单次封顶剩下的场数原样返回，由调用方告诉作者还剩多少、再点一次继续。
     """
@@ -338,7 +341,10 @@ def _scene_detail_batches(draft: dict[str, Any]) -> tuple[list[list[str]], int]:
         (
             index
             for index, scene in enumerate(scenes)
-            if diagnose_scene_detail(scene, index=index + 1).get("missing_fields")
+            if any(
+                field not in SCENE_LIST_OWNED_FIELDS
+                for field in diagnose_scene_detail(scene, index=index + 1).get("missing_fields") or []
+            )
         ),
         0,
     )

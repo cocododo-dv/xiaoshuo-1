@@ -195,6 +195,106 @@ def test_echoing_the_draft_verbatim_fails_loudly(session, monkeypatch):
     assert excinfo.value.code == "SNOWFLAKE_LLM_EMPTY_GENERATION"
 
 
+def _seed_with_plans(session, project_id: str, *, scenes: list[dict], planned=lambda index: True) -> SnowflakeWorkspaceService:
+    """作者真实走过的路：09（``scenes`` 这张场景表）/ 10 都经工作台保存过，场景计划已经建好（``_seed`` 直接落两份草稿、
+    不建计划）。``planned(i)`` 为真的场（i 从 1 起）在第 10 步填好三拍与代价。"""
+    session.add(StoryProject(
+        project_id=project_id, title="何有", outline_text="何有", planning_mode="snowflake",
+        snowflake_workflow_mode="explore", target_word_count=100000,
+    ))
+    session.flush()
+    service = SnowflakeWorkspaceService(session)
+    service.update_step(project_id, "scene_list", {"draft": {"scenes": scenes}})
+    rows = next(
+        step for step in service.workspace(project_id)["steps"] if step["step_key"] == "scene_details"
+    )["draft"]["scenes"]
+    trio = {"conflict": "三轮受阻", "setback": "账本被烧", "cost_requirement": "失去父亲遗物"}
+    service.update_step(project_id, "scene_details", {"draft": {"scenes": [
+        dict(row, goal=f"{row['scene_id']} 拿到账本", **trio) if planned(index) else dict(row)
+        for index, row in enumerate(rows, start=1)
+    ]}})
+    session.flush()
+    return service
+
+
+def _plans_of(session, project_id: str) -> list[tuple]:
+    from novel_system.db.models import SnowflakeScenePlan
+
+    plans = session.query(SnowflakeScenePlan).filter(SnowflakeScenePlan.project_id == project_id).all()
+    return sorted(
+        (plan.row_uid, plan.title, plan.summary, plan.location, plan.scene_crucible, plan.goal, plan.conflict, plan.setback)
+        for plan in plans
+    )
+
+
+def _versions_of(session, project_id: str) -> int:
+    return session.query(SnowflakeStepRun).filter_by(project_id=project_id, step_key="scene_details").count()
+
+
+@pytest.mark.parametrize("body", [{}, {"focus_scene_refs": ["SC002"]}], ids=["whole-table", "one-scene"])
+def test_a_generation_that_only_rewrites_the_scene_list_columns_fails_loudly(session, monkeypatch, body):
+    """复核 I6-R1：事件 / 地点 / 坩埚归 09（合并胶水 G4）——第 10 步的生成改不动已有场景计划上的这几栏，存下的草稿也照
+    场上的样子写回。模型这次只换了这几栏的说法、第 10 步自己的栏一个字没动，就是空转：如实报错，不落一版新的「AI 生成」
+    （已确认的 10 也就不会被打回待重新确认），而不是报「已生成」、场上什么都没变。"""
+    def responder(request):
+        payload = _payload_of(request)
+        targets = _focus_ids(payload) or [scene["scene_id"] for scene in payload["current_draft"]["scenes"]]
+        return _respond({"scenes": [
+            {"scene_id": scene_id, "summary": "模型换了说法的事件", "location": "模型换的地点",
+             "crucible": "模型换的坩埚", "scene_crucible": "模型换的坩埚"}
+            for scene_id in targets
+        ]})
+
+    _install_llm(monkeypatch, responder)
+    service = _seed_with_plans(session, "prj-list-only", scenes=_scenes(4))
+    versions, plans = _versions_of(session, "prj-list-only"), _plans_of(session, "prj-list-only")
+
+    with pytest.raises(DomainError) as excinfo:
+        service.generate_step("prj-list-only", "scene_details", {"source": "fe_scaffold_ai", **body})
+
+    assert excinfo.value.code == "SNOWFLAKE_LLM_EMPTY_GENERATION"
+    session.flush()
+    assert _versions_of(session, "prj-list-only") == versions, "空转也落了一版「AI 生成」"
+    assert _plans_of(session, "prj-list-only") == plans
+
+
+def test_full_table_batches_start_at_the_first_scene_step_10_can_still_deepen(session, monkeypatch):
+    """复核 I6-R1 的另一面：坩埚归 09（合并胶水 G4），第 10 步的生成补不上它。分批的起点以前取「第一场还缺必填项的场」，
+    缺的若只是 09 的坩埚，这一批就是白跑——空转防线如今如实拒收这种批次，第一批拒收整表生成随之报错，后面真缺三拍的场
+    永远轮不到。起点只看第 10 步自己写得进去的缺口；坩埚留空的那场仍然空着，等作者回 09 补。"""
+    calls: list[list[str]] = []
+
+    def responder(request):
+        payload = _payload_of(request)
+        focus = _focus_ids(payload)
+        calls.append(focus)
+        current = {scene["scene_id"]: scene for scene in payload["current_draft"]["scenes"]}
+        scenes = []
+        for scene_id in focus:
+            scene = current[scene_id]
+            item = {"scene_id": scene_id, "goal": scene.get("goal"), "conflict": scene.get("conflict"),
+                    "setback": scene.get("setback"), "cost_requirement": scene.get("cost_requirement")}
+            if not item["goal"]:
+                item.update(goal=f"{scene_id} 新的目标", conflict="两轮受阻", setback="证人翻供", cost_requirement="信用")
+            if not (scene.get("crucible") or scene.get("scene_crucible")):
+                item.update(crucible="模型补的坩埚", scene_crucible="模型补的坩埚")  # 提示词要它填，第 10 步存不进去
+            scenes.append(item)
+        return _respond({"scenes": scenes})
+
+    _install_llm(monkeypatch, responder)
+    listed = _scenes(SCENE_DETAIL_BATCH_SIZE + 2)
+    listed[0]["crucible"] = ""  # 第 1 场 09 的坩埚空着，三拍齐全
+    service = _seed_with_plans(session, "prj-start", scenes=listed, planned=lambda index: index <= SCENE_DETAIL_BATCH_SIZE)
+
+    result = service.generate_step("prj-start", "scene_details", {"source": "fe_scaffold_ai"})
+
+    assert calls == [[f"SC{i:03d}" for i in range(SCENE_DETAIL_BATCH_SIZE + 1, SCENE_DETAIL_BATCH_SIZE + 3)]]
+    assert result["step"]["health"]["generation_source"] == "llm"
+    plans = {row[0]: row for row in _plans_of(session, "prj-start")}
+    assert plans["u7"][5] == "SC007 新的目标" and plans["u8"][5] == "SC008 新的目标"
+    assert plans["u1"][4] == "", "09 的坩埚只在 09 改"
+
+
 def test_a_mid_run_batch_failure_keeps_finished_batches_and_reports_progress(session, monkeypatch):
     """中途失败：已深化的场必须留下（真花了 token），但进度要明明白白告诉作者。"""
     from novel_system.services.llm_client import LLMResponseError
