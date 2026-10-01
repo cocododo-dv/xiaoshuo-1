@@ -145,4 +145,26 @@ describe("写作台场景笔记的异步隔离", () => {
       .map((index) => window.localStorage.key(index))
       .some((key) => key.startsWith("wr-notes-pending:scene-a"))).toBe(true);
   });
+
+  it("开着笔记时目录给这一场换了名字（临时 sid → scene_id）：没存上的笔记跟到新名字下、照样显示，状态是未同步", async () => {
+    const { client, WrCtxNotes } = await loadNotes();
+    const { WsCatalog } = await import("./ws-catalog.jsx");
+    vi.spyOn(WsCatalog, "sceneById").mockImplementation((sid) => (sid === "tmp_1" || sid === "s9" ? { scene: { sid: "s9" } } : null));
+    client.apiGet.mockResolvedValue({ notes: "", revision_no: 1 });
+    client.apiPatch.mockRejectedValue(Object.assign(new Error("offline"), { code: "NETWORK_ERROR" }));
+
+    await act(async () => root.render(<WrCtxNotes scene="tmp_1" />));
+    await flushPromises();
+    await changeTextarea(host.querySelector("textarea"), "新建时记下的伏笔");
+    await act(async () => root.render(<WrCtxNotes scene="s9" />));
+    await flushPromises();
+    await flushPromises();
+    await flushPromises();
+
+    expect(host.querySelector("textarea").value).toBe("新建时记下的伏笔");
+    expect(host.querySelector(".wr-notes-state").textContent).toContain("未同步");
+    const keys = [...Array(window.localStorage.length).keys()].map((index) => window.localStorage.key(index));
+    expect(keys.some((key) => key.startsWith("wr-notes-pending:s9"))).toBe(true);
+    expect(keys.some((key) => key.startsWith("wr-notes:tmp_1") || key.startsWith("wr-notes-pending:tmp_1"))).toBe(false);
+  });
 });

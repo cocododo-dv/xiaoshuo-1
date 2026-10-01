@@ -29,6 +29,8 @@ import { WrContext } from "./ws-writer-context.jsx";
 import { WrTray } from "./ws-writer-tray.jsx";
 import { WrInlineRewrite } from "./ws-writer-inline.jsx";
 import { formatClockTime } from "./lib/format.js";
+/* 换了名字的场（乐观新建：临时 sid → scene_id），批注与本场笔记的本机键跟过去：模块加载时向目录登记一次 */
+import "./ws-writer-scene-keys.js";
 
 /* ==========================================================
    WriterRoom — 写作台

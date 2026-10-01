@@ -366,3 +366,31 @@ describe("复核七 · 创建第一章后马上动笔，建章还在路上时刷
     expect(Object.keys(window.localStorage).some((key) => key.startsWith("wr-doc-pending:") && key.includes(tmp))).toBe(true);
   }, LONG);
 });
+
+describe("换了名字的场：批注与本场笔记的本机键跟过去（W1 复核跟进）", () => {
+  it("新建那几秒写的批注、没同步上的笔记：目录换名之后搬到 s9 下，编辑器里批注照样标出来", async () => {
+    const ctx = await loadWriter(newWorld());
+    const { host } = await render(<ctx.WriterRoom t={{}} setTweak={() => {}} />);
+    const r = room(ctx, host);
+    let tmpSid = null;
+    await createFirstChapterAndType(ctx, r, "<p>第一句写在新场景里。</p>", {
+      beforeRelease: () => {
+        tmpSid = window.WsCatalog.writingScene().scene.sid;
+        window.localStorage.setItem(`wr-anno:${tmpSid}::prj-main`, JSON.stringify({ v: 1, items: [
+          { id: "a1", quote: "新场景", prefix: "第一句写在", suffix: "里。", note: "这里再冷一点", createdAt: 1, updatedAt: 1 },
+        ] }));
+        window.localStorage.setItem(`wr-notes:${tmpSid}::prj-main`, "新建时记下的笔记");
+        window.localStorage.setItem(`wr-notes-pending:${tmpSid}::prj-main`, "1");
+      },
+    });
+    expect(tmpSid).toMatch(/^tmp_/);
+    await vi.waitFor(() => expect(window.localStorage.getItem("wr-anno:s9::prj-main")).toContain("这里再冷一点"), T);
+    expect(window.localStorage.getItem(`wr-anno:${tmpSid}::prj-main`)).toBeNull();
+    expect(window.localStorage.getItem("wr-notes:s9::prj-main")).toBe("新建时记下的笔记");
+    expect(window.localStorage.getItem("wr-notes-pending:s9::prj-main")).toBe("1");
+    expect(window.localStorage.getItem(`wr-notes:${tmpSid}::prj-main`)).toBeNull();
+    await vi.waitFor(() => expect(r.editor().querySelector('mark.wr-anno[data-anno-id="a1"]')).not.toBeNull(), T);
+    expect(r.editor().querySelector('mark.wr-anno[data-anno-id="a1"]').textContent).toBe("新场景");
+  }, LONG);
+});
+
