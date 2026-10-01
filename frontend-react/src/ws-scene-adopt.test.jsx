@@ -460,7 +460,7 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
 
   it("scnRewriteBriefFrom：读后端真实键名 hard_qc_summary / soft_qc_summary，硬优先于软", async () => {
     const { mod } = await loadSceneRun();
-    // 服务端形状（api/routes/scenes.py `_serialize_qc_summary`）
+    // 服务端形状（services/scene_workbench.py `serialize_qc_summary`）
     expect(mod.scnRewriteBriefFrom({
       hard_qc_summary: { qc_type: "hard_qc", pass_flag: false, rewrite_brief: ["补齐推门动作", "明确主动销毁通行证"] },
       soft_qc_summary: { qc_type: "soft_qc", pass_flag: false, rewrite_brief: ["收紧结尾三句"] },

@@ -456,7 +456,7 @@ describe("SceneRunJobControl", () => {
   });
 
   /* 契约对位：GET /scenes/{id}/workbench 以 hard_qc_summary / soft_qc_summary 透出质检
-     （api/routes/scenes.py `_serialize_qc_summary`，rewrite_brief 为字符串列表）。
+     （services/scene_workbench.py `serialize_qc_summary`，rewrite_brief 为字符串列表）。
      起草台的运行记录必须从这两个真实键名取回改写指令，否则「按硬问题重写并复检」
      只能退到 issue_key 拼接，作者看不到质检给出的具体改法。 */
   const HARD_BLOCKED_WORKBENCH = {

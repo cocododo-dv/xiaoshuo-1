@@ -4,8 +4,8 @@ One home for the copies that were byte-identical (X02-18 / X01-14). Rules that d
 are, under their own names — they are NOT this module's contract:
 
 - current author draft *without* the ``updated_at`` / ``draft_id`` ordering
-  (``writer_deep_review`` passage patch apply, ``style_reference.check_job`` scene text,
-  ``api/routes/scenes`` adopt-current, ``project_overview`` batch by scene ids);
+  (``style_reference.check_job`` scene text, ``scene_adoption`` adopt-current,
+  ``project_overview`` batch by scene ids);
 - the final-scene pointer rule of ``canonical_manuscripts`` / ``project_overview`` / the run pipeline.
 """
 
