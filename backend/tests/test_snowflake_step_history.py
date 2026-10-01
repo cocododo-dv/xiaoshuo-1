@@ -23,9 +23,10 @@ def _chapter(title: str, **extra) -> dict:
 
 def test_restoring_an_older_07_keeps_the_live_chapter_table(session) -> None:
     """R11（批准 #18a）：07 的章表是分章结果的只读镜像，章表行只有一个写入方（分章面板 / 确认写入）。恢复一版旧的 07
-    只恢复它的文字：章表行、章名（分章面板 / 写作台起的名字）、场景归属原样，恢复出来的草稿里的章表——连同前端写穿
-    缓存里的那一份——是现在这张章表，也就没有「章表收缩」可报。以前恢复把那一版当时的章表同步回章表行：改过的章名
-    退回旧名、后来加的章被软删、挂在上面的场退回「未分章」（复核 P04-R3，主管决定）。"""
+    只恢复它的文字：章表行、章名（分章面板 / 写作台起的名字）、场景归属原样，恢复出来的草稿里的章表是现在这张章表，
+    也就没有「章表收缩」可报；那一版的前端写穿缓存里那时候的章表副本去掉（07 的章表只在规范的 chapters 里）。以前
+    恢复把那一版当时的章表同步回章表行：改过的章名退回旧名、后来加的章被软删、挂在上面的场退回「未分章」（复核
+    P04-R3，主管决定）。"""
     from sqlalchemy import select
 
     from novel_system.db.models import SnowflakeScenePlan
@@ -91,7 +92,7 @@ def test_restoring_an_older_07_keeps_the_live_chapter_table(session) -> None:
     assert [(item["row_uid"], item["title"]) for item in restored.draft_json["chapters"]] == [
         (uid, title) for uid, title, _status in before_table
     ]
-    assert [item["title"] for item in restored.draft_json["fe_scaffold"]["chapters"]] == ["旧信回城", "雨夜对质"]
+    assert "chapters" not in restored.draft_json["fe_scaffold"], "那一版写穿缓存里的旧章表副本跟着恢复回来了"
     assert restored.draft_json["fe_scaffold"]["expansions"] == {"setup": "第一段"}
 
 

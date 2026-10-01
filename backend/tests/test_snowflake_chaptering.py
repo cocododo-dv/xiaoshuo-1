@@ -685,12 +685,12 @@ def test_saving_step_07_without_a_chapter_table_keeps_the_table_and_the_approved
 
 
 def _explicit_table(session, project_id: str) -> list[dict]:
-    """现在这张章表写成 07 的显式 ``chapters``（API 调用方给的、今天的前端上行的就是这个形状）。"""
+    """现在这张章表写成 07 的显式 ``chapters``（API 调用方给的形状；前端从 Q1c 起不再上行章表）。"""
     return [dict(chapter, row_uid=row.row_uid) for chapter, row in zip(_CHAPTERS, _live_chapters(session, project_id))]
 
 
 def test_an_explicit_07_table_that_grows_mints_identity_only_for_the_new_chapters(client, session) -> None:
-    """显式给 07 的章表（API 调用方；前端改成不上行章表之前还有前端的 07 上行）照旧同步成章表行，走的是与分章面板
+    """显式给 07 的章表（只剩 API 调用方：前端从 Q1c 起不再上行章表）照旧同步成章表行，走的是与分章面板
     同一个 upsert（收下认不得的 row_uid）：加两章时前六章的身份与场景归属不动，新增的两章各拿一个新 uid，
     铸好的 uid 写回 07 草稿（下一次保存与前端水合拿到同一个锚）。"""
     project_id = _create_project(client, "explicit-grow")
@@ -775,26 +775,18 @@ def test_a_shrinking_07_table_counts_only_live_scenes_as_loose(client, session) 
     assert all(plan.chapter_plan_id is None for plan in bound), "删掉的场也从消失的章上摘下来"
 
 
-def test_the_frontend_cache_copy_of_the_07_table_stays_the_chapter_table(client, session) -> None:
-    """复核 P04-R1：前端水合 07 时整份取写穿缓存 ``fe_scaffold``（它在就不看规范的 ``chapters``）。分章面板存了章表之后，
-    缓存里的那一份必须是同一张章表——否则新浏览器 / 另一台电脑打开 07 看到空章表，点一下「添加第一幕章节」自动
-    保存就上行一张只有一行的显式章表，全书的章被软删、每一场退回「未分章」。另一台电脑上行一张空章表（本机缓存
-    比服务端旧）时同理：存着的章表沿用，缓存里的那一份也沿用。"""
+def test_the_07_table_lives_only_in_the_canonical_chapters_never_in_the_frontend_cache(client, session) -> None:
+    """R11（批准 #18a）收尾：前端（Q1c 起）只从规范的 ``chapters`` 水合 07 的章表、07 上行不带章表，后端也就不再写
+    前端写穿缓存里的那份章表（``fe_scaffold.chapters``，复核 P04-R1 时为旧前端临时留着的）。还留着的旧副本——R11
+    之前的前端写进去的、没刷新的旧标签页上行带来的——一律去掉，也从不拿它同步章表行：旧标签页上行一张过时的副本
+    时，章表、章名与场景归属一行不动。"""
     from tests.test_snowflake_chaptering_story_order import _payload
 
-    def fe_rows(rows) -> list[dict]:
-        # 前端 feFromCanon("outline") 的形状：两位章号、章目标叫 goal
+    def fe_copy(rows) -> list[dict]:
+        # R11 之前的前端写穿缓存里那份章表的形状（feFromCanon("outline")：两位章号、章目标叫 goal）
         return [
             {"row_uid": row.row_uid, "id": f"{index:02d}", "act": row.act, "title": row.title or "",
              "summary": row.summary or "", "spine": row.spine or "", "goal": row.chapter_goal or ""}
-            for index, row in enumerate(rows, start=1)
-        ]
-
-    def canon_rows(rows) -> list[dict]:
-        # 前端 canonFromFE("outline") 上行的形状
-        return [
-            {"row_uid": row.row_uid, "chapter_seq": index, "act": row.act, "title": row.title or "",
-             "summary": row.summary or "", "spine": row.spine or "", "chapter_goal": row.chapter_goal or ""}
             for index, row in enumerate(rows, start=1)
         ]
 
@@ -802,11 +794,13 @@ def test_the_frontend_cache_copy_of_the_07_table_stays_the_chapter_table(client,
     _seed(client, project_id)
     _autoassign(session, project_id)
     live = _live_chapters(session, project_id)
-    # 今天的前端上行 07 的样子：规范的 chapters + 写穿缓存（里面也有一份章表）
+    # R11 之前的前端留下的 07：写穿缓存里还有一份章表（规范字段没带章表 → 沿用存着的）
     _patch(client, project_id, "long_synopsis", {
-        "paragraphs": ["", "", "", ""], "chapters": canon_rows(live),
-        "fe_scaffold": {"expansions": {}, "chapters": fe_rows(live)},
+        "paragraphs": ["", "", "", ""], "fe_scaffold": {"expansions": {}, "chapters": fe_copy(live)},
     })
+    stored = _latest_07(session, project_id).draft_json
+    assert "chapters" not in stored["fe_scaffold"], "上行的写穿缓存里那份章表收进了库"
+    assert [item["row_uid"] for item in stored["chapters"]] == [row.row_uid for row in live]
 
     # 分章面板「只保存章表」：第二章并入第一章，第一章起个名字
     preview = client.post(
@@ -824,57 +818,70 @@ def test_the_frontend_cache_copy_of_the_07_table_stays_the_chapter_table(client,
 
     live = _live_chapters(session, project_id)
     assert len(live) == len(_CHAPTERS) - 1 and live[0].title == "旧信回城"
+    table = [(row.row_uid, row.title) for row in live]
     stored = _latest_07(session, project_id).draft_json
-    assert stored["fe_scaffold"]["chapters"] == fe_rows(live), "新浏览器会水合到一张过时的 / 空的 07 章表"
+    assert [(item["row_uid"], item["title"]) for item in stored["chapters"]] == table
+    assert "chapters" not in stored["fe_scaffold"], "后端又写了前端写穿缓存里的章表"
     assert stored["fe_scaffold"]["expansions"] == {}
     bindings = _bindings(session, project_id)
     assert all(bindings.values())
 
-    # 新浏览器水合到的就是这一份，它每次 07 上行原样回传：章表与归属一行不动
-    table = [(row.row_uid, row.title) for row in live]
+    # 今天的前端上行 07：五段展开 + 不带章表的写穿缓存——存着的章表沿用，章表与归属一行不动
     _patch(client, project_id, "long_synopsis", {
-        "paragraphs": ["改过的一幕", "", "", ""], "chapters": canon_rows(live),
-        "fe_scaffold": {"expansions": {"setup": "改过的一幕"}, "chapters": fe_rows(live)},
-    })
-    assert [(row.row_uid, row.title) for row in _live_chapters(session, project_id)] == table
-    assert _bindings(session, project_id) == bindings
-
-    # 另一台电脑的本机缓存比服务端旧、07 章表是空的：上行的章表是空表 → 沿用存着的，写穿缓存里的那一份也沿用
-    _patch(client, project_id, "long_synopsis", {
-        "paragraphs": ["改过的一幕", "又改一句", "", ""], "chapters": [],
-        "fe_scaffold": {"expansions": {"setup": "改过的一幕", "d1": "又改一句"}, "chapters": []},
+        "paragraphs": ["改过的一幕", "", "", ""], "fe_scaffold": {"expansions": {"setup": "改过的一幕"}},
     })
     stored = _latest_07(session, project_id).draft_json
-    assert stored["fe_scaffold"]["chapters"] == fe_rows(live)
-    assert stored["fe_scaffold"]["expansions"]["d1"] == "又改一句"
+    assert [(item["row_uid"], item["title"]) for item in stored["chapters"]] == table
+    assert "chapters" not in stored["fe_scaffold"]
     assert [(row.row_uid, row.title) for row in _live_chapters(session, project_id)] == table
     assert _bindings(session, project_id) == bindings
 
+    # 没刷新的旧标签页：写穿缓存里还是分章之前的那张表（六章、旧章名）——不收、不同步，去掉
+    stale = [dict(item, title=f"{item['title']}（旧标签页）") for item in fe_copy(_live_chapters(session, project_id))]
+    stale.append({"row_uid": second, "id": "06", "act": 3, "title": "已经并掉的那一章", "summary": "", "spine": "", "goal": ""})
+    _patch(client, project_id, "long_synopsis", {
+        "paragraphs": ["改过的一幕", "又改一句", "", ""],
+        "fe_scaffold": {"expansions": {"setup": "改过的一幕", "d1": "又改一句"}, "chapters": stale},
+    })
+    stored = _latest_07(session, project_id).draft_json
+    assert "chapters" not in stored["fe_scaffold"]
+    assert stored["fe_scaffold"]["expansions"]["d1"] == "又改一句"
+    assert [(item["row_uid"], item["title"]) for item in stored["chapters"]] == table
+    assert [(row.row_uid, row.title) for row in _live_chapters(session, project_id)] == table, "旧副本被同步成了章表行"
+    assert _bindings(session, project_id) == bindings, "旧副本改动了场景归属"
 
-def test_keeping_the_live_table_also_replaces_an_old_frontend_cache_copy(client, session) -> None:
-    """保留现表的那条路（07 重新生成；从历史里恢复旧版本时也该走它）碰上带着写穿缓存的草稿——恢复的旧版本带着
-    它当时的那一份旧章表——缓存里的章表一并换成现表，缓存的其余部分原样：留着旧章表，新浏览器水合到它，下一次
-    07 上行就把旧章表当显式章表同步回来。"""
+
+def test_keeping_the_live_table_also_drops_an_old_frontend_cache_copy(client, session) -> None:
+    """保留现表的那条路（07 重新生成；从历史里恢复旧版本）碰上带着写穿缓存的草稿——恢复的旧版本带着它当时的那一份
+    旧章表——规范的章表换成现表，写穿缓存里那份旧副本去掉，缓存的其余部分原样。还没分过章时不保留什么，旧副本
+    照样去掉（07 的章表只在规范的 ``chapters`` 里）。"""
     from novel_system.services.snowflake_chapter_table import keep_live_chapter_table
 
+    def old_draft() -> dict:
+        return {
+            "paragraphs": ["一幕", "", "", "", ""],
+            "chapters": [{"row_uid": "chrow_old", "chapter_seq": 1, "act": 1, "title": "旧的一章"}],
+            "fe_scaffold": {
+                "expansions": {"setup": "一幕"},
+                "chapters": [{"row_uid": "chrow_old", "id": "01", "act": 1, "title": "旧的一章", "summary": "", "spine": "", "goal": ""}],
+            },
+        }
+
     project_id = _create_project(client, "keep-live-fe")
+    draft = old_draft()
+    assert keep_live_chapter_table(session, project_id, draft) is False  # 还没有章表行
+    assert draft["fe_scaffold"] == {"expansions": {"setup": "一幕"}}
+    assert [item["row_uid"] for item in draft["chapters"]] == ["chrow_old"]
+
     _seed(client, project_id)
     _autoassign(session, project_id)
     live = _live_chapters(session, project_id)
-    old = [{"row_uid": "chrow_old", "id": "01", "act": 1, "title": "旧的一章", "summary": "", "spine": "", "goal": ""}]
-    draft = {
-        "paragraphs": ["一幕", "", "", "", ""],
-        "chapters": [{"row_uid": "chrow_old", "chapter_seq": 1, "act": 1, "title": "旧的一章"}],
-        "fe_scaffold": {"expansions": {"setup": "一幕"}, "chapters": old},
-    }
+    draft = old_draft()
 
     assert keep_live_chapter_table(session, project_id, draft) is True
 
     assert [item["row_uid"] for item in draft["chapters"]] == [row.row_uid for row in live]
-    assert [(item["row_uid"], item["title"], item["id"]) for item in draft["fe_scaffold"]["chapters"]] == [
-        (row.row_uid, row.title, f"{index:02d}") for index, row in enumerate(live, start=1)
-    ]
-    assert draft["fe_scaffold"]["expansions"] == {"setup": "一幕"}
+    assert draft["fe_scaffold"] == {"expansions": {"setup": "一幕"}}
 
 
 def test_a_frontend_payload_missing_chapters_cannot_wipe_the_chapter_table(session) -> None:

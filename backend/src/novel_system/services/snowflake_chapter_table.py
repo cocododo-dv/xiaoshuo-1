@@ -365,8 +365,11 @@ def soft_delete_unlisted_chapters(
 #
 # 2026-09-30（R11，批准 #18a）起 07 的章表是分章结果的**只读镜像**：分章面板（与章节编排改名）是唯一改章的地方，
 # 07 只显示。07 保存不带章表时沿用存着的那一份（``carry_stored_chapters``），07 重新生成时只要有章表行就保留现表、
-# 不收模型的章（``keep_live_chapter_table``）。显式给了章表的保存照旧同步成行——API 调用方，以及前端改成不上行
-# 章表之前的前端 07 上行。
+# 不收模型的章（``keep_live_chapter_table``）。显式给了章表的保存照旧同步成行——只剩 API 调用方：前端（Q1c 起）
+# 07 上行不带章表，水合也只读规范的 ``chapters``。
+#
+# 前端写穿缓存里的章表（``fe_scaffold.chapters``）后端从不写；还留着的旧副本（R11 之前的前端写进去的、没刷新的
+# 旧标签页上行带来的、从历史里恢复的旧版本带着的）在三处写 07 草稿的地方一律去掉，也从不拿它同步章表行。
 
 
 def chapter_table_rows(chapters: Iterable[SnowflakeChapterPlan]) -> list[dict[str, Any]]:
@@ -389,86 +392,56 @@ def chapter_table_rows(chapters: Iterable[SnowflakeChapterPlan]) -> list[dict[st
 def mirror_chapters_into_long_synopsis(session: Session, project_id: str, chapters: list[SnowflakeChapterPlan]) -> None:
     """把章表写回 07 最新草稿的 ``chapters``（带 row_uid），07 显示的与章表行才是同一份。
 
-    草稿里的 ``fe_scaffold.chapters`` 是前端的写穿缓存：前端水合 07 时**整份**取 ``fe_scaffold``，它在就不看规范字段，
-    所以两处一起写（只改 ``chapters`` 的话，新浏览器看到的是旧章表——真实故障里是两行占位旧章——下一次 07 上行
-    再把它当作者的章表同步回来，把刚确认的分章冲掉）。前端改成从规范的 ``chapters`` 水合章表之前这一份删不得：
-    删掉它，新浏览器 / 另一台电脑打开 07 看到的是一张空章表，点一下「添加第一幕章节」自动保存就上行一张只有一行的
-    显式章表——全书的章被软删、每一场退回「未分章」（复核 P04-R1：是毁数据，不只是显示空）。
+    前端写穿缓存里还留着的章表旧副本（``fe_scaffold.chapters``）一并去掉：前端从规范的 ``chapters`` 水合章表（R11），
+    旧副本只会让哪个没刷新的旧页面把一张过时的章表当成作者的章表读回去。
     """
     run = latest_step_run(session, project_id, "long_synopsis")
     if run is None:
         return
     draft = dict(run.draft_json or {})
-    rows = chapter_table_rows(chapters)
-    draft["chapters"] = rows
-    scaffold = draft.get("fe_scaffold")
-    if isinstance(scaffold, dict):
-        draft["fe_scaffold"] = {**scaffold, "chapters": fe_chapter_rows(rows)}
+    draft["chapters"] = chapter_table_rows(chapters)
+    _drop_frontend_chapter_copy(draft)
     run.draft_json = draft
     flag_modified(run, "draft_json")
 
 
-def fe_chapter_rows(chapters: Iterable[Any]) -> list[dict[str, Any]]:
-    """07 草稿里的 ``chapters`` → 前端写穿缓存 ``fe_scaffold.chapters`` 的形状（与前端 ``feFromCanon("outline")`` 同一个
-    形状：按位置编两位章号、幕 1–3、章目标叫 ``goal``）。"""
-    rows = [item for item in chapters if isinstance(item, dict)]
-    return [
-        {
-            "row_uid": str(item.get("row_uid") or ""),
-            "id": f"{index:02d}",
-            "act": _clamped_act(item.get("act")),
-            "title": str(item.get("title") or ""),
-            "summary": str(item.get("summary") or ""),
-            "spine": str(item.get("spine") or ""),
-            "goal": str(item.get("chapter_goal") or ""),
-        }
-        for index, item in enumerate(rows, start=1)
-    ]
+def _drop_frontend_chapter_copy(draft: dict[str, Any]) -> None:
+    """去掉 07 草稿的前端写穿缓存里那份章表旧副本（``fe_scaffold.chapters``），缓存的其余部分原样。
 
-
-def _clamped_act(value: Any) -> int:
-    """幕夹到 1–3（与前端 ``Math.min(Math.max(act || 1, 1), 3)`` 一样：越界的夹住，不像 :func:`coerce_act` 那样退回第一幕）。"""
-    try:
-        act = int(value or 1)
-    except (TypeError, ValueError):
-        return 1
-    return min(max(act, 1), 3)
+    07 的章表只在规范的 ``chapters`` 里（R11）：前端不读也不上行写穿缓存里的章表，后端从不写它、也从不拿它同步章表行。
+    """
+    scaffold = draft.get("fe_scaffold")
+    if isinstance(scaffold, dict) and "chapters" in scaffold:
+        draft["fe_scaffold"] = {key: value for key, value in scaffold.items() if key != "chapters"}
 
 
 def carry_stored_chapters(draft: dict[str, Any], sent_draft: Any, stored_run: Any) -> bool:
     """07 保存没带章表（空表也算没带）：把存着的那一份原样放回 ``draft``，返回 True。
 
     必须在「这一版和已确认的是不是同一个故事」的比较之前做：``merge_step_draft`` 从步骤默认值起，缺席的章表会变成
-    空表，已确认的 07 就被当成改过、打回待审。沿用时调用方也不去同步章表行——章表没动。显式带了章表（API 调用方、
-    改成不上行章表之前的前端）返回 False，照旧同步。
+    空表，已确认的 07 就被当成改过、打回待审。沿用时调用方也不去同步章表行——章表没动。显式带了章表（API 调用方）
+    返回 False，照旧同步。
 
-    上行的写穿缓存里章表是空的（本机缓存比服务端旧的另一台电脑 / 旧标签页）时，缓存里的那一份也换成沿用的章表：
-    前端水合整份取 ``fe_scaffold``，留一张空表在那里，下一个新浏览器看到的就是空章表（见
-    :func:`mirror_chapters_into_long_synopsis`）。
+    上行的写穿缓存里带着章表的（R11 之前的前端、没刷新的旧标签页）那一份一律去掉、不收：章表行只认规范的 ``chapters``。
     """
+    _drop_frontend_chapter_copy(draft)
     sent = sent_draft.get("chapters") if isinstance(sent_draft, dict) else None
     if isinstance(sent, list) and any(isinstance(item, dict) for item in sent):
         return False
     stored = (getattr(stored_run, "draft_json", None) or {}).get("chapters") if stored_run is not None else None
-    carried = deepcopy(stored) if isinstance(stored, list) else []
-    draft["chapters"] = carried
-    scaffold = draft.get("fe_scaffold")
-    if carried and isinstance(scaffold, dict) and not scaffold.get("chapters"):
-        draft["fe_scaffold"] = {**scaffold, "chapters": fe_chapter_rows(carried)}
+    draft["chapters"] = deepcopy(stored) if isinstance(stored, list) else []
     return True
 
 
 def keep_live_chapter_table(session: Session, project_id: str, draft: dict[str, Any]) -> bool:
-    """07 重新生成：已经有章表行就保留现表（模型给的章表不收——拆章 / 并章 / 改章名都在分章面板），返回 True。
+    """07 重新生成 / 恢复旧版本：已经有章表行就保留现表（模型给的、旧版本当时的章表都不收——拆章 / 并章 / 改章名都在
+    分章面板），返回 True。
 
-    草稿带着前端写穿缓存时（生成的草稿不带；从历史里恢复的旧版本带着它当时的那一份）缓存里的章表一并换成现表：
-    前端水合整份取 ``fe_scaffold``，留一份旧章表在那里，下一次 07 上行就把旧章表当显式章表同步回来。
+    草稿带着前端写穿缓存时（生成的草稿不带；从历史里恢复的旧版本带着它当时的那一份）缓存里的章表旧副本一并去掉。
     """
+    _drop_frontend_chapter_copy(draft)
     live = live_chapter_plans(session, project_id)
     if not live:
         return False
     draft["chapters"] = chapter_table_rows(live)
-    scaffold = draft.get("fe_scaffold")
-    if isinstance(scaffold, dict):
-        draft["fe_scaffold"] = {**scaffold, "chapters": fe_chapter_rows(draft["chapters"])}
     return True

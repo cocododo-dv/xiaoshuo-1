@@ -291,7 +291,7 @@ def test_confirming_a_proposal_replaces_the_placeholder_table_and_mirrors_it(ses
     run = session.execute(
         select(SnowflakeStepRun).where(SnowflakeStepRun.project_id == PROJECT_ID, SnowflakeStepRun.step_key == "long_synopsis")
     ).scalars().first()
-    # 前端写穿缓存里也有那两行占位章——水合时它优先于规范字段
+    # R11 之前的前端在写穿缓存里也留着一份章表（那两行占位章）
     run.draft_json = {**run.draft_json, "fe_scaffold": {"expansions": {}, "chapters": [{"id": "01", "act": 1, "title": "（待补）"}]}}
     session.flush()
 
@@ -314,12 +314,9 @@ def test_confirming_a_proposal_replaces_the_placeholder_table_and_mirrors_it(ses
     session.refresh(run)
     assert [item["title"] for item in run.draft_json["chapters"]] == ["旧日志", "第 2 章", "第 3 章", "第 4 章"]
     assert [item["row_uid"] for item in run.draft_json["chapters"]] == [chapter.row_uid for chapter in chapters]
-    # 写穿缓存里的那一份跟着换成新章表（前端水合整份取它）：新浏览器看不到那两行占位旧章，也看不到一张空章表
-    #（复核 P04-R1：空表上点一下「添加章节」就上行一张一行的显式章表，把全书的章冲掉）；写穿缓存的其余部分原样
-    mirrored = run.draft_json["fe_scaffold"]["chapters"]
-    assert [item["title"] for item in mirrored] == [item["title"] for item in run.draft_json["chapters"]]
-    assert [item["row_uid"] for item in mirrored] == [chapter.row_uid for chapter in chapters]
-    assert [item["id"] for item in mirrored] == ["01", "02", "03", "04"]
+    # 07 的章表只在规范的 chapters 里（R11）：前端只从它水合章表，写穿缓存里那份占位旧章的旧副本去掉、后端不再写这份
+    # 副本（复核 P04-R1 时为旧前端临时留着的）；写穿缓存的其余部分原样
+    assert "chapters" not in run.draft_json["fe_scaffold"]
     assert run.draft_json["fe_scaffold"]["expansions"] == {}
 
 

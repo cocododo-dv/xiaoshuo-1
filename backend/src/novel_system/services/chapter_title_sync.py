@@ -10,7 +10,7 @@
 - 分章面板确认写入 → ``SnowflakeChapteringService.save`` + 物化（阶段 W 的「目录章名跟随章表」）。
 
 目录那一行的 ``writer_brief_json["chapter_title"]`` 记着「上一次由章表播下去的名字」；两边一致时它就等于
-当前章名，之后任何一扇门再改都还跟得上。章表在 07 草稿里的镜像（``chapters`` 与前端写穿缓存里的那一份）由
+当前章名，之后任何一扇门再改都还跟得上。章表在 07 草稿里的镜像（``chapters``；前端写穿缓存里不留章表副本）由
 :func:`mirror_chapters_into_long_synopsis`（实现在 ``snowflake_chapter_table``）统一维护。
 """
 
