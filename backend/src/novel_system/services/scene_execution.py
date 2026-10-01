@@ -16,9 +16,12 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.qc_constraints import strip_reference_policy
+from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_form import form_alias
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
+    chapter_title_candidates,
+    is_retired_chapter_goal,
     normalize_story_slot,
     normalize_story_slot_mapping,
     planned_beats,
@@ -306,6 +309,11 @@ class SceneExecutionContractService:
             }
         payload = {**common_payload, **mode_payload}
         missing_fields = self._missing_fields(payload)
+        if "goal" in missing_fields and _goal_was_canned(scene, chapter):
+            # S1 9 的护栏：拿掉样板不能让一道闸门开始失败。这样的主动场以前从不缺目标——样板「推进本章：<章名>」
+            # 顶着，契约放行；现在目标如实空着（payload 与提示里都没有目标），缺目标只提醒、不挡起草。
+            # 别的场（手加的场、写了脚手架占位的场）缺目标照旧挡：那里从来没有样板顶过。
+            missing_fields = ["goal(advisory)" if field == "goal" else field for field in missing_fields]
         blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
         return payload, missing_fields, blocking_fields
 
@@ -405,6 +413,16 @@ def _infer_scene_mode(scene: SceneCard, brief: dict[str, Any]) -> str:
 
 def _is_explicit_structured_scene(scene: SceneCard, brief: dict[str, Any]) -> bool:
     return bool(_declared_scene_forms(scene, brief))
+
+
+def _goal_was_canned(scene: SceneCard, chapter: ChapterGoal) -> bool:
+    """这一场的目标以前是不是由「整理为章节结构」补的样板顶着（S2 1）：卡上还是那句「推进本章：<所在章的名字>」
+    （旧行），或者是雪花物化 / 回流出来的卡、场目标空着——09 没写摘要和题名、章也没有目标，样板以前正好补在
+    这里，现在物化如实存空串；改名 / 搬场 / 确认写入清掉旧行的样板之后也是空串。"""
+    goal = str(scene.scene_goal or "").strip()
+    if not goal:
+        return is_snowflake_origin(scene.writer_brief_json)
+    return is_retired_chapter_goal(goal, chapter_title_candidates(chapter))
 
 
 def _first_text(*values: Any) -> str:

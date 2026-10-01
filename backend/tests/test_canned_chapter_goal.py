@@ -293,14 +293,15 @@ def test_the_execution_contract_takes_no_canned_goal(session) -> None:
     assert contract.payload_json["goal"] == "在雨城找到写信的人"
     assert CANNED_MARK not in json.dumps(contract.payload_json, ensure_ascii=False)
 
-    # 目标哪里都没写：以前样板「推进本章：旧信」顶替了它，契约放行了一场没有目标的戏；现在如实缺目标
-    # （预检把作者指回构思第 10 步）
+    # 目标哪里都没写：以前样板「推进本章：旧信」顶替了它、契约放行；现在 payload 如实没有目标，缺目标只提醒——
+    # 这道闸门不因拿掉样板开始失败（S1 9 的护栏）
     blank.writer_brief_json = {**blank.writer_brief_json, "goal": ""}
     session.commit()
     contract = contracts.generate(blank.scene_id, actor_ref="test")
     assert contract.payload_json["goal"] == ""
     assert CANNED_MARK not in json.dumps(contract.payload_json, ensure_ascii=False)
-    assert "goal" in contract.missing_fields_json
+    assert "goal(advisory)" in contract.missing_fields_json and "goal" not in contract.missing_fields_json
+    assert contract.status == "active"
 
     # 没声明形态的场（章节编排手加的那种）：坩埚 / 节拍不拿场目标与唯一一拍里的样板兜底……
     blank.scene_type = None
@@ -435,6 +436,64 @@ def test_deriving_chapter_plans_from_the_catalog_takes_no_canned_goal(session) -
 
     (derived,) = _derive_from_catalog(session, PROJECT_ID, [plan])
     assert (derived["title"], derived["summary"], derived["chapter_goal"]) == (TITLE, "", "")
+
+
+# ---------------------------------------------------------------------------
+# 闸门：拿掉样板不能让一道闸门开始失败（S1 9 的护栏）
+# ---------------------------------------------------------------------------
+
+
+def test_an_unplanned_goal_does_not_block_a_scene_the_canned_goal_used_to_carry(session) -> None:
+    """09 没写摘要和题名、第 10 步写了坩埚 / 冲突 / 挫折却没写目标、所在章也没有目标和摘要的主动场：以前样板
+    「推进本章：<章名>」顶着目标，执行契约放行；现在目标如实空着（提示里没有目标行），缺目标只提醒。"""
+    from novel_system.services.materialization import materialize_outline_plan
+    from novel_system.services.scene_execution import SceneExecutionContractService
+    from novel_system.services.scene_run_preflight import SceneRunPreflightService
+    from novel_system.services.snowflake_chaptering.outline_plan import build_chaptered_outline_plan
+
+    project = _project(session)
+    chapter_plan = create_chapter_plan(session, PROJECT_ID, {"row_uid": "ch-g", "chapter_seq": 1, "title": TITLE})
+    session.flush()
+    scene = _scene_plan(
+        session,
+        "g1",
+        chapter_plan,
+        pov_character_id="CHAR_LZ",
+        scene_crucible="天亮前拿不到信，案卷就要归档",
+        conflict="送信人不肯交",
+        setback="信被雨水泡烂",
+    )
+    session.flush()
+    plan_json = build_chaptered_outline_plan(session, project, [scene], protagonist=None, excluded=set())
+    outline = OutlinePlan(
+        plan_id="outline_plan_goal_gate", project_id=PROJECT_ID, version=1, status="pending_review", plan_json=plan_json
+    )
+    session.add(outline)
+    session.flush()
+    materialize_outline_plan(session, project, outline)
+    session.commit()
+
+    card = session.get(SceneCard, scene.scene_id)
+    assert card.scene_goal == ""
+    contracts = SceneExecutionContractService(session)
+    contract = contracts.generate(card.scene_id, actor_ref="test")
+    session.commit()
+    assert contract.status == "active"
+    assert contract.payload_json["goal"] == ""
+    assert "goal(advisory)" in contract.missing_fields_json and "goal" not in contract.missing_fields_json
+    preflight = SceneRunPreflightService(session).build(card)
+    assert preflight["can_run"] is True and preflight["blocking_items"] == []
+    # 作者照旧被提醒：场目标为空、场景结构三拍缺目标（回构思第 10 步）
+    warnings = {item["code"]: item for item in preflight["warning_items"]}
+    assert "SCENE_GOAL_MISSING" in warnings
+    assert "goal" in warnings["SCENE_STRUCTURE_INCOMPLETE"]["detail"]
+
+    # 从来没有样板顶过目标的场（章节编排手加的场）缺目标照旧挡
+    card.writer_brief_json = {**card.writer_brief_json, "source": "catalog_api"}
+    session.commit()
+    contract = contracts.generate(card.scene_id, actor_ref="test")
+    assert contract.status == "blocked"
+    assert "goal" in contract.missing_fields_json
 
 
 # ---------------------------------------------------------------------------
