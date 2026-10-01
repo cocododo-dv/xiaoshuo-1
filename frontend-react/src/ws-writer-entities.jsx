@@ -4,6 +4,8 @@ import { I } from "./icons.jsx";
 import { navigateWithViewIntent } from "./ws-view-intents.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
 import { isImeComposing } from "./lib/keyboard.js";
+import { libLive, useLibraryLive } from "./ws-library-store.js";
+import { LIB_CATS } from "./labels/library.js";
 
 /* ==========================================================
    档案实体 — 正文里已登记的人物 / 地点 / 术语（2026-09-21 从 ws-writer.jsx 拆出）
@@ -12,17 +14,14 @@ import { isImeComposing } from "./lib/keyboard.js";
      wrSerializeManuscript 拆掉，存下去的只有字）。
    · useWrEntities：悬停看档案摘要、点击直达档案；从档案「在正文中定位」跳来时滚动并闪一下。
    · useWrMention + WrMentionPicker：正文里敲 @ 唤出档案选择器，插入一处引用。
-   档案数据运行时读 window.LIB_*（资料库的过渡全局，只读）。ESM 模块，不写 window。
+   档案数据读资料库 store（ws-library-store.js）的只读快照：useWrEntities 订阅它，写作台一挂上就按需拉一次——
+   过去读 window.LIB_*，那是「资料」页的门面装上的接缝，没打开过「资料」的会话里名字高亮和 @ 选择器都是空的。
+   档案晚于正文到达（或换了一份）时把正文里的名字补标一遍。类别表在 labels/library.js。ESM 模块，不写 window。
    ========================================================== */
 
-const { useCallback, useRef, useState } = React;
+const { useCallback, useEffect, useRef, useState } = React;
 
-function libLive() {
-  return window.LIB_live ? window.LIB_live() : { entries: window.LIB_ENTRIES || [], byId: window.LIB_BY_ID || {} };
-}
-function libCategories() {
-  return (window.LIB_CATS || []).reduce((map, cat) => { map[cat.id] = cat; return map; }, {});
-}
+const LIB_CATEGORY_BY_ID = LIB_CATS.reduce((map, cat) => { map[cat.id] = cat; return map; }, {});
 
 /* 与资料库同源：种子按作品门控 + 用户新建 + 编辑覆盖；只认两个字以上的档案名 */
 function entityNameIndex() {
@@ -33,16 +32,21 @@ function entityNameIndex() {
   return idOf;
 }
 
-export function wrHighlightEntities(root) {
+/* keepSelection：作者可能正在写（档案晚到时的补标）——当前选区 / 光标所在的文本节点不动，
+   免得把文字包进 <span> 时光标跳走、选中的字丢了选区；那几个名字等下次载入再标 */
+export function wrHighlightEntities(root, { keepSelection = false } = {}) {
   if (!root) return;
   const idOf = entityNameIndex();
   const names = Object.keys(idOf).sort((a, b) => b.length - a.length);
   if (!names.length) return;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const rx = new RegExp("(" + names.map(esc).join("|") + ")", "g");
+  const sel = keepSelection ? window.getSelection() : null;
+  const selected = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      if (selected && selected.intersectsNode(node)) return NodeFilter.FILTER_REJECT;
       let parent = node.parentElement;
       while (parent && parent !== root) {
         if (parent.classList && (parent.classList.contains("wr-entity") || parent.classList.contains("wr-anno"))) return NodeFilter.FILTER_REJECT;
@@ -81,6 +85,12 @@ export function useWrEntities({ editorRef, scrollRef, onNeedScene }) {
   const [entityPop, setEntityPop] = useState(null);
   const pendingRef = useRef(null);
   const needScene = useWrEvent(() => { if (onNeedScene) onNeedScene(); });
+
+  /* 订阅资料库：写作台挂上就按需拉一次；档案到了（或换了一份）就把正文里还没标的名字补标上 */
+  const library = useLibraryLive();
+  useEffect(() => {
+    if (library.entries.length) wrHighlightEntities(editorRef.current, { keepSelection: true });
+  }, [library, editorRef]);
 
   const locateEntity = useCallback((id) => {
     const el = editorRef.current;
@@ -148,7 +158,7 @@ export function WrEntityPop({ pop }) {
   if (!pop) return null;
   const entry = libLive().byId[pop.id];
   if (!entry) return null;
-  const cats = libCategories();
+  const cats = LIB_CATEGORY_BY_ID;
   const above = pop.top > 180;
   const style = {
     left: pop.x,
@@ -243,7 +253,7 @@ export function useWrMention({ editorRef, onInserted }) {
 
 export function WrMentionPicker({ mention, list, idx, onPick, onHover }) {
   if (!mention) return null;
-  const cats = libCategories();
+  const cats = LIB_CATEGORY_BY_ID;
   const flip = mention.y > (typeof window !== "undefined" ? window.innerHeight - 300 : 9999);
   const style = { left: mention.x, top: flip ? mention.y - 26 : mention.y + 6, transform: flip ? "translateY(-100%)" : "none" };
   return (

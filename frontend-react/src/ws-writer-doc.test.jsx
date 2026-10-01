@@ -464,14 +464,52 @@ describe("写作台 · 目录只改了字数（F03-10）", () => {
   }, LONG);
 });
 
+/* 资料库：写作台自己订阅资料库 store（GET …/library），不靠「资料」页装上的 window.LIB_* */
+const LIBRARY = {
+  characters: [{ character_id: "e1", name: "林昭", role: "主角", summary: "雨城的档案员", details: {} }],
+  entities: [{ entity_id: "e2", name: "雨城", kind: "location", summary: "", tags: [], details: {} }],
+  timeline: [],
+  relations: [],
+};
+
+function routeLibrary(client, payload = LIBRARY) {
+  const base = client.apiGet.getMockImplementation();
+  client.apiGet.mockImplementation((url, options) => (/\/api\/v2\/projects\/[^/]+\/library$/.test(url)
+    ? Promise.resolve(payload)
+    : base(url, options)));
+}
+
 describe("写作台 · @ 唤档案", () => {
   const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
   afterEach(() => {
-    delete window.LIB_ENTRIES;
-    delete window.LIB_BY_ID;
     if (rangeRect) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeRect);
     else delete Range.prototype.getBoundingClientRect;
   });
+
+  it("没打开过「资料」也有档案：写作台自己拉资料库，正文里的档案名标出来，悬停卡认得它", async () => {
+    const { client, WriterRoom } = await loadWriter();
+    const library = deferred();
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => (/\/api\/v2\/projects\/[^/]+\/library$/.test(url)
+      ? library.promise
+      : base(url, options)));
+    client.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/s1\/ensure$/.test(url)
+      ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>林昭回到雨城。</p>" } })
+      : Promise.resolve({})));
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    const editor = () => host.querySelector(".wr-editor");
+    await vi.waitFor(() => expect(editor().textContent).toContain("林昭回到雨城"), T);
+    expect(editor().querySelector(".wr-entity")).toBeNull();
+
+    // 档案晚于正文到达：正文里的名字补标上，存盘的仍是干净正文
+    await act(async () => { library.resolve(LIBRARY); });
+    await vi.waitFor(() => expect([...editor().querySelectorAll(".wr-entity")].map((span) => span.getAttribute("data-lib-id"))).toEqual(["e1", "e2"]), T);
+    await act(async () => {
+      editor().querySelector('.wr-entity[data-lib-id="e1"]').dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(host.querySelector(".wr-entpop").textContent).toContain("雨城的档案员"), T);
+    expect(host.querySelector(".wr-entpop-kind").textContent).toContain("人物");
+  }, LONG);
 
   it("↓ 挪到第二条：松键时不跳回第一条，回车插入的是第二条", async () => {
     if (!rangeRect) {
@@ -480,12 +518,8 @@ describe("写作台 · @ 唤档案", () => {
         value: () => ({ left: 10, right: 10, top: 10, bottom: 20, width: 0, height: 10 }),
       });
     }
-    window.LIB_ENTRIES = [
-      { id: "e1", name: "林昭", cat: "people", kind: "人物", accent: "crimson", glyph: "林", summary: "" },
-      { id: "e2", name: "雨城", cat: "places", kind: "地点", accent: "slate", glyph: "雨", summary: "" },
-    ];
-    window.LIB_BY_ID = { e1: window.LIB_ENTRIES[0], e2: window.LIB_ENTRIES[1] };
     const { client, WriterRoom } = await loadWriter();
+    routeLibrary(client);
     client.apiPost.mockImplementation((url) => (/\/author-drafts\/scene\/s1\/ensure$/.test(url)
       ? Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: "<p>起点</p>" } })
       : Promise.resolve({})));
