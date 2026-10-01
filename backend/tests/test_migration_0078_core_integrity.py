@@ -4,52 +4,11 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 
+from tests.support.migrations import migrate
 
 PREVIOUS_HEAD = "20260802_0077"
 CURRENT_HEAD = "20260802_0078"
-
-
-def _config() -> Config:
-    backend_dir = Path(__file__).resolve().parents[1]
-    config = Config(str(backend_dir / "alembic.ini"))
-    config.set_main_option("script_location", str(backend_dir / "alembic"))
-    return config
-
-
-def _backup_root(tmp_path: Path) -> Path:
-    root = tmp_path / "repo-root"
-    backups = root / "backups"
-    backups.mkdir(parents=True)
-    (backups / "style_reference_legacy_0078.json").write_text(
-        "[]",
-        encoding="utf-8",
-    )
-    return root
-
-
-def _upgrade(
-    database_path: Path,
-    revision: str,
-    *,
-    monkeypatch: pytest.MonkeyPatch,
-    backup_root: Path,
-) -> None:
-    from novel_system.db.session import reset_engine
-
-    with monkeypatch.context() as migration_env:
-        migration_env.setenv(
-            "NOVEL_SYSTEM_DATABASE_URL",
-            f"sqlite:///{database_path.as_posix()}",
-        )
-        migration_env.setenv("STYLE_REFERENCE_REPO_ROOT", str(backup_root))
-        reset_engine()
-        try:
-            command.upgrade(_config(), revision)
-        finally:
-            reset_engine()
 
 
 def test_0078_repairs_legacy_order_and_nullable_links_then_enforces_them(
@@ -57,13 +16,7 @@ def test_0078_repairs_legacy_order_and_nullable_links_then_enforces_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "core-integrity-0078.db"
-    backup_root = _backup_root(tmp_path)
-    _upgrade(
-        database_path,
-        PREVIOUS_HEAD,
-        monkeypatch=monkeypatch,
-        backup_root=backup_root,
-    )
+    migrate(database_path, PREVIOUS_HEAD, monkeypatch)
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
@@ -130,12 +83,7 @@ def test_0078_repairs_legacy_order_and_nullable_links_then_enforces_them(
             """
         )
 
-    _upgrade(
-        database_path,
-        CURRENT_HEAD,
-        monkeypatch=monkeypatch,
-        backup_root=backup_root,
-    )
+    migrate(database_path, CURRENT_HEAD, monkeypatch)
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -228,13 +176,7 @@ def test_0078_fails_closed_for_non_nullable_orphan_audit_artifact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "core-integrity-orphan-0078.db"
-    backup_root = _backup_root(tmp_path)
-    _upgrade(
-        database_path,
-        PREVIOUS_HEAD,
-        monkeypatch=monkeypatch,
-        backup_root=backup_root,
-    )
+    migrate(database_path, PREVIOUS_HEAD, monkeypatch)
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
@@ -247,12 +189,7 @@ def test_0078_fails_closed_for_non_nullable_orphan_audit_artifact(
         )
 
     with pytest.raises(RuntimeError, match="scene_drafts.scene_id has 1 orphan"):
-        _upgrade(
-            database_path,
-            CURRENT_HEAD,
-            monkeypatch=monkeypatch,
-            backup_root=backup_root,
-        )
+        migrate(database_path, CURRENT_HEAD, monkeypatch)
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(

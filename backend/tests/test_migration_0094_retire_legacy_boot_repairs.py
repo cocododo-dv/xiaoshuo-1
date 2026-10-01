@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _columns, _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate, table_columns
 
 PREVIOUS_HEAD = "20260929_0093"
 THIS_REVISION = "20260929_0094"
@@ -31,7 +31,7 @@ def _seed(path: Path) -> None:
             ("book_live_classification", "ingesting"),
             ("book_ready", "ready"),
         ):
-            _insert_minimal_row(
+            insert_minimal_row(
                 connection,
                 BOOKS,
                 {
@@ -44,7 +44,7 @@ def _seed(path: Path) -> None:
                     "updated_at": "2026-09-01T00:00:00+00:00",
                 },
             )
-        _insert_minimal_row(
+        insert_minimal_row(
             connection,
             JOBS,
             {
@@ -60,7 +60,7 @@ def _seed(path: Path) -> None:
             ("run_learn_lineage", "running", "learn_job"),
             ("run_done", "done", "completed"),
         ):
-            _insert_minimal_row(
+            insert_minimal_row(
                 connection,
                 RUNS,
                 {
@@ -93,14 +93,14 @@ def test_0094_retires_legacy_runs_and_orphaned_classifications_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "boot-repairs-0094.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
-    columns_before = {table: _columns(path, table) for table in (RUNS, BOOKS, JOBS)}
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
+    columns_before = {table: table_columns(path, table) for table in (RUNS, BOOKS, JOBS)}
     _seed(path)
 
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
+    migrate(path, THIS_REVISION, monkeypatch)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (THIS_REVISION,)
-    assert {table: _columns(path, table) for table in (RUNS, BOOKS, JOBS)} == columns_before
+    assert {table: table_columns(path, table) for table in (RUNS, BOOKS, JOBS)} == columns_before
 
     runs = _runs(path)
     for run_id in ("run_legacy_queued", "run_legacy_running"):
@@ -117,7 +117,7 @@ def test_0094_retires_legacy_runs_and_orphaned_classifications_once(
     }
 
     # 降级是空操作；再升一次没有候选、不再改动
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
     assert _runs(path) == runs
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
+    migrate(path, THIS_REVISION, monkeypatch)
     assert _runs(path) == runs and _book_status(path)["book_live_classification"] == "ingesting"

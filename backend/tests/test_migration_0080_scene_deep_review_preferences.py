@@ -4,37 +4,13 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 
-
-PREVIOUS_HEAD = "20260802_0079"
 # 升到 head 后断言的版本号跟着 schema_contract 走（test_schema_contract_revision 把它钉在 Alembic 唯一 head 上），
 # 以后再加迁移不必回来改这个文件。
-from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION as CURRENT_HEAD  # noqa: E402
+from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION as CURRENT_HEAD
+from tests.support.migrations import migrate
 
-
-def _config() -> Config:
-    backend_dir = Path(__file__).resolve().parents[1]
-    config = Config(str(backend_dir / "alembic.ini"))
-    config.set_main_option("script_location", str(backend_dir / "alembic"))
-    return config
-
-
-def _upgrade(path: Path, revision: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from novel_system.db.session import reset_engine
-
-    backups = tmp_path / "backups"
-    backups.mkdir(exist_ok=True)
-    (backups / "style_reference_legacy_0080.json").write_text("[]", encoding="utf-8")
-    with monkeypatch.context() as migration_env:
-        migration_env.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{path.as_posix()}")
-        migration_env.setenv("STYLE_REFERENCE_REPO_ROOT", str(tmp_path))
-        reset_engine()
-        try:
-            command.upgrade(_config(), revision)
-        finally:
-            reset_engine()
+PREVIOUS_HEAD = "20260802_0079"
 
 
 def test_0080_adds_empty_deep_review_preferences_without_changing_scenes(
@@ -42,7 +18,7 @@ def test_0080_adds_empty_deep_review_preferences_without_changing_scenes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "scene-deep-review-0080.db"
-    _upgrade(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     with sqlite3.connect(path) as connection:
         connection.executescript(
             """
@@ -64,7 +40,7 @@ def test_0080_adds_empty_deep_review_preferences_without_changing_scenes(
             """
         )
 
-    _upgrade(path, "head", monkeypatch, tmp_path)
+    migrate(path, "head", monkeypatch)
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (CURRENT_HEAD,)

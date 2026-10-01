@@ -12,7 +12,7 @@ import yaml
 
 from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.llm_routing import parse_model_routing_config
-from tests.test_migration_0084_scene_plan_rendering_mode import _migrate
+from tests.support.migrations import migrate
 
 PREVIOUS_HEAD = "20260929_0095"
 CURRENT_HEAD = "20260929_0096"
@@ -102,7 +102,7 @@ def _snapshots(connection: sqlite3.Connection) -> list[tuple]:
 
 def test_0096_adds_ledger_indexes_and_slims_the_active_models_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "lean-routes-0096.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     live = _live_shaped_models_payload()
     with sqlite3.connect(path) as connection:
         for table, names in INDEXES.items():
@@ -111,7 +111,7 @@ def test_0096_adds_ledger_indexes_and_slims_the_active_models_snapshot(tmp_path:
         _insert_snapshot(connection, "config_models_live", 2, live, active=True)
         connection.commit()
 
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)  # 显式升到本迁移：以后再加迁移不必回来改这个文件
+    migrate(path, CURRENT_HEAD, monkeypatch)  # 显式升到本迁移：以后再加迁移不必回来改这个文件
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (CURRENT_HEAD,)
         for table, names in INDEXES.items():
@@ -160,7 +160,7 @@ def test_0096_adds_ledger_indexes_and_slims_the_active_models_snapshot(tmp_path:
     assert routing.node_routing["style_draft"].provider_options == {"extra_payload": {"seed": 7}}
 
     # 降级：索引没了，迁移另存的快照删掉，来源快照重新激活
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
     with sqlite3.connect(path) as connection:
         for table, names in INDEXES.items():
             assert not names & _index_names(connection, table)
@@ -170,7 +170,7 @@ def test_0096_adds_ledger_indexes_and_slims_the_active_models_snapshot(tmp_path:
         ]
 
     # 再升一次结果相同；升完之后的快照已是瘦身形状，再跑一遍瘦身什么都不做
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)
+    migrate(path, CURRENT_HEAD, monkeypatch)
     with sqlite3.connect(path) as connection:
         rows = _snapshots(connection)
         assert len(rows) == 3 and rows[2][2:4] == ("active", 1)
@@ -183,13 +183,13 @@ def test_0096_adds_ledger_indexes_and_slims_the_active_models_snapshot(tmp_path:
 
 def test_0096_leaves_an_already_lean_snapshot_and_later_author_saves_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "lean-routes-0096-noop.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
     lean = {"node_routing": {"neutral_draft": {"provider": "openai_compatible", "provider_id": "relay", "model": "m", "api_mode": "chat"}}}
     with sqlite3.connect(path) as connection:
         _insert_snapshot(connection, "config_models_lean", 1, lean, active=True)
         connection.commit()
 
-    _migrate(path, CURRENT_HEAD, monkeypatch, tmp_path)
+    migrate(path, CURRENT_HEAD, monkeypatch)
     with sqlite3.connect(path) as connection:
         assert [row[:4] for row in _snapshots(connection)] == [("config_models_lean", 1, "active", 1)]
 
@@ -198,7 +198,7 @@ def test_0096_leaves_an_already_lean_snapshot_and_later_author_saves_alone(tmp_p
         connection.execute("UPDATE system_config_snapshots SET active_flag = 0, status = 'superseded'")
         _insert_snapshot(connection, "config_models_author", 2, lean, active=True)
         connection.commit()
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
     with sqlite3.connect(path) as connection:
         assert [row[:4] for row in _snapshots(connection)] == [
             ("config_models_lean", 1, "superseded", 0),

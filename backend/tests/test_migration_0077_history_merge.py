@@ -4,57 +4,15 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 
-
+# 升到 head 后断言的版本号跟着 schema_contract 走（test_schema_contract_revision 把它钉在 Alembic 唯一 head 上），
+# 以后再加迁移不必回来改这个文件。
+from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION as CURRENT_HEAD
+from tests.support.migrations import migrate
 
 REAL_ONLY_HEAD = "20260717_0075"
 CHAPTERING_HEAD = "20260725_0076"
 MERGED_HEAD = "20260802_0077"
-# 升到 head 后断言的版本号跟着 schema_contract 走（test_schema_contract_revision 把它钉在 Alembic 唯一 head 上），
-# 以后再加迁移不必回来改这个文件。
-from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION as CURRENT_HEAD  # noqa: E402
-
-
-def _config() -> Config:
-    backend_dir = Path(__file__).resolve().parents[1]
-    config = Config(str(backend_dir / "alembic.ini"))
-    config.set_main_option("script_location", str(backend_dir / "alembic"))
-    return config
-
-
-def _upgrade(
-    database_path: Path,
-    revision: str,
-    *,
-    monkeypatch: pytest.MonkeyPatch,
-    backup_root: Path,
-) -> None:
-    from novel_system.db.session import reset_engine
-
-    with monkeypatch.context() as migration_env:
-        migration_env.setenv(
-            "NOVEL_SYSTEM_DATABASE_URL",
-            f"sqlite:///{database_path.as_posix()}",
-        )
-        migration_env.setenv("STYLE_REFERENCE_REPO_ROOT", str(backup_root))
-        reset_engine()
-        try:
-            command.upgrade(_config(), revision)
-        finally:
-            reset_engine()
-
-
-def _backup_root(tmp_path: Path) -> Path:
-    root = tmp_path / "repo-root"
-    backups = root / "backups"
-    backups.mkdir(parents=True)
-    (backups / "style_reference_legacy_history_merge.json").write_text(
-        "[]",
-        encoding="utf-8",
-    )
-    return root
 
 
 def test_published_real_only_head_remains_upgradeable_to_single_head(
@@ -62,25 +20,13 @@ def test_published_real_only_head_remains_upgradeable_to_single_head(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "real-only-head.db"
-    backup_root = _backup_root(tmp_path)
-
-    _upgrade(
-        database_path,
-        REAL_ONLY_HEAD,
-        monkeypatch=monkeypatch,
-        backup_root=backup_root,
-    )
+    migrate(database_path, REAL_ONLY_HEAD, monkeypatch)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchall() == [(REAL_ONLY_HEAD,)]
 
-    _upgrade(
-        database_path,
-        "head",
-        monkeypatch=monkeypatch,
-        backup_root=backup_root,
-    )
+    migrate(database_path, "head", monkeypatch)
 
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
@@ -123,12 +69,7 @@ def test_merge_repairs_historical_0076_membership_and_installs_fk(
             """
         )
 
-    _upgrade(
-        database_path,
-        MERGED_HEAD,
-        monkeypatch=monkeypatch,
-        backup_root=_backup_root(tmp_path),
-    )
+    migrate(database_path, MERGED_HEAD, monkeypatch)
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")

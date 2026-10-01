@@ -13,12 +13,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import sqlalchemy as sa
 import yaml
 from alembic import command
-from alembic.config import Config
+
+from tests.support.migrations import alembic_config
 
 _LEGACY_SNAPSHOTS = """
 CREATE TABLE system_config_snapshots (
@@ -56,12 +56,6 @@ def _upgrade(tmp_path, monkeypatch, seed) -> dict[str, tuple[dict, dict | None]]
     """建一个 0073 形态的库、灌数据、跑到 head，回读 (parsed_json, yaml 解析结果)。"""
     from novel_system.db.session import reset_engine
 
-    # 迁移 0036 的遗留备份守卫（与 test_migration_0075 同一套处置）
-    fake_root = tmp_path / "repo_root"
-    (fake_root / "backups").mkdir(parents=True)
-    (fake_root / "backups" / "style_reference_legacy_test.json").write_text("[]", encoding="utf-8")
-    monkeypatch.setenv("STYLE_REFERENCE_REPO_ROOT", str(fake_root))
-
     legacy_db = tmp_path / "legacy-0074.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{legacy_db}")
     reset_engine()
@@ -74,10 +68,7 @@ def _upgrade(tmp_path, monkeypatch, seed) -> dict[str, tuple[dict, dict | None]]
             conn.execute(sa.text("INSERT INTO alembic_version VALUES ('20260716_0073')"))
             seed(conn)
 
-        backend_dir = Path(__file__).resolve().parents[1]
-        cfg = Config(str(backend_dir / "alembic.ini"))
-        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-        command.upgrade(cfg, "20260722_0074")
+        command.upgrade(alembic_config(), "20260722_0074")
 
         with engine.begin() as conn:
             result = {}
@@ -173,11 +164,6 @@ def test_downgrade_never_stamps_the_ceiling_onto_a_snapshot_that_lacked_it(tmp_p
     """
     from novel_system.db.session import reset_engine
 
-    fake_root = tmp_path / "repo_root"
-    (fake_root / "backups").mkdir(parents=True)
-    (fake_root / "backups" / "style_reference_legacy_test.json").write_text("[]", encoding="utf-8")
-    monkeypatch.setenv("STYLE_REFERENCE_REPO_ROOT", str(fake_root))
-
     legacy_db = tmp_path / "legacy-0074-down.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{legacy_db}")
     reset_engine()
@@ -193,10 +179,7 @@ def test_downgrade_never_stamps_the_ceiling_onto_a_snapshot_that_lacked_it(tmp_p
                     payload={"llm": {"enabled": True, "provider": "deepseek"}},
                     yaml_payload={"llm": {"enabled": True, "provider": "deepseek"}})
 
-        backend_dir = Path(__file__).resolve().parents[1]
-        cfg = Config(str(backend_dir / "alembic.ini"))
-        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-        command.downgrade(cfg, "20260716_0073")
+        command.downgrade(alembic_config(), "20260716_0073")
 
         with engine.begin() as conn:
             raw, parsed = conn.execute(

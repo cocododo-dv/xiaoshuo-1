@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_migration_0084_scene_plan_rendering_mode import _columns, _insert_minimal_row, _migrate
+from tests.support.migrations import insert_minimal_row, migrate, table_columns
 
 PREVIOUS_HEAD = "20260923_0091"
 THIS_REVISION = "20260924_0092"
@@ -40,7 +40,7 @@ def _seed(path: Path) -> None:
             ),
             ("bind_c_bad_draft", "C", {"intensity": 100, "draft_mode": "hybrid", "sample_windows": 99}),
         ):
-            _insert_minimal_row(
+            insert_minimal_row(
                 connection,
                 BINDINGS,
                 {
@@ -60,7 +60,7 @@ def _seed(path: Path) -> None:
             ("profile_legacy_archived", "archived", {}),
             ("profile_v3", "active", {"profile_version": "style_profile_v3", "dimension_card": {"version": "dimension_card_v1"}}),
         ):
-            _insert_minimal_row(
+            insert_minimal_row(
                 connection,
                 PROFILES,
                 {
@@ -80,7 +80,7 @@ def _seed(path: Path) -> None:
             "review_style_ref_calib_abcdef123456_1",
             "review_scene_memory_keep_me",
         ):
-            _insert_minimal_row(
+            insert_minimal_row(
                 connection,
                 REVIEW_ITEMS,
                 {
@@ -116,15 +116,15 @@ def test_0092_backfills_bindings_archives_legacy_profiles_and_drops_legacy_cards
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "style-reference-v3-0092.db"
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path)
-    columns_before = {table: _columns(path, table) for table in (BINDINGS, PROFILES, REVIEW_ITEMS)}
+    migrate(path, PREVIOUS_HEAD, monkeypatch)
+    columns_before = {table: table_columns(path, table) for table in (BINDINGS, PROFILES, REVIEW_ITEMS)}
     _seed(path)
 
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
+    migrate(path, THIS_REVISION, monkeypatch)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (THIS_REVISION,)
     # 只改数据：三张表的列一个没动
-    assert {table: _columns(path, table) for table in (BINDINGS, PROFILES, REVIEW_ITEMS)} == columns_before
+    assert {table: table_columns(path, table) for table in (BINDINGS, PROFILES, REVIEW_ITEMS)} == columns_before
 
     bindings = _bindings(path)
     assert {strategy for strategy, _config in bindings.values()} == {"mixed"}
@@ -152,11 +152,11 @@ def test_0092_backfills_bindings_archives_legacy_profiles_and_drops_legacy_cards
     assert _review_ids(path) == {"review_scene_memory_keep_me"}
 
     # 降级是空操作：数据原样；再升一次不再改动
-    _migrate(path, PREVIOUS_HEAD, monkeypatch, tmp_path, down=True)
+    migrate(path, PREVIOUS_HEAD, monkeypatch, down=True)
     assert _bindings(path) == bindings and _profile_status(path) == status
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (PREVIOUS_HEAD,)
-    _migrate(path, THIS_REVISION, monkeypatch, tmp_path)
+    migrate(path, THIS_REVISION, monkeypatch)
     assert _bindings(path) == bindings and _profile_status(path) == status
     assert _review_ids(path) == {"review_scene_memory_keep_me"}
 
