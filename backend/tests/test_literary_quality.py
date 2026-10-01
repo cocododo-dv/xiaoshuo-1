@@ -538,8 +538,11 @@ def test_the_overview_reads_the_binding_calibration_without_an_injected_resolver
     make_binding(session, "profile_lqbind", binding_id="bind_lqbind", scope="global")
     session.commit()
 
-    expected = SceneDiagnosisService(session).rule_calibration_for_scene(session.get(SceneCard, "LQBIND_SC01"))
-    assert expected is not None and expected.active
+    # 写作台深改面板读到的那一份：这一场的节奏校准里挂着的规则那一半（深改面板走场景诊断自己的策略解析与校准，
+    # 文学质量走 calibration_source.PolicyRuleCalibrations——两条路得出同一份）
+    style_bound, panel_calibration = SceneDiagnosisService(session).scene_calibration(session.get(SceneCard, "LQBIND_SC01"))
+    expected = panel_calibration.rules
+    assert style_bound and expected.active
     item = next(
         entry
         for entry in LiteraryQualityService(session).overview(chapter_id="LQBIND")["items"]

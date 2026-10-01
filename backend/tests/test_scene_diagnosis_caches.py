@@ -25,6 +25,7 @@ from novel_system.db.models import (
     StyleReferenceRun,
 )
 from novel_system.services.literary_quality import RuleCalibration
+from novel_system.services.literary_quality.calibration_source import rule_calibration_for_policy
 from novel_system.services.scene_diagnosis import SceneDiagnosisService
 from novel_system.services.scene_diagnosis.calibration import calibration_from_reference
 from novel_system.services.scene_diagnosis.findings import SceneFindingsCache
@@ -92,10 +93,15 @@ def _seed_scenes(session, count: int) -> list[str]:
     return scene_ids
 
 
+def _policy(book_id: str) -> StylePolicy:
+    """绑着这本书（作者手笔直起）的风格策略。"""
+
+    return StylePolicy(bound=True, style_first=True, mode="live", profile_id=f"prof_{book_id}", book_id=book_id)
+
+
 def _bind(monkeypatch, books_by_scene: dict[str, str]) -> None:
     def policy(self, scene):
-        book_id = books_by_scene[scene.scene_id]
-        return StylePolicy(bound=True, style_first=True, mode="live", profile_id=f"prof_{book_id}", book_id=book_id)
+        return _policy(books_by_scene[scene.scene_id])
 
     monkeypatch.setattr(SceneDiagnosisService, "style_policy", policy)
 
@@ -131,15 +137,14 @@ def _full_book_reads(statements: _Statements) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_an_in_place_retype_recomputes_the_endings_calibration(session, monkeypatch) -> None:
-    [scene_id] = _seed_scenes(session, 1)
+def test_an_in_place_retype_recomputes_the_endings_calibration(session) -> None:
     paragraphs = _reference_paragraphs()
     # 没有标题段也没有场界：收尾只能取转场段之前的那一段
     _seed_book(session, "book_retype", types=["transition" if index % 120 == 60 else "narration" for index in range(len(paragraphs))])
-    _bind(monkeypatch, {scene_id: "book_retype"})
-    scene = session.get(SceneCard, scene_id)
+    # 规则校准的共用入口（成稿门、文学质量视图经它取；深改面板的节奏校准读同一份进程缓存）
+    policy = _policy("book_retype")
 
-    before = SceneDiagnosisService(session).rule_calibration_for_scene(scene)
+    before = rule_calibration_for_policy(session, policy)
     assert before is not None and before.endings_source == "transitions" and before.endings >= 4
 
     # 「重新分类（就地）」：正文与段数都不变，只改段型；分类作业成功时把段型修订号加一
@@ -148,7 +153,7 @@ def test_an_in_place_retype_recomputes_the_endings_calibration(session, monkeypa
     book.stats_json = {**(book.stats_json or {}), "paragraph_types_revision": 1}
     session.commit()
 
-    after = SceneDiagnosisService(session).rule_calibration_for_scene(scene)
+    after = rule_calibration_for_policy(session, policy)
     assert after is not None and after.endings_source == "none" and after.endings == 0
 
 
@@ -157,18 +162,16 @@ def test_an_in_place_retype_recomputes_the_endings_calibration(session, monkeypa
 # ---------------------------------------------------------------------------
 
 
-def test_two_bound_books_do_not_evict_each_other(session, monkeypatch) -> None:
-    scene_a, scene_b = _seed_scenes(session, 2)
+def test_two_bound_books_do_not_evict_each_other(session) -> None:
     _seed_book(session, "book_a", title="甲")
     _seed_book(session, "book_b", title="乙")
-    _bind(monkeypatch, {scene_a: "book_a", scene_b: "book_b"})
-    scenes = [session.get(SceneCard, scene_a), session.get(SceneCard, scene_b)]
+    policies = [_policy("book_a"), _policy("book_b")]
 
     with _Statements(session) as statements:
         for _ in range(3):
-            for scene in scenes:
-                # 每次新的服务实例（一次请求一个）：跨请求靠的是进程缓存
-                calibration = SceneDiagnosisService(session).rule_calibration_for_scene(scene)
+            for policy in policies:
+                # 共用入口没有请求内的记忆、每次都现取：交替两本书靠的是进程缓存
+                calibration = rule_calibration_for_policy(session, policy)
                 assert isinstance(calibration, RuleCalibration) and calibration.active
     # 两本书各读一遍，之后交替诊断都命中缓存（以前单条缓存：每换一本书就把整本书重读、重算一遍）
     assert _full_book_reads(statements) == 2

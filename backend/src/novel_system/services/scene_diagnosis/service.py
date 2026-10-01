@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard, WriterEvaluation
-from novel_system.services.literary_quality import DEFAULT_RULE_CALIBRATION, RuleCalibration
 from novel_system.services.literary_quality.calibration_source import (
     BoundProfile,
     bound_profile_for_policy,
-    rule_calibration_for_book,
 )
 from novel_system.services.scene_diagnosis.calibration import (
     DEFAULT_CRAFT_CALIBRATION,
@@ -41,7 +38,6 @@ from novel_system.services.scene_lookup import active_chapter_scenes, require_ch
 from novel_system.services.scene_text import current_author_draft, pointed_final_scene
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 
-_LOGGER = logging.getLogger(__name__)
 STYLE_TASK_TYPE = "scene_generation"
 
 
@@ -52,7 +48,6 @@ class SceneDiagnosisService:
         self._policy_memo: dict[str, StylePolicy] = {}
         # 每份绑定的画像一份校准（书的版本只查一次库，而不是逐场一次；X01-03 / X01-09）
         self._calibration_memo: dict[tuple[str, str | None, bool], CraftCalibration] = {}
-        self._rule_memo: dict[tuple[str, str | None, bool], RuleCalibration] = {}
         self._profile_memo: dict[tuple[str, str | None], BoundProfile | None] = {}
 
     # -- 正文 --------------------------------------------------------------
@@ -223,38 +218,6 @@ class SceneDiagnosisService:
 
         style_bound, profile = self.binding_profile(scene)
         return style_bound, (self.craft_calibration(profile) if style_bound else DEFAULT_CRAFT_CALIBRATION)
-
-    def rule_calibration_for_scene(self, scene: SceneCard) -> RuleCalibration | None:
-        """文学质量视图用的解析器（路由层注入 LiteraryQualityService）：有绑定给参考书的规则校准，否则 None。"""
-
-        return self.rule_calibration_for_policy(self.style_policy(scene))
-
-    def rule_calibration_for_policy(self, policy: StylePolicy) -> RuleCalibration | None:
-        """成稿门用的解析器（风格参考 v3 V11）：按策略绑定的书校准的规则维度；未绑定 / 校准不可用 → None。
-        只算规则那一半（成稿门与文学质量视图用不到节奏读数）。"""
-
-        profile = self.bound_profile_for_policy(policy)
-        if profile is None:
-            return None
-        rules = self._rule_calibration(profile)
-        return rules if rules.active else None
-
-    def _rule_calibration(self, profile: BoundProfile) -> RuleCalibration:
-        key = (profile.profile_id, profile.book_id, bool(profile.deliberate_repetition))
-        craft = self._calibration_memo.get(key)
-        if craft is not None:
-            return craft.rules
-        rules = self._rule_memo.get(key)
-        if rules is None:
-            try:
-                rules = rule_calibration_for_book(
-                    self.session, profile.book_id, deliberate_repetition=bool(profile.deliberate_repetition)
-                )
-            except Exception:  # noqa: BLE001 — 校准读不出：按未校准处理，不让调用方失败
-                _LOGGER.warning("rule calibration unavailable for book %s", profile.book_id, exc_info=True)
-                rules = DEFAULT_RULE_CALIBRATION
-            self._rule_memo[key] = rules
-        return rules
 
     def craft_calibration(self, profile: BoundProfile | None) -> CraftCalibration:
         """按绑定画像的参考书校准节奏检查与规则维度（``calibration.craft_calibration_for``：读数按书的版本缓存在

@@ -14,7 +14,8 @@
 参考书 2.6 万段：一次几秒）。
 
 版本读一次库（一条按主键的查询，没存根哈希的书再聚合一遍段落）；一次请求里逐场调用时由调用方记住结果
-（``SceneDiagnosisService`` 每个实例按画像记一份，成稿门与文学质量视图用 ``PolicyRuleCalibrations``）。
+（``SceneDiagnosisService`` 每个实例按画像记一份节奏校准，规则这一半挂在它的 ``rules`` 上；文学质量视图用
+``PolicyRuleCalibrations``）。成稿门一次只判一场的正文，直接调 ``rule_calibration_for_policy``。
 """
 
 from __future__ import annotations
