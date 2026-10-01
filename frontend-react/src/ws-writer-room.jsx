@@ -444,7 +444,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
           ) : catalogUnavailable ? (
             <div className="wr-blank" role="status">
               <EmptyState icon="AlertTriangle" title="章节目录加载失败"
-                actions={<button type="button" className="btn btn-ghost" onClick={() => WsCatalog.__refresh && WsCatalog.__refresh()}><I.Refresh size={14} /> 重试加载</button>}>
+                actions={<button type="button" className="btn btn-ghost" onClick={() => WsCatalog.refresh()}><I.Refresh size={14} /> 重试加载</button>}>
                 系统不会把网络失败当成空作品。恢复连接后重试，正文与目录都不会被本地空状态覆盖。
               </EmptyState>
             </div>

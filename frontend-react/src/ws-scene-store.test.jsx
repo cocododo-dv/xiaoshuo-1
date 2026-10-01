@@ -48,7 +48,7 @@ describe("scnBackendRunSids（队列成员的后端派生）", () => {
     expect(client.apiGet).toHaveBeenCalledWith("/api/v1/scene-run-states?project_id=prj-main");
   });
 
-  it("目录为空时先 __refresh 再对位（换浏览器冷启动路径）", async () => {
+  it("目录为空时先 refresh 再对位（换浏览器冷启动路径）", async () => {
     // 启动装载吃到空目录（installApiRouter 的 catalog: []）；之后经包装路由
     // 返回真实章——模拟「目录还没就绪就进起草台」的竞态，派生应自行补拉
     const { mod, client } = await loadSceneRun({ catalog: [] });
