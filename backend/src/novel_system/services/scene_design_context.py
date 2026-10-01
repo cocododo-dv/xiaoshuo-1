@@ -36,6 +36,7 @@ from novel_system.db.models import (
     SnowflakeStepRun,
     StoryCharacter,
 )
+from novel_system.services.catalog_labels import act_number
 from novel_system.services.scene_form import text as _text
 from novel_system.services.snowflake_scene_order import sort_in_story_order
 from novel_system.services.snowflake_triage import latest_triage_plan_ids
@@ -254,7 +255,8 @@ def _chapter_line(session: Session, scene: SceneCard, plan: SnowflakeScenePlan |
             return None
         narrative = chapter.narrative_json if isinstance(getattr(chapter, "narrative_json", None), dict) else {}
         title = _text(narrative.get("title"))
-        act = _coerce_int(narrative.get("act"))
+        # 目录侧的幕是 act1 / act2 / act3（阶段 X）；阶段 X 之前物化的旧行是整数幕。以前按整数读，act1 永远读不出来
+        act = act_number(narrative.get("act"))
         spine = _text(narrative.get("spine"))
         # 目录章的章目标只在作者规划过时才写：旧物化给没目标的章补的「推进本章：<章名>」不算（S2 1）
         goal = _text(planned_chapter_goal(chapter.chapter_goal, chapter))

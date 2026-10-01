@@ -314,6 +314,38 @@ def test_design_context_reads_the_story_order_once_and_writes_no_list_reprs(sess
     assert "['" not in context.text and "Goal:" not in sheet and "Epiphany: 体面的自保比污点更致命" in sheet
 
 
+def test_a_scene_outside_the_plan_reads_the_act_of_its_catalog_chapter(session) -> None:
+    """构思里没有的场（章节编排手加的）读目录章的幕。目录侧的幕自阶段 X 起写成 act1 / act2 / act3，旧代码却按整数读
+    （``int("act2")`` 失败）——这种场的章行从来不带幕（S2 发现，合并胶水 G4）。阶段 X 之前的整数幕照旧认；没有幕、
+    或认不出的幕就不写，不替作者编一个第一幕。"""
+    from novel_system.db.models import ChapterGoal
+
+    service = _seed_workspace(session)
+    _seed_canon(session)
+    _materialize(session, service)
+
+    def chapter_line(key: str, act) -> str:
+        narrative = {"title": "码头夜雨"} if act is None else {"title": "码头夜雨", "act": act}
+        chapter_id = f"{PROJECT_ID}_HAND_{key}"
+        session.add(
+            ChapterGoal(chapter_id=chapter_id, project_id=PROJECT_ID, planned_scene_count=1, chapter_goal="", narrative_json=narrative)
+        )
+        session.flush()
+        card = SceneCard(
+            scene_id=f"{chapter_id}_SC01", chapter_id=chapter_id, project_id=PROJECT_ID, scene_seq=1,
+            scene_goal="林一鸣去码头找线人", beats_json=[], scene_type="proactive", writer_brief_json={},
+        )
+        session.add(card)
+        session.flush()
+        text = render_scene_design_context(card, session) or ""
+        return next(line for line in text.split("\n") if line.startswith("Chapter: "))
+
+    assert chapter_line("A", "act2") == "Chapter: 《码头夜雨》 · Act 2"
+    assert chapter_line("B", 3) == "Chapter: 《码头夜雨》 · Act 3"  # 阶段 X 之前物化的整数幕
+    assert chapter_line("C", None) == "Chapter: 《码头夜雨》"
+    assert chapter_line("D", "序章") == "Chapter: 《码头夜雨》"
+
+
 def test_blueprint_and_bundle_carry_the_same_two_design_sections(session) -> None:
     """蓝图经 scene_sections 挂两段，bundle 暂时还是自己那一份（P01c 再换）：两边挂出来的内容、来源与次序必须一样。"""
     from novel_system.db.models import ChapterGoal

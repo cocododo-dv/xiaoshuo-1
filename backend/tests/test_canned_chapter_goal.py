@@ -387,8 +387,9 @@ def test_the_design_context_and_the_proposal_target_take_no_canned_goal(session)
     chapter, blank = _legacy_rows(session)
     session.commit()
 
-    # 构思里没有这一场（章节编排手加的场）：设计上下文读目录章的章目标
-    assert _chapter_line(session, blank, None) == f"Chapter: 《{TITLE}》"
+    # 构思里没有这一场（章节编排手加的场）：设计上下文读目录章的章目标（样板不算）；目录章的幕 act1 照样读得出
+    # （合并胶水 G4 之前这一行恰好因为读不出幕而只剩章名）
+    assert _chapter_line(session, blank, None) == f"Chapter: 《{TITLE}》 · Act 1"
 
     # 章节规划上下文：没起题名的场，题名不拿本章的样板目标
     from novel_system.services.chapter_planning_context import ChapterPlanningContextBuilder

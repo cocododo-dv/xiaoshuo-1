@@ -49,6 +49,21 @@ _ACT_CN = {"一": "act1", "二": "act2", "三": "act3"}
 _TITLE_CLAUSE_BREAK = re.compile(r"[，。；：！？,;:!?\n]")
 
 
+def act_number(value: Any) -> int | None:
+    """幕号 1–3：认 ``act1`` / ``act2`` / ``act3``、阶段 X 之前的整数幕和带一二三的写法；认不出（空值、别的字）就是
+    ``None``——提示词里的章行不替作者编一个幕（:func:`normalize_act` 是给看板分卷用的，认不出时落到第一幕）。"""
+    text = str(value if value is not None else "").strip().lower()
+    if text in CATALOG_ACTS:
+        return int(text[-1])
+    digit = _ACT_DIGIT.search(text)
+    if digit:
+        return int(digit.group(0))
+    for char, act in _ACT_CN.items():
+        if char in text:
+            return int(act[-1])
+    return None
+
+
 def normalize_act(value: Any) -> str:
     """目录侧的幕只有 ``act1`` / ``act2`` / ``act3``。
 
@@ -56,16 +71,8 @@ def normalize_act(value: Any) -> str:
     章节序列里**一张都不显示**（2026-09-19 真实故障：目录 6 章，编排台只看得见手建的那一章）。
     读取时统一归一，写入方也已改成字符串；认不出的值落到第一幕，绝不让一章从看板上消失。
     """
-    text = str(value if value is not None else "").strip().lower()
-    if text in CATALOG_ACTS:
-        return text
-    digit = _ACT_DIGIT.search(text)
-    if digit:
-        return f"act{digit.group(0)}"
-    for char, act in _ACT_CN.items():
-        if char in text:
-            return act
-    return "act1"
+    number = act_number(value)
+    return f"act{number}" if number else "act1"
 
 
 def short_scene_title(text: Any) -> str:
