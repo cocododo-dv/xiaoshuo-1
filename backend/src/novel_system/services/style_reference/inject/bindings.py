@@ -112,20 +112,42 @@ def rank_bindings(
 
     冻结路径（:func:`resolve_active_binding` / :func:`resolve_binding_layers`）只看 ``usable`` 的；
     ``style_policy`` 的轻量现解析也用这一份：命中的绑定全部不 usable 时降级（C7），而不是当作未绑定。"""
-    if not project_id and not character_ids and not scene_id:
-        return []
-    matched: list[tuple[int, StyleReferenceInjectionBinding]] = []
-    for binding in session.scalars(
+    return rank_bindings_for_scopes(session, task_type, [(project_id, character_ids, scene_id)])[0]
+
+
+BindingScope = tuple[str | None, Sequence[str] | None, str | None]  # (project_id, character_ids, scene_id)
+
+
+def rank_bindings_for_scopes(
+    session: Session,
+    task_type: str,
+    scopes: Sequence[BindingScope],
+) -> list[list[RankedBinding]]:
+    """一批作用域各自的 :func:`rank_bindings`（同一个次序与口径），总共两条查询：活动绑定一条、所指画像一条——
+    逐场解析整章 / 整本时查询数不随场数增长。"""
+    results: list[list[RankedBinding]] = [[] for _ in scopes]
+    wanted = [index for index, (project_id, character_ids, scene_id) in enumerate(scopes) if project_id or character_ids or scene_id]
+    if not wanted:
+        return results
+    bindings = session.scalars(
         select(StyleReferenceInjectionBinding).where(
             StyleReferenceInjectionBinding.task_type == str(task_type),
             StyleReferenceInjectionBinding.status == "active",
         )
-    ).all():
-        rank = binding_rank(binding, project_id=project_id, character_ids=character_ids, scene_id=scene_id)
-        if rank < _UNMATCHED:
-            matched.append((rank, binding))
-    if not matched:
-        return []
+    ).all()
+    matched_by_scope: dict[int, list[tuple[int, StyleReferenceInjectionBinding]]] = {}
+    for index in wanted:
+        project_id, character_ids, scene_id = scopes[index]
+        matched: list[tuple[int, StyleReferenceInjectionBinding]] = []
+        for binding in bindings:
+            rank = binding_rank(binding, project_id=project_id, character_ids=character_ids, scene_id=scene_id)
+            if rank < _UNMATCHED:
+                matched.append((rank, binding))
+        if matched:
+            matched_by_scope[index] = matched
+    if not matched_by_scope:
+        return results
+    profile_ids = sorted({str(binding.profile_id) for matched in matched_by_scope.values() for _rank, binding in matched})
     profile_rows = {
         str(pid): (str(status or ""), str(book_id or "") or None)
         for pid, status, book_id in session.execute(
@@ -133,19 +155,22 @@ def rank_bindings(
                 StyleReferenceProfile.profile_id,
                 StyleReferenceProfile.status,
                 StyleReferenceProfile.book_id,
-            ).where(StyleReferenceProfile.profile_id.in_(sorted({str(b.profile_id) for _rank, b in matched})))
+            ).where(StyleReferenceProfile.profile_id.in_(profile_ids))
         )
     }
-    matched.sort(key=lambda item: _sort_key(item[1], rank=item[0], character_ids=character_ids))
-    return [
-        RankedBinding(
-            binding=binding,
-            rank=rank,
-            profile_status=profile_rows.get(str(binding.profile_id), ("", None))[0],
-            book_id=profile_rows.get(str(binding.profile_id), ("", None))[1],
-        )
-        for rank, binding in matched
-    ]
+    for index, matched in matched_by_scope.items():
+        character_ids = scopes[index][1]
+        matched.sort(key=lambda item: _sort_key(item[1], rank=item[0], character_ids=character_ids))
+        results[index] = [
+            RankedBinding(
+                binding=binding,
+                rank=rank,
+                profile_status=profile_rows.get(str(binding.profile_id), ("", None))[0],
+                book_id=profile_rows.get(str(binding.profile_id), ("", None))[1],
+            )
+            for rank, binding in matched
+        ]
+    return results
 
 
 def resolve_active_binding(
@@ -227,6 +252,7 @@ __all__ = [
     "most_specific_binding",
     "ordered_character_ids",
     "rank_bindings",
+    "rank_bindings_for_scopes",
     "resolve_active_binding",
     "resolve_binding_layers",
     "ts_to_int",

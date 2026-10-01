@@ -245,3 +245,68 @@ def test_light_and_frozen_paths_rank_bindings_the_same_way(session) -> None:
         else:
             assert not light.bound and light.mode != MODE_DEGRADED, trial
     assert bound_seen and degraded_seen
+
+
+def test_batched_light_live_policies_match_one_by_one_and_do_not_grow_with_the_scopes(session) -> None:
+    """整本 / 整章逐场判定用的批量现解析（literary_quality、成稿中心的抄袭扫描）：每个作用域的结果与逐个
+    ``style_policy_live(..., freeze_contract=False)`` 相同（随机的一组绑定：各层、同层多条、有的画像已归档），
+    查询数与作用域多少无关。"""
+    import random
+
+    from sqlalchemy import event
+
+    from novel_system.db.models import StoryProject, StyleReferenceInjectionBinding
+    from novel_system.services.style_policy import live_policies_without_contract, style_policy_live
+    from tests.style_reference_factories import make_binding, make_book, make_profile, synthetic_paragraphs
+
+    project_id = "PRJ_BATCH"
+    session.add(StoryProject(project_id=project_id, title="batch", outline_text=""))
+    book_id = make_book(session, "book_batch", paragraphs=synthetic_paragraphs(4))
+    profiles = [
+        make_profile(session, book_id, profile_id=f"profile_batch_{n}", status="archived" if n % 3 == 2 else "active")
+        for n in range(6)
+    ]
+    targets = [
+        ("scene", "SC_B1"),
+        ("scene", "SC_B3"),
+        ("character", "C_A"),
+        ("character", "C_B"),
+        ("project", project_id),
+        ("global", None),
+    ]
+    scopes = [
+        SimpleNamespace(project_id=project_id, scene_id="SC_B1", pov_character_id="C_A", onstage_chars_json=["C_B"]),
+        SimpleNamespace(project_id=project_id, scene_id="SC_B2", pov_character_id="C_B", onstage_chars_json=[]),
+        SimpleNamespace(project_id=project_id, scene_id="SC_B3", pov_character_id=None, onstage_chars_json=["C_A"]),
+        SimpleNamespace(project_id="PRJ_OTHER", scene_id="SC_B4", pov_character_id=None, onstage_chars_json=[]),
+        None,
+    ]
+    engine = session.get_bind()
+    statements: list[str] = []
+
+    def count(_conn, _cursor, statement, *_args):  # noqa: ANN001, ANN002
+        statements.append(statement)
+
+    rng = random.Random(41)
+    for trial in range(8):
+        session.query(StyleReferenceInjectionBinding).delete()
+        used: set[tuple[str, str, str | None]] = set()
+        for number in range(rng.randint(0, 6)):
+            target_scope, ref = rng.choice(targets)
+            profile_id = rng.choice(profiles)
+            if (profile_id, target_scope, ref) in used:
+                continue
+            used.add((profile_id, target_scope, ref))
+            make_binding(session, profile_id, binding_id=f"bind_batch_{trial}_{number}", scope=target_scope, scope_ref_id=ref)
+        session.commit()
+        one_by_one = [style_policy_live(session, scope, freeze_contract=False) for scope in scopes]
+        session.expire_all()
+        statements.clear()
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            batched = live_policies_without_contract(session, scopes)
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+        assert batched == one_by_one, trial
+        # 活动绑定、所指画像、书的云策略：至多三条，不按作用域重复
+        assert len(statements) <= 3, (trial, len(statements))

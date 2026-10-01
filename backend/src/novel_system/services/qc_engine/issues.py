@@ -14,6 +14,7 @@ from novel_system.services.quality_checks.continuity import (
     CONTINUITY_UNAVAILABLE_KEY,
     EVENT_LOG_VIOLATION_KEY,
     deterministic_continuity_issues,
+    reference_message,
 )
 
 
@@ -28,12 +29,19 @@ LLM_PRONOUN_ISSUE_KEYS = frozenset(
 )
 
 
+def _mined_message(issue: dict[str, Any]) -> str:
+    """取词用的说明：事件账本矛盾按账本 id 写的那一份（``quality_checks.continuity.reference_message``），
+    别的 issue 就是它自己的说明。"""
+    reference = reference_message(issue)
+    return reference if reference is not None else str(issue.get("message") or "")
+
+
 def _issue_blob(issues: list[Any], rewrite_brief: list[Any]) -> str:
     parts: list[str] = []
     for issue in issues:
         if isinstance(issue, dict):
             parts.append(str(issue.get("issue_key") or ""))
-            parts.append(str(issue.get("message") or ""))
+            parts.append(_mined_message(issue))
     parts.extend(str(item) for item in rewrite_brief)
     return "\n".join(parts)
 
@@ -157,7 +165,7 @@ def _annotate_qc_issues(
         if not isinstance(issue, dict):
             annotated.append(issue)
             continue
-        blob = " ".join(str(issue.get(key) or "") for key in ("issue_key", "message"))
+        blob = " ".join((str(issue.get("issue_key") or ""), _mined_message(issue)))
         conflicts = _constraint_conflicts_for_text(scene, blob)
         evidence_spans = _evidence_spans_for_text(source_content, blob)
         severity = (
@@ -256,7 +264,7 @@ def _dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str]] = set()
     for issue in issues:
         issue_key = str(issue.get("issue_key") or "")
-        message = str(issue.get("message") or "")
+        message = _mined_message(issue)
         key = (issue_key, message)
         if key in seen:
             continue

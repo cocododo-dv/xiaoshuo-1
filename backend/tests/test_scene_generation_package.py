@@ -113,3 +113,39 @@ def test_rule_analysis_runs_once_per_text_across_gate_and_critique(monkeypatch) 
     again_signals, again_findings = literary_signals.rule_analysis(text)
     assert again_signals and len(again_findings) == expected_findings
     assert len(calls) == 1
+
+
+def test_the_anti_template_gate_score_is_the_shared_weighted_score() -> None:
+    """B04-16：去模板门的分数走 ``literary_quality.weighted_score(..., normalize=True)``——与以前自己写的那一份
+    （这组维度的 Σ 分数 × 权重 ÷ 权重和，四舍五入到 4 位）逐位相同。"""
+    from novel_system.services.literary_quality import DIMENSION_WEIGHTS
+
+    dims = sg.text_gates.ANTI_TEMPLATE_GATE_DIMENSIONS
+    texts = (
+        "她突然意识到，自己一直在等这一刻。月光照着月光下的院子。",
+        "The witness held the key. The lead had to choose the archive or the child.",
+        "他转身，转身，又转身。最后，一切都永远改变了。",
+        "林昭把旧信折好，放回案卷里，雨停了。",
+    )
+    for text in texts:
+        signals, _findings = literary_signals.rule_analysis(text)
+        before = round(
+            sum(signals[dim]["score"] * DIMENSION_WEIGHTS[dim] for dim in dims) / sum(DIMENSION_WEIGHTS[dim] for dim in dims),
+            4,
+        )
+        assert sg.text_gates._anti_template_quality_gate(text, scene_id="S", chapter_id="C")["score"] == before
+
+
+def test_the_drafting_gates_read_required_groups_like_qc() -> None:
+    """批准#11：起草的确定性验收与硬质检、成稿门同一处按组读必写（``qc_constraints.required_groups_missing``）——
+    一整段分不出 ≥2 字的组时整段算一组（以前起草这边分不出组就当没有必写）。"""
+    from types import SimpleNamespace
+
+    card = SimpleNamespace(must_include_text="主角交出钥匙，门外传来警笛", forbidden_text="黑伞|雨伞、钥匙链")
+    snapshot = sg.text_gates.ConstraintSnapshot.read(card, "他犹豫很久，最后主角交出钥匙。她撑开雨伞。", None)
+    assert snapshot.missing_required == ["门外传来警笛"]
+    assert snapshot.forbidden_hits == ["黑伞|雨伞"]
+
+    single = SimpleNamespace(must_include_text="钟", forbidden_text="")
+    assert sg.text_gates.ConstraintSnapshot.read(single, "雨停了。", None).missing_required == ["钟"]
+    assert sg.text_gates.ConstraintSnapshot.read(single, "钟响了。", None).missing_required == []

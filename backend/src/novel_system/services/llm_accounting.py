@@ -125,6 +125,7 @@ __all__ = [
     "recover_incomplete_call",
     "recover_stale_legacy_reservations",
     "recover_stale_unowned_reservations",
+    "stamp_product_hash",
     "validate_product_call",
     "validate_product_call_ledger",
 ]
@@ -518,11 +519,7 @@ def execute_accounted_call(
     online_capability_invoked = False
     response: object | None = None
     try:
-        if context.provider_execution_mode != "online":
-            raise LLMAccountingRejected(
-                "LLM_ACCOUNTING_CONTEXT_INVALID",
-                "offline deterministic execution was retired; only online provider execution is accounted",
-            )
+        # 上下文只能是 online（LLMCallContext 构造时就拒绝别的执行模式），这里不再复查。
         if not isinstance(client, OnlineAccountedExecution):
             raise LLMAccountingRejected(
                 "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
@@ -1080,6 +1077,20 @@ def mark_postprocess_failure(
     parent.response_payload_summary = sanitize_audit_summary(summary)
     parent.settled_at = parent.settled_at or utcnow()
     session.commit()
+
+
+def stamp_product_hash(session: Session, llm_call_id: str, key: str, value: str) -> bool:
+    """在一次调用的账本行的回包摘要里记下它产出的那份产品的哈希（检查点复验认它：产品、检查点与账本三者绑在一起）。
+
+    账本的格式只有本模块一个主人（B01-23：以前编排器直接改 ``response_payload_summary``）。账本行不在 → False，
+    调用方报它自己的错（每条路径的错误码 / 说法不同）；不提交——随调用方的事务一起落。"""
+    parent = session.get(LlmCall, llm_call_id)
+    if parent is None:
+        return False
+    parent.response_payload_summary = sanitize_audit_summary(
+        {**dict(parent.response_payload_summary or {}), key: value}
+    )
+    return True
 
 
 def _usage_for_failed_attempt(

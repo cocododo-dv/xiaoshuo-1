@@ -36,13 +36,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.cache_registry import register_cache_reset
 from novel_system.db.models import (
     StyleReferenceBannedTerm,
-    StyleReferenceBook,
     StyleReferenceParagraph,
     StyleReferenceProfile,
 )
@@ -52,7 +51,7 @@ from novel_system.services.source_safety import (
     find_protected_term_spans,
     normalize_for_term_match,
 )
-from novel_system.services.style_reference.paragraph_root import COUNT_KEY, ROOT_KEY
+from novel_system.services.style_reference.paragraph_root import read_book_version
 from novel_system.services.style_reference.validation.plagiarism import (
     normalize_text_for_matching,
     normalize_with_offsets,
@@ -199,34 +198,11 @@ class _BookCopyIndex:
 
 
 def _book_fingerprint(session: Session, book_id: str) -> tuple[Any, ...] | None:
-    """段落表的廉价指纹（索引缓存与结果缓存的键），加上书的校验和与建书时间（同一个书号删了重导入也认得出来）。
-
-    书的统计里存着段落根哈希时就用它：改段落文本或行的写入者负责把它 pop 掉（契约 §3.1；导入之后只有校对工具
-    会动段落行），段落表一变它就没了或换了——用不着每次检查都把全书段落数一遍、加一遍长度（2.6 万段一次十几毫秒，
-    一场运行要查十来次，B04-25）。没存根哈希时照旧按段数 / 总字数 / 最新段落时间认。两条路都现读库：会话在提交时
-    不过期对象，身份映射里的书可能是别的连接改之前的样子。"""
-    row = session.execute(
-        select(
-            func.json_extract(StyleReferenceBook.stats_json, f"$.{ROOT_KEY}"),
-            func.json_extract(StyleReferenceBook.stats_json, f"$.{COUNT_KEY}"),
-            StyleReferenceBook.text_checksum,
-            StyleReferenceBook.created_at,
-        ).where(StyleReferenceBook.book_id == book_id)
-    ).one_or_none()
-    if row is None:
-        return None
-    root, stored_count, checksum, created_at = row
-    identity = (str(checksum or ""), str(created_at or ""))
-    if isinstance(root, str) and root:
-        return ("root", root, str(stored_count if stored_count is not None else ""), *identity)
-    count, total, latest = session.execute(
-        select(
-            func.count(StyleReferenceParagraph.paragraph_id),
-            func.coalesce(func.sum(func.length(StyleReferenceParagraph.text)), 0),
-            func.max(StyleReferenceParagraph.created_at),
-        ).where(StyleReferenceParagraph.book_id == book_id)
-    ).one()
-    return ("scan", int(count or 0), int(total or 0), str(latest or ""), *identity)
+    """段落文本的版本（索引缓存与结果缓存的键）：与规则 / 节奏校准的读数缓存共用一次读库
+    （``paragraph_root.read_book_version``）。存着段落根哈希时不数段落表（2.6 万段一次十几毫秒，一场运行要查十来次，
+    B04-25）；没存时按段数 / 总字数 / 最新段落时间认。书不存在 → None。"""
+    version = read_book_version(session, book_id)
+    return version.text_key if version is not None else None
 
 
 def _book_index(session: Session, book_id: str, fingerprint: tuple[Any, ...]) -> _BookCopyIndex:
@@ -496,6 +472,7 @@ def copy_gate_policies(
     scope: Any = None,
     bundle_snapshot: Mapping[str, Any] | None = None,
     policy: Any = None,
+    live: Any = None,
 ) -> list[Any]:
     """抄袭门要比对的绑定：bundle 冻结的那份（绑定时）+ 作用域当前的活动绑定（轻量现解析，不冻结契约）。
 
@@ -505,6 +482,8 @@ def copy_gate_policies(
 
     ``policy``：调用方已经解析好的这一场的策略（成稿门一次评估只解析一份，文学规则与抄袭门看的是同一份）——给了
     就用它代替从 ``bundle_snapshot`` 解析的那份；它本身已是现解析时不再补一份现解析。
+    ``live``：调用方批量解析好的 ``scope`` 的现解析策略（``style_policy.live_policies_without_contract``：整章逐场
+    扫描时查询数不随场数增长）——给了就不再逐场现解析。
     """
     from novel_system.services.style_policy import MODE_LIVE, style_policy_for_bundle, style_policy_live
 
@@ -515,7 +494,8 @@ def copy_gate_policies(
     if primary is not None and (primary.bound or _policy_unavailable_reason(primary) is not None):
         policies.append(primary)
     if scope is not None and getattr(primary, "mode", None) != MODE_LIVE:
-        live = style_policy_live(session, scope, freeze_contract=False)
+        if live is None:
+            live = style_policy_live(session, scope, freeze_contract=False)
         if live.bound or _policy_unavailable_reason(live) is not None:
             policies.append(live)
     return policies

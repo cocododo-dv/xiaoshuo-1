@@ -43,9 +43,9 @@ from novel_system.services.llm_accounting import (
     ACCOUNTING_EXECUTION_MODE_KEY,
     LLMAccountingError,
     LLMCallContext,
+    stamp_product_hash,
     validate_product_call,
 )
-from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
 from novel_system.services.scene_run.context import ArchiveInputs
 from novel_system.services.scene_run.results import (
@@ -469,18 +469,12 @@ class ArchiveCheckpointMixin:
             event_ids=prose_event_ids,
             events=prose_events,
         )
-        if prose_result.llm_call_id is not None:
-            prose_parent = self.session.get(LlmCall, prose_result.llm_call_id)
-            if prose_parent is None:
-                raise LLMAccountingError(
-                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                    "prose extraction product parent disappeared before archive checkpoint",
-                )
-            prose_parent.response_payload_summary = sanitize_audit_summary(
-                {
-                    **dict(prose_parent.response_payload_summary or {}),
-                    "archive_prose_product_hash": self._json_hash(prose_product),
-                }
+        if prose_result.llm_call_id is not None and not stamp_product_hash(
+            self.session, prose_result.llm_call_id, "archive_prose_product_hash", self._json_hash(prose_product)
+        ):
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "prose extraction product parent disappeared before archive checkpoint",
             )
         self.session.flush()
         self._validate_archive_prose_checkpoint(
@@ -1532,15 +1526,13 @@ class ArchiveCheckpointMixin:
             evaluation_row=snapshot,
             evaluator_llm_call_id=row.evaluator_llm_call_id,
         )
-        parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
-        if parent is None:
+        if not stamp_product_hash(
+            self.session,
+            row.evaluator_llm_call_id,
+            "archive_chapter_near_final_product_hash",
+            self._json_hash(product),
+        ):
             self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
-        parent.response_payload_summary = sanitize_audit_summary(
-            {
-                **dict(parent.response_payload_summary or {}),
-                "archive_chapter_near_final_product_hash": self._json_hash(product),
-            }
-        )
         self.session.flush()
         return product
 

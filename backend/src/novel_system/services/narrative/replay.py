@@ -115,14 +115,12 @@ def fold_events(events, state: EntityState) -> EntityState:
     return state
 
 
-def require_scene_boundary(scene_seq: None, scene_id: str | None) -> str:
+def require_scene_boundary(scene_id: str | None) -> str:
     """摘要只认「这一场之前」的场景边界。
 
-    按章内 scene_seq 截断的旧游标已经删掉（B11-07：它是章内序号，多章作品里拿它当全书边界是错的，
-    产品调用方早就只传 scene_id）；位置参数 ``scene_seq`` 留着只是为了照旧传 ``None`` 的调用方。
+    按章内 scene_seq 截断的旧游标已经删掉（B11-07：它是章内序号，多章作品里拿它当全书边界是错的）；
+    2026-10-01 连同为照旧传 ``None`` 的调用方留着的位置参数 ``scene_seq`` 一起删了，边界只有 ``scene_id``。
     """
-    if scene_seq is not None:
-        raise TypeError("the chapter-local scene_seq cursor was removed; pass scene_id")
     if not scene_id:
         raise TypeError("a narrative digest needs the scene_id it is written for")
     return scene_id

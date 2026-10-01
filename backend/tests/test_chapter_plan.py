@@ -440,6 +440,23 @@ def test_apply_fill_only_idempotent_replay_and_skip_non_empty(client) -> None:
     assert len(target["scenes"]) == 2  # 没有第三张卡
 
 
+def test_apply_returns_its_chapter_exactly_as_the_catalog_shows_it(client) -> None:
+    """B07-19：apply 只为这一章查表、只回这一章——载荷与整本目录里这一章的一样（章号、slug 按章序）。"""
+    pid = _create_project(client)
+    chapters = [_create_chapter(client, pid, title=title) for title in ("第一章", "第二章", "第三章")]
+    chid = chapters[1]["chapter_id"]
+    response = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/apply",
+        json={"patch": {"drama": {"spine": "旧工牌把调查推向父亲"}, "scenes": [], "append_scenes": []}},
+        headers={"X-Idempotency-Key": _key("apply-one-chapter")},
+    )
+    assert response.status_code == 200, response.text
+    returned = response.json()["data"]["chapter"]
+    tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    assert returned == next(item for item in tree["chapters"] if item["chapter_id"] == chid)
+    assert returned["no"] == "02" and returned["drama"]["spine"] == "旧工牌把调查推向父亲"
+
+
 def test_apply_fills_empty_drama_fields_and_preserves_author_values(client) -> None:
     pid = _create_project(client)
     chapter = _create_chapter(client, pid)
@@ -532,6 +549,17 @@ def test_fill_offline_is_fail_closed_and_the_gap_checklist_is_a_separate_non_ai_
     assert data["source"] == "rules"
     # 默认开场卡缺 conflict/setback/pov → 清单列出空槽
     assert data["gaps"] and any("conflict" in gap for gap in data["gaps"])
+    # 结构化的一份（S1 21）：中文字段名（与前端章节规划同一套叫法）、第几场，不带内部 id
+    scene_item = next(item for item in data["items"] if item["scope"] == "scene")
+    assert scene_item["scene_id"] == chapter["scenes"][0]["scene_id"]
+    assert scene_item["scene_label"].startswith("第 1 场 · ")
+    assert {"key": "conflict", "label": "冲突"} in scene_item["fields"]
+    assert {"key": "pov", "label": "视角"} in scene_item["fields"]
+    assert scene_item["fill_in"] is None
+    drama_item = next(item for item in data["items"] if item["scope"] == "chapter")
+    assert drama_item["scene_id"] is None and drama_item["scene_label"] == "章节戏剧卡"
+    assert {"key": "promise", "label": "核心承诺"} in drama_item["fields"]
+    assert all(chid not in item["scene_label"] for item in data["items"])
 
 
 def test_fill_llm_patch_sanitized_and_notes_kept(client, monkeypatch) -> None:

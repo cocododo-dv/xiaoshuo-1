@@ -215,6 +215,43 @@ def test_draft_sync_keeps_unchanged_scene_rows_approved(client, session) -> None
         assert by_uid[scene["row_uid"]].status == "approved", scene["row_uid"]
 
 
+def test_draft_sync_keeps_rows_approved_when_only_their_position_moves(client, session) -> None:
+    """09 草稿同步只把内容变了的场打回 draft——位置不算内容（S1 18）。前端 09 上行的每一行带着全书序
+    ``scene_seq = i + 1``（``canonFromFE``），同步又按章内位置重算：以前内容签名里带着章内序号，第二章起的每一场
+    每存一次都被当成「改了」，打回 draft、复核留痕清零；在一章开头插进一场时，同章后面几场也一样。"""
+    pid = _create_project(client, key="g-sync-insert")["project_id"]
+    _approve_through(client, pid, "scene_details")
+    scenes = _step(_workspace(client, pid), "scene_list")["draft"]["scenes"]
+    assert len(scenes) >= 2 and all(scene.get("row_uid") for scene in scenes)
+    session.expire_all()
+    plans = _plans(session, pid)
+    assert all(plan.status == "approved" for plan in plans)
+    assert len({plan.chapter_id for plan in plans}) >= 2, "需要两章：第二章的章内序号与全书序不同"
+
+    def fe_rows(rows: list[dict]) -> list[dict]:
+        return [{**row, "scene_seq": index} for index, row in enumerate(rows, start=1)]
+
+    # 只改第一场的摘要：只有它回到 draft
+    edited = [dict(scene) for scene in scenes]
+    edited[0]["summary"] = "她在旧码头等到了送信人，信却是空的。"
+    _patch(client, pid, "scene_list", {"scenes": fe_rows(edited)})
+    session.expire_all()
+    by_uid = {plan.row_uid: plan.status for plan in _plans(session, pid)}
+    assert by_uid == {scene["row_uid"]: "draft" if scene is edited[0] else "approved" for scene in edited}
+
+    # 在一章开头插进一场：只有新来的那一场是 draft（同章后面几场的章内位置挪了一格，内容没变）
+    identity = {"row_uid", "scene_id", "scene_plan_id", "chapter_plan_id"}
+    fresh = {key: value for key, value in edited[1].items() if key not in identity}
+    fresh["summary"] = "插进来的一场：雨城的钟停在了三点。"
+    _patch(client, pid, "scene_list", {"scenes": fe_rows([edited[0], fresh, *edited[1:]])})
+    session.expire_all()
+    plans = _plans(session, pid)
+    old_uids = {scene["row_uid"] for scene in scenes}
+    [added] = [plan for plan in plans if plan.row_uid not in old_uids]
+    assert added.status == "draft"
+    assert {plan.row_uid: plan.status for plan in plans if plan.row_uid in old_uids} == by_uid
+
+
 # ---------------------------------------------------------------------------
 # 运行时失效：书级步骤只提示，09 按场定位
 # ---------------------------------------------------------------------------

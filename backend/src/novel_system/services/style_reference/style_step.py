@@ -381,6 +381,31 @@ def patch_keep_decision(
     return PATCH_DECISION_KEPT, PATCH_REASON_NOT_WORSE
 
 
+# 软 QC 报告的改稿意见里，参考评审那一条的 kind（10 分制的 style_score + 16 维分数）
+REFERENCE_JUDGE_KIND = "reference_judge"
+
+
+def report_reference_judge(report: Any) -> dict[str, Any] | None:
+    """软 QC 报告（``QcReport``：只读 ``rewrite_brief_json``）里的参考评审条目（原样的一份拷贝）；没有 → None。
+
+    软补丁的去留、归档时的终稿读数、像不像视图都从这里取（B01-16：以前三处各写一遍）。"""
+    for entry in (getattr(report, "rewrite_brief_json", None) or []) if report is not None else []:
+        if isinstance(entry, dict) and entry.get("kind") == REFERENCE_JUDGE_KIND:
+            return dict(entry)
+    return None
+
+
+def judge_unit(judge: Mapping[str, Any] | None) -> float | None:
+    """参考评审的总分换到 0–1（``style_score`` 是 10 分制；越界的夹到两端）；没有可用的分 → None。"""
+    if not isinstance(judge, Mapping):
+        return None
+    try:
+        value = float(judge.get("style_score"))
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, value / 10.0))
+
+
 def reading_brief(reading: FidelityReading | None, *, reading_id: str | None = None) -> dict[str, Any] | None:
     """尝试记录 / 决定里存的读数摘要（不含逐特征 z 值）。"""
     if reading is None:
@@ -420,6 +445,7 @@ __all__ = [
     "PATCH_REASON_NOT_WORSE",
     "PATCH_REASON_NO_EVIDENCE",
     "REASON_BASE_UNSAFE",
+    "REFERENCE_JUDGE_KIND",
     "REASON_CANDIDATE_SLOT",
     "REASON_CLOSER",
     "REASON_COPY_BLOCKED",
@@ -435,9 +461,11 @@ __all__ = [
     "card_lines_for",
     "dimension_label",
     "fidelity_thresholds",
+    "judge_unit",
     "level_words",
     "patch_keep_decision",
     "reading_brief",
+    "report_reference_judge",
     "revision_brief_sections",
     "revision_differences",
     "revision_dimensions",

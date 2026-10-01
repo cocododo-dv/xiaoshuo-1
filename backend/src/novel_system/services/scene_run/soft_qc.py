@@ -13,7 +13,6 @@ from novel_system.db.models import (
     AttemptTracker,
     ChapterGoal,
     HumanReviewEvent,
-    LlmCall,
     QcReport,
     SceneCard,
     SceneDraft,
@@ -24,14 +23,15 @@ from novel_system.services.llm_accounting import (
     LLMAccountingError,
     LLMCallContext,
     is_llm_control_plane_failure,
+    stamp_product_hash,
 )
-from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 from novel_system.services.qc_engine import SoftQcDecision
 from novel_system.services.scene_generation import (
     STYLE_NOTICE_PATCH_REVERTED,
     STYLE_PATCH_KEEP_STEP,
+    StepKeys,
     StyleGenerationResult,
     fidelity_probe,
     style_notice,
@@ -48,8 +48,10 @@ from novel_system.services.style_reference import readings as style_readings
 from novel_system.services.style_reference.style_step import (
     PATCH_DECISION_REVERTED,
     fidelity_thresholds,
+    judge_unit,
     patch_keep_decision,
     reading_brief,
+    report_reference_judge,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -142,7 +144,7 @@ class SoftQcCheckpointMixin:
                 )
             critique_summary = critique.product_snapshot()
 
-            self._reconcile_execution_step("soft_patch:auto_critique:0")
+            self._reconcile_execution_step(StepKeys.soft_patch("auto_critique"))
             patch_spend_allowed = bool(
                 critique.should_rewrite and optional_spend_allowed()
             )
@@ -184,7 +186,7 @@ class SoftQcCheckpointMixin:
                                 source_style_content=style_generation.content,
                                 rewrite_brief=critique_brief,
                                 source_qc_report_id=f"auto_critique_{scene_id}",
-                                execution_step_key="soft_patch:auto_critique:0",
+                                execution_step_key=StepKeys.soft_patch("auto_critique"),
                             )
                         )
                         critique_outcome = "patched"
@@ -217,18 +219,12 @@ class SoftQcCheckpointMixin:
                 patch_outcome=critique_outcome,
             )
             critique_product_hash = self._json_hash(critique_summary)
-            if critique.llm_call_id is not None:
-                critique_parent = self.session.get(LlmCall, critique.llm_call_id)
-                if critique_parent is None:
-                    raise LLMAccountingError(
-                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                        "auto-critique product parent disappeared before checkpoint commit",
-                    )
-                critique_parent.response_payload_summary = sanitize_audit_summary(
-                    {
-                        **dict(critique_parent.response_payload_summary or {}),
-                        "auto_critique_product_hash": critique_product_hash,
-                    }
+            if critique.llm_call_id is not None and not stamp_product_hash(
+                self.session, critique.llm_call_id, "auto_critique_product_hash", critique_product_hash
+            ):
+                raise LLMAccountingError(
+                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                    "auto-critique product parent disappeared before checkpoint commit",
                 )
             # 该摘要只绑定本次事务所见的产品与父账本；不宣称抵抗可同步改写
             # checkpoint、parent summary 与 ledger 的全库特权篡改。
@@ -243,21 +239,16 @@ class SoftQcCheckpointMixin:
                 else None
             )
             if patch_failure_product is not None:
-                patch_parent = self.session.get(
-                    LlmCall,
+                if not stamp_product_hash(
+                    self.session,
                     patch_failure_product["llm_call_id"],
-                )
-                if patch_parent is None:
+                    "auto_critique_patch_failure_hash",
+                    patch_failure_hash,
+                ):
                     raise LLMAccountingError(
                         "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                         "auto-critique patch failure parent disappeared before checkpoint commit",
                     )
-                patch_parent.response_payload_summary = sanitize_audit_summary(
-                    {
-                        **dict(patch_parent.response_payload_summary or {}),
-                        "auto_critique_patch_failure_hash": patch_failure_hash,
-                    }
-                )
                 self._validate_auto_critique_patch_failure_checkpoint(
                     scene_id,
                     patch_failure_product,
@@ -351,7 +342,7 @@ class SoftQcCheckpointMixin:
                     contract,
                     self._rewrite_brief_from_report(soft_qc0.qc_report_id),
                 )
-                self._reconcile_execution_step("soft_patch:soft_qc:0")
+                self._reconcile_execution_step(StepKeys.soft_patch("soft_qc"))
                 final_generation = self.scene_generation_service.generate_style_patch(
                     scene_id,
                     bundle,
@@ -359,7 +350,7 @@ class SoftQcCheckpointMixin:
                     source_style_content=style_generation.content,
                     rewrite_brief=rewrite_brief,
                     source_qc_report_id=soft_qc0.qc_report_id,
-                    execution_step_key="soft_patch:soft_qc:0",
+                    execution_step_key=StepKeys.soft_patch("soft_qc"),
                 )
                 self._save_run_checkpoint(
                     "soft_qc_ready",
@@ -471,22 +462,8 @@ class SoftQcCheckpointMixin:
         )
 
     def _report_judge(self, qc_report_id: str | None) -> dict[str, Any] | None:
-        """软 QC 报告里的参考评审分（10 分制的 ``reference_judge`` 条目）；没有 → None。"""
-        report = self.session.get(QcReport, qc_report_id) if qc_report_id else None
-        for entry in (report.rewrite_brief_json or []) if report is not None else []:
-            if isinstance(entry, dict) and entry.get("kind") == "reference_judge":
-                return dict(entry)
-        return None
-
-    @staticmethod
-    def _judge_unit(judge: dict[str, Any] | None) -> float | None:
-        if not isinstance(judge, dict):
-            return None
-        try:
-            value = float(judge.get("style_score"))
-        except (TypeError, ValueError):
-            return None
-        return max(0.0, min(1.0, value / 10.0))
+        """软 QC 报告里的参考评审分（10 分制的 ``reference_judge`` 条目，``style_step.report_reference_judge``）；没有 → None。"""
+        return report_reference_judge(self.session.get(QcReport, qc_report_id) if qc_report_id else None)
 
     def _observe_patch_keep(
         self,
@@ -545,8 +522,8 @@ class SoftQcCheckpointMixin:
             and reading_after.reliable
         )
         decision, reason = patch_keep_decision(
-            before_judge=self._judge_unit(judge_before),
-            after_judge=self._judge_unit(judge_after),
+            before_judge=judge_unit(judge_before),
+            after_judge=judge_unit(judge_after),
             before_distance=reading_before.distance if comparable else None,
             after_distance=reading_after.distance if comparable else None,
             thresholds=thresholds,

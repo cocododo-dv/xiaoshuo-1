@@ -358,6 +358,37 @@ def test_historical_offline_product_no_longer_validates(session) -> None:
     assert exc_info.value.code == "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID"
 
 
+def test_product_hash_is_stamped_on_the_ledger_row_by_the_accounting_module(session) -> None:
+    """产品哈希记在账本行的回包摘要里（B01-23：账本格式只有计量模块一个主人）：并进已有的摘要、不提交；
+    账本行不在时返回 False，由调用方报它自己的错。"""
+    accounting = _accounting_module()
+    now = datetime.now(UTC).isoformat()
+    session.add(
+        LlmCall(
+            llm_call_id="product-hash-parent",
+            provider="openai_compatible",
+            scope_type="project",
+            scope_id="project-1",
+            project_id="project-1",
+            node_id="neutral_draft",
+            step="draft",
+            request_payload_summary={},
+            response_payload_summary={"request_id": "r-1"},
+            accounting_status="settled",
+            settled_at=now,
+        )
+    )
+    session.commit()
+
+    assert accounting.stamp_product_hash(session, "product-hash-parent", "archive_prose_product_hash", "h" * 64) is True
+    summary = session.get(LlmCall, "product-hash-parent").response_payload_summary
+    # 并进已有的摘要（摘要照旧过审计的有界指纹，已有的键还在）
+    assert summary["archive_prose_product_hash"] == "h" * 64 and "request_id" in summary
+    session.rollback()
+    assert "archive_prose_product_hash" not in session.get(LlmCall, "product-hash-parent").response_payload_summary
+    assert accounting.stamp_product_hash(session, "no-such-call", "archive_prose_product_hash", "h" * 64) is False
+
+
 def test_online_wrapper_forwards_attempt_hook_and_is_fully_accounted(session) -> None:
     accounting = _accounting_module()
     inner = LLMClient(

@@ -13,6 +13,7 @@ from novel_system.services.literary_quality import (
     analyze_literary_quality,
     ignored_dimensions_from_findings,
 )
+from novel_system.services.literary_quality.calibration_source import rule_calibration_for_policy
 from novel_system.services.literary_quality.scoring import weighted_score
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
 from novel_system.services.qc_constraints import contains_forbidden_term, required_groups_missing
@@ -391,13 +392,12 @@ class FinalTextGateService:
 
 
     def _rule_calibration(self, policy: StylePolicy) -> Any:
-        """绑定的参考书对规则维度的校准（与写作台深改面板 / 文学质量视图同一份）；未绑定或不可用 → None。"""
+        """绑定的参考书对规则维度的校准（与写作台深改面板 / 文学质量视图同一份：``literary_quality.calibration_source``）；
+        未绑定或不可用 → None。"""
         if not policy.bound:
             return None
         try:
-            from novel_system.services.scene_diagnosis import SceneDiagnosisService
-
-            return SceneDiagnosisService(self.session).rule_calibration_for_policy(policy)
+            return rule_calibration_for_policy(self.session, policy)
         except Exception:  # noqa: BLE001 — 校准读不出：退回让位规则（见 _literary）
             return None
 

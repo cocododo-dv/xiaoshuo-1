@@ -111,7 +111,9 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "extraction",
         "Generic extraction",
         "reference",
-        template_name="extraction",
+        # 这个节点实际派发的模板（成稿正文抽持久状态变化：prose_event_extractor 经 run_task 的
+        # narrative_event_extract → extraction 路由别名）；以前填的是并不存在的 "extraction"。
+        template_name="narrative_event_extract",
         model="gpt-5-mini",
         temperature=0.1,
         max_output_tokens=1200,

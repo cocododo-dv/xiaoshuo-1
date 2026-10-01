@@ -145,13 +145,9 @@ def test_manuscript_detail_query_count_does_not_grow_with_scene_count(client, se
         lambda: ChapterManuscriptService(session).manuscript_detail("CHM_QUERY_MANY"),
     )
 
-    # 已知的 N+1（2026-09-30 查出，已报给拥有者）：抄袭门按场现解析风格绑定（copy_gate_policies →
-    # style_policy_live），每场一条 style_reference_injection_bindings 查询。先钉住「每场至多一条」不许变坏；
-    # 整章批量解析修好之后删掉这段豁免，回到对全部查询的断言。
-    assert sum(map(_is_binding_lookup, many_scene_queries)) <= 8
-    other_one = [statement for statement in one_scene_queries if not _is_binding_lookup(statement)]
-    other_many = [statement for statement in many_scene_queries if not _is_binding_lookup(statement)]
-    assert len(other_many) <= len(other_one) + 1
+    # 抄袭门的各场活动绑定一次批量解析（S1 19a；以前每场一条 style_reference_injection_bindings 查询）
+    assert sum(map(_is_binding_lookup, many_scene_queries)) == sum(map(_is_binding_lookup, one_scene_queries)) == 1
+    assert len(many_scene_queries) <= len(one_scene_queries) + 1
 
 
 def test_chapter_manuscript_detail_assembles_current_final_scenes_and_marks_missing(client, session) -> None:
@@ -269,6 +265,26 @@ def test_chapter_manuscript_scans_the_chapter_against_the_bound_reference(client
     assert scan["profile_ids"] == [refs["profile_id"]]
     assert scan["protected_hit_count"] >= 1
     assert PROTECTED_NAME not in str(scan)
+
+
+def test_chapter_manuscript_scan_reads_the_manuscript_not_a_stale_aggregate(client, session) -> None:
+    """整章抄袭读数查的是成稿中心读到的那份正文（各场当前终稿现拼）：存下来的章汇总落后了、里面还留着一段
+    与参考书重合的旧字，正文里已经改掉——不报重合（S1 27；以前把汇总也拼进去一起查）。"""
+    from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
+
+    _create_chapter(client, "CHM252")
+    _create_scene(client, "CHM252_SC01", chapter_id="CHM252", scene_seq=1, is_chapter_last=1)
+    _finalize_scene(session, "CHM252_SC01", "CHM252", "守夜人换了一种说法，自己写下了这一夜。")
+    refs = seed_bound_reference(session, seed="stale_aggregate", scope="scene", scope_ref_id="CHM252_SC01")
+    _set_final_aggregate(session, "CHM252", f"旧的章汇总：{REFERENCE_PASSAGE}")
+
+    data = client.get("/api/v1/chapter-manuscripts/CHM252").json()["data"]
+
+    assert data["comparison_status"] == "aggregate_differs_current"
+    scan = data["source_safety_scan"]
+    assert scan["checked_books"] == [refs["book_id"]]
+    assert scan["safe"] is True and scan["blocked"] is False
+    assert scan["hit_count"] == 0 and scan["hits"] == []
 
 
 def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(client, session) -> None:

@@ -391,6 +391,21 @@ def test_patch_keep_decision_reverts_only_when_the_patch_moved_away() -> None:
     )
 
 
+def test_the_reference_judge_is_read_from_the_soft_qc_brief_in_one_place() -> None:
+    """软补丁去留、归档读数与像不像视图取参考评审的同一个口径（B01-16）：改稿意见里第一条 reference_judge 的拷贝；
+    总分 10 分制换成 0–1，越界夹到两端，读不出分给 None。"""
+    judge = {"kind": "reference_judge", "style_score": 7.5, "dimensions": {"voice": 8}}
+    report = SimpleNamespace(rewrite_brief_json=[{"kind": "patch", "text": "x"}, judge, {"kind": "reference_judge", "style_score": 1}])
+    picked = S.report_reference_judge(report)
+    assert picked == judge and picked is not judge
+    assert S.report_reference_judge(SimpleNamespace(rewrite_brief_json=[{"kind": "patch"}])) is None
+    assert S.report_reference_judge(SimpleNamespace(rewrite_brief_json=None)) is None
+    assert S.report_reference_judge(None) is None
+    assert S.judge_unit(judge) == 0.75
+    assert S.judge_unit({"style_score": 12}) == 1.0 and S.judge_unit({"style_score": -3}) == 0.0
+    assert S.judge_unit({"style_score": "n/a"}) is None and S.judge_unit({}) is None and S.judge_unit(None) is None
+
+
 def test_fidelity_thresholds_come_from_the_budget_file() -> None:
     thresholds = S.fidelity_thresholds()
     assert thresholds.audit() == {

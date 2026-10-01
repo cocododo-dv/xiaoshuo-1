@@ -434,8 +434,7 @@ def _install_llm(monkeypatch, responder):
     monkeypatch.setattr(mod, "mark_postprocess_failure", lambda session, llm_call_id, **kwargs: None)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_supplement_accounted_call",
-                        lambda self, **kwargs: None)
+    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
 
 
 def _chapter_llm_response(chapters):

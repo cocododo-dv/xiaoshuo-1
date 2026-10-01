@@ -514,11 +514,6 @@ class LLMNodeRunner(RuntimeLLMAccess):
         than silently returning substitute text.
         """
         self._assert_online_execution_available()
-        if context.provider_execution_mode != "online":
-            raise LLMAccountingRejected(
-                "LLM_ACCOUNTING_CONTEXT_INVALID",
-                "run_task requires online provider execution",
-            )
         route_node = _AD_HOC_ROUTE_ALIASES.get(task_name, task_name)
         self._validate_task_context(context, expected_node_id=route_node)
         try:

@@ -119,10 +119,13 @@ def build_chaptered_outline_plan(
                 "planned_scene_count": len(scenes_payload),
                 "chapter_goal": goal,
                 "main_plot_push": (chapter.summary or goal).strip(),
-                "emotional_target": "让人物目标、阻碍和代价在行动中显形。",
-                "ending_effect": "用新的选择、代价或信息推动下一章。",
-                "must_not": "不得复制参考书原文表达、人物、设定或桥段。",
-                "notes": "由雪花法分章物化，需确认后进入逐章运行。",
+                # 情绪目标 / 结尾效果 / 禁写 / 备注：分章里没有作者写的这四样，就空着（「没规划」）。以前这里写一套
+                # 固定的句子，场景执行契约、文学质量章组复审、章节规划上下文都把它当成作者写的（S1 9，阶段 F 的
+                # 「不拿样板当事实」；禁写那句还和 2026-09-20 的「人物」禁用词是同一句话）。
+                "emotional_target": "",
+                "ending_effect": "",
+                "must_not": "",
+                "notes": "",
                 # 阶段 X：幕写成目录侧的口径 act1 / act2 / act3。过去写整数 1 / 2 / 3，而章节编排按
                 # ``act === "act1"`` 分卷——雪花整理出来的章在编排台上一张都不显示。
                 "narrative_json": {

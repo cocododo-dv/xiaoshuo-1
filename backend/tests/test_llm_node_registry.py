@@ -36,8 +36,6 @@ _NON_PROMPTBUILDER_TEMPLATE_NAMES = {
     # 任务路由别名：节点 template_name="stylize"，实际 .build() 用 "style_draft"
     # （llm_task_runner.py 把 style_draft/style_patch 路由到 task_routing["stylize"]）。
     "stylize",
-    # run_task + _AD_HOC_ROUTE_ALIASES（narrative_event_extract→extraction）路径。
-    "extraction",
     # 当前无 PromptBuilder 调用方（保留 / 旧元数据）。
     "snowflake_step_generate",
 }

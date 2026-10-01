@@ -43,7 +43,7 @@ from novel_system.services.bundle_freshness import (
 )
 from novel_system.services.bundle_sections import BundleSections
 from novel_system.services.hash_engine import compute_bundle_hash_projection, sha256_text
-from novel_system.services.resolver import Resolver
+from novel_system.services.resolver import resolve_chapter_summary, resolve_scene_summary
 from novel_system.services.character_continuity import (
     CHARACTER_CONTRACT_VERSION,
     build_character_contract_digest,
@@ -154,7 +154,6 @@ BUNDLE_REFERENCE_NODE_IDS: tuple[str, ...] = (
 class BundleBuilder:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.resolver = Resolver()
         # 审计 P-11：可选注入槽的降级不允许静默——WARNING 落日志并随快照暴露。
         self._degraded_slots: set[str] = set()
 
@@ -471,7 +470,7 @@ class BundleBuilder:
                 refs={"literary_freshness_source_final_scene_ids": freshness_budget["source_final_scene_ids"]},
             )
 
-        scene_summary = self.resolver.resolve_scene_summary(self.session, scene)
+        scene_summary = resolve_scene_summary(self.session, scene)
         if scene_summary:
             sections.add(
                 "scene_summary",
@@ -480,7 +479,7 @@ class BundleBuilder:
                 refs={"scene_summary_id": scene_summary.scene_id},
             )
 
-        chapter_summary = self.resolver.resolve_chapter_summary(self.session, scene)
+        chapter_summary = resolve_chapter_summary(self.session, scene)
         if chapter_summary:
             sections.add(
                 "chapter_summary",

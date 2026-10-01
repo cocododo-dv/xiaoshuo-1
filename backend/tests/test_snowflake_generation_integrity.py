@@ -53,8 +53,7 @@ def _install_llm(monkeypatch, responder):
                         lambda session, llm_call_id, **kwargs: None)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_llm_enabled", lambda self: True)
     monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_client", lambda self: object())
-    monkeypatch.setattr(mod.SnowflakeWorkspaceLLMService, "_supplement_accounted_call",
-                        lambda self, **kwargs: None)
+    monkeypatch.setattr(mod, "supplement_accounted_call", lambda session, llm_call_id, **kwargs: None)
 
 
 def test_truncated_generation_fails_loudly_instead_of_returning_an_unchanged_draft(session, monkeypatch):

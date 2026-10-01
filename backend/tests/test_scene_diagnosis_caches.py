@@ -375,3 +375,43 @@ def test_diagnosis_queries_do_not_grow_with_the_scene_count(client, session) -> 
     # 镜头行、冻结正文都是整组一次（以前每场六七条）
     assert many_summary - few_summary <= 6, (few_summary, many_summary)
     assert many_scene - few_scene <= 6, (few_scene, many_scene)
+
+
+# ---------------------------------------------------------------------------
+# 后台预热（X01-04）：绑定着的参考书的两份读数不等第一次诊断现算
+# ---------------------------------------------------------------------------
+
+
+def test_the_warmup_task_fills_both_reference_caches_off_the_request_path(session) -> None:
+    """全系统维护登记簿上的预热任务：每 6 小时一次、启动后的第一拍不跑（热加载新代码时不做这件重活）；跑的时候
+    把绑定着的每本书的规则与节奏读数算进进程缓存，之后读校准不再整本读段落。只读库、不写任何东西。"""
+    from novel_system.services import maintenance
+    from novel_system.services.literary_quality import calibration_source
+    from novel_system.services.scene_diagnosis import calibration as craft
+    from tests.style_reference_factories import make_binding
+
+    _seed_book(session, "book_warm")
+    session.get(StyleReferenceProfile, "prof_book_warm").status = "active"
+    make_binding(session, "prof_book_warm", binding_id="bind_warm", scope="global", scope_ref_id=None)
+    session.commit()
+
+    registered = maintenance.SYSTEM_MAINTENANCE.tasks.get(craft.REFERENCE_CALIBRATION_WARMUP_TASK)
+    assert registered is not None and registered[0] is craft.warm_reference_calibrations
+    assert registered[1] >= 6 * 3600
+    start = 1_000.0
+    try:
+        maintenance.reset_maintenance_schedule(now=start)
+        assert craft.REFERENCE_CALIBRATION_WARMUP_TASK not in maintenance.run_due_maintenance(now=start + 60)
+    finally:
+        maintenance.reset_maintenance_schedule()
+
+    rule_builds, craft_builds = calibration_source._RULE_STATS.builds, craft._CRAFT_STATS.builds
+    with _Statements(session) as warm:
+        assert craft.warm_reference_calibrations() == 1
+    assert (calibration_source._RULE_STATS.builds, craft._CRAFT_STATS.builds) == (rule_builds + 1, craft_builds + 1)
+    assert not any(statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for statement in warm.statements)
+
+    with _Statements(session) as statements:
+        calibration = craft.craft_calibration_for(session, calibration_source.bound_profile(session, "prof_book_warm"))
+    assert calibration.source == "reference"
+    assert _full_book_reads(statements) == 0

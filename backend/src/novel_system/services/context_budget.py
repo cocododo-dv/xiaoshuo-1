@@ -37,6 +37,9 @@ class PromptSection:
         return self.text
 
 
+# (段名, 标题, 取正文的 inline_digests 键)。每个键都要有写入方（bundle_sections.BUNDLE_SECTION_DIGEST_KEYS；
+# tests/test_prompt_assembly_e2e.py 两个方向都查）：没人写的渲染位是死代码，2026-10-01 删了最后三个
+# （avoid_recent_expressions 整行、character_pressure_blueprint / scene_memory_digest 两个别名）。
 SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("chapter_goal", "Chapter Goal", ("chapter_goal",)),
     ("scene_card", "Scene Card", ("scene_card",)),
@@ -50,7 +53,7 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
     ("author_instruction", "Author Instruction", ("author_instruction",)),
     ("scene_blueprint", "Scene Literary Blueprint", ("scene_blueprint",)),
-    ("character_pressure", "Character Pressure Blueprint", ("character_pressure", "character_pressure_blueprint")),
+    ("character_pressure", "Character Pressure Blueprint", ("character_pressure",)),
     ("chapter_story_architecture", "Chapter Story Architecture", ("chapter_story_architecture",)),
     ("character_contract", "Character Continuity Contract", ("character_contract",)),
     ("narrative_state", "Authoritative Character State (Event Log)", ("narrative_state",)),
@@ -65,11 +68,10 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "Previous Scene Voice Anchor (own prose; keep the same voice)",
         ("previous_scene_voice_anchor",),
     ),
-    ("scene_memory_digest", "Previous Scene Memory", ("scene_memory", "scene_memory_digest")),
+    ("scene_memory_digest", "Previous Scene Memory", ("scene_memory",)),
     ("scene_summary", "Scene Summary", ("scene_summary",)),
     ("chapter_summary", "Chapter Summary", ("chapter_summary",)),
     ("volume_summary", "Volume Summary (atmosphere only)", ("volume_summary",)),
-    ("avoid_recent_expressions", "Avoid Recent Expressions", ("avoid_recent_expressions",)),
 )
 
 # neutral_draft 只负责事件、因果与连续性骨架。下面这些 section 都会把

@@ -109,7 +109,9 @@ def _make_scene(project_id: str | None) -> SceneCard:
         location="Café",
         scene_goal="reveal",
         beats_json=["arrival"],
-        must_include_text="x",
+        # 必写要真能写到（起草与质检、成稿门一样按组查，整段分不出 ≥2 字的组时整段算一组——以前占位的 "x"
+        # 起草这边当没有必写，质检那边却当必写）
+        must_include_text="信封",
         target_length_band="short",
         scene_type="reveal",
         is_chapter_last=0,

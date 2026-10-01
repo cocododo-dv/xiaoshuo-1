@@ -129,7 +129,8 @@ def test_project_summary_gives_structured_gaps_and_the_latest_final_per_scene(se
             _row("fd4", scene_id="SC_C", stage=R.STAGE_FIRST_DRAFT, created_at="2026-09-23T04:00:00"),
             # SC_A 两条终稿：取后一条；SC_B 的终稿不可靠也照给（角标自己说「量不准」）
             _row("fa_old", scene_id="SC_A", percentile=95.0, created_at="2026-09-23T05:00:00"),
-            _row("fa_new", scene_id="SC_A", percentile=35.0, source=R.SOURCE_ADOPT, created_at="2026-09-23T06:00:00"),
+            _row("fa_new", scene_id="SC_A", percentile=35.0, source=R.SOURCE_ADOPT, created_at="2026-09-23T06:00:00",
+                 max_percentile=30.0),
             _row("fb", scene_id="SC_B", percentile=60.0, reliable=False, char_count=200, created_at="2026-09-23T07:00:00"),
             # 别的画像的终稿不算（作品现在对照的是 pf_ui）
             _row("fx", scene_id="SC_C", profile_id="pf_other", created_at="2026-09-23T08:00:00"),
@@ -158,9 +159,13 @@ def test_project_summary_gives_structured_gaps_and_the_latest_final_per_scene(se
         "percentile": 35.0,
         "within_range": True,
         "reliable": True,
+        # 每一场的角标按它自己入库时的正常范围上限判（这条读数记的是 30，不是默认值）
+        "max_percentile": 30.0,
         "created_at": "2026-09-23T06:00:00",
     }
     assert finals["SC_B"]["reliable"] is False and finals["SC_B"]["percentile"] == 60.0
+    # 早于这一版的读数没记上限：给 None，角标用当前默认值
+    assert finals["SC_B"]["max_percentile"] is None
     assert summary["final_scene_count"] == 2
     # 走势行带可靠与否（图上把量不准的点画成空心）与入库时的正常范围上限（图上的范围带）
     assert {row["reading_id"]: row["reliable"] for row in summary["trend"]}["fb"] is False

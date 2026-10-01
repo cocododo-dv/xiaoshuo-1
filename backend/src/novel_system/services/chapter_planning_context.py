@@ -41,6 +41,7 @@ from novel_system.services.chapter_architecture import (  # noqa: F401 — 旧�
     latest_chapter_architecture,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.story_slots import normalize_story_slot
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.scene_design_ownership import plan_owned_scene_ids
@@ -297,7 +298,6 @@ class ChapterPlanningContextBuilder:
         try:
             text = NarrativeEventLog(self.session).format_state_for_prompt(
                 project_id,
-                None,
                 scene_id=first_scene.scene_id,
                 pov_character_id=None,
                 onstage_character_ids=None,
@@ -388,7 +388,8 @@ class ChapterPlanningContextBuilder:
         drama = dict(narrative.get("drama") or {})
         return {
             "forbidden": str(drama.get("forbidden") or ""),
-            "must_not": str(chapter.must_not or ""),
+            # 旧的物化样板句（防抄袭政策句）不是作者给这一章的禁写，不进规划上下文
+            "must_not": normalize_story_slot(chapter.must_not),
             "notes": str(drama.get("notes") or ""),
         }
 

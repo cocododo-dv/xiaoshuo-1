@@ -73,8 +73,8 @@ def test_corpus_previous_chapter_is_the_one_before_it_in_the_same_book(session) 
                       text="本书第二章的终稿。")
 
     detector = SelfRepetitionDetector(session)
-    _texts, second_chapter_ids = detector._load_corpus("P_TWO_S2", "CH05", lookback_scenes=6)
-    _texts, first_chapter_ids = detector._load_corpus("P_TWO_S1", "CH07", lookback_scenes=6)
+    _texts, second_chapter_ids = detector.recent_corpus("P_TWO_S2", "CH05", lookback_scenes=6)
+    _texts, first_chapter_ids = detector.recent_corpus("P_TWO_S1", "CH07", lookback_scenes=6)
 
     assert second_chapter_ids == ["P_TWO_S1"]
     assert first_chapter_ids == [], "第一章前面没有章，不能借别的作品的章"
@@ -140,7 +140,7 @@ def test_recent_corpus_feeds_semantic_repetition_guidance(session) -> None:
     _seed_book_finals(session)
     detector = SelfRepetitionDetector(session)
 
-    texts, scene_ids = detector._load_corpus("P_BOOK_SC04", "P_BOOK_CH01", lookback_scenes=6)
+    texts, scene_ids = detector.recent_corpus("P_BOOK_SC04", "P_BOOK_CH01", lookback_scenes=6)
     assert scene_ids == ["P_BOOK_SC03", "P_BOOK_SC02", "P_BOOK_SC01"]
     assert texts == [_BOOK_TEXTS[2], _BOOK_TEXTS[1], _BOOK_TEXTS[0]]
 

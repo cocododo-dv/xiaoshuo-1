@@ -109,6 +109,16 @@ def test_snowflake_chapters_land_in_the_acts_the_arrangement_board_groups_by(cli
 # ------------------------------------------------------------------ 2. 空白占位章
 
 
+def test_materialized_chapters_carry_no_canned_plan_text(client, session) -> None:
+    """S1 9（阶段 F 的「不拿样板当事实」）：分章里没有作者写的情绪目标 / 结尾效果 / 禁写 / 备注，物化就让它们空着
+    （以前每一章都写一套固定的句子，禁写那句就是 2026-09-20 的「人物」禁用词那句政策句）。"""
+    project_id = _materialized(client, "spine-no-canned", scenes_per_chapter=3)
+    chapters = session.execute(select(ChapterGoal).where(ChapterGoal.project_id == project_id)).scalars().all()
+    assert chapters
+    for chapter in chapters:
+        assert (chapter.emotional_target, chapter.ending_effect, chapter.must_not, chapter.notes) == (None, None, None, None)
+
+
 def test_a_pristine_placeholder_chapter_steps_aside_for_the_snowflake_chapters(client, session) -> None:
     project_id = _create_project(client, "spine-placeholder")
     _seed(client, project_id)
@@ -490,6 +500,12 @@ def test_the_chapter_planning_ai_does_not_fill_the_design_of_a_snowflake_scene(c
     ).scalars())
     gaps = _empty_slot_gaps(cards, plan_owned_scene_ids={scene_id})
     assert any(scene_id in line and "在构思第 10 步补" in line for line in gaps)
+    # 结构化的一份（S1 21）说得一样：这一场去构思第 10 步补
+    from novel_system.services.chapter_plan_llm import empty_slot_gap_items
+
+    owned_item = next(item for item in empty_slot_gap_items(cards, plan_owned_scene_ids={scene_id}) if item["scene_id"] == scene_id)
+    assert owned_item["fill_in"] == "snowflake_step_10"
+    assert {"key": "setback", "label": "挫败"} in owned_item["fields"]
     # 不带归属集合的调用（旧调用方 / 手建作品）行为不变
     clean, _dropped = sanitize_plan_patch(cards, body["patch"])
     assert clean["scenes"] == [{"scene_id": scene_id, "set": {"setback": "AI 想替构思补上的挫折", "hook": "AI 想补的钩子"}}]

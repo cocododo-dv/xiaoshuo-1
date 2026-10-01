@@ -471,6 +471,83 @@ def test_chapter_set_review_reads_the_reference_calibration_like_the_overview(se
     assert calibrated and all(finding["severity"] == "info" for finding in calibrated)
 
 
+def test_a_blank_author_draft_is_no_text_for_literary_quality(session) -> None:
+    """与写作台深改面板同一条「看得见的字才算正文」（S1 17，与复核 P02b-R1 同类）：写作台一打开就建的空白作者稿
+    （""、<p></p>、<p><br></p>）是一张白纸——以前文学质量照样分析它，「缺什么」的规则对白纸全会响，深改面板却什么都
+    不报。空白的作者稿往下一层落：有终稿看终稿，没有就这一场不列；只有空段落的终稿也不算正文。"""
+    from novel_system.services.literary_quality import LiteraryQualityService
+
+    final_row_id = _seed_quality_scene(session, chapter_id="LQBLANK", scene_id="LQBLANK_SC01")
+    session.add(SceneCard(scene_id="LQBLANK_SC02", chapter_id="LQBLANK", scene_seq=2, scene_goal="她开口。", beats_json=[]))
+    session.add(SceneCard(scene_id="LQBLANK_SC03", chapter_id="LQBLANK", scene_seq=3, scene_goal="门开了。", beats_json=[]))
+    session.add(
+        SceneRunState(scene_id="LQBLANK_SC03", scene_status="archived", current_final_scene_row_id="final_scene_LQBLANK_SC03_v1")
+    )
+    session.add(
+        FinalScene(
+            row_id="final_scene_LQBLANK_SC03_v1",
+            scene_id="LQBLANK_SC03",
+            chapter_id="LQBLANK",
+            content="<p> </p><p><br></p>",
+            status="approved",
+            source_bundle_id="bundle_quality",
+            source_bundle_hash="hash_quality",
+        )
+    )
+    for object_type, object_id, content in (
+        ("scene", "LQBLANK_SC01", "<p><br></p>"),
+        ("scene", "LQBLANK_SC02", "<p> </p><p></p>"),
+        ("chapter", "LQBLANK", ""),
+    ):
+        session.add(
+            AuthorDraft(
+                draft_id=f"draft_{object_id}",
+                object_type=object_type,
+                object_id=object_id,
+                source_text_ref=f"{object_type}:{object_id}",
+                content=content,
+                status="current",
+            )
+        )
+    session.commit()
+
+    service = LiteraryQualityService(session)
+    items = {(item["object_type"], item["object_id"]): item for item in service.overview(chapter_id="LQBLANK")["items"]}
+    # 空白作者稿、有终稿 → 看终稿
+    assert items[("scene", "LQBLANK_SC01")]["text_layer"] == "runtime_final_scene"
+    assert items[("scene", "LQBLANK_SC01")]["source_ref"] == f"final_scene:{final_row_id}"
+    # 空白作者稿、没有终稿 / 终稿只有空段落 → 这一场没有正文，不列
+    assert ("scene", "LQBLANK_SC02") not in items and ("scene", "LQBLANK_SC03") not in items
+    # 章：空白的章级作者稿 → 各场当前终稿现拼（只拼有字的）
+    chapter_item = items[("chapter", "LQBLANK")]
+    assert chapter_item["text_layer"] == "chapter_assembled"
+    review = service.chapter_set_review({"chapter_ids": ["LQBLANK"]})
+    assert [scene["object_id"] for scene in review["scenes"]] == ["LQBLANK_SC01"]
+
+
+def test_the_overview_reads_the_binding_calibration_without_an_injected_resolver(session) -> None:
+    """B04-21：文学质量自己经 ``literary_quality.calibration_source`` 取这一场绑定的参考书的规则校准（路由不必再把场景
+    诊断的解析器注入进来）——与写作台深改面板读到的是同一份。"""
+    from novel_system.services.literary_quality import LiteraryQualityService
+    from novel_system.services.scene_diagnosis import SceneDiagnosisService
+    from tests.style_reference_factories import make_binding, make_book, make_profile, synthetic_paragraphs
+
+    _seed_quality_scene(session, chapter_id="LQBIND", scene_id="LQBIND_SC01")
+    book_id = make_book(session, "book_lqbind", paragraphs=synthetic_paragraphs(600))
+    make_profile(session, book_id, profile_id="profile_lqbind")
+    make_binding(session, "profile_lqbind", binding_id="bind_lqbind", scope="global")
+    session.commit()
+
+    expected = SceneDiagnosisService(session).rule_calibration_for_scene(session.get(SceneCard, "LQBIND_SC01"))
+    assert expected is not None and expected.active
+    item = next(
+        entry
+        for entry in LiteraryQualityService(session).overview(chapter_id="LQBIND")["items"]
+        if entry["object_type"] == "scene"
+    )
+    assert item["rule_calibration"] == expected.as_dict()
+
+
 def test_literary_quality_chapter_set_review_reports_missing_payoff_chapter_ids(client, session) -> None:
     session.add(
         ChapterGoal(

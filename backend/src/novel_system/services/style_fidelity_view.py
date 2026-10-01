@@ -30,7 +30,11 @@ from novel_system.db.models import (
 )
 from novel_system.services.style_reference import readings
 from novel_system.services.style_reference.card import DIMENSION_LABELS
-from novel_system.services.style_reference.style_step import PATCH_DECISION_REVERTED, STYLE_PATCH_KEEP_STEP
+from novel_system.services.style_reference.style_step import (
+    PATCH_DECISION_REVERTED,
+    STYLE_PATCH_KEEP_STEP,
+    report_reference_judge,
+)
 
 MAX_DECISIONS = 10
 
@@ -136,13 +140,14 @@ def _reading(session: Session, reading_id: Any) -> dict[str, Any] | None:
 
 
 def _report_judge(report: QcReport | None) -> dict[str, Any] | None:
-    for entry in (report.rewrite_brief_json or []) if report is not None else []:
-        if isinstance(entry, dict) and entry.get("kind") == "reference_judge":
-            judge = readings.normalize_judge(entry, source="soft_qc")
-            if judge is not None:
-                judge["qc_report_id"] = report.qc_report_id
-            return judge
-    return None
+    """软 QC 报告里的参考评审（``style_step.report_reference_judge``），按像不像视图的口径归一、带上报告号。"""
+    entry = report_reference_judge(report)
+    if entry is None:
+        return None
+    judge = readings.normalize_judge(entry, source="soft_qc")
+    if judge is not None:
+        judge["qc_report_id"] = report.qc_report_id
+    return judge
 
 
 def _style_step_decision(attempt: AttemptTracker) -> dict[str, Any] | None:

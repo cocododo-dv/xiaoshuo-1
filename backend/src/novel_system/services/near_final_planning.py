@@ -10,7 +10,7 @@ import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, partial
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +21,13 @@ from novel_system.db.models import (
     GenerationPlanningArtifact,
     SceneBlueprint,
     SceneCard,
+)
+from novel_system.services.chapter_architecture import (
+    ARCHITECTURE_FIELDS,
+    CHAPTER_ARCHITECTURE_ARTIFACT,
+    latest_chapter_architecture,
+    normalize_chapter_architecture,
+    persist_chapter_architecture,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_json_normalized
@@ -38,7 +45,6 @@ from novel_system.services.style_reference.planning_context import (
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 CHARACTER_PRESSURE_ARTIFACT = "character_pressure_blueprint"
-CHAPTER_ARCHITECTURE_ARTIFACT = "chapter_story_architecture"
 
 CHARACTER_PRESSURE_FIELDS = (
     "surface_goal",
@@ -49,14 +55,8 @@ CHARACTER_PRESSURE_FIELDS = (
     "relationship_debt",
     "current_mask",
 )
-CHAPTER_ARCHITECTURE_FIELDS = (
-    "chapter_promise",
-    "escalation_path",
-    "reveal_plan",
-    "payoff_target",
-    "character_shift",
-    "ending_question",
-)
+# 章架构的常量、字段表、读法、落库与归一只有一处（``services/chapter_architecture``，B07-11）；旧名照旧可以从这里 import。
+CHAPTER_ARCHITECTURE_FIELDS = ARCHITECTURE_FIELDS
 
 def _planning_user_prompt(
     base_prompt: str,
@@ -97,39 +97,6 @@ def _normalize_character_pressure_payload(payload: Any) -> dict[str, str]:
     return normalized
 
 
-def _normalize_chapter_architecture_payload(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise ValueError("payload must be an object")
-    # 同上：只查规范字段齐全，多余字段忽略（json_object 非严格 schema）。
-    missing = [field for field in CHAPTER_ARCHITECTURE_FIELDS if field not in payload]
-    if missing:
-        raise ValueError(
-            "chapter architecture payload is missing required fields: " + ", ".join(missing)
-        )
-    scalar_fields = ("chapter_promise", "payoff_target", "character_shift", "ending_question")
-    normalized: dict[str, Any] = {}
-    for field in scalar_fields:
-        value = payload.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"{field} must be a non-empty string")
-        normalized[field] = value.strip()
-    for field in ("escalation_path", "reveal_plan"):
-        value = payload.get(field)
-        if not isinstance(value, list) or not value:
-            raise ValueError(f"{field} must be a non-empty string array")
-        if any(not isinstance(item, str) or not item.strip() for item in value):
-            raise ValueError(f"{field} must contain only non-empty strings")
-        normalized[field] = [item.strip() for item in value]
-    return {
-        "chapter_promise": normalized["chapter_promise"],
-        "escalation_path": normalized["escalation_path"],
-        "reveal_plan": normalized["reveal_plan"],
-        "payoff_target": normalized["payoff_target"],
-        "character_shift": normalized["character_shift"],
-        "ending_question": normalized["ending_question"],
-    }
-
-
 @dataclass(frozen=True)
 class _PlanningArtifactSpec:
     """一份规划产物的生成口径（节点 id = 产物类型 = 提示词模板名）。"""
@@ -160,7 +127,8 @@ _PLANNING_ARTIFACT_SPECS: tuple[_PlanningArtifactSpec, ...] = (
         invalid_code="CHAPTER_STORY_ARCHITECTURE_OUTPUT_INVALID",
         operation="chapter architecture generation",
         next_action="configure_chapter_story_architecture_route_and_retry",
-        normalizer=_normalize_chapter_architecture_payload,
+        # 场景运行现做的章架构：严格归一（六个字段缺一个、有空值都报 ValueError；多余字段忽略——json_object 非严格 schema）
+        normalizer=partial(normalize_chapter_architecture, strict=True),
     ),
     _PlanningArtifactSpec(
         key="character_pressure",
@@ -320,6 +288,17 @@ class NearFinalPlanningService:
         source_bundle_hash: str,
         actor_ref: str,
     ) -> GenerationPlanningArtifact:
+        if artifact_type == CHAPTER_ARCHITECTURE_ARTIFACT:
+            # 章架构与章节编排写的是同一种行：落库（旧 active 行让位）走同一处
+            return persist_chapter_architecture(
+                self.session,
+                object_id,
+                payload,
+                llm_call_id=llm_call_id,
+                created_by=actor_ref or "near_final_planning",
+                source_bundle_id=source_bundle_id,
+                source_bundle_hash=source_bundle_hash,
+            )
         for row in self.session.execute(
             select(GenerationPlanningArtifact).where(
                 GenerationPlanningArtifact.artifact_type == artifact_type,
@@ -406,11 +385,7 @@ class NearFinalPlanningService:
                 sort_keys=True,
             )
         if include_chapter_architecture:
-            architecture = self._latest_artifact(
-                artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
-                object_type="chapter",
-                object_id=chapter.chapter_id,
-            )
+            architecture = latest_chapter_architecture(self.session, chapter.chapter_id)
             if architecture is not None:
                 source_refs["chapter_story_architecture_artifact_row_id"] = architecture.row_id
                 injections.append(
@@ -479,6 +454,8 @@ class NearFinalPlanningService:
         ]
 
     def _latest_artifact(self, *, artifact_type: str, object_type: str, object_id: str) -> GenerationPlanningArtifact | None:
+        if artifact_type == CHAPTER_ARCHITECTURE_ARTIFACT:
+            return latest_chapter_architecture(self.session, object_id)
         return latest_active_planning_artifact(
             self.session, artifact_type=artifact_type, object_type=object_type, object_id=object_id
         )

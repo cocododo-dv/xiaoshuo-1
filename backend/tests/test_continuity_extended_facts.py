@@ -290,3 +290,71 @@ def test_hard_qc_flags_required_beats_dumped_at_the_tail_as_a_warning(session) -
         "把门口那一段写慢一点。",
         "将必须出现的剧情节拍自然织入动作和因果，不要在段尾追加清单。",
     ]
+
+
+# ---------------------------------------------------------------------------
+# 事件账本矛盾的说明印人物名（I1-R1(a)，批准#14）：取词仍按账本 id，质检的升级行为不变
+# ---------------------------------------------------------------------------
+
+NAMED_ID = "CHAR_CONT_GZ"
+NAMED = "顾舟"
+
+
+def _log_named_severed_arm(session) -> None:
+    """角色 id 与名字不同（真实作品就是这样：正史按 id 记，正文写名字）；名字还写在场景卡的必写与目标里。"""
+    from novel_system.db.models import StoryCharacter
+
+    _log(session, entity=NAMED_ID, key="physical_state", value="right_arm_severed")
+    session.add(StoryCharacter(character_id=NAMED_ID, project_id=PROJECT_ID, display_name=NAMED))
+    scene = session.get(SceneCard, TARGET_ID)
+    scene.must_include_text = f"{NAMED}握刀"
+    scene.scene_goal = f"{NAMED}回到码头"
+    scene.onstage_chars_json = [NAMED_ID]
+    session.commit()
+
+
+def test_the_event_log_contradiction_names_the_character_but_hard_qc_decides_as_before(session) -> None:
+    _log_named_severed_arm(session)
+
+    decision = _hard_qc(session, SEVERED_TEXT)
+
+    report = session.get(QcReport, decision.qc_report_id)
+    issue = next(item for item in report.issues_json if item["issue_key"] == "event_log_consistency_violation")
+    # 作者看到的是名字，账本 id 留在 details 里，证据引用照旧按 id
+    assert f"{NAMED}.physical_state" in issue["message"] and NAMED_ID not in issue["message"]
+    assert issue["details"]["entity_name"] == NAMED and issue["details"]["entity_id"] == NAMED_ID
+    assert issue["authority_ref"] == f"event:{NAMED_ID}.physical_state"
+    # 名字写在场景卡上，但它不是「质检要改的词」：不凭空多出场景卡冲突、不升级人工复核，照旧局部重写
+    assert issue["conflicts_with"] == []
+    assert decision.branch == "rewrite_partial"
+    assert report.next_action != "human_review_required"
+
+
+def test_the_character_name_in_a_contradiction_never_counts_as_a_term_to_change() -> None:
+    """取词（证据位置、场景卡冲突、去重）按账本 id 写的说明算：名字就在一个改动标记旁边、又写在场景卡上，也不算
+    「质检要改场景卡要求的词」——说明里印 id 的时候本来就是这样。"""
+    from novel_system.services.qc_engine.issues import _annotate_qc_issues, _dedupe_issues
+    from novel_system.services.quality_checks.continuity import event_log_violation_message
+
+    scene = SceneCard(scene_id="SC_NAMED", chapter_id="CH_NAMED", scene_seq=1, hook=f"{NAMED}在码头等天亮")
+    issue = {
+        "issue_key": "event_log_consistency_violation",
+        "message": event_log_violation_message(NAMED, "physical_state", "不要开灯", "appears alive in text"),
+        "source": "deterministic",
+        "details": {
+            "entity_id": NAMED_ID,
+            "entity_name": NAMED,
+            "fact_key": "physical_state",
+            "expected": "不要开灯",
+            "actual": "appears alive in text",
+        },
+    }
+    annotated = _annotate_qc_issues(scene, f"{NAMED}推门进来。", {"pass_flag": False, "issues": [issue]})["issues"][0]
+    assert annotated["conflicts_with"] == []
+    assert all(span["text"] != NAMED for span in annotated["evidence_spans"])
+    # 同一个名字、两个角色的矛盾照旧是两条
+    twin = {**issue, "details": {**issue["details"], "entity_id": "CHAR_CONT_TWIN"}}
+    assert len(_dedupe_issues([issue, twin])) == 2
+    # 反例：别的 issue 说明里写到这个名字、旁边有改动标记，照旧按冲突处理（取词规则只对账本矛盾换 id）
+    llm_issue = {"issue_key": "tone", "message": f"Replace the name “{NAMED}” in the hook.", "source": "llm"}
+    assert _annotate_qc_issues(scene, "", {"pass_flag": False, "issues": [llm_issue]})["issues"][0]["conflicts_with"]

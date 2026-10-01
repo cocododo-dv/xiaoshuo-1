@@ -246,6 +246,7 @@ class SceneArchiveEffects:
         from novel_system.db.models import FinalScene, QcReport, SceneBundle, SceneRunState
         from novel_system.services.style_policy import MODE_NONE, style_policy_for_bundle, style_policy_live
         from novel_system.services.style_reference import readings
+        from novel_system.services.style_reference.style_step import report_reference_judge
 
         state = self.session.get(SceneRunState, scene.scene_id)
         final_row_id = getattr(state, "current_final_scene_row_id", None) if state is not None else None
@@ -269,14 +270,7 @@ class SceneArchiveEffects:
         ).all():
             if (content or "") != (final.content or ""):
                 continue
-            judge = next(
-                (
-                    dict(entry)
-                    for entry in report.rewrite_brief_json or []
-                    if isinstance(entry, dict) and entry.get("kind") == "reference_judge"
-                ),
-                None,
-            )
+            judge = report_reference_judge(report)
             break
         row = readings.record_fidelity_reading(
             self.session,

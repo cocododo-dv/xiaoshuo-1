@@ -17,6 +17,29 @@ SCENE_STATES = ("todo", "writing", "done")
 SCENE_BRIEF_GCS = ("goal", "conflict", "setback")
 SCENE_BRIEF_RDD = ("reaction", "dilemma", "decision")
 
+#: 章节规划的场景槽 / 戏剧卡字段的中文名——与前端 ``ws-chapter-plan.jsx`` 的 ``CP_FIELD_LABELS`` 同一套叫法
+#: （待补清单、补丁勾选行说的是同一样东西）
+SCENE_SLOT_LABELS: dict[str, str] = {
+    "goal": "目标",
+    "conflict": "冲突",
+    "setback": "挫败",
+    "reaction": "反应",
+    "dilemma": "两难",
+    "decision": "决定",
+    "pov": "视角",
+    "exit_change": "离场变化",
+    "hook": "钩子",
+    "title": "标题",
+}
+DRAMA_SLOT_LABELS: dict[str, str] = {
+    "promise": "核心承诺",
+    "spine": "主线推进",
+    "arc": "人物变化",
+    "problem": "章节问题",
+    "aftertaste": "结尾余味",
+    "ending": "结尾效果",
+}
+
 #: 目录侧的幕（章节编排按它分卷）
 CATALOG_ACTS = ("act1", "act2", "act3")
 #: 目录里显示用的场景短题上限（整句摘要另有 ``summary``）

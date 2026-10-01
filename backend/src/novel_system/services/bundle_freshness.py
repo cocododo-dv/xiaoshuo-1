@@ -172,7 +172,7 @@ def literary_freshness_budget(
         corpus_texts, corpus_ids = (
             ([], [])
             if style_bound
-            else detector._load_corpus(scene.scene_id, scene.chapter_id, lookback_scenes=6)
+            else detector.recent_corpus(scene.scene_id, scene.chapter_id, lookback_scenes=6)
         )
         if corpus_texts:
             from novel_system.services.self_repetition import (

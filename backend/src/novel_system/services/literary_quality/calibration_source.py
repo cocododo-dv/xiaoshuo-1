@@ -7,13 +7,14 @@
 叠句、句首重复）另算，在 ``scene_diagnosis.calibration``。
 
 **缓存**（进程级，锁保护，最多 ``REFERENCE_STATS_BOOKS`` 本书——两部作品绑两本书不会互相挤掉）：键是书的版本
-（``reference_book_state``）：书的统计里存着段落根哈希时用它（写段落表的人负责把它 pop 掉，契约 §3.1），否则现数
-段落数 / 最新段落时间；再加段型修订号（分类作业每次成功把 ``paragraph_types_revision`` 加一——就地重标段落类型
-不改段数也不改时间，收尾读数却按「转场段之前的那一段」取）、导入时记下的场界、书的校验和与建书时间。同一个键
-第一次算时别的线程等它算完再取，不重复算（真实参考书 2.6 万段：一次几秒）。
+（``reference_book_state``）：段落文本的版本与抄袭闸共用（``paragraph_root.read_book_version``：书的统计里存着段落
+根哈希时用它，写段落表的人负责把它 pop 掉，契约 §3.1；否则现数段数 / 总字数 / 最新段落时间；再加书的校验和与建书
+时间），再加段型修订号（分类作业每次成功把 ``paragraph_types_revision`` 加一——就地重标段落类型不改文本，收尾
+读数却按「转场段之前的那一段」取）与导入时记下的场界。同一个键第一次算时别的线程等它算完再取，不重复算（真实
+参考书 2.6 万段：一次几秒）。
 
-版本读一次库（一条按主键的查询，没存根哈希的书再数一遍段落）；一次请求里逐场调用时由调用方记住结果
-（``SceneDiagnosisService`` 每个实例按画像记一份）。
+版本读一次库（一条按主键的查询，没存根哈希的书再聚合一遍段落）；一次请求里逐场调用时由调用方记住结果
+（``SceneDiagnosisService`` 每个实例按画像记一份，成稿门与文学质量视图用 ``PolicyRuleCalibrations``）。
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from novel_system.services.literary_quality.calibration import (
 )
 from novel_system.services.literary_quality.lexicons import FAULT_LEXICONS
 from novel_system.services.literary_quality.rules import analyze_literary_quality
+from novel_system.services.style_reference.paragraph_root import read_book_version
 from novel_system.services.style_reference.segmentation.heuristic import is_title_paragraph
 from novel_system.services.style_reference.text_utils import is_scene_break_paragraph
 
@@ -329,39 +331,20 @@ class ReferenceBookState:
 def reference_book_state(session: Session, book_id: str) -> ReferenceBookState | None:
     """书的版本（读数缓存的键）。书不存在 → None；没有段落时 ``paragraphs == 0``。
 
-    书的统计里存着段落根哈希时就用它（一条按主键的查询，不数段落表）；没存时照旧数段落数、取最新段落时间。两条路
-    都再加上段型修订号、场界、校验和与建书时间（同一个书号删了重导入也认得出来）。都现读库：会话在提交时不过期对象，
-    身份映射里的书可能是别的连接改之前的样子。"""
+    段落文本的版本与抄袭闸共用一次读库（``paragraph_root.read_book_version``：存着段落根哈希时不数段落表，没存时现数
+    段数 / 总字数 / 最新段落时间，同一个书号删了重导入也认得出来）；这里再加上段型修订号与导入时记下的场界——就地
+    重标段型不改文本，收尾读数却按「转场段之前的那一段」取。"""
 
-    row = session.execute(
-        select(
-            StyleReferenceBook.title,
-            func.json_extract(StyleReferenceBook.stats_json, "$.paragraph_root_sha256"),
-            func.json_extract(StyleReferenceBook.stats_json, "$.paragraph_count"),
-            func.json_extract(StyleReferenceBook.stats_json, "$.paragraph_types_revision"),
-            func.json_extract(StyleReferenceBook.stats_json, "$.scene_breaks"),
-            StyleReferenceBook.text_checksum,
-            StyleReferenceBook.created_at,
-        ).where(StyleReferenceBook.book_id == book_id)
-    ).one_or_none()
-    if row is None:
+    version = read_book_version(session, book_id)
+    if version is None:
         return None
-    title, root, stored_count, types_revision, scene_breaks, checksum, created_at = row
-    breaks_digest = hashlib.sha1(str(scene_breaks or "").encode("utf-8")).hexdigest()[:12]
-    identity = (str(types_revision or 0), breaks_digest, str(checksum or ""), str(created_at or ""))
-    if isinstance(root, str) and root:
-        try:
-            count = int(stored_count or 0)
-        except (TypeError, ValueError):
-            count = 0
-        return ReferenceBookState(book_id=book_id, title=title, paragraphs=count, version=("root", root, count, *identity))
-    count, latest = session.execute(
-        select(func.count(StyleReferenceParagraph.paragraph_id), func.max(StyleReferenceParagraph.created_at)).where(
-            StyleReferenceParagraph.book_id == book_id
-        )
-    ).one()
-    count = int(count or 0)
-    return ReferenceBookState(book_id=book_id, title=title, paragraphs=count, version=("scan", count, str(latest or ""), *identity))
+    breaks_digest = hashlib.sha1(str(version.scene_breaks or "").encode("utf-8")).hexdigest()[:12]
+    return ReferenceBookState(
+        book_id=book_id,
+        title=version.title,
+        paragraphs=version.paragraphs,
+        version=(*version.text_key, str(version.types_revision or 0), breaks_digest),
+    )
 
 
 @dataclass(frozen=True)
@@ -497,6 +480,27 @@ def rule_calibration_for_policy(session: Session, policy: _PolicyLike) -> RuleCa
     return rules if rules.active else None
 
 
+class PolicyRuleCalibrations:
+    """一次请求里按策略取规则校准（文学质量视图逐场调用）：同一份画像、同一本书只查一次库、只取一次读数；
+    校准读不出按未校准处理（None），不让调用方失败。"""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+        self._memo: dict[tuple[str, str | None], RuleCalibration | None] = {}
+
+    def for_policy(self, policy: _PolicyLike) -> RuleCalibration | None:
+        if not policy.bound or not policy.profile_id:
+            return None
+        key = (str(policy.profile_id), policy.book_id)
+        if key not in self._memo:
+            try:
+                self._memo[key] = rule_calibration_for_policy(self._session, policy)
+            except Exception:  # noqa: BLE001 — 校准读不出：按未校准处理
+                _LOGGER.warning("rule calibration unavailable for profile %s", policy.profile_id, exc_info=True)
+                self._memo[key] = None
+        return self._memo[key]
+
+
 __all__ = [
     "RULE_CALIBRATION_MAX_ENDINGS",
     "RULE_CALIBRATION_MAX_WINDOWS",
@@ -507,6 +511,7 @@ __all__ = [
     "TRANSITION_PARAGRAPH_TYPE",
     "BoundProfile",
     "CorpusLoader",
+    "PolicyRuleCalibrations",
     "ReferenceBookState",
     "ReferenceCorpus",
     "ReferenceStatsCache",

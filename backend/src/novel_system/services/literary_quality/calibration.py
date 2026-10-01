@@ -150,6 +150,7 @@ class RuleCalibration:
 
     def as_dict(self) -> dict[str, Any]:
         top = sorted(self.needle_rates.items(), key=lambda item: (-float(item[1]), item[0]))
+        habitual_needles = self.habitual_needles  # 属性每次现算整张表：取一次，别在下面逐词再算
         return {
             "source": self.source,
             "windows": self.windows,
@@ -166,7 +167,7 @@ class RuleCalibration:
             },
             "needle_count": len(self.needle_rates),
             "top_needles": [{"term": term, "per_10k": round(float(rate), 2)} for term, rate in top[:12]],
-            "habitual_needles": [term for term, _rate in top if term in self.habitual_needles],
+            "habitual_needles": [term for term, _rate in top if term in habitual_needles],
             "habitual_dimensions": sorted(self.habitual_dimensions),
             "common_dimensions": sorted(self.common_dimensions),
             "dimension_levels": {
