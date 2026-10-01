@@ -21,7 +21,7 @@ scripts/start-all-linux.sh          # Linux；Windows 是 .\start-dev.cmd
 - 存活检查：`http://127.0.0.1:8000/live`
 - 就绪检查：`http://127.0.0.1:8000/ready`
 
-启动脚本会先升级数据库，再启动后端与 React 前端；日志与进程号在 `.codex-run/`。Windows 脚本端口冲突时会选择可用端口并把实际地址写入 `.codex-run/`。Node 版本太旧（低于 18.18）或缺前端依赖时，前端那一段直接说明该装什么（Node 22）并退出；单独重启前端（`scripts/start-frontend-linux.sh`）时，这个检查在停掉旧前端之前做。日常使用以下命令管理进程：
+启动脚本会先升级数据库，再启动后端与 React 前端；日志与进程号在 `.codex-run/`。Windows 脚本端口冲突时会选择可用端口并把实际地址写入 `.codex-run/`。Node 版本太旧（低于 18.18）或缺前端依赖时，前端那一段直接说明该做什么（装 Node 22，或先 `npm ci`）并退出；单独重启前端（`scripts/start-frontend-linux.sh`）时，这个检查在停掉旧前端之前做。日常使用以下命令管理进程：
 
 ```bash
 scripts/stop-all-linux.sh           # Windows：.\stop-dev.cmd / .\restart-dev.cmd

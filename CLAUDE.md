@@ -39,7 +39,7 @@ publication arbiter.
   `scripts/start-backend-linux.sh` (prunes old `.codex-run` logs, exports `PYTHONPATH=backend/src`, `alembic upgrade
   head` with `backend/.venv/bin/python`, uvicorn `--reload`) and `scripts/start-frontend-linux.sh` (Node from
   `NOVEL_SYSTEM_NODE_BIN` → nvm → `~/.local/node/bin` → `PATH`; refuses a missing node / `node_modules` or a Node below
-  the `engines` floor ≥ 18.18 before stopping anything — use Node 22).
+  the `engines` floor ≥ 18.18 before stopping its old instance — use Node 22).
 - Windows: `.\start-dev.cmd` / `.\stop-dev.cmd` / `.\restart-dev.cmd` (→ `scripts/dev.ps1`: migrate, start both, open
   the browser; a busy port scans upward and the chosen URLs go to `.codex-run/backend.url` / `frontend-react.url`);
   `.\reset-runtime-keep-llm.cmd` resets the runtime DB / artifacts but keeps the LLM config.
