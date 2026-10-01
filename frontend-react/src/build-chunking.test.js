@@ -39,10 +39,29 @@ describe("生产构建分块", () => {
   });
 
   it("雪花与作者路由会同时装配 SnowSync，不能只把同步模块留在源码里", () => {
+    // 两条路由的模块经静态 import 走得到 ws-snow-sync.jsx：路由块一加载，同步层就跟着装好（以前 ws-app 另外动态
+    // import 它一次补装——那时页面经 window.SnowSync 取它，没有静态依赖）
     const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const staticDeps = (file) => [...fs.readFileSync(file, "utf8").matchAll(/(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"](\.[^'"]+)['"]/g)]
+      .map((match) => path.resolve(path.dirname(file), match[1]))
+      .map((base) => [base, `${base}.js`, `${base}.jsx`].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()))
+      .filter(Boolean);
+    const closure = (entry) => {
+      const seen = new Set();
+      const stack = [path.join(srcRoot, entry)];
+      while (stack.length) {
+        const file = stack.pop();
+        if (seen.has(file)) continue;
+        seen.add(file);
+        stack.push(...staticDeps(file));
+      }
+      return [...seen].map((file) => path.relative(srcRoot, file));
+    };
+    for (const route of ["ws-snow.jsx", "ws-author.jsx"]) {
+      expect(closure(route), route).toContain("ws-snow-sync.jsx");
+    }
     const app = fs.readFileSync(path.join(srcRoot, "ws-app.jsx"), "utf8");
-    expect(app).toContain('import("./ws-snow-sync.jsx")');
-    expect(app).toMatch(/LazyWsConstruct\s*=\s*lazySnowNamed/);
-    expect(app).toMatch(/LazyWsAuthor\s*=\s*lazySnowNamed/);
+    expect(app).toMatch(/LazyWsConstruct\s*=\s*lazyNamed\(\(\)\s*=>\s*import\("\.\/ws-snow\.jsx"\)/);
+    expect(app).toMatch(/LazyWsAuthor\s*=\s*lazyNamed\(\(\)\s*=>\s*import\("\.\/ws-author\.jsx"\)/);
   });
 });
