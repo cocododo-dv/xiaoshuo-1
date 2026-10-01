@@ -1,15 +1,18 @@
-"""退役接口一张表（X04-15）：删掉的路由不在路由表里、不进 OpenAPI，请求它们只得到 404 / 405。
+"""退役接口一张表（X04-15）：删掉的路由不在路由表里、不进 OpenAPI，请求它们只得到 404（路径还为别的方法服务的得 405）。
 
 以前每删一组接口就在各自的测试文件里加一条「已删」用例，各建一次应用和库，有的还先造一整套书 / 草稿 / 学习血缘，
 只为拿一个真 id 去请求——可只看状态码分不清「路由没了」和「路由还在、只是这个 id 不存在」。这里直接查路由表：
-具体路径（占位段换成 ``retired-<名>``）对这个方法没有任何路由完整匹配，路径模板不在 OpenAPI 里；再经一个真客户端
-各请求一遍。``test_fixture_import_boundary.py`` 是 CLAUDE.md 点名的守卫，照旧单独钉着它那一条。
+具体路径（占位段换成 ``retired-<名>``）对这个方法没有任何路由完整匹配，整条路径对别的方法也不匹配（只有
+``STILL_SERVED_PATHS`` 里路径本身还在的几条例外），路径模板不在 OpenAPI 里；整段退役的前缀下，路由表（连不进
+OpenAPI 的 ``include_in_schema=False`` 路由在内）一条都不许有；再经一个真客户端各请求一遍。
+``test_fixture_import_boundary.py`` 是 CLAUDE.md 点名的守卫，照旧单独钉着它那一条。
 """
 
 from __future__ import annotations
 
 import re
 
+from fastapi.routing import iter_route_contexts
 from starlette.routing import Match
 
 from novel_system.api.app import create_app
@@ -68,7 +71,15 @@ RETIRED_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/api/v2/style-reference/profiles/{profile_id}/validate", "迁移 0091"),
     ("GET", "/api/v2/style-reference/profiles/{profile_id}/reports", "迁移 0091"),
     ("GET", "/api/v2/style-reference/reports/{report_id}", "迁移 0091"),
+    # 一次性的参考书演示（整段前缀同样钉在下面）
+    ("GET", "/api/v1/demo/{slug}/status", "一次性的参考书演示"),
 )
+
+#: 路径本身还在、只是为别的方法服务的退役行：请求它们答 405。其余退役路径整条都不在了，任何方法都只得 404。
+STILL_SERVED_PATHS: dict[str, str] = {
+    "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}": "PATCH 改章",
+    "/api/v2/projects/{project_id}/catalog/scenes/{scene_id}": "PATCH 改场",
+}
 
 # 整段前缀下一条路由都不许有
 RETIRED_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -78,8 +89,16 @@ RETIRED_PREFIXES: tuple[tuple[str, str], ...] = (
 )
 
 
+METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+
 def _concrete(template: str) -> str:
     return re.sub(r"\{(\w+)\}", lambda match: f"retired-{match.group(1)}", template)
+
+
+def _shape(template: str) -> str:
+    """去掉占位段的名字与转换器（``{project_id}`` / ``{path:path}`` → ``{}``）：换个参数名复活的路由同样认得出。"""
+    return re.sub(r"\{[^{}]*\}", "{}", template)
 
 
 def _match(app, method: str, path: str) -> Match:
@@ -108,32 +127,56 @@ def test_no_route_serves_a_retired_method_and_path() -> None:
         if _match(app, method, _concrete(template)) == Match.FULL
     ]
     assert served == []
+    # 整条路径都没了：换个方法也不匹配（只得 404）。路径本身还在的几条例外，例外清单也不许过期
+    templates = {template for _method, template, _why in RETIRED_ROUTES}
+    assert set(STILL_SERVED_PATHS) <= templates
+    reachable = sorted(
+        f"{method} {template}"
+        for template in templates - set(STILL_SERVED_PATHS)
+        for method in METHODS
+        if _match(app, method, _concrete(template)) != Match.NONE
+    )
+    assert reachable == []
+    gone = [
+        template
+        for template in STILL_SERVED_PATHS
+        if not any(_match(app, method, _concrete(template)) == Match.FULL for method in METHODS)
+    ]
+    assert gone == [], "这几条路径已经没有路由在服务了：从 STILL_SERVED_PATHS 删掉，它们就该只答 404"
 
 
 def test_retired_routes_and_prefixes_are_absent_from_openapi_and_the_route_table() -> None:
     app = create_app()
     paths = app.openapi()["paths"]
+    operations = {(method.upper(), _shape(path)) for path, item in paths.items() for method in item}
     documented = [
         f"{method} {template}"
         for method, template, _why in RETIRED_ROUTES
-        if method.lower() in paths.get(template, {})
+        if (method, _shape(template)) in operations
     ]
     assert documented == []
+    # 路由表里每条路由的完整路径模板（不进 OpenAPI 的 include_in_schema=False 路由也在这里）；include_router 是惰性
+    # 挂载，app.routes 里是包装对象，iter_route_contexts 展开成一条条带前缀的路由
+    templates = [context.path or "" for context in iter_route_contexts(app.routes)]
     for prefix, why in RETIRED_PREFIXES:
-        assert not [path for path in paths if path.startswith(prefix)], why
+        assert not [path for path in paths if _shape(path).startswith(_shape(prefix))], why
+        assert not [path for path in templates if _shape(path).startswith(_shape(prefix))], why
         probes = [_concrete(prefix), _concrete(prefix) + "/retired-a", _concrete(prefix) + "/retired-a/retired-b"]
         reached = [
             f"{method} {probe}"
             for probe in probes
-            for method in ("GET", "POST", "PUT", "PATCH", "DELETE")
+            for method in METHODS
             if _match(app, method, probe) != Match.NONE
         ]
         assert reached == [], why
 
 
 def test_retired_routes_answer_404_or_405(client) -> None:
-    answers = {}
+    """路径整条没了的答 404；路径还为别的方法服务的（``STILL_SERVED_PATHS``）答 405。"""
+    wrong = {}
     for method, template, _why in RETIRED_ROUTES:
         response = client.request(method, _concrete(template), json={} if method in {"POST", "PUT", "PATCH"} else None)
-        answers[f"{method} {template}"] = response.status_code
-    assert {key: status for key, status in answers.items() if status not in (404, 405)} == {}
+        expected = 405 if template in STILL_SERVED_PATHS else 404
+        if response.status_code != expected:
+            wrong[f"{method} {template}"] = (expected, response.status_code)
+    assert wrong == {}

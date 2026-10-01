@@ -34,7 +34,8 @@ from novel_system.services.scene_structure_brief import (
     scene_has_structure,
     scene_structure_form,
 )
-from tests.real_llm_fakes import install_online_pipeline
+
+pytestmark = pytest.mark.usefixtures("online_pipeline")
 
 PROJECT_ID = "P_SSB"
 CHAPTER_ID = "SSB01"
@@ -48,11 +49,6 @@ FOE_ID = "P_SSB_CHAR02"
 
 SETBACK = "警探宣布以妨碍司法拘留 48 小时，正好是真凶行动的窗口期。"
 DECISION = "决定认罪，但在签字前悄悄给记者发出一条暗语短信。"
-
-
-@pytest.fixture(autouse=True)
-def _auto_online_pipeline(monkeypatch):
-    install_online_pipeline(monkeypatch)
 
 
 def _snowflake_brief(**overrides):
