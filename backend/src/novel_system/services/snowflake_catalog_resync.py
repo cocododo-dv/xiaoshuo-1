@@ -25,7 +25,7 @@ from novel_system.services.catalog_ordering import PARK_GAP
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import trash_emptied_snowflake_chapters
 from novel_system.services.scene_rehome import rehome_scenes
-from novel_system.services.snowflake_scene_brief import followed_scene_title, real_scene_title, scene_card_beats
+from novel_system.services.snowflake_scene_brief import followed_scene_title, real_scene_title, scene_card_beats, scene_card_goal
 from novel_system.services.snowflake_scene_rows import scene_plan_payload
 from novel_system.services.snowflake_step_catalog import SUMMARY_LENGTH_BAND, effective_rendering_mode
 from novel_system.services.story_slots import planned_beats, without_retired_chapter_goal
@@ -580,7 +580,8 @@ class SnowflakeCatalogResyncMixin:
         stored_beats = list(scene.beats_json or []) if leaving is None else planned_beats(scene.beats_json, leaving)
         return {
             **trash_patch,
-            "scene_goal": plan.summary or plan.goal or stored_goal,
+            # 与物化同一配方（scene_card_goal）：事件 → 目标 → 题名，构思这一侧什么都给不出时沿用卡上的值
+            "scene_goal": scene_card_goal(detail, fallback=stored_goal),
             "beats_json": beats or stored_beats,
             "must_include_text": plan.must_include_text or scene.must_include_text,
             "exit_change": plan.exit_change or plan.setback or plan.decision or scene.exit_change,

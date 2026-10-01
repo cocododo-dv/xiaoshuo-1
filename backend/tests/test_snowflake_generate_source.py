@@ -224,3 +224,54 @@ def test_fresh_materialization_reports_no_pending_resync_when_plans_lack_beats(c
         card = session.get(SceneCard, plan.scene_id)
         assert card is not None
         assert card.beats_json, plan.scene_id
+
+
+def test_fresh_materialization_reports_no_pending_resync_when_a_scene_has_no_summary(client, session, monkeypatch) -> None:
+    """（合并胶水 G5，S2 发现）09 没写事件（摘要）的场：物化给场景卡目标的配方是「摘要 → 题名 → 章目标」，回流的是
+    「摘要 → 第 10 步的目标 → 卡上的旧值」——两套配方，刚「确认写入」完这一场就被报成「待同步」（纯假阳性）。
+    物化与回流现在共用 snowflake_scene_brief.scene_card_goal：摘要 → 目标 → 题名，物化最后才落章目标、回流最后才
+    沿用卡上的旧值。"""
+    install_skeleton_snowflake(monkeypatch)
+    pid = _create_project(client, key="goal-recipe")
+    for step_key in ALL_STEPS:
+        response = _generate(client, pid, step_key, {}, key="goal")
+        assert response.status_code == 200, response.text
+        _approve(client, pid, step_key, key="goal")
+
+    # 09 的一行可以没有事件（插进来的空行、模型漏了这一栏）；第 10 步照样给它排了目标与题名
+    session.expire_all()
+    plans = session.execute(select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == pid)).scalars().all()
+    unsummarized = [
+        plan for plan in plans
+        if plan.scene_type == "proactive" and (plan.goal or "").strip() and (plan.title or "").strip() and plan.title != plan.goal
+    ]
+    assert unsummarized, "骨架应有题名与目标不同的主动场"
+    for plan in unsummarized:
+        plan.summary = ""
+    session.commit()
+
+    r = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/materialize",
+        json={},
+        headers={"X-Idempotency-Key": "fix-src-goal-materialize"},
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/outline/approve",
+        json={},
+        headers={"X-Idempotency-Key": "fix-src-goal-approve-outline"},
+    )
+    assert r.status_code == 200, r.text
+
+    ws = client.get(f"/api/v2/projects/{pid}/snowflake-workspace").json()["data"]
+    assert ws["resync_status"]["pending_count"] == 0, ws["resync_status"]
+    r = client.post(f"/api/v2/projects/{pid}/snowflake-workspace/resync", json={"dry_run": True})
+    assert r.status_code == 200, r.text
+    results = r.json()["data"]["results"]
+    assert results and all(item["diff"] == {} and item["reason"] == "already_current" for item in results), results
+
+    # 没有事件的场，场景卡的目标就是第 10 步排的目标（不是题名，也不是章目标）
+    session.expire_all()
+    for plan in unsummarized:
+        card = session.get(SceneCard, plan.scene_id)
+        assert card is not None and card.scene_goal == plan.goal, plan.scene_id

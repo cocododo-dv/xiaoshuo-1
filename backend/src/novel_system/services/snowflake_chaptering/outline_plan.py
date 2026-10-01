@@ -15,7 +15,7 @@ from novel_system.services.catalog import normalize_act
 from novel_system.services.snowflake_chapter_table import catalog_chapter_id
 from novel_system.services.snowflake_chaptering.derive import ensure_chapter_plans
 from novel_system.services.snowflake_queries import latest_step_run
-from novel_system.services.snowflake_scene_brief import scene_card_beats, scene_title_seed, scene_writer_brief
+from novel_system.services.snowflake_scene_brief import scene_card_beats, scene_card_goal, scene_title_seed, scene_writer_brief
 from novel_system.services.snowflake_scene_rows import scene_plan_payload
 from novel_system.services.snowflake_step_catalog import SUMMARY_LENGTH_BAND, effective_rendering_mode
 from novel_system.services.snowflake_step_diagnosis import is_protagonist_role
@@ -85,7 +85,8 @@ def build_chaptered_outline_plan(
                     "pov_character_id": detail.get("pov_character_id") or None,
                     "onstage_chars_json": detail.get("onstage_chars_json") or [],
                     "location": detail.get("location") or None,
-                    "scene_goal": detail.get("summary") or detail.get("title") or goal,
+                    # 与 _scene_card_resync_patch 同一配方（scene_card_goal）：没写事件的场先拿第 10 步的目标
+                    "scene_goal": scene_card_goal(detail, fallback=goal),
                     "beats_json": scene_card_beats(scene_type, detail),
                     # 阶段 F：摘要不再冒充「必须包含」的硬约束（它本来就含挫折，写成硬约束会让
                     # 硬 QC 拿一句概括去卡正文）；钩子 / 离场变化没写就留空，简报只陈述作者写过的。

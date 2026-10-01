@@ -1,8 +1,8 @@
 """雪花场景计划 → 场景卡的写作简报与节拍（叶子模块：纯函数，不引用任何服务）。
 
-物化（``_build_chaptered_outline_plan``）与回流（``_scene_card_resync_patch``）共用这里的配方——两个写入方
-各算一套时，刚物化完的每一场都会被报成「待同步」。这两个函数原先寄住在 v1 规划器里（B06-10）；v1 规划器
-退役之后它们是 v2 工作台唯一的家。
+物化（``_build_chaptered_outline_plan``）与回流（``_scene_card_resync_patch``）共用这里的配方（简报、节拍、题名、
+场景卡目标）——两个写入方各算一套时，刚物化完的每一场都会被报成「待同步」。简报与节拍原先寄住在 v1 规划器里
+（B06-10）；v1 规划器退役之后它们是 v2 工作台唯一的家。
 """
 
 from __future__ import annotations
@@ -102,6 +102,17 @@ def followed_scene_title(previous_brief: dict[str, Any], real: str) -> dict[str,
     if current and current != seeded:
         return {"title": current, "seeded_title": real}
     return {"title": real, "seeded_title": real} if real else {"seeded_title": ""}
+
+
+def scene_card_goal(detail: dict[str, Any], *, fallback: Any = "") -> str:
+    """``SceneCard.scene_goal`` 的唯一配方，物化与回流共用。
+
+    09 的事件（整句摘要）→ 第 10 步排的目标 → 构思里的题名 → ``fallback``：物化给这一章的章目标（分章里作者写的，
+    没写就空着），回流给卡上现存的值（构思这一侧什么都给不出时不把它清空）。过去两个写入方各算一套——物化是
+    「摘要 → 题名 → 章目标」，回流是「摘要 → 目标 → 旧值」：09 没写事件、第 10 步排了目标的主动场刚「确认写入」完
+    就被报成「待同步」（S2 发现，合并胶水 G5）。目标排在题名前面：回流一直给的就是它，这样已同步过的卡不会因此再报一次。
+    """
+    return str(detail.get("summary") or detail.get("goal") or detail.get("title") or fallback or "")
 
 
 def scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:
