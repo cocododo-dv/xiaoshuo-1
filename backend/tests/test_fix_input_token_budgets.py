@@ -283,27 +283,6 @@ def test_hard_qc_and_style_draft_fit_a_3000_char_chinese_draft() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 作者稿结构提取：场景稿与整章稿都要能过，且稿件只进提示词一次
-# ---------------------------------------------------------------------------
-
-
-def _author_target(object_type: str) -> dict:
-    return {
-        "object_type": object_type,
-        "object_id": "CH001_SC02" if object_type == "scene" else "CH001",
-        "project_id": "PRJ",
-        "chapter_id": "CH001",
-        "scene_id": "CH001_SC02" if object_type == "scene" else None,
-        "chapter_goal": _zh(60, seed=950),
-        "chapter_writer_brief": {"core_promise": _zh(60, seed=951)},
-        "scene_card": {"scene_goal": _zh(40, seed=952), "beats": [_zh(20, seed=953)], "location": "档案馆", "exit_change": "", "hook": ""}
-        if object_type == "scene"
-        else {},
-        "current_writer_brief": {"goal": _zh(40, seed=954)},
-    }
-
-
-# ---------------------------------------------------------------------------
 # 章节族：15000 字章
 # ---------------------------------------------------------------------------
 

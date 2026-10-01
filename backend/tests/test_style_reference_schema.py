@@ -72,7 +72,6 @@ def isolated_database(
     db_path = tmp_path / "test.db"
     db_url = f"sqlite:///{db_path}"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", db_url)
-    monkeypatch.setenv("NOVEL_SYSTEM_VECTOR_BACKEND", "memory")
     from novel_system.db.session import reset_engine
 
     reset_engine()

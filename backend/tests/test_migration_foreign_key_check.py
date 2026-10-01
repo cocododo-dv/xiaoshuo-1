@@ -39,7 +39,6 @@ def isolated_database(
 
     db_path = tmp_path / "migrated.db"
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
-    monkeypatch.setenv("NOVEL_SYSTEM_VECTOR_BACKEND", "memory")
     reset_engine()
     yield db_path
     reset_engine()
