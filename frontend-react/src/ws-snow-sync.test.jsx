@@ -862,6 +862,32 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(1), T);
   });
 
+  it("flush：先向挂着的构思视图要此刻的内存态，不等 700 ms 上行防抖就推上去；返回同步态，上行失败也不抛（重试是 retry）", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: WS_WITH_BOOK_BRIEF });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    await vi.waitFor(() => expect(readCacheOf().scaffolds.audience.reader).toBe(BOOK_BRIEF_DRAFT.target_reader), T);
+    client.apiPatch.mockClear();
+    const cache = readCacheOf();
+    /* 视图手上改了一栏、还没落盘：flush 发 ws:snow-flush-local 时它才写进缓存（并广播 ws:snow-saved） */
+    let edited = "改过的读者";
+    const flushLocal = () => saveCache({ ...cache, scaffolds: { ...cache.scaffolds, audience: { ...cache.scaffolds.audience, reader: edited } } });
+    window.addEventListener("ws:snow-flush-local", flushLocal);
+    try {
+      const startedAt = Date.now();
+      const state = await mod.SnowSync.flush("prj-main");
+      expect(Date.now() - startedAt).toBeLessThan(700);
+      expect(patchCallWith(client, "book_brief", (draft) => draft.target_reader === "改过的读者")).toBeTruthy();
+      expect(state.phase).toBe("synced");
+
+      edited = "又改了一次";
+      client.apiPatch.mockRejectedValueOnce(Object.assign(new Error("网络断了"), { code: "NETWORK_ERROR" }));
+      const failed = await mod.SnowSync.flush("prj-main");
+      expect(failed.phase).toBe("error");
+    } finally {
+      window.removeEventListener("ws:snow-flush-local", flushLocal);
+    }
+  });
+
   it("本机首次出现时已经是 done：分章预览先完成 PATCH + approve，再读取预览与物化闸门", async () => {
     const gate = {
       status: "ready", blockers: [], warnings: [], items: [],

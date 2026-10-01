@@ -82,11 +82,15 @@ adoptModuleListeners("ws-snow-sync", () => {
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
   syncState(workId) { return { ...readSnowSyncState(workId || activeWork()) }; },
+  /* 作者点「重试」：马上把这部作品排进上行链（不等防抖），返回这一次上行的 Promise（失败会拒绝） */
   retry(workId) {
     const id = workId || activeWork();
     if (!id) return Promise.reject(new Error("作品尚未就绪"));
     return retryPush(snowCacheKey(id));
   },
+  /* 排空本机还没上行的编辑：先向挂着的构思视图要一份此刻的内存态（跨过它 450ms 的落盘防抖），再不等 700ms 上行防抖
+     把排着的那一份推上去；返回同步态，从不抛错。「下一跳要读服务端」的动作之前用（从历史恢复一步、分章预览 / 物化）。 */
+  flush(workId) { return flushSnowPush(workId || activeWork()); },
   markLocalFailure(error, workId) {
     const id = workId || activeWork();
     setSnowSyncState(id, {
