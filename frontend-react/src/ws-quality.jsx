@@ -2,7 +2,8 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
 import { EmptyState, Notice, PageHeader, Segmented, Spinner, StatTile, Tag } from "./ws-ui.jsx";
-import { FindingLine, findingPlainText, writerIntents } from "./ws-finding-ui.jsx";
+import { FindingLine, findingPlainText } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { chapterLabel, chapterLabelById, findSceneByBackendId } from "./labels/catalog.js";
 import { findingSeverityLabel } from "./labels/finding.js";
 import {

@@ -4,6 +4,7 @@ import { I } from "./icons.jsx";
 import { PageHeader, Segmented, Tag, EmptyState, Notice, Spinner } from "./ws-ui.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import {
   RV_KINDS, rvOpenItems, rvSnoozedList, rvReady, rvLoadErrorOf, rvDoneToday, rvFetch, rvPush,
   rvMarkResolved, rvMarkSnoozed, rvUnsnooze, rvResolveAction, rvSubscribe, useReviewOpenItems,
@@ -111,8 +112,7 @@ function WsReview({ go }) {
       const intents = [];
       if (a.step) intents.push({ type: "ws:snow-step", detail: a.step });
       if (a.scene && a.to === "scene") intents.push({ type: "ws:scene-enqueue", detail: { sid: a.scene } });
-      else if (a.scene) intents.push({ type: "ws:writer-scene", detail: a.scene });
-      if (a.posture) intents.push({ type: "ws:writer-posture", detail: a.posture });
+      else intents.push(...writerIntents(a.scene, { posture: a.posture }));
       go(a.to, intents);
     }
     else if (a.op === "snooze") snooze(item.id);

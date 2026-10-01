@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { wsConfirm, wsToast } from "./ws-notify.jsx";
 import { planIntentsForScene } from "./ws-scene-design.jsx";
-import { writerIntents } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { EmptyState, Spinner, Tag } from "./ws-ui.jsx";
 import { SCENE_STATE_META, chapterLabel, chapterStateMeta, chapterOwnTitle, dramaFieldLabel } from "./labels/catalog.js";
 import { MANU_DRAMA_KEYS, manuArchivedParas, manuDramaOf } from "./ws-manuscripts-compile.js";

@@ -2,7 +2,8 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Spinner } from "./ws-ui.jsx";
 import { wrAiError } from "./ws-writer-ai.js";
-import { FindingLine, writerIntents } from "./ws-finding-ui.jsx";
+import { FindingLine } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { useChapterDiagnosis } from "./ws-manuscripts-diagnosis-store.js";
 import { formatLocaleMonthDayTime } from "./lib/format.js";
 

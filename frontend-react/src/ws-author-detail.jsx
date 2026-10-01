@@ -8,7 +8,7 @@ import { ArrSceneBoard } from "./ws-author-scenes.jsx";
 import { ArrChapterStateTag, blurOnEnter } from "./ws-author-ui.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 import { planIntentsForScene } from "./ws-scene-design.jsx";
-import { writerIntents } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { IconButton, Notice, Tag } from "./ws-ui.jsx";
 import { chapterLabel } from "./labels/catalog.js";
 

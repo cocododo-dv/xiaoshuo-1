@@ -18,7 +18,7 @@ import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog, ManuReturnDialog } from "./ws-manuscripts-dialogs.jsx";
-import { writerIntents } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================

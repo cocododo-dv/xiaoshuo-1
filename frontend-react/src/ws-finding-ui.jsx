@@ -13,8 +13,7 @@ import { RULE_DIMENSION_LABELS, findingLabel, findingSeverityLabel, findingSever
    · layout="row"（成稿中心的诊断页签）：左边一枚严重度色块写名字，中间问题 / 改法 / 与哪一段有关 / 沿用上次 /
      引文已不在正文，右边「在写作台看这一处」（只有钉得到原文的发现才有）。
    写作台深改抽屉的发现行更丰富（定位、忽略、AI 看这一处），另有自己的行，只和这里共用词表（labels/finding.js）。
-   writerIntents：进写作台某一场（可带深改姿态与这条发现的 signal_id）的一组视图意图——章节编排、成稿中心、
-   文学质量都用它去写作台。纯展示与纯函数：不读 store、不写 window。
+   去写作台看这一处的视图意图由 ws-view-intents.js 的 writerIntents 给。纯展示与纯函数：不读 store、不写 window。
    ========================================================== */
 
 /* 证据摘录来自作者稿（HTML），截断处可能带半个标签：只留文字 */
@@ -54,16 +53,6 @@ export function findingView(finding, { evidence } = {}) {
     carried: !!(f.origin && f.origin.carried_from),
     stale: !!f.stale,
   };
-}
-
-/* 进写作台这一场的视图意图。deep：带深改姿态；signalId：深改面板到了诊断就选中这一条（隐含 deep）。
-   没有 sid（章级结果没有单一场景可去）时是空数组：只回写作台。 */
-export function writerIntents(sid, { deep = false, signalId = "" } = {}) {
-  if (!sid) return [];
-  const intents = [{ type: "ws:writer-scene", detail: sid }];
-  if (signalId) intents.push({ type: "ws:writer-posture", detail: { posture: "deep", signal_id: signalId } });
-  else if (deep) intents.push({ type: "ws:writer-posture", detail: "deep" });
-  return intents;
 }
 
 /* 一条发现。onLocate(signalId) 给了就有「在写作台看这一处」：card 版式只要有 signal_id，

@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { CloseButton, Notice, Spinner, Tag } from "./ws-ui.jsx";
 import { AUTHOR_NOTE_LIMIT, scnFindingIsPlainLanguage, scnFindingText } from "./ws-scene-derive.js";
+import { writerIntents } from "./ws-view-intents.js";
 
 const { useEffect, useState } = React;
 
@@ -43,10 +44,7 @@ function DecisionBar({ scene, state, runJobStatus, go, onEditPlan = null, onArch
   const noteTooLong = normalizedNoteLength > AUTHOR_NOTE_LIMIT;
   useEffect(() => { setRework(false); setNote(""); }, [scene.id]);
 
-  const openWriter = (posture) => go && go("writer", [
-    { type: "ws:writer-scene", detail: scene.sid },
-    ...(posture ? [{ type: "ws:writer-posture", detail: posture }] : []),
-  ]);
+  const openWriter = (posture) => go && go("writer", writerIntents(scene.sid, { posture }));
 
   if (state === "queued") {
     if (runJobStatus === "queued") {

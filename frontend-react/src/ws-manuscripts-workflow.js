@@ -4,7 +4,7 @@ import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review-store.js";
 import { WsManuStore } from "./ws-manuscripts-store.jsx";
 import { wsToast } from "./ws-notify.jsx";
-import { writerIntents } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { readyWorkId } from "./lib/ready-work.js";
 import { chapterLabel } from "./labels/catalog.js";
 import {
@@ -166,8 +166,8 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
     rvPush(manuReturnTodo(picked, { reason, sid, sceneTitle }));
     setDialog(null);
     run.finish("ok", "已退回草稿，并生成修订待办。");
-    /* 直达深改：定位到场时进那一场的深改姿态；没定位到场也照样进深改姿态 */
-    if (openDeep && go) go("writer", sid ? writerIntents(sid, { deep: true }) : [{ type: "ws:writer-posture", detail: "deep" }]);
+    /* 直达深改：定位到场时进那一场的深改姿态；没定位到场也照样进深改姿态（点名的 posture 没有 sid 也带上） */
+    if (openDeep && go) go("writer", writerIntents(sid, { posture: "deep" }));
   };
 
   const approveFinal = async ({ readNote, revisionNotes }) => {
