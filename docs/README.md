@@ -16,7 +16,7 @@
 
 ## 开发与发布
 
-- [发布检查清单](release-checklist.md)：CI、Windows、React E2E 和 WSL Chroma 发布门。
+- [发布检查清单](release-checklist.md)：CI 四项、本机检查、按改动类型补的检查、部署到作者安装的步骤。
 - [数据库迁移](migrations.md)：怎么升级、怎么写新迁移、各版本做了什么、哪些不可逆、重构的部署顺序。
 
 ## 当前专项记录
