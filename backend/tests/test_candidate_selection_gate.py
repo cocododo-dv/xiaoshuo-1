@@ -455,12 +455,42 @@ def test_blinded_candidates_view_strips_scores_and_uses_blinded_order(
         assert "selected" not in candidate  # 盲化视图不泄漏机器预选
         assert candidate["content"]  # 展示完整正文，不只预览
 
-    # 作者主动展开：附分数但不得重排（分数只做标注，不做默认排序）
+    # 作者主动展开：附分数但不得重排（分数只做标注，不做默认排序）。这几份手造的候选没有冻结的 bundle 可查，
+    # 照旧给房风分；作者手笔直起的候选不给（下一条用例）
     scored = client.get(
         f"/api/v1/scenes/{SCENE_ID}/style-candidates?include_scores=true"
     ).json()["data"]
     assert [c["row_id"] for c in scored["candidates"]] == blinded
     assert all("adversarial_score" in c for c in scored["candidates"])
+    assert "scores_withheld" not in scored
+
+
+def test_style_first_candidates_never_carry_the_house_taste_score(client, session) -> None:
+    """重评 R2 复核补充 5：作者手笔直起的场景里，像不像以参考作者为准，房风规则让位——机器的去 AI 味规则分
+    （adversarial_score）既不随「展开分数」给作者看，诊断形状也不再按它排序（改按生成时间倒序）。"""
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID, execution_id=ORIGIN_EXECUTION_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    blinded = gate.details_json["blinded_order"]
+
+    scored = client.get(f"/api/v1/scenes/{SCENE_ID}/style-candidates?include_scores=true").json()["data"]
+    assert scored["blinded"] is True
+    assert [c["row_id"] for c in scored["candidates"]] == blinded
+    assert not [c for c in scored["candidates"] if "adversarial_score" in c]
+    assert scored["scores_withheld"] == "style_first"
+
+    diagnostic = client.get(f"/api/v1/scenes/{SCENE_ID}/style-candidates?diagnostic=true").json()["data"]
+    assert diagnostic["blinded"] is False
+    assert not [c for c in diagnostic["candidates"] if "adversarial_score" in c]
+    assert diagnostic["scores_withheld"] == "style_first"
+    drafts = session.execute(
+        select(SceneDraft)
+        .where(SceneDraft.scene_id == SCENE_ID, SceneDraft.stage == "style_draft")
+        .order_by(SceneDraft.created_at.desc())
+    ).scalars().all()
+    assert [c["row_id"] for c in diagnostic["candidates"]] == [draft.row_id for draft in drafts]
+    assert set(blinded) <= {draft.row_id for draft in drafts}
 
 
 def test_candidate_views_carry_no_dispersion_reading(client, session) -> None:

@@ -2,7 +2,7 @@
 
 - :func:`offer_candidates_for_selection`：编排器在风格稿候选排好之后调它开门（``Orchestrator._offer_candidates_for_selection``
   仍是它的名字，测试在实例上调）；
-- :func:`candidates_view`：``GET /api/v1/scenes/{scene_id}/style-candidates``；
+- :func:`candidates_view`：``GET /api/v1/scenes/{scene_id}/style-candidates``（作者手笔直起的候选不附房风分）；
 - :func:`select_candidate`：``POST …/style-candidates/{row_id}/select``（幂等层在路由）。
 
 门是 ``human_review_events`` 里 ``event_source="candidate_selection"``、``details.gate_type="style_candidate_selection"``
@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import HumanReviewEvent, SceneDraft, SceneRunState, utcnow
+from novel_system.db.models import HumanReviewEvent, SceneBundle, SceneDraft, SceneRunState, utcnow
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.errors import DomainError
 from novel_system.services.style_policy import style_policy_for_bundle
@@ -68,6 +69,26 @@ def latest_selection_gate(session: Session, scene_id: str) -> HumanReviewEvent |
     return None
 
 
+# 候选不附房风分时视图上的标记（重评 R2 复核补充 5）
+SCORES_WITHHELD_STYLE_FIRST = "style_first"
+
+
+def _house_taste_withheld(session: Session, drafts: Iterable[SceneDraft]) -> bool:
+    """这些候选出自作者手笔直起的绑定场景：房风规则（去 AI 味的规则分 ``adversarial_rank_score``）让位给参考，像不像
+    以参考作者为准——机器的房风分不给作者看，也不拿它排序（重评 R2 复核补充 5）。按候选稿自己冻结的 bundle 判；
+    bundle 找不到（旧数据、手造的稿）照旧给分。"""
+    seen: set[str] = set()
+    for draft in drafts:
+        bundle_id = str(draft.source_bundle_id or "")
+        if not bundle_id or bundle_id in seen:
+            continue
+        seen.add(bundle_id)
+        bundle = session.get(SceneBundle, bundle_id)
+        if bundle is not None and style_policy_for_bundle(bundle.frozen_snapshot_json).defers_house_taste():
+            return True
+    return False
+
+
 def candidates_view(
     session: Session,
     scene_id: str,
@@ -81,6 +102,9 @@ def candidates_view(
     机器分数与预选标记（按分排序展示本身就是泄漏）；`include_scores=true`
     为作者主动展开——附分数但不改顺序。无 gate（标准场/历史诊断）保留旧的
     按分降序形状（`diagnostic` 用途），并标 `blinded:false`。
+
+    作者手笔直起的候选（``_house_taste_withheld``）两种视图都不附房风分：展开时什么分也不附，诊断形状不按分排、
+    按生成时间倒序；视图带 ``scores_withheld: "style_first"``（重评 R2 复核补充 5）。
     """
     AuthorLifecycleService(session).require_active_scene(scene_id)
     from novel_system.services.literary_quality import adversarial_rank_score
@@ -102,23 +126,24 @@ def candidates_view(
                 details.get("blinded_order") or details.get("candidate_row_ids") or []
             )
         ]
+        gate_drafts = [
+            draft for draft in (session.get(SceneDraft, row_id) for row_id in blinded_order) if draft is not None
+        ]
+        withheld = include_scores and _house_taste_withheld(session, gate_drafts)
         candidates = []
-        for row_id in blinded_order:
-            draft = session.get(SceneDraft, row_id)
-            if draft is None:
-                continue
+        for draft in gate_drafts:
             entry: dict[str, Any] = {
                 "row_id": draft.row_id,
                 "content": draft.content,
                 "created_at": str(draft.created_at) if draft.created_at else None,
             }
-            if include_scores:
+            if include_scores and not withheld:
                 # 主动展开：分数只做标注，不重排（§5.5）
                 entry["adversarial_score"] = round(
                     adversarial_rank_score(draft.content) if draft.content else 0.0, 3
                 )
             candidates.append(entry)
-        return {
+        view: dict[str, Any] = {
             "scene_id": scene_id,
             "blinded": True,
             "candidates": candidates,
@@ -134,6 +159,9 @@ def candidates_view(
             },
             "criticality": criticality_info,
         }
+        if withheld:
+            view["scores_withheld"] = SCORES_WITHHELD_STYLE_FIRST
+        return view
 
     # 无终选 gate：旧诊断形状（按分降序、带分数）——仅限非盲化诊断用途
     drafts = list(
@@ -149,27 +177,31 @@ def candidates_view(
         .all()
     )
     selected_row_id = state.current_style_draft_row_id if state else None
+    withheld = _house_taste_withheld(session, drafts)
     candidates = []
     for d in drafts:
-        score = adversarial_rank_score(d.content) if d.content else 0.0
-        candidates.append(
-            {
-                "row_id": d.row_id,
-                "adversarial_score": round(score, 3),
-                "content_preview": (d.content or "")[:500],
-                "content": d.content,
-                "selected": d.row_id == selected_row_id,
-                "created_at": str(d.created_at) if d.created_at else None,
-            }
-        )
-    candidates.sort(key=lambda c: c["adversarial_score"], reverse=True)
-    return {
+        entry = {
+            "row_id": d.row_id,
+            "content_preview": (d.content or "")[:500],
+            "content": d.content,
+            "selected": d.row_id == selected_row_id,
+            "created_at": str(d.created_at) if d.created_at else None,
+        }
+        if not withheld:
+            entry["adversarial_score"] = round(adversarial_rank_score(d.content) if d.content else 0.0, 3)
+        candidates.append(entry)
+    if not withheld:
+        candidates.sort(key=lambda c: c["adversarial_score"], reverse=True)
+    view = {
         "scene_id": scene_id,
         "blinded": False,
         "candidates": candidates,
         "total": len(candidates),
         "criticality": criticality_info,
     }
+    if withheld:
+        view["scores_withheld"] = SCORES_WITHHELD_STYLE_FIRST
+    return view
 
 
 def select_candidate(
@@ -398,6 +430,7 @@ def offer_candidates_for_selection(
 __all__ = [
     "CANDIDATE_SELECTION_SOURCE",
     "PREFERENCE_TAGS",
+    "SCORES_WITHHELD_STYLE_FIRST",
     "STYLE_CANDIDATE_SELECTION_GATE",
     "candidates_view",
     "latest_selection_gate",
