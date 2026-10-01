@@ -1107,13 +1107,15 @@ describe("SceneRunJobControl", () => {
 
   it("真实起草台发现作者正文时打开差异决策，默认焦点落在“保存为候选”且不归档", async () => {
     const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const { wsKey } = await import("./ws-works.jsx");
+    const { WrRecovery } = await import("./wr-doc-store.jsx");
     const cached = {
       ...mod.scnQC([{ id: "p1", text: "AI 写下了另一种开场。" }]),
       state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
     };
     mod.scnRunSave("ch01s1", cached);
     await queueSceneIntent({ sid: "ch01s1" });
-    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>作者亲写的开场。</p>");
+    window.localStorage.setItem(wsKey("wr-doc:ch01s1"), "<p>作者亲写的开场。</p>");
     client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }));
     const page = await import("./ws-scene.jsx");
     const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
@@ -1136,8 +1138,8 @@ describe("SceneRunJobControl", () => {
     await click(safe);
     await vi.waitFor(() => expect(document.body.querySelector(".scn2-adopt")).toBeNull(), T);
     expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
-    expect(window.localStorage.getItem(window.wsKey("wr-doc:ch01s1"))).toBe("<p>作者亲写的开场。</p>");
-    expect(window.WrRecovery.list()).toEqual([expect.objectContaining({ type: "candidate", source: "ai" })]);
+    expect(window.localStorage.getItem(wsKey("wr-doc:ch01s1"))).toBe("<p>作者亲写的开场。</p>");
+    expect(WrRecovery.list()).toEqual([expect.objectContaining({ type: "candidate", source: "ai" })]);
     expect(view.host.textContent).toContain("作者正文没有被改动");
   });
 
@@ -1424,6 +1426,8 @@ describe("SceneRunJobControl", () => {
 
   it("归档预检同步防双击，切换场景后不弹出旧场景的作者稿决策", async () => {
     const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT], catalog: [TWO_SCENE_CHAP] });
+    const { wsKey } = await import("./ws-works.jsx");
+    const { WrDocs } = await import("./wr-doc-store.jsx");
     const ready = (text) => ({
       ...mod.scnQC([{ id: "p1", text }]),
       state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
@@ -1431,13 +1435,13 @@ describe("SceneRunJobControl", () => {
     mod.scnRunSave("ch01s1", ready("第一场 AI 稿。"));
     mod.scnRunSave("ch01s2", ready("第二场 AI 稿。"));
     await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
-    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>第一场作者稿。</p>");
+    window.localStorage.setItem(wsKey("wr-doc:ch01s1"), "<p>第一场作者稿。</p>");
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
     // 预检和服务器上的作者稿对齐走 WrDocs.prepareAdoption（W1 复核三起；过去是 WrDocs.hydrate）：按住它，预检就一直在路上
     const hydration = deferred();
-    const hydrateSpy = vi.spyOn(window.WrDocs, "prepareAdoption").mockImplementation((sid) => (
+    const hydrateSpy = vi.spyOn(WrDocs, "prepareAdoption").mockImplementation((sid) => (
       sid === "ch01s1" ? hydration.promise : Promise.resolve(null)
     ));
     const page = await import("./ws-scene.jsx");

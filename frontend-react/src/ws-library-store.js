@@ -5,7 +5,7 @@ import { adoptModuleListeners, retireModuleListeners } from "./lib/events.js";
 import { isRealWorkId } from "./lib/work-id.js";
 import { readyWorkId } from "./lib/ready-work.js";
 import { WsWorks } from "./ws-works.jsx";
-import { LIB_CATS, LIB_KIND_LABEL, LIB_KIND_OPTIONS } from "./labels/library.js";
+import { LIB_KIND_LABEL } from "./labels/library.js";
 
 /* ==========================================================
    资料库的 store（2026-09-30 从 ws-library-data.jsx / ws-library-edit.jsx 收拢，审计 F05-08 / F01-18）
@@ -19,19 +19,12 @@ import { LIB_CATS, LIB_KIND_LABEL, LIB_KIND_OPTIONS } from "./labels/library.js"
    · 读：只按当前作品存一份。第一个订阅者（或 libEnsureLoaded / libRefetch）才发请求——import 本模块不拉数据，
      写作台的名字高亮、章节编排的视角候选可以直接 import 它，用到时再拉（审计 F05-01：它们以前读 window.LIB_*，
      没打开过「资料」页就是空的）。换作品时立即清掉旧快照，迟到的旧请求不写回。
-   · 快照不可变：libLive() / useLibraryLive() 每次变化给一份新的 { entries, byId }；LIB_ENTRIES / LIB_BY_ID
-     是原地更新的过渡容器，只给 window 接缝（ws-library-data.jsx）与旧导出用，接缝退役时一起删。
+   · 快照不可变：libLive() / useLibraryLive() 每次变化给一份新的 { entries, byId }（身份变了 = 内容变了）。
    · 写：全部直达后端（characters / entities / timeline / relations），写完以服务端为准重读；失败提示并重读。
-   纯 ESM，不写 window（窗口接缝在门面 ws-library-data.jsx / ws-library-edit.jsx 里）。
+   纯 ESM，不写 window；资料页、写作台、章节编排都直接 import 它（类别与世界条目类型的表在 labels/library.js）。
    ========================================================== */
 
-/* 类别与世界条目类型的表住在叶子模块 labels/library.js；这里照旧转出（门面与旧 import 路径用） */
-export { LIB_CATS, LIB_KIND_LABEL, LIB_KIND_OPTIONS };
 const LIB_CAT_ACCENT = { people: "crimson", world: "gold", events: "slate" };
-
-/* 过渡容器（原地更新，身份不变）：window.LIB_ENTRIES / LIB_BY_ID 接缝与门面的旧导出指着它们 */
-export const LIB_ENTRIES = [];
-export const LIB_BY_ID = {};
 
 /* 不可变快照：每次档案变化换一份新对象（身份变了 = 内容变了） */
 const LIB_EMPTY = Object.freeze({ entries: [], byId: {} });
@@ -53,15 +46,11 @@ function libBump() {
   libSubscribers.notify();
 }
 
-/* 档案换了一份：不可变快照换新，过渡容器原地跟上 */
+/* 档案换了一份：不可变快照换新 */
 function libReplace(entries) {
   const byId = {};
   entries.forEach(e => { byId[e.id] = e; });
   libSnap = entries.length ? { entries, byId } : LIB_EMPTY;
-  LIB_ENTRIES.length = 0;
-  LIB_ENTRIES.push(...entries);
-  Object.keys(LIB_BY_ID).forEach(k => { delete LIB_BY_ID[k]; });
-  Object.assign(LIB_BY_ID, byId);
 }
 
 /* 订阅：第一个订阅者到来时按需拉一次当前作品的资料库。每次订阅各包一层，同一个函数订阅两次也各算一个。 */

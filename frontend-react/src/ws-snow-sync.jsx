@@ -82,11 +82,15 @@ adoptModuleListeners("ws-snow-sync", () => {
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
   syncState(workId) { return { ...readSnowSyncState(workId || activeWork()) }; },
+  /* 作者点「重试」：马上把这部作品排进上行链（不等防抖），返回这一次上行的 Promise（失败会拒绝） */
   retry(workId) {
     const id = workId || activeWork();
     if (!id) return Promise.reject(new Error("作品尚未就绪"));
     return retryPush(snowCacheKey(id));
   },
+  /* 排空本机还没上行的编辑：先向挂着的构思视图要一份此刻的内存态（跨过它 450ms 的落盘防抖），再不等 700ms 上行防抖
+     把排着的那一份推上去；返回同步态，从不抛错。「下一跳要读服务端」的动作之前用（从历史恢复一步、分章预览 / 物化）。 */
+  flush(workId) { return flushSnowPush(workId || activeWork()); },
   markLocalFailure(error, workId) {
     const id = workId || activeWork();
     setSnowSyncState(id, {
@@ -448,8 +452,6 @@ const SnowSync = {
 /* 台子上改的章名被后端写穿到章计划后，目录在重拉之前等本机雪花缓存接过服务端章表（登记口见 ws-catalog.jsx）。
    经 SnowSync 的属性调用：单测会替换它。 */
 WsCatalog.onPlanTitlesSynced((workId) => SnowSync.adoptServerChapters(workId));
-
-Object.assign(window, { SnowSync });
 
 // mergeCanon / applyCanonPatch / feFromCanon / canonFromFE 一并导出：供 store 单测
 // 直接验证「保真合并」「咨询式补丁」与「规范字段 ↔ 原型形状」的往返契约

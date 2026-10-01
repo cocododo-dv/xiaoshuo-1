@@ -5,7 +5,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CHAP, DEFAULT_PROJECT, installApiRouter } from "./test-helpers.js";
+import { DEFAULT_CHAP, DEFAULT_PROJECT, installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -29,13 +29,18 @@ function matchMedia() {
   return { matches: false, media: "", addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() };
 }
 
+/* 被测代码用的那一份目录 / 正文 store：每次 loadWriter（vi.resetModules 之后）重新取（以前读 window 上的全局） */
+let WsCatalog = null;
+let WrDocs = null;
+
 async function loadWriter(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  ({ WsCatalog } = await settleCatalog(T));
   const writer = await import("./ws-writer.jsx");
+  ({ WrDocs } = await import("./wr-doc-store.jsx"));
   return { ...writer, client };
 }
 
@@ -206,7 +211,7 @@ describe("写作台 · 停靠的栏与续写托盘", () => {
   it("打开续写托盘不会自己发生成请求；按「生成三条」才发一次，没配模型时给出去系统设置的出口", async () => {
     const go = vi.fn();
     const { WriterRoom, client } = await loadWriter();
-    vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
+    vi.spyOn(WrDocs, "draftId").mockResolvedValue("draft-s1");
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} go={go} />);
     client.apiPost.mockClear();
     client.apiPost.mockRejectedValue(Object.assign(new Error("author proposal generation requires a configured live LLM capability"), {
@@ -233,9 +238,9 @@ describe("写作台 · 停靠的栏与续写托盘", () => {
 describe("写作台 · 续写托盘关上后焦点回到正文", () => {
   it("⌘J 打开托盘、Esc 关上：焦点回到正文和原来的光标处；采纳整段后光标落在新段末尾", async () => {
     const { WriterRoom, client } = await loadWriter();
-    vi.spyOn(window.WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
-    vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
-    vi.spyOn(window.WrDocs, "save").mockResolvedValue({});
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
+    vi.spyOn(WrDocs, "draftId").mockResolvedValue("draft-s1");
+    vi.spyOn(WrDocs, "save").mockResolvedValue({});
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.textContent).toContain("她把灯关了"), T);
     const editor = host.querySelector(".wr-editor");
@@ -287,9 +292,9 @@ describe("写作台 · 续写按段采纳（重评 R6）", () => {
   };
   async function trayWithMultiParagraph() {
     const { WriterRoom, client } = await loadWriter();
-    vi.spyOn(window.WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
-    vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
-    vi.spyOn(window.WrDocs, "save").mockResolvedValue({});
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
+    vi.spyOn(WrDocs, "draftId").mockResolvedValue("draft-s1");
+    vi.spyOn(WrDocs, "save").mockResolvedValue({});
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.textContent).toContain("她把灯关了"), T);
     const editor = host.querySelector(".wr-editor");
@@ -327,7 +332,7 @@ describe("写作台 · 续写按段采纳（重评 R6）", () => {
 describe("写作台 · 大纲里的改名与输入法", () => {
   it("输入法确认候选的那一下回车不算改完；真正的回车才提交", async () => {
     const { WriterRoom } = await loadWriter({ catalog: [DEFAULT_CHAP, SECOND_CHAP] });
-    const rename = vi.spyOn(window.WsCatalog, "renameScene");
+    const rename = vi.spyOn(WsCatalog, "renameScene");
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await click(outline(host).querySelector('[aria-label="重命名 夜航"]'));
     const input = outline(host).querySelector(".wr-sc-edit");
@@ -356,7 +361,7 @@ describe("写作台 · 大纲里的改名与输入法", () => {
 describe("写作台 · AI 续写三候选", () => {
   it("用一次 generate-set 请求取得三份独立续写，不再并发三个同签名 mutation", async () => {
     const { wrContinueMulti, client } = await loadWriter();
-    vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
+    vi.spyOn(WrDocs, "draftId").mockResolvedValue("draft-s1");
     client.apiPost.mockResolvedValue({
       mode: "continuation_variants",
       proposals: [
@@ -404,9 +409,9 @@ const genCalls = (client) => client.apiPost.mock.calls.filter(([url]) => String(
 
 async function writerWithCandidates() {
   const { WriterRoom, client } = await loadWriter();
-  vi.spyOn(window.WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
-  vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
-  vi.spyOn(window.WrDocs, "save").mockResolvedValue({});
+  vi.spyOn(WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
+  vi.spyOn(WrDocs, "draftId").mockResolvedValue("draft-s1");
+  vi.spyOn(WrDocs, "save").mockResolvedValue({});
   const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
   await vi.waitFor(() => expect(host.textContent).toContain("她把灯关了"), T);
   const editor = host.querySelector(".wr-editor");
@@ -480,7 +485,7 @@ describe("写作台 · 续写托盘的快捷键只认托盘里的按键", () => 
 describe("写作台 · 输入法组字中的 Esc 不是命令", () => {
   it("续写提示里组字时按 Esc 不关托盘；沉浸写作时在正文里组字按 Esc 不退出沉浸", async () => {
     const { WriterRoom } = await loadWriter();
-    vi.spyOn(window.WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.textContent).toContain("她把灯关了"), T);
     const root = host.querySelector(".wr-root");
@@ -510,7 +515,7 @@ describe("写作台 · 模态层开着时写作台的快捷键不响应", () => 
   it("命令面板这样的对话框开着：⌘J 不在它底下开托盘、⌘1 不收大纲；对话框关了照常", async () => {
     const { WriterRoom } = await loadWriter();
     const { WsDialog } = await import("./ws-dialog.jsx");
-    vi.spyOn(window.WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>她把灯关了。</p>");
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
     await vi.waitFor(() => expect(host.textContent).toContain("她把灯关了"), T);
     const root = host.querySelector(".wr-root");

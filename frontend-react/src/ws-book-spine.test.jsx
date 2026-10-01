@@ -8,7 +8,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CHAP, installApiRouter } from "./test-helpers.js";
+import { DEFAULT_CHAP, installApiRouter, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -54,7 +54,7 @@ async function loadCatalog(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, { catalog: SNOW_CATALOG, ...(opts || {}) });
   const mod = await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  await settleActiveWork("prj-main", T);
   await vi.waitFor(() => expect(mod.WsCatalog.get().length).toBeGreaterThan(0), T);
   return { WsCatalog: mod.WsCatalog, client };
 }

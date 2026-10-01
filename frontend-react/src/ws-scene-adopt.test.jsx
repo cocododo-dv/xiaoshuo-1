@@ -4,7 +4,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT, settleActiveWork, settleCatalog } from "./test-helpers.js";
 import {
   T, RUN_STATES_URL, NON_DEMO_PROJECT, TWO_SCENE_CHAP, settleActive, routeRunStates, loadSceneRun,
   mountedRoots, renderRunJobControl, click, deferred, queueSceneIntent,
@@ -238,7 +238,9 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
 
   it("内容安全复核重试复用已验证的作者稿备份，不制造重复副本", async () => {
     const { mod, client } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
+    const { wsKey } = await import("./ws-works.jsx");
+    const { WrRecovery } = await import("./wr-doc-store.jsx");
+    const key = wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
     const reviewError = Object.assign(new Error("review required"), {
       code: "CONTENT_SAFETY_REVIEW_REQUIRED",
@@ -267,7 +269,7 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
       ok: false,
       authorBackup: expect.objectContaining({ type: "backup", durable: true }),
     });
-    expect(window.WrRecovery.list()).toHaveLength(1);
+    expect(WrRecovery.list()).toHaveLength(1);
 
     const accepted = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, {
       mode: "overwrite",
@@ -276,7 +278,7 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
       acceptedWarningCodes: ["sexual_content_with_minor_indicators"],
     });
     expect(accepted.ok).toBe(true);
-    expect(window.WrRecovery.list()).toHaveLength(1);
+    expect(WrRecovery.list()).toHaveLength(1);
   });
 
   it("目录未同步到后端（无 backendId）：不静默装成功", async () => {
@@ -289,7 +291,9 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
 
   it("已有作者稿时可默认保存为候选：不调用归档、不覆盖正文", async () => {
     const { mod, client } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
+    const { wsKey } = await import("./ws-works.jsx");
+    const { WrRecovery } = await import("./wr-doc-store.jsx");
+    const key = wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
 
     const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
@@ -297,28 +301,31 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
     expect(result).toMatchObject({ ok: true, archived: false, mode: "candidate" });
     expect(window.localStorage.getItem(key)).toBe("<p>作者亲写的正文。</p>");
     expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
-    expect(window.WrRecovery.list()).toEqual([
+    expect(WrRecovery.list()).toEqual([
       expect.objectContaining({ sid: "ch01s1", type: "candidate", source: "ai" }),
     ]);
   });
 
   it("调用层只声明 overwrite 但没有显式确认时也 fail closed", async () => {
     const { mod, client } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
+    const { wsKey } = await import("./ws-works.jsx");
+    const { WrRecovery } = await import("./wr-doc-store.jsx");
+    const key = wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
 
     const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, { mode: "overwrite" });
 
     expect(result).toMatchObject({ ok: false, confirmationRequired: true });
     expect(window.localStorage.getItem(key)).toBe("<p>作者亲写的正文。</p>");
-    expect(window.WrRecovery.list()).toEqual([]);
+    expect(WrRecovery.list()).toEqual([]);
     expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
   });
 
   it("作者正文后文恰好写到旧占位那句话：仍是作者稿，覆盖必须先确认", async () => {
     // 旧判定：整份草稿里出现过「在这里开始写这一场」就当空稿——这里会不经确认直接覆盖并发 adopt-current
     const { mod, client } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
+    const { wsKey } = await import("./ws-works.jsx");
+    const key = wsKey("wr-doc:ch01s1");
     const authored = "<p>她把纸条翻过来。</p><p>背面只有一行字：在这里开始写这一场……</p>";
     window.localStorage.setItem(key, authored);
 
@@ -367,7 +374,9 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
 
   it("明确覆盖时先持久备份作者稿，再归档并写入 AI 稿", async () => {
     const { mod, client } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
+    const { wsKey } = await import("./ws-works.jsx");
+    const { WrRecovery } = await import("./wr-doc-store.jsx");
+    const key = wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
     const basePost = client.apiPost.getMockImplementation();
     client.apiPost.mockImplementation((url, body, options) => {
@@ -384,7 +393,7 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
     const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, { mode: "overwrite", confirmed: true });
 
     expect(result).toMatchObject({ ok: true, archived: true, authorBackup: expect.objectContaining({ durable: true }) });
-    expect(window.WrRecovery.list()).toEqual([
+    expect(WrRecovery.list()).toEqual([
       expect.objectContaining({ type: "backup", html: "<p>作者亲写的正文。</p>" }),
     ]);
     expect(window.localStorage.getItem(key)).toContain("潮水退去，她看清了闸门上的名字");
@@ -393,7 +402,8 @@ describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
 
   it("覆盖前备份触发 quota 时 fail-safe：阻止归档，作者稿保持不变", async () => {
     const { mod, client } = await loadWithCatalog();
-    const key = window.wsKey("wr-doc:ch01s1");
+    const { wsKey } = await import("./ws-works.jsx");
+    const key = wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
     const originalSetItem = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function quotaForBackup(storageKey, value) {
@@ -612,8 +622,8 @@ async function loadAdoption() {
   const client = await import("./lib/client.js");
   installApiRouter(client);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const api = await import("./ws-scene-api.js");
   const store = await import("./wr-doc-store.jsx");
   return { client, api, store };
@@ -696,6 +706,7 @@ describe("起草台「采纳并归档」：确认覆盖的是对话框里看过�
     const X = "<p>作者亲写的开场 X：码头的灯还亮着。</p>";
     const Y = "<p>作者亲写的开场 X：码头的灯还亮着。另一台设备补上的一句 Y：她把船票撕了。</p>";
     const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const { WrRecovery } = await import("./wr-doc-store.jsx");
     const server = { revision: 2, content: X, adopted: [] };
     const basePost = client.apiPost.getMockImplementation();
     client.apiPost.mockImplementation((url, body, options) => {
@@ -743,7 +754,7 @@ describe("起草台「采纳并归档」：确认覆盖的是对话框里看过�
 
     expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current$/.test(url))).toEqual([]);
     expect(server).toMatchObject({ revision: 3, content: Y, adopted: [] });
-    expect(window.WrRecovery.list().filter((entry) => entry.type === "backup")).toEqual([]);
+    expect(WrRecovery.list().filter((entry) => entry.type === "backup")).toEqual([]);
     expect(document.body.querySelector(".scn2-adopt")).toBeTruthy();         // 对话框还开着，作者没被告知「已归档」
     // 对话框换成了 Y 的差异，确认框复位：作者得对着 Y 重新确认
     expect(document.body.querySelector(".scn2-adopt-diff").textContent).toContain("她把船票撕了");
@@ -756,6 +767,7 @@ describe("起草台「采纳并归档」：确认覆盖的是对话框里看过�
     const X = "<p>作者亲写的开场 X：码头的灯还亮着。</p>";
     const Y = "<p>作者亲写的开场 X：码头的灯还亮着。另一台设备补上的一句 Y：她把船票撕了。</p>";
     const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const { WrDocs, WrRecovery } = await import("./wr-doc-store.jsx");
     const server = { revision: 2, content: X, adopted: [] };
     const basePost = client.apiPost.getMockImplementation();
     client.apiPost.mockImplementation((url, body, options) => {
@@ -794,7 +806,7 @@ describe("起草台「采纳并归档」：确认覆盖的是对话框里看过�
 
     server.revision = 3;                                                     // 另一台设备存下了 Y，写作台这边后台读到了它
     server.content = Y;
-    await act(async () => { window.WrDocs.load("ch01s1"); });
+    await act(async () => { WrDocs.load("ch01s1"); });
     await vi.waitFor(() => expect(dialog.querySelector(".scn2-adopt-diff").textContent).toContain("她把船票撕了"), T);
     expect(dialog.querySelector(".scn2-adopt-confirm input").checked).toBe(false);
     expect(dialog.querySelector(".scn2-adopt-live").textContent).toContain("差异已按最新的一版重算");
@@ -802,7 +814,7 @@ describe("起草台「采纳并归档」：确认覆盖的是对话框里看过�
     await act(async () => { dialog.querySelector(".scn2-adopt-confirm input").click(); });
     await click(dialog.querySelector('[data-testid="scene-confirm-overwrite"]'));
     await vi.waitFor(() => expect(server.adopted).toEqual([{ base: 3, overwritten: Y }]), T);
-    const backups = window.WrRecovery.list().filter((entry) => entry.type === "backup");
+    const backups = WrRecovery.list().filter((entry) => entry.type === "backup");
     expect(backups.map((entry) => entry.html)).toEqual([Y]);
   }, 40000);
 });

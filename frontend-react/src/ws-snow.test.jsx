@@ -22,13 +22,14 @@ vi.mock("./ws-works.jsx", () => ({
     active: () => ({ id: "new-book", title: "真正的新书" }),
   },
 }));
-// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 挂在 window 上，这里的模块 mock
+// 视图从 ws-snow-sync.jsx 直接 import SnowSync。每个用例把自己的假 SnowSync 放进 fakeSnow.current，这里的模块 mock
 // 转发过去（用例没给的方法读出来是 undefined）；subscribe 用例一般不给，由这里的通知表兜着——
 // notify(kind, detail) 就是同步层发出的一条通知（hydrated / health / …）。
 const snowListeners = vi.hoisted(() => new Set());
+const fakeSnow = vi.hoisted(() => ({ current: null }));
 vi.mock("./ws-snow-sync.jsx", () => ({
   SnowSync: new Proxy({}, { get: (_target, name) => {
-    if (window.SnowSync && window.SnowSync[name]) return window.SnowSync[name];
+    if (fakeSnow.current && fakeSnow.current[name]) return fakeSnow.current[name];
     if (name === "subscribe") return (fn) => { snowListeners.add(fn); return () => snowListeners.delete(fn); };
     return undefined;
   } }),
@@ -57,7 +58,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.spyOn(window, "alert").mockImplementation(() => {});
     // 分章面板打开即拉后端预览（算法在后端，前端不再持有第二套）
-    window.SnowSync = {
+    fakeSnow.current = {
       chapterPreview: vi.fn(async () => ({
         strategy: "spine_anchor",
         chapters: [
@@ -92,7 +93,7 @@ describe("真实新项目的雪花顶部主操作", () => {
       host.remove();
     }
     vi.restoreAllMocks();
-    try { delete window.SnowSync; } catch (e) {}
+    fakeSnow.current = null;
   });
 
   it("点击“整理章节结构”打开分章预览面板，而不是直接落库", async () => {
@@ -111,13 +112,13 @@ describe("真实新项目的雪花顶部主操作", () => {
     await act(async () => button.click());
 
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).toBeTruthy();
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledTimes(1);
     // 预览阶段绝不落库
-    expect(window.SnowSync.materialize).not.toHaveBeenCalled();
+    expect(fakeSnow.current.materialize).not.toHaveBeenCalled();
   });
 
   it("右栏只有一个评分：后端的评定；没有按关键词计数的「实时自评」，也没有页脚的「自检 0/3」", async () => {
-    window.SnowSync.health = () => ({ paragraph: { beStatus: "approved", score: 88, status: "pass", filled: 2, total: 2, gateSatisfied: true, missingFields: [], nextActions: ["建议：让灾难二更疼一点"] } });
+    fakeSnow.current.health = () => ({ paragraph: { beStatus: "approved", score: 88, status: "pass", filled: 2, total: 2, gateSatisfied: true, missingFields: [], nextActions: ["建议：让灾难二更疼一点"] } });
     const host = await renderSnow();
     const checks = host.querySelector('[data-testid="snow-step-checks"]');
     expect(checks.textContent).toContain("后端 88 分");
@@ -147,7 +148,7 @@ describe("真实新项目的雪花顶部主操作", () => {
 
   it("第 10 步确认之后，眼前这一步也落定了，「整理章节结构」才成为页头唯一的实心主按钮", async () => {
     seedParagraph({ states: { planning: "done", paragraph: "done" } });
-    window.SnowSync.health = () => ({ paragraph: { beStatus: "approved", gateSatisfied: true, missingFields: [], nextActions: [] } });
+    fakeSnow.current.health = () => ({ paragraph: { beStatus: "approved", gateSatisfied: true, missingFields: [], nextActions: [] } });
     const host = await renderSnow();
     expect(accents(host)).toEqual(["snow-materialize-top"]);
   });
@@ -163,7 +164,7 @@ describe("真实新项目的雪花顶部主操作", () => {
   it("服务器已确认的一步，页头标签和计数「已确认」、按钮「确认本步」同一个词（不再叫「已批准」）", async () => {
     const saved = JSON.parse(window.localStorage.getItem("ws_snow_state_v2::new-book"));
     window.localStorage.setItem("ws_snow_state_v2::new-book", JSON.stringify({ ...saved, states: { paragraph: "done" } }));
-    window.SnowSync.health = () => ({ paragraph: { beStatus: "approved", gateSatisfied: true, missingFields: [], nextActions: [] } });
+    fakeSnow.current.health = () => ({ paragraph: { beStatus: "approved", gateSatisfied: true, missingFields: [], nextActions: [] } });
     const host = await renderSnow();
     const pill = host.querySelector('[data-testid="snow-confirmed-pill"]');
     expect(pill.textContent).toBe("已确认");
@@ -190,8 +191,8 @@ describe("真实新项目的雪花顶部主操作", () => {
     // 以前唯一的迹象是页脚一行「仅本机已保存 · 服务器同步失败 读不到服…」——原因被截成三个字，
     // 新浏览器里页面还是 0/10 的空白稿，作者很容易以为构思没了
     const message = "读不到服务器上的构思版本，已暂停上行以免覆盖服务器内容；本机版本已保留";
-    window.SnowSync.syncState = () => ({ phase: "error", pendingSteps: [], error: { scope: "hydrate", code: 500, message, offline: false } });
-    window.SnowSync.retry = vi.fn(async () => ({ phase: "synced" }));
+    fakeSnow.current.syncState = () => ({ phase: "error", pendingSteps: [], error: { scope: "hydrate", code: 500, message, offline: false } });
+    fakeSnow.current.retry = vi.fn(async () => ({ phase: "synced" }));
     const host = await renderSnow();
     const notice = host.querySelector('[data-testid="snow-sync-notice"]');
     expect(notice.getAttribute("role")).toBe("alert");
@@ -205,16 +206,16 @@ describe("真实新项目的雪花顶部主操作", () => {
     expect(foot.querySelector("em")).toBeNull();
     expect(foot.title).toBe(message); // 悬停仍能看到全文
     await act(async () => host.querySelector('[data-testid="snow-sync-notice-retry"]').click());
-    expect(window.SnowSync.retry).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.retry).toHaveBeenCalledTimes(1);
   });
 
   it("同步正常时没有提示条，确认数照常；本机保存失败时提示条给「立即导出」而不是重试", async () => {
-    window.SnowSync.syncState = () => ({ phase: "synced", pendingSteps: [], error: null, lastSyncedAt: Date.now() });
+    fakeSnow.current.syncState = () => ({ phase: "synced", pendingSteps: [], error: null, lastSyncedAt: Date.now() });
     let host = await renderSnow();
     expect(host.querySelector('[data-testid="snow-sync-notice"]')).toBeNull();
     expect(host.querySelector('[data-testid="snow-progress"]').textContent).toMatch(/^\d+\/10 已确认$/);
 
-    window.SnowSync.syncState = () => ({ phase: "error", pendingSteps: [], error: { scope: "local", message: "本机自动保存失败，请先导出构思" } });
+    fakeSnow.current.syncState = () => ({ phase: "error", pendingSteps: [], error: { scope: "local", message: "本机自动保存失败，请先导出构思" } });
     host = await renderSnow();
     const notice = host.querySelector('[data-testid="snow-sync-notice"]');
     expect(notice.textContent).toContain("本机保存失败");
@@ -239,7 +240,7 @@ describe("真实新项目的雪花顶部主操作", () => {
   });
 
   it("模态框开着时全局快捷键一律不响：遮罩上按下鼠标不丢焦点；焦点就算落到 body，←/→ 也不在面板背后换步、⌘↵ 不确认背后那一步", async () => {
-    window.SnowSync.needsReconfirm = vi.fn(() => false);
+    fakeSnow.current.needsReconfirm = vi.fn(() => false);
     const host = await renderSnow();
     const title = () => host.querySelector(".snow-canvas-title").textContent;
     await act(async () => host.querySelector('[data-testid="snow-materialize-top"]').click());
@@ -259,7 +260,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     await key({ key: "ArrowRight" });
     expect(title()).toBe("一段话概括");
     await key({ key: "Enter", ctrlKey: true });
-    expect(window.SnowSync.needsReconfirm).not.toHaveBeenCalled();
+    expect(fakeSnow.current.needsReconfirm).not.toHaveBeenCalled();
     expect(title()).toBe("一段话概括");
     expect(host.querySelector('[data-testid="snow-step-paragraph"]').className).not.toContain("s-done");
     // 面板关掉之后，页面上的 → 照常翻步（守卫只在模态框开着时生效）
@@ -312,9 +313,9 @@ describe("真实新项目的雪花顶部主操作", () => {
   });
 
   it("对话框走共享的 WsDialog：导入结构（更多菜单里）与「上游改了什么」都是真对话框，Esc 关闭", async () => {
-    window.SnowSync.health = () => ({ paragraph: { beStatus: "stale", staleAcceptedAt: null, staleReason: "合成的失效原因", stepRunId: "r2", inputRefs: { one_sentence_summary: "r1-old" } }, logline: { beStatus: "approved", stepRunId: "r1-new", inputRefs: {} } });
-    window.SnowSync.upstreamChanges = vi.fn(async () => [{ feKey: "logline", oldVersion: 1, newVersion: 2, oldFound: true, oldText: "旧的一句", newText: "新的一句" }]);
-    window.SnowSync.importCanonicalPlan = vi.fn(async () => ({ readyToMaterialize: true }));
+    fakeSnow.current.health = () => ({ paragraph: { beStatus: "stale", staleAcceptedAt: null, staleReason: "合成的失效原因", stepRunId: "r2", inputRefs: { one_sentence_summary: "r1-old" } }, logline: { beStatus: "approved", stepRunId: "r1-new", inputRefs: {} } });
+    fakeSnow.current.upstreamChanges = vi.fn(async () => [{ feKey: "logline", oldVersion: 1, newVersion: 2, oldFound: true, oldText: "旧的一句", newText: "新的一句" }]);
+    fakeSnow.current.importCanonicalPlan = vi.fn(async () => ({ readyToMaterialize: true }));
     const host = await renderSnow();
     // 上游 diff
     await act(async () => host.querySelector('[data-testid="snow-stale-diff"]').click());
@@ -340,7 +341,7 @@ describe("真实新项目的雪花顶部主操作", () => {
     expect(importDown.defaultPrevented).toBe(true);
     expect(document.querySelector('[data-testid="snow-import-dialog"]')).toBeTruthy();
     await act(async () => document.querySelector('[data-testid="snow-import-submit"]').click());
-    expect(window.SnowSync.importCanonicalPlan).toHaveBeenCalledWith(null, { steps: {} });
+    expect(fakeSnow.current.importCanonicalPlan).toHaveBeenCalledWith(null, { steps: {} });
     expect(document.querySelector('[data-testid="snow-import-dialog"]')).toBeNull();
   });
 
@@ -474,7 +475,7 @@ describe("阶段 M · 09/10 交互", () => {
   beforeEach(() => {
     catalog.get.mockReturnValue([]);
     vi.spyOn(window, "alert").mockImplementation(() => {});
-    window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn(), skipStep: vi.fn(async () => ({ beStatus: "skipped" })) };
+    fakeSnow.current = { chapterPreview: vi.fn(), materialize: vi.fn(), skipStep: vi.fn(async () => ({ beStatus: "skipped" })) };
   });
   afterEach(async () => {
     while (mounted.length) {
@@ -483,7 +484,7 @@ describe("阶段 M · 09/10 交互", () => {
       host.remove();
     }
     vi.restoreAllMocks();
-    try { delete window.SnowSync; } catch (e) {}
+    fakeSnow.current = null;
   });
 
   async function renderAt(step) {
@@ -537,7 +538,7 @@ describe("阶段 M · 09/10 交互", () => {
   it("10 场景规划：钩子 / 离场变化有输入框；存档的分诊随水合回来并显示在当前场上", async () => {
     const seeded = threeScenes();
     window.localStorage.setItem(CACHE, JSON.stringify(seeded));
-    window.SnowSync.triageItems = vi.fn(() => ({ at: 1, source: "workspace", items: {
+    fakeSnow.current.triageItems = vi.fn(() => ({ at: 1, source: "workspace", items: {
       S01: { status: "maybe", score: 55, notes: "坩埚说得太笼统", fix_steps: ["把困局写成具体的退路被断"], missing_fields: [], repair_patch: {} },
     } }));
     const host = await renderAt("planning");
@@ -575,7 +576,7 @@ describe("阶段 M · 09/10 交互", () => {
     expect(findSkip(essential).disabled).toBe(true);
     await act(async () => findSkip(essential).click());
     expect(essential.querySelector('[data-testid="snow-skip-reason"]')).toBeNull();
-    expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
+    expect(fakeSnow.current.skipStep).not.toHaveBeenCalled();
 
     const optional = await renderAt("characters");
     await act(async () => findSkip(optional).click());
@@ -583,16 +584,16 @@ describe("阶段 M · 09/10 交互", () => {
     expect(optional.querySelector('[data-testid="snow-skip-confirm"]').disabled).toBe(true);
     await typeReason(optional, "先按梗概走，人物表等第二稿");
     await act(async () => optional.querySelector('[data-testid="snow-skip-confirm"]').click());
-    expect(window.SnowSync.skipStep).toHaveBeenCalledWith("new-book", "characters", "先按梗概走，人物表等第二稿");
+    expect(fakeSnow.current.skipStep).toHaveBeenCalledWith("new-book", "characters", "先按梗概走，人物表等第二稿");
     expect(prompt).not.toHaveBeenCalled();
 
     // 服务端拒绝：本地不标略过，浮层留着让作者看见
-    window.SnowSync.skipStep.mockRejectedValueOnce(new Error("SNOWFLAKE_STEP_NOT_SKIPPABLE"));
+    fakeSnow.current.skipStep.mockRejectedValueOnce(new Error("SNOWFLAKE_STEP_NOT_SKIPPABLE"));
     const again = await renderAt("synopsis");
     await act(async () => findSkip(again).click());
     await typeReason(again, "梗概之后再补");
     await act(async () => again.querySelector('[data-testid="snow-skip-confirm"]').click());
-    expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
+    expect(fakeSnow.current.skipStep).toHaveBeenCalledTimes(2);
     expect(again.querySelector('[data-testid="snow-skip-reason"]')).not.toBeNull();
     expect(again.querySelector('[data-testid="snow-step-synopsis"]').className).not.toContain("s-skip");
     // 取消理由框：什么都不发生
@@ -601,7 +602,7 @@ describe("阶段 M · 09/10 交互", () => {
     await typeReason(cancelled, "写了又不想略过");
     await act(async () => cancelled.querySelector('[data-testid="snow-skip-cancel"]').click());
     expect(cancelled.querySelector('[data-testid="snow-skip-reason"]')).toBeNull();
-    expect(window.SnowSync.skipStep).toHaveBeenCalledTimes(2);
+    expect(fakeSnow.current.skipStep).toHaveBeenCalledTimes(2);
   });
 
   it("Q2-02：略过浮层点外面、焦点移出、再点一下「略过此步」只是收起——写了一半的理由留着；Esc 与取消才清掉", async () => {
@@ -631,7 +632,7 @@ describe("阶段 M · 09/10 交互", () => {
     expect(reason()).toBeNull();
     expect(document.activeElement).toBe(openBtn());
     expect(await reopen()).toBe("");
-    expect(window.SnowSync.skipStep).not.toHaveBeenCalled();
+    expect(fakeSnow.current.skipStep).not.toHaveBeenCalled();
   });
 
   it("07 章表是分章的只读镜像（重评 R11）：一章一行——章号 · 章名 · 章摘要 · 灾难标记，按数组顺序、幕分段；没有输入框、添加、删除", async () => {
@@ -675,7 +676,7 @@ describe("阶段 M · 09/10 交互", () => {
       { row_uid: "cr2", id: "02", act: 1, title: "合成二章", summary: "", spine: "" },
     ] } } }));
     const scene = (n) => ({ scene_plan_id: `sp${n}`, scene_id: `S0${n}`, story_index: n, title: `合成第 ${n} 场`, primary_form: "proactive", planned: true });
-    window.SnowSync.chapterPreview = vi.fn(async () => ({
+    fakeSnow.current.chapterPreview = vi.fn(async () => ({
       strategy: "keep_current",
       chapters: [
         { row_uid: "cr1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scenes: [scene(1)] },
@@ -690,7 +691,7 @@ describe("阶段 M · 09/10 交互", () => {
     expect(input.closest('[data-testid="chapter-plan-chapter-1"]')).toBeTruthy();
     expect(input.value).toBe("合成二章");
     expect([input.selectionStart, input.selectionEnd]).toEqual([0, "合成二章".length]);
-    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(fakeSnow.current.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
   it("批准 #18b：导出大纲与「引用上下文」是带栏名的分步文本——不印行 id、角色键与 proactive / main / full 这些内部值", async () => {
@@ -908,11 +909,11 @@ describe("阶段 M · 09/10 交互", () => {
       code: "SNOWFLAKE_PREVIOUS_STEP_REQUIRED", status: 409,
       details: { missing_previous_steps: [{ step_key: "scene_list", label: "场景列表" }, { step_key: "one_sentence_summary", label: "一句话概括" }] },
     });
-    window.SnowSync.needsReconfirm = vi.fn(() => true);
-    window.SnowSync.approveStep = vi.fn(async () => { throw blocked; });
+    fakeSnow.current.needsReconfirm = vi.fn(() => true);
+    fakeSnow.current.approveStep = vi.fn(async () => { throw blocked; });
     const host = await renderAt("planning");
     await act(async () => host.querySelector('[data-testid="snow-confirm-step"]').click());
-    expect(window.SnowSync.approveStep).toHaveBeenCalledWith("new-book", "planning");
+    expect(fakeSnow.current.approveStep).toHaveBeenCalledWith("new-book", "planning");
     const toast = host.querySelector('[data-testid="undo-toast"]');
     expect(toast.textContent).toContain("重新确认未能记入服务端：先确认「09 场景列表」（前面还有 1 步没确认）");
     expect(host.querySelector('[data-testid="snow-step-planning"]').className).not.toContain("s-done");
@@ -922,7 +923,7 @@ describe("阶段 M · 09/10 交互", () => {
     expect(host.querySelector('[data-testid="snow-scene-row-0"]')).toBeTruthy();
 
     // 别的错误照旧给服务端的原话
-    window.SnowSync.approveStep = vi.fn(async () => { throw new Error("网络断了"); });
+    fakeSnow.current.approveStep = vi.fn(async () => { throw new Error("网络断了"); });
     await act(async () => host.querySelector('[data-testid="snow-step-planning"]').click());
     await act(async () => host.querySelector('[data-testid="snow-confirm-step"]').click());
     expect(host.querySelector('[data-testid="undo-toast"]').textContent).toContain("重新确认未能记入服务端：网络断了");
@@ -932,16 +933,16 @@ describe("阶段 M · 09/10 交互", () => {
   it("阶段 R：作者裁定——点「待删」经 SnowSync.saveTriageVerdict 写回服务端并高亮；失败回滚到上一次裁定", async () => {
     const seeded = threeScenes();
     window.localStorage.setItem(CACHE, JSON.stringify(seeded));
-    window.SnowSync.saveTriageVerdict = vi.fn(async () => ({ triage_id: "t1", scene_plan_id: "sp1", recommended_status: "maybe" }));
+    fakeSnow.current.saveTriageVerdict = vi.fn(async () => ({ triage_id: "t1", scene_plan_id: "sp1", recommended_status: "maybe" }));
     const host = await renderAt("planning");
     const cutBtn = host.querySelector('[data-testid="snow-verdict-cut"]');
     expect(cutBtn).toBeTruthy();
     await act(async () => { cutBtn.click(); });
-    await vi.waitFor(() => expect(window.SnowSync.saveTriageVerdict).toHaveBeenCalledWith("new-book", expect.objectContaining({ row_uid: "S01", status: "cut" })));
+    await vi.waitFor(() => expect(fakeSnow.current.saveTriageVerdict).toHaveBeenCalledWith("new-book", expect.objectContaining({ row_uid: "S01", status: "cut" })));
     await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-verdict-cut"]').className).toContain("is-on"));
     expect(host.querySelector(".sf-triage-badge").textContent).toBe("待删");
 
-    window.SnowSync.saveTriageVerdict = vi.fn(async () => { throw new Error("网络断了"); });
+    fakeSnow.current.saveTriageVerdict = vi.fn(async () => { throw new Error("网络断了"); });
     await act(async () => { host.querySelector('[data-testid="snow-verdict-pass"]').click(); });
     await vi.waitFor(() => expect(host.querySelector('[data-testid="snow-verdict-cut"]').className).toContain("is-on"));
     expect(host.querySelector('[data-testid="snow-verdict-pass"]').className).not.toContain("is-on");
@@ -969,7 +970,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
 
   beforeEach(() => {
     catalog.get.mockReturnValue([]);
-    window.SnowSync = { chapterPreview: vi.fn(), materialize: vi.fn() };
+    fakeSnow.current = { chapterPreview: vi.fn(), materialize: vi.fn() };
   });
   afterEach(async () => {
     while (mounted.length) {
@@ -978,7 +979,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
       host.remove();
     }
     vi.restoreAllMocks();
-    try { delete window.SnowSync; } catch (e) {}
+    fakeSnow.current = null;
   });
 
   async function mount(element) {
@@ -994,7 +995,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
 
   it("成稿中心「回第 10 步」：先换步再选场，在同一个视图实例里完成（页面节点不换、目标被消费）", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(3))));
-    window.SnowSync.rowUidForSceneId = vi.fn((workId, sceneId) => (sceneId === "sc-backend-2" ? "S02" : ""));
+    fakeSnow.current.rowUidForSceneId = vi.fn((workId, sceneId) => (sceneId === "sc-backend-2" ? "S02" : ""));
     const host = await mount(<WsConstruct />);
     const page = host.querySelector(".snow-page");
     expect(title(host)).toBe("角色摘要表");
@@ -1002,7 +1003,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
     await fire("ws:snow-scene", "sc-backend-2");
     expect(title(host)).toBe("场景规划");
     expect(host.querySelector(".sf-plan-cur-id").textContent).toBe("S02");
-    expect(window.SnowSync.rowUidForSceneId).toHaveBeenCalledWith("new-book", "sc-backend-2");
+    expect(fakeSnow.current.rowUidForSceneId).toHaveBeenCalledWith("new-book", "sc-backend-2");
     // 以前 WsConstruct 按目标步骤给 WsSnowflake 换 key：这里会是一个新的页面节点
     expect(host.querySelector(".snow-page")).toBe(page);
   });
@@ -1010,7 +1011,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
   it("场景目标在水合之前对不上（对照表还没来）：先挂着，水合回来再选中那一场", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes()));
     let mapped = "";
-    window.SnowSync.rowUidForSceneId = vi.fn(() => mapped);
+    fakeSnow.current.rowUidForSceneId = vi.fn(() => mapped);
     const host = await mount(<WsConstruct />);
     await fire("ws:snow-step", "planning");
     await fire("ws:snow-scene", "sc-backend-3");
@@ -1034,7 +1035,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
 
   it("后端判定需复核的步骤先于还没确认的步骤", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(3))));
-    window.SnowSync.health = () => ({ logline: { beStatus: "stale", staleAcceptedAt: null, stepRunId: "r2", inputRefs: {} } });
+    fakeSnow.current.health = () => ({ logline: { beStatus: "stale", staleAcceptedAt: null, stepRunId: "r2", inputRefs: {} } });
     const host = await mount(<WsSnowflake />);
     expect(title(host)).toBe("一句话概括");
   });
@@ -1050,7 +1051,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
   });
 
   it("本机缓存还没水合：第一次水合回来按服务端真相重定一次落点；之后的水合不再挪", async () => {
-    window.SnowSync.hydrated = () => false;
+    fakeSnow.current.hydrated = () => false;
     const host = await mount(<WsSnowflake />);
     expect(title(host)).toBe("读者定位");
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(8))));
@@ -1062,7 +1063,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
   });
 
   it("作者在水合回来之前已经动过这一页：不再改落点", async () => {
-    window.SnowSync.hydrated = () => false;
+    fakeSnow.current.hydrated = () => false;
     const host = await mount(<WsSnowflake />);
     await act(async () => { host.querySelector(".snow-page").dispatchEvent(new Event("pointerdown", { bubbles: true })); });
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(8))));
@@ -1080,7 +1081,7 @@ describe("SNOW-20 · 就地换步与落点", () => {
 
   it("分章面板里「在构思里改这一场」：关面板，就地跳到第 10 步并选中那一场", async () => {
     window.localStorage.setItem(CACHE, JSON.stringify(threeScenes(doneUpTo(3))));
-    window.SnowSync.chapterPreview = vi.fn(async () => ({
+    fakeSnow.current.chapterPreview = vi.fn(async () => ({
       strategy: "keep_current",
       chapters: [{ row_uid: "c1", chapter_seq: 1, act: 1, title: "合成一章", spine: "", chapter_goal: "", scene_count: 2, scenes: [
         { scene_plan_id: "sp1", scene_id: "S01", story_index: 1, title: "合成事件一", primary_form: "proactive", planned: true },

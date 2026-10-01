@@ -24,23 +24,13 @@ import { LOADING_WORK_ID } from "./lib/work-id.js";
 
 const { useState: useAS, useEffect: useAE } = React;
 
-/* SnowSync 是雪花工作台与章节编排共同依赖的运行时能力。它仍按业务路由懒加载，
-   但必须和使用 window.SnowSync 的页面一起装配；只加载视图会让所有带可选链的保存
-   静默退化成本机态，而分章面板的直接调用则在运行时崩掉。 */
-function lazySnowNamed(loader, exportName) {
-  return lazyNamed(async () => {
-    const [module] = await Promise.all([loader(), import("./ws-snow-sync.jsx")]);
-    return module;
-  }, exportName);
-}
-
 const LazyWsHome = lazyNamed(() => import("./ws-home.jsx"), "WsHome");
-const LazyWsConstruct = lazySnowNamed(() => import("./ws-snow.jsx"), "WsConstruct");
+const LazyWsConstruct = lazyNamed(() => import("./ws-snow.jsx"), "WsConstruct");
 const LazyWsReview = lazyNamed(() => import("./ws-review.jsx"), "WsReview");
 const LazyWsStyleRef = lazyNamed(() => import("./ws-styleref.jsx"), "WsStyleRef");
 const LazyWsLibrary = lazyNamed(() => import("./ws-library.jsx"), "WsLibrary");
 const LazyWsTrash = lazyNamed(() => import("./ws-trash.jsx"), "WsTrash");
-const LazyWsAuthor = lazySnowNamed(() => import("./ws-author.jsx"), "WsAuthor");
+const LazyWsAuthor = lazyNamed(() => import("./ws-author.jsx"), "WsAuthor");
 const LazyWsScene = lazyNamed(() => import("./ws-scene.jsx"), "WsScene");
 const LazyWsManuscripts = lazyNamed(() => import("./ws-manuscripts.jsx"), "WsManuscripts");
 const LazyWsQuality = lazyNamed(() => import("./ws-quality.jsx"), "WsQuality");

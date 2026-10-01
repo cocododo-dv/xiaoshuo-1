@@ -4,6 +4,7 @@ import { I } from "./icons.jsx";
 import { PageHeader, Segmented, Tag, EmptyState, Notice, Spinner } from "./ws-ui.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import {
   RV_KINDS, rvOpenItems, rvSnoozedList, rvReady, rvLoadErrorOf, rvDoneToday, rvFetch, rvPush,
   rvMarkResolved, rvMarkSnoozed, rvUnsnooze, rvResolveAction, rvSubscribe, useReviewOpenItems,
@@ -111,14 +112,12 @@ function WsReview({ go }) {
       const intents = [];
       if (a.step) intents.push({ type: "ws:snow-step", detail: a.step });
       if (a.scene && a.to === "scene") intents.push({ type: "ws:scene-enqueue", detail: { sid: a.scene } });
-      else if (a.scene) intents.push({ type: "ws:writer-scene", detail: a.scene });
-      if (a.posture) intents.push({ type: "ws:writer-posture", detail: a.posture });
+      else intents.push(...writerIntents(a.scene, { posture: a.posture }));
       go(a.to, intents);
     }
     else if (a.op === "snooze") snooze(item.id);
     else {
-      // 补出来的「知道了」不是卡上的动作，不带 action_index
-      if (!a.fallback) rvResolveAction(item, a);
+      rvResolveAction(item, a);
       resolve(item.id);
     }
   };
@@ -252,9 +251,7 @@ function WsReview({ go }) {
   );
 }
 
-Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvResolveAction });
-
-/* ESM 导出（window.* 赋值过渡期保留，冒烟脚本仍读 window.rvOpenItems） */
+/* 视图 + 转出收件箱 store 的名字（旧的 import 路径；store 本身在 ws-review-store.js） */
 export {
   WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush,
   rvResolveAction, rvReady, useReviewOpenItems,

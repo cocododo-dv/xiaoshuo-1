@@ -6,6 +6,7 @@ import {
   queueViewIntent,
   queueViewIntents,
   setViewIntentTargetReady,
+  writerIntents,
 } from "./ws-view-intents.js";
 
 describe("跨页面意图队列", () => {
@@ -71,5 +72,30 @@ describe("跨页面意图队列", () => {
     expect(received).toEqual(["planning"]);
     setViewIntentTargetReady("snowflake", false);
     window.removeEventListener("ws:snow-step", handler);
+  });
+});
+
+describe("去写作台的一组意图（writerIntents）", () => {
+  it("有场：先定位这一场，再带深改姿态；带发现的 signal_id 时深改面板选中它", () => {
+    expect(writerIntents("SC-1")).toEqual([{ type: "ws:writer-scene", detail: "SC-1" }]);
+    expect(writerIntents("SC-1", { deep: true })).toEqual([
+      { type: "ws:writer-scene", detail: "SC-1" },
+      { type: "ws:writer-posture", detail: "deep" },
+    ]);
+    expect(writerIntents("SC-1", { signalId: "sig-9" })).toEqual([
+      { type: "ws:writer-scene", detail: "SC-1" },
+      { type: "ws:writer-posture", detail: { posture: "deep", signal_id: "sig-9" } },
+    ]);
+  });
+
+  it("没有场：深改 / 发现不带姿态（章级结果只回写作台）；点名的姿态照样带上", () => {
+    expect(writerIntents("", { deep: true })).toEqual([]);
+    expect(writerIntents(null, { signalId: "sig-9" })).toEqual([]);
+    expect(writerIntents(undefined)).toEqual([]);
+    expect(writerIntents("", { posture: "deep" })).toEqual([{ type: "ws:writer-posture", detail: "deep" }]);
+    expect(writerIntents("SC-2", { posture: "deep" })).toEqual([
+      { type: "ws:writer-scene", detail: "SC-2" },
+      { type: "ws:writer-posture", detail: "deep" },
+    ]);
   });
 });

@@ -7,7 +7,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -52,7 +52,7 @@ async function loadSync(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   const mod = await import("./ws-snow-sync.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  await settleActiveWork("prj-main", T);
   return { mod, client };
 }
 
@@ -837,7 +837,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "scene_list", steps: [] } });
     window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
     // 目录装载（installApiRouter 默认一章一场）——强制重拉的前置条件
-    await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+    await settleCatalog(T);
     expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(0);
 
     // 此后的 workspace GET 返回「1 场待同步」——模拟 9 步改动已在服务端形成 diff
@@ -860,6 +860,32 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
 
     // 9 步 PATCH 后触发强制 hydrate → 捕获到最新 resync_status（若不强拉则永远是 0，可证伪）
     await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(1), T);
+  });
+
+  it("flush：先向挂着的构思视图要此刻的内存态，不等 700 ms 上行防抖就推上去；返回同步态，上行失败也不抛（重试是 retry）", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: WS_WITH_BOOK_BRIEF });
+    await vi.waitFor(() => expect(mod.SnowSync.hydrated("prj-main")).toBe(true), T);
+    await vi.waitFor(() => expect(readCacheOf().scaffolds.audience.reader).toBe(BOOK_BRIEF_DRAFT.target_reader), T);
+    client.apiPatch.mockClear();
+    const cache = readCacheOf();
+    /* 视图手上改了一栏、还没落盘：flush 发 ws:snow-flush-local 时它才写进缓存（并广播 ws:snow-saved） */
+    let edited = "改过的读者";
+    const flushLocal = () => saveCache({ ...cache, scaffolds: { ...cache.scaffolds, audience: { ...cache.scaffolds.audience, reader: edited } } });
+    window.addEventListener("ws:snow-flush-local", flushLocal);
+    try {
+      const startedAt = Date.now();
+      const state = await mod.SnowSync.flush("prj-main");
+      expect(Date.now() - startedAt).toBeLessThan(700);
+      expect(patchCallWith(client, "book_brief", (draft) => draft.target_reader === "改过的读者")).toBeTruthy();
+      expect(state.phase).toBe("synced");
+
+      edited = "又改了一次";
+      client.apiPatch.mockRejectedValueOnce(Object.assign(new Error("网络断了"), { code: "NETWORK_ERROR" }));
+      const failed = await mod.SnowSync.flush("prj-main");
+      expect(failed.phase).toBe("error");
+    } finally {
+      window.removeEventListener("ws:snow-flush-local", flushLocal);
+    }
   });
 
   it("本机首次出现时已经是 done：分章预览先完成 PATCH + approve，再读取预览与物化闸门", async () => {

@@ -2,10 +2,29 @@
 // 让各 store 在 import 期触发的拉取（projects / catalog / trash / review）
 // 都拿到确定性形状的后端数据。写动词（apiPost/apiPatch/apiDelete）默认 resolve，
 // 具体用例再按需 mockRejectedValueOnce 制造失败以验证回滚/告警。
+// settleActiveWork / settleCatalog：等书架、目录落定，并把被测代码 import 的那一份 store 模块交给用例
+// （store 早已不挂 window；以前用例读 window.WsWorks / window.WsCatalog）。
 //
-// 注意：本文件不被 vitest include（无 .test/.spec 后缀），仅作纯函数工具被各 spec 引入。
-// 它从不 import lib/client.js —— 由调用方把「已 mock 的 client 模块实例」传进来，
-// 避免和 vi.mock 的 hoist/resetModules 语义打架。
+// 注意：本文件不被 vitest include（无 .test/.spec 后缀），仅作工具被各 spec 引入。
+// 它从不静态 import lib/client.js 与 store —— 由调用方把「已 mock 的 client 模块实例」传进来；
+// settle* 在调用时才动态 import store，拿到的就是当下模块注册表里（vi.resetModules 之后被测代码加载的）那一份。
+import { expect, vi } from "vitest";
+
+const SETTLE = { timeout: 5000, interval: 25 };
+
+/** 等书架落定：当前作品从 __loading__ 占位切到 projectId。返回 ws-works.jsx 模块（WsWorks、wsKey…）。 */
+export async function settleActiveWork(projectId = "prj-main", opts = SETTLE) {
+  const works = await import("./ws-works.jsx");
+  await vi.waitFor(() => expect(works.WsWorks.activeId()).toBe(projectId), opts);
+  return works;
+}
+
+/** 等当前作品的目录装好（至少一章）。返回 ws-catalog.jsx 模块（WsCatalog…）。 */
+export async function settleCatalog(opts = SETTLE) {
+  const catalog = await import("./ws-catalog.jsx");
+  await vi.waitFor(() => expect(catalog.WsCatalog.get().length).toBeGreaterThan(0), opts);
+  return catalog;
+}
 
 /** 默认作品：返回一个中性真实作品，使 WsWorks 由 __loading__ 占位切到真实激活作品。 */
 export const DEFAULT_PROJECT = {
@@ -13,7 +32,6 @@ export const DEFAULT_PROJECT = {
   title: "北岸手记",
   genre: "悬疑",
   synopsis_line: "一桩跨越三代的旧案。",
-  is_demo: false,
   target_word_count: 100000,
   stats: { words_total: 38000, words_today: 0, streak_days: 3 },
 };

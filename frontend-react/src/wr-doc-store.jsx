@@ -211,6 +211,4 @@ Promise.resolve().then(() => {
   try { if (WsCatalog.ready()) WrDocs.followCatalog(activeWorkId()); } catch (e) { console.warn("[WrDocs] 跟随目录失败:", e); }
 });
 
-Object.assign(window, { WrDocs, WrDocVersions, WrRecovery });
-
 export { WrDocs, WrDocVersions, WrRecovery };

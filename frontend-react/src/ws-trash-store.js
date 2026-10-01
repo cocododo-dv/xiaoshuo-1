@@ -95,7 +95,7 @@ const WsTrashStore = {
   restore(id) {
     apiPost(`/api/v2/trash/${encodeURIComponent(id)}/restore`, {}).then(() => {
       trashRefetch();
-      if (String(id).startsWith("work:")) WsWorks.__refresh();
+      if (String(id).startsWith("work:")) WsWorks.retry("projects");
       else trashRestoredHooks.forEach((fn) => { try { fn(id); } catch (e) {} });
     }).catch((e) => {
       storeAlert(e, "恢复失败。");

@@ -21,13 +21,12 @@ import { sceneLabel } from "./labels/catalog.js";
 /* 6 月原型时期本机作品（ws_works_created_v1）的一次性上行已删除（批准 #25，重评 R16）：旧键原样留着、不再读。 */
 const WS_ACTIVE_LS = "ws_active_work_v1";    // 当前作品 id（UI 状态，长期保留 localStorage）
 const WS_CACHE_LS = "ws_works_cache_v1";     // 列表启动缓存（API 真相的本地影子，仅为同步 list()）
+/* 已退役的两部演示作品：浏览器里的旧缓存影子不让它们复活（离线时书架只剩缓存可显示）。后端早就不再有演示作品，
+   作品载荷里的 is_demo 也不再读。 */
 const WS_RETIRED_DEMO_IDS = new Set(["tide", "salt"]);
 
 function wsIsRetiredDemo(work) {
-  return !!(
-    work
-    && (WS_RETIRED_DEMO_IDS.has(String(work.id || work.project_id || "")) || work.isDemo === true || work.is_demo === true)
-  );
+  return !!work && WS_RETIRED_DEMO_IDS.has(String(work.id || work.project_id || ""));
 }
 
 function wsAgo(iso) {
@@ -430,7 +429,7 @@ const WsWorks = {
     if (scope === "projects") return wsRefresh();
     return wsLoadHome(id || WS_ACTIVE_ID);
   },
-  /* —— FE-ALIGN 内部接缝（非契约面）：统计派生字段的只读注入 + 手动刷新 —— */
+  /* —— FE-ALIGN 内部接缝（非契约面）：统计派生字段的只读注入（重读书架用公开的 retry("projects")） —— */
   __applyDerived(id, fields) {
     const allowed = {};
     if ("wordsTotal" in (fields || {})) allowed.wordsTotal = fields.wordsTotal;
@@ -442,7 +441,6 @@ const WsWorks = {
     wsSaveCache();
     wsNotify();
   },
-  __refresh: wsRefresh,
 };
 
 /* ---- per-work storage namespace ----
@@ -483,7 +481,4 @@ function useActiveWorkIdentity() {
 /* 启动即拉一次后端列表（缓存影子先行渲染） */
 wsRefresh();
 
-Object.assign(window, { WsWorks, useActiveWork, useWorks, useWorksStatus, wsKey });
-
-/* ESM 导出（window.* 赋值过渡期保留；useActiveWorkIdentity 是新接口，只走 ESM） */
 export { WsWorks, useActiveWork, useActiveWorkIdentity, useWorks, useWorksStatus, wsKey };

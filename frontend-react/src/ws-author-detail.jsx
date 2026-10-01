@@ -8,7 +8,7 @@ import { ArrSceneBoard } from "./ws-author-scenes.jsx";
 import { ArrChapterStateTag, blurOnEnter } from "./ws-author-ui.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 import { planIntentsForScene } from "./ws-scene-design.jsx";
-import { writerIntents } from "./ws-finding-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 import { IconButton, Notice, Tag } from "./ws-ui.jsx";
 import { chapterLabel } from "./labels/catalog.js";
 
@@ -173,7 +173,7 @@ function ArrEditor({
         <ArrHandoffStrip prev={prev} ch={ch} next={next} numOf={numOf} onJump={onJump} sectionRef={refs.handoff} />
         <ArrDramaCard ch={ch} locked={locked} onPatchDrama={onPatchDrama} sectionRef={refs.drama} />
         {/* AI 编排：蓝图 / 方向 / 补全，咨询式补丁经作者逐条确认后原子回写目录 */}
-        <ArrAiArrange ch={ch} locked={locked} sectionRef={refs.ai} onConfigureModel={onConfigureModel} />
+        <ArrAiArrange ch={ch} locked={locked} sectionRef={refs.ai} onConfigureModel={onConfigureModel} onEditPlan={editInPlan} />
       </div>
     </section>
   );

@@ -1,7 +1,10 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { useCatalogChapters } from "./ws-catalog.jsx";
-import { LIB_CATS, libLive, libLoadState, libRefetch, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
+import { LIB_CATS } from "./labels/library.js";
+import {
+  LIB_createEntry, LIB_deleteEntry, LIB_persist, libLive, libLoadState, libRefetch, libSnapshot, libSubscribe,
+} from "./ws-library-store.js";
 import {
   LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_entrySub, LIB_overviewFacts, LIB_sortWithPin,
 } from "./ws-library-derive.js";
@@ -10,7 +13,7 @@ import { LibGraph } from "./ws-library-graph.jsx";
 import { LibTimeline } from "./ws-library-timeline.jsx";
 import { LibOverview } from "./ws-library-overview.jsx";
 import { LibEntryRow, libCatLabel } from "./ws-library-parts.jsx";
-import { DossierCreate, DossierEdit, LIB_createEntry, LIB_deleteEntry, LIB_persist } from "./ws-library-edit.jsx";
+import { DossierCreate, DossierEdit } from "./ws-library-form.jsx";
 import { useActiveWorkIdentity } from "./ws-works.jsx";
 import { setViewIntentTargetReady } from "./ws-view-intents.js";
 import { useWindowEvents } from "./lib/events.js";
@@ -28,8 +31,8 @@ const {
 
 /* ==========================================================
    资料 · 故事圣经（左目录 | 右详情），另有图谱与时间线两种看法。
-   数据只有一份：ws-library-store.js 从后端装载的档案快照（这里经门面 ws-library-data.jsx / ws-library-edit.jsx
-   import——门面顺带把过渡期的 window 接缝挂上）；不叠本地覆盖层——新建先落后端再选中，编辑保存后以服务端为准刷新。
+   数据只有一份：ws-library-store.js 从后端装载的档案快照；不叠本地覆盖层——新建先落后端再选中，
+   编辑保存后以服务端为准刷新。
    这个文件只管页面：目录、筛选、选中与编辑态的切换。档案阅读视图在 ws-library-dossier.jsx，
    编辑 / 新建表单在 ws-library-form.jsx，共用的行与字块在 ws-library-parts.jsx；回收站在 ws-trash.jsx。
    ========================================================== */

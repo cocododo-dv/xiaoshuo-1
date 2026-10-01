@@ -4,7 +4,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -37,7 +37,7 @@ async function loadStore() {
   installApiRouter(client);
   client.apiPut.mockResolvedValue({});
   const mod = await import("./ws-author-ai-store.js");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  await settleActiveWork("prj-main", T);
   return { mod, client };
 }
 
@@ -153,7 +153,7 @@ describe("WsAuthorAi（章节编排的 AI 编排 store）", () => {
     expect(client.apiGet).toHaveBeenCalledWith(gapsUrl);
     const snap = mod.WsAuthorAi.snapshot("c1");
     expect(snap.fill).toBeNull();
-    expect(snap.gaps).toEqual({ source: "rules", gaps: ["第 1 场：待补 conflict"] });
+    expect(snap.gaps).toEqual({ source: "rules", gaps: ["第 1 场：待补 conflict"], items: null });
     expect(snap.authorAction.target_view).toBe("config");
     expect(snap.action.error).toBeNull();
 
@@ -303,7 +303,7 @@ describe("章节编排 · AI 编排卡与 AI 体检（没有模型）", () => {
 
   const CH = { id: "ch01", backendId: "c1", title: "盐场的早班", scenes: [{ sid: "s1", backendId: "b1", title: "交班", design: { owner: "desk" } }] };
 
-  it("一键补全：不再说「AI 还没接上」并把规则清单当 AI 结果；给「去系统配置」和一份按空槽列出的待补清单", async () => {
+  it("一键补全：不再说「AI 还没接上」并把规则清单当 AI 结果；给「去系统配置」和一份按空槽列出的待补清单（旧后端只给 gaps 行时照旧列）", async () => {
     const { client } = await loadStore();
     const base = client.apiGet.getMockImplementation();
     client.apiGet.mockImplementation((url) => {
@@ -334,6 +334,63 @@ describe("章节编排 · AI 编排卡与 AI 体检（没有模型）", () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(host.querySelector(".arr-ai-findings")).toBeNull();
     expect(host.textContent).not.toContain("没有发现结构性问题");
+  });
+
+  it("待补清单照结构化的 items 画：第几场、中文栏名，不印内部 id / 英文槽名；构思侧的场给「去构思第 10 步补」", async () => {
+    const { client } = await loadStore();
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url.endsWith("/plan/gaps")) {
+        return Promise.resolve({
+          source: "rules",
+          gaps: ["章节戏剧卡：待补 promise", "交班（b1）：待补 conflict, pov——在构思第 10 步补", "回潮（b2）：待补 goal"],
+          items: [
+            { scope: "chapter", scene_id: null, scene_label: "章节戏剧卡", fields: [{ key: "promise", label: "核心承诺" }], fill_in: null },
+            { scope: "scene", scene_id: "b1", scene_label: "第 1 场 · 交班", fields: [{ key: "conflict", label: "冲突" }, { key: "pov", label: "视角" }], fill_in: "snowflake_step_10" },
+            { scope: "scene", scene_id: "b2", scene_label: "第 2 场 · 回潮", fields: [{ key: "goal", label: "目标" }], fill_in: null },
+          ],
+        });
+      }
+      if (url.endsWith("/architecture")) return Promise.resolve({ architecture: null });
+      return base(url);
+    });
+    client.apiPost.mockRejectedValue(NO_MODEL());
+    const ch = { ...CH, scenes: [{ ...CH.scenes[0], design: { owner: "plan" } }, { sid: "s2", backendId: "b2", title: "回潮", design: { owner: "desk" } }] };
+    const editPlan = vi.fn();
+    const { ArrAiArrange } = await import("./ws-author-ai.jsx");
+    const host = await mountArrange(<ArrAiArrange ch={ch} locked={false} onConfigureModel={vi.fn()} onEditPlan={editPlan} />);
+
+    await act(async () => { [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent.includes("补全")).click(); });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent.includes("一键补全")).click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+
+    const rows = [...host.querySelectorAll('[data-testid="arr-ai-gap"]')].map((li) => li.textContent);
+    expect(rows).toEqual(["章节戏剧卡：核心承诺", "第 1 场 · 交班：冲突、视角 去构思第 10 步补 ↗", "第 2 场 · 回潮：目标"]);
+    const gaps = host.querySelector('[data-testid="arr-ai-gaps"]');
+    expect(gaps.textContent).toContain("不是 AI 的建议");
+    expect(gaps.textContent).not.toMatch(/promise|conflict|pov|b1|b2/);
+    // 只有构思侧拥有设计的那一场有门；点它去构思第 10 步的那一场（给的是目录里的整张卡）
+    const doors = host.querySelectorAll('[data-testid="arr-ai-gap-plan"]');
+    expect(doors).toHaveLength(1);
+    await act(async () => { doors[0].click(); });
+    expect(editPlan).toHaveBeenCalledWith(ch.scenes[0]);
+  });
+
+  it("待补清单：后端说没有空着的格子时照实说", async () => {
+    const { client } = await loadStore();
+    const base = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url.endsWith("/plan/gaps")) return Promise.resolve({ source: "rules", gaps: [], items: [] });
+      if (url.endsWith("/architecture")) return Promise.resolve({ architecture: null });
+      return base(url);
+    });
+    client.apiPost.mockRejectedValue(NO_MODEL());
+    const { ArrAiArrange } = await import("./ws-author-ai.jsx");
+    const host = await mountArrange(<ArrAiArrange ch={CH} locked={false} onConfigureModel={vi.fn()} />);
+    await act(async () => { [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent.includes("补全")).click(); });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent.includes("一键补全")).click(); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(host.querySelector('[data-testid="arr-ai-gaps"]').textContent).toBe("戏剧卡与场景卡都没有空着的格子。");
   });
 
   it("蓝图页签：作者写的蓝图之后设计又改过，说一句「设计改过，蓝图可能过时」", async () => {

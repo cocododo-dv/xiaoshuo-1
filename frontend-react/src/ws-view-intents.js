@@ -60,6 +60,19 @@ function clearViewIntents(view) {
   else pendingByView.clear();
 }
 
+/* 进写作台的一组视图意图（章节编排、成稿中心、文学质量、待办、AI 起草台去写作台都用它）：
+   · sid：先定位到这一场（ws:writer-scene）；
+   · deep / signalId：进这一场的深改姿态，signalId 让深改面板到了诊断就选中这一条（隐含 deep）。没有 sid
+     （章级结果没有单一场景可去）时不带姿态，是空数组：只回写作台；
+   · posture：调用方点名的姿态（待办卡动作上带的、起草台「去写作台」给的），没有 sid 也照样带上。 */
+function writerIntents(sid, { deep = false, signalId = "", posture = "" } = {}) {
+  const intents = sid ? [{ type: "ws:writer-scene", detail: sid }] : [];
+  if (sid && signalId) intents.push({ type: "ws:writer-posture", detail: { posture: "deep", signal_id: signalId } });
+  else if (sid && deep) intents.push({ type: "ws:writer-posture", detail: "deep" });
+  else if (posture) intents.push({ type: "ws:writer-posture", detail: posture });
+  return intents;
+}
+
 function navigateWithViewIntent(view, type, detail) {
   if (!queueViewIntent(view, type, detail) || typeof window === "undefined") return false;
   const hash = `#${view.trim()}`;
@@ -79,4 +92,5 @@ export {
   queueViewIntent,
   queueViewIntents,
   setViewIntentTargetReady,
+  writerIntents,
 };

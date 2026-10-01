@@ -6,7 +6,7 @@
 // 不可靠地依赖时序——改为断言回滚后的最终状态（标题被服务端原值覆盖）与 alert 触发，
 // 它们对去重免疫且仍可证伪（破坏 catRecover 即转红）。所有 waitFor 给足超时以耐 CI 负载。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT, DEFAULT_TRASH } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT, DEFAULT_TRASH, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -18,9 +18,12 @@ vi.mock("./lib/client.js", () => ({
 
 const T = { timeout: 5000, interval: 25 };
 
+// 被测代码用的那一份书架 store（每次 vi.resetModules 之后由 settleActive 重新取）
+let WsWorks = null;
+
 // 等 active 从 __loading__ 翻成真实作品 id（写穿路径都依赖它确定）。
 async function settleActive() {
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
+  ({ WsWorks } = await settleActiveWork("prj-main", T));
 }
 
 async function loadCatalog(opts) {
@@ -63,6 +66,31 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     resolveCatalog({ chapters: [DEFAULT_CHAP] });
     await vi.waitFor(() => expect(mod.WsCatalog.ready()).toBe(true), T);
     expect(mod.WsCatalog.get()).toHaveLength(1);
+  });
+
+  it("退役的实例（单测 resetModules / HMR 之后）：在路上的装载回来照常落进自己的缓存，但不再叫 onLoaded 登记口", async () => {
+    const client = await import("./lib/client.js");
+    installApiRouter(client);
+    const route = client.apiGet.getMockImplementation();
+    let release;
+    const oldCatalog = new Promise((resolve) => { release = resolve; });
+    let hold = true;
+    client.apiGet.mockImplementation((url) => (hold && url === "/api/v2/projects/prj-main/catalog" ? oldCatalog : route(url)));
+    const old = await import("./ws-catalog.jsx");
+    const loaded = vi.fn();
+    old.WsCatalog.onLoaded(loaded);
+    await settleActive();
+    await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog"), T);
+
+    hold = false;
+    vi.resetModules();
+    const fresh = await import("./ws-catalog.jsx"); // 新实例加载：旧实例退役
+    await vi.waitFor(() => expect(fresh.WsCatalog.ready()).toBe(true), T);
+
+    release({ chapters: [DEFAULT_CHAP] });
+    await vi.waitFor(() => expect(old.WsCatalog.ready()).toBe(true), T);
+    expect(old.WsCatalog.get()[0].title).toBe(DEFAULT_CHAP.title);
+    expect(loaded).not.toHaveBeenCalled();
   });
 
   it("renameScene 同步改缓存并 PATCH 到后端场景端点", async () => {
@@ -756,12 +784,12 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
   it("正文自动保存回写 rollup：总字数立刻用上，不再每存一次就 GET writing-stats；rollup 带齐今日 / 连续天数时连问都不问（F01-07）", async () => {
     const { mod, client } = await loadCatalog();
     const statsGets = () => client.apiGet.mock.calls.filter(([url]) => url.includes("/writing-stats")).length;
-    await vi.waitFor(() => expect(window.WsWorks.active().wordsTotal).toBe(38000), T);
+    await vi.waitFor(() => expect(WsWorks.active().wordsTotal).toBe(38000), T);
     const before = statsGets();
 
     mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 120, chapter_words: 120, words_total: 38120 });
     mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 180, chapter_words: 180, words_total: 38180 });
-    expect(window.WsWorks.active().wordsTotal).toBe(38180);
+    expect(WsWorks.active().wordsTotal).toBe(38180);
     expect(mod.WsCatalog.sceneById("ch01s1").scene.words).toBe(180);
     await new Promise((resolve) => setTimeout(resolve, 50));
     // 节流：连着两次保存至多问一次（首次立刻问，让今日字数跟得上），不再每存一次就问
@@ -769,7 +797,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     const afterBurst = statsGets();
 
     mod.WsCatalog.applyWordsRollup("ch01s1", { scene_words: 200, chapter_words: 200, words_total: 38200, words_today: 200, streak_days: 4 });
-    expect(window.WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
+    expect(WsWorks.active()).toMatchObject({ wordsTotal: 38200, wordsToday: 200, streak: 4 });
     expect(statsGets()).toBe(afterBurst);
   });
 
@@ -864,13 +892,28 @@ describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
     await settleActive();
     await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/trash?project_id=prj-main"), T);
 
-    window.WsWorks.setActive("prj-other");
+    WsWorks.setActive("prj-other");
     await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/trash?project_id=prj-other"), T);
     releaseMain({ items: [{ ...DEFAULT_TRASH, id: "scene:m1", title: "上一部的场" }] });
 
     await vi.waitFor(() => expect(mod.WsTrashStore.list().map((x) => x.id)).toEqual(["scene:o1"]), T);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(mod.WsTrashStore.list().map((x) => x.id)).toEqual(["scene:o1"]);
+  });
+
+  it("恢复整部作品：后端恢复成功后重读书架（作品回到切换器里），不发目录的恢复通知", async () => {
+    const workTrash = { ...DEFAULT_TRASH, id: "work:p9", kind: "work", title: "被删的作品" };
+    const { mod, client } = await loadTrash([workTrash]);
+    const projectGets = () => client.apiGet.mock.calls.filter(([url]) => url === "/api/v2/projects").length;
+    const before = projectGets();
+    const catalogGets = () => client.apiGet.mock.calls.filter(([url]) => /\/catalog$/.test(url)).length;
+    const catalogBefore = catalogGets();
+
+    mod.WsTrashStore.restore("work:p9");
+
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v2/trash/work%3Ap9/restore", {}), T);
+    await vi.waitFor(() => expect(projectGets()).toBe(before + 1), T);
+    expect(catalogGets()).toBe(catalogBefore);
   });
 
   it("restore 失败时告警", async () => {

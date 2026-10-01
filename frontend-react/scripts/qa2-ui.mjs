@@ -1,14 +1,12 @@
 // QA2 批次2 — Playwright 非破坏 UI 深度交互 + P1/P2 回归 + Q2/Q3 的 UI 体现。
-// 运行：cd frontend && node ../frontend-react/scripts/qa2-ui.mjs [BASE] [API]
+// 运行：node frontend-react/scripts/qa2-ui.mjs [BASE] [API]（底座见 scripts/lib/harness.mjs；结果写到仓库的 .codex-run/qa2/ui/）
 import path from "node:path";
 import fs from "node:fs";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const { chromium } = require("playwright");
+import { fileURLToPath } from "node:url";
+import { API, BASE, openApp } from "./lib/harness.mjs";
 
-const BASE = process.argv[2] || "http://127.0.0.1:5176/";
-const API = process.argv[3] || "http://127.0.0.1:8009";
-const OUT = path.resolve("../.codex-run/qa2/ui");
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const OUT = path.resolve(HERE, "../../.codex-run/qa2/ui");
 fs.mkdirSync(path.join(OUT, "shots"), { recursive: true });
 
 const checks = [];
@@ -17,9 +15,7 @@ let ctx = "";
 function chk(name, ok, detail = "") { checks.push({ ctx, name, ok: !!ok, detail: String(detail).slice(0, 240) }); console.log(`  ${ok ? "✓" : "✗"} [${ctx}] ${name}${ok ? "" : "  | " + detail}`); }
 function skip(name, detail = "") { checks.push({ ctx, name, ok: true, skip: true, detail: String(detail).slice(0, 240) }); console.log(`  ⊘ [${ctx}] ${name} (skipped: ${detail})`); }
 
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-page.setDefaultTimeout(20000);
+const { browser, page, waitForApp, observe } = await openApp({ acceptDialogs: false });
 const consoleErrs = [];
 page.on("console", (m) => { if (m.type() === "error") consoleErrs.push({ ctx, t: m.text().slice(0, 200) }); });
 page.on("pageerror", (e) => consoleErrs.push({ ctx, t: "PAGEERROR " + e.message.slice(0, 200) }));
@@ -31,15 +27,26 @@ page.on("response", (r) => {
   }
 });
 
-await page.addInitScript((api) => {
-  localStorage.setItem("novel-system-api-base", api);
-  localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-}, API);
-async function waitApp() { await page.waitForSelector(".ws-app", { state: "attached" }); try { await page.evaluate(() => document.fonts.ready); } catch {} await page.waitForTimeout(500); }
+/* 页面上的条件在时限内成立就是 true，否则 false（检查自己决定记成 ✓ 还是 ✗） */
+async function becomes(predicate, arg, timeout = 10_000) {
+  try { await page.waitForFunction(predicate, arg, { timeout }); return true; } catch (e) { return false; }
+}
+const railText = () => page.evaluate(() => (document.querySelector(".ws-rail, nav, aside")?.innerText || ""));
+const contentText = () => page.evaluate(() => document.querySelector(".ws-content")?.innerText || "");
+/* 当前页面载入完毕：外壳的内容区在，懒加载的页面模块已经换掉「正在打开…」 */
+const viewMounted = () => becomes(() => !!document.querySelector(".ws-content") && !document.querySelector(".ws-content .ws-view-loading"), null, 20_000);
+async function waitApp() {
+  await waitForApp();
+  try { await page.evaluate(() => document.fonts.ready); } catch {}
+}
 async function go(work, view) {
   await page.evaluate((w) => localStorage.setItem("ws_active_work_v1", w), work);
   await page.evaluate((v) => { location.hash = "#" + v; }, view);
-  await page.reload(); await waitApp(); await page.waitForTimeout(900);
+  await page.reload();
+  // 只等应用装好，不要求当前作品就是 work：书架（/api/v2/projects）只列雪花作品，不在上面的（AUTHOR-04 从 v1 列表
+  // 发现的单章夹具项目）照旧退回书架上的第一部
+  await waitForApp();
+  await viewMounted();
 }
 async function shot(n) { try { await page.screenshot({ path: path.join(OUT, "shots", n + ".png") }); } catch {} }
 
@@ -50,14 +57,14 @@ ctx = "NAV-01";
 await go("work-a", "home");
 await page.evaluate(() => localStorage.setItem("ws_tweaks_v1", JSON.stringify({ mode: "writer" })));
 await page.reload(); await waitApp();
-let railText = await page.evaluate(() => (document.querySelector(".ws-rail, nav, aside")?.innerText || ""));
-chk("writer 模式不显示高级组(章节编排/AI起草台)", !/AI\s*起草台|成稿中心|长篇控制塔/.test(railText) || /构思|写作/.test(railText), `rail=${railText.replace(/\n/g, "·").slice(0, 120)}`);
+let rail = await railText();
+chk("writer 模式不显示高级组(章节编排/AI起草台)", !/AI\s*起草台|成稿中心|长篇控制塔/.test(rail) || /构思|写作/.test(rail), `rail=${rail.replace(/\n/g, "·").slice(0, 120)}`);
 await page.evaluate(() => { location.hash = "#scene"; });
-await page.waitForTimeout(1200);
-const advReveal = await page.evaluate(() => (document.querySelector(".ws-rail, nav, aside")?.innerText || ""));
+await becomes(() => /起草台|成稿|控制塔|质量/.test(document.querySelector(".ws-rail, nav, aside")?.innerText || ""));
+const advReveal = await railText();
 chk("深链 #scene 自动切高级并显示生产组", /起草台|成稿|控制塔|质量/.test(advReveal), advReveal.replace(/\n/g, "·").slice(0, 120));
 await page.evaluate(() => { location.hash = "#__bogus__"; });
-await page.waitForTimeout(700);
+await observe(500); // 观察窗口：非法 hash 处理完之后应用还在
 chk("非法 hash 不崩溃", await page.evaluate(() => !!document.querySelector(".ws-app")));
 
 // ---- NAV-02 Ctrl+k 命令面板 ----
@@ -66,24 +73,21 @@ chk("非法 hash 不崩溃", await page.evaluate(() => !!document.querySelector(
 ctx = "NAV-02";
 await go("work-a", "home");
 await page.keyboard.press("Control+k").catch(() => {});
-await page.waitForTimeout(600);
-const paletteOpen = await page.evaluate(() => !!document.querySelector(".pal[role='dialog']"));
+const paletteOpen = await becomes(() => !!document.querySelector(".pal[role='dialog']"), null, 5_000);
 chk("Ctrl+k 命令面板打开", paletteOpen);
 if (paletteOpen) {
   await page.keyboard.type("成本");
-  await page.waitForTimeout(200);
-  const costHit = await page.evaluate(() => [...document.querySelectorAll(".pal [role='option']")].some(o => o.textContent.includes("成本看板")));
+  const costHit = await becomes(() => [...document.querySelectorAll(".pal [role='option']")].some(o => o.textContent.includes("成本看板")), null, 5_000);
   chk("命令面板能搜到「成本看板」（页面清单与侧栏同源）", costHit);
 }
 await page.keyboard.press("Escape").catch(() => {});
-await page.waitForTimeout(300);
-chk("Esc 关闭命令面板", await page.evaluate(() => !document.querySelector(".pal[role='dialog']")));
+chk("Esc 关闭命令面板", await becomes(() => !document.querySelector(".pal[role='dialog']"), null, 5_000));
 
 // ---- SNOW-12 (P1 回归)：打开构思页不盲发 approve ----
 ctx = "SNOW-12";
 net.length = 0;
 await go("work-b", "snowflake");
-await page.waitForTimeout(1800);
+await observe(1800); // 观察窗口：水合 + 上行防抖都过去之后，仍然没有 approve → 409
 const approve409 = net.filter(n => /\/approve/.test(n.url) && n.status === 409);
 chk("打开构思页无 approve→409 噪声(P1 回归)", approve409.length === 0, `409s=${approve409.length} ${JSON.stringify(approve409.slice(0,2))}`);
 await shot("snow12-salt-construct");
@@ -91,8 +95,8 @@ await shot("snow12-salt-construct");
 // ---- Q3 UI 体现：tide 构思页物化按钮反映 blocked ----
 ctx = "Q3-UI";
 await go("work-a", "snowflake");
-await page.waitForTimeout(1500);
-const bodyTxt = await page.evaluate(() => document.querySelector(".ws-content")?.innerText || "");
+await becomes(() => /整理章节结构|章节结构|物化|场景/.test(document.querySelector(".ws-content")?.innerText || ""));
+const bodyTxt = await contentText();
 chk("tide 构思页渲染(含物化/章节字样)", /整理章节结构|章节结构|物化|场景/.test(bodyTxt), bodyTxt.slice(0, 80));
 await shot("q3-tide-construct");
 
@@ -128,10 +132,10 @@ if (!arcProject) {
 } else {
   consoleErrs.length = 0;
   await go(arcProject, "author");
-  await page.waitForTimeout(1000);
   // 点故事弧线 tab
   const arcTab = page.locator("text=故事弧线").first();
-  if (await arcTab.count()) { await arcTab.click().catch(() => {}); await page.waitForTimeout(1000); }
+  if (await arcTab.count()) { await arcTab.click().catch(() => {}); }
+  await observe(1000); // 观察窗口：弧线画完之后没有 SVG path 报错
   const svgErr = consoleErrs.filter(e => /moveto|path command|Expected.*path|<path>/i.test(e.t));
   chk("单章项目故事弧线无 SVG path 报错(P2 回归)", svgErr.length === 0, JSON.stringify(svgErr.slice(0, 2)));
   await shot("author04-real-arc");
@@ -140,16 +144,16 @@ if (!arcProject) {
 // ---- REVIEW-01：待办加载 + 筛选 chip ----
 ctx = "REVIEW-01";
 await go("work-a", "review");
-await page.waitForTimeout(1200);
-const reviewLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
+await becomes(() => (document.querySelector(".ws-content")?.innerText || "").length > 60);
+const reviewLen = (await contentText()).length;
 chk("待办视图渲染非空", reviewLen > 60, `len=${reviewLen}`);
 await shot("review-tide");
 
 // ---- QUAL-04：文学质量视图渲染 ----
 ctx = "QUAL-04";
 await go("work-a", "quality");
-await page.waitForTimeout(1200);
-const qualLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
+await becomes(() => (document.querySelector(".ws-content")?.innerText || "").length > 60);
+const qualLen = (await contentText()).length;
 chk("文学质量视图渲染非空", qualLen > 60, `len=${qualLen}`);
 await shot("quality-tide");
 
@@ -166,8 +170,9 @@ try {
   if (rt.ok()) { const body = await rt.json(); styleRuntime = body?.data || body || null; }
 } catch (e) { /* 读不到运行时：下面按「不知道有没有模型」跳过模型门的断言 */ }
 await go("work-a", "styleref");
-await page.waitForTimeout(1400);
-chk("风格页外壳渲染", await page.evaluate(() => !!document.querySelector(".sr-page")));
+chk("风格页外壳渲染", await becomes(() => !!document.querySelector(".sr-page")));
+// 书库读完：要么有书（列表 + 步骤条），要么是「导入第一本参考书」的空态
+await becomes(() => !!document.querySelector('.sr-book-list .sr-book-item, [data-testid="sr-import-first"]'));
 const styleState = await page.evaluate(() => ({
   books: document.querySelectorAll(".sr-book-list .sr-book-item").length,
   empty: !!document.querySelector('[data-testid="sr-import-first"]'),
@@ -185,7 +190,10 @@ if (styleState.books > 0) {
 const importBtn = page.locator('[data-testid="sr-import-first"], [data-testid="sr-books-import"]').first();
 if (await importBtn.count()) {
   await importBtn.click().catch(() => {});
-  await page.waitForTimeout(600);
+  await becomes(() => !!document.querySelector(".sr-import-dialog"), null, 5_000);
+  if (styleRuntime && styleRuntime.llm_enabled === false) {
+    await becomes(() => !!document.querySelector('[data-testid="sr-import-no-llm"]'), null, 5_000);
+  }
   const importState = await page.evaluate(() => ({
     dialog: !!document.querySelector(".sr-import-dialog"),
     noLlm: !!document.querySelector('[data-testid="sr-import-no-llm"]'),
@@ -201,8 +209,7 @@ if (await importBtn.count()) {
     skip("导入被模型门挡住", "读不到 /style-reference/runtime，不知道有没有模型");
   }
   await page.keyboard.press("Escape").catch(() => {});
-  await page.waitForTimeout(300);
-  chk("Esc 关闭导入对话框", await page.evaluate(() => !document.querySelector(".sr-import-dialog")));
+  chk("Esc 关闭导入对话框", await becomes(() => !document.querySelector(".sr-import-dialog"), null, 5_000));
 } else {
   chk("有「导入参考书」的入口", false, "既没有 sr-import-first 也没有 sr-books-import");
 }
@@ -216,7 +223,8 @@ await shot("styleref-tide");
 ctx = "console-sweep";
 consoleErrs.length = 0;
 for (const v of ["home", "writer", "library", "manuscripts", "settings", "trash"]) {
-  await go("work-a", v); await page.waitForTimeout(700);
+  await go("work-a", v);
+  await observe(700); // 观察窗口：页面挂上、读完数据之后没有 console error
 }
 const realErrs = consoleErrs.filter(e => !/favicon|404.*\.png|ResizeObserver/i.test(e.t));
 chk("全视图巡检无 console error", realErrs.length === 0, JSON.stringify(realErrs.slice(0, 4)));

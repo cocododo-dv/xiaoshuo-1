@@ -1,7 +1,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -22,12 +22,12 @@ async function loadRecovery() {
     draft: { draft_id: "d1", revision_no: 2, content: body.content },
   }));
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  const works = await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   const store = await import("./wr-doc-store.jsx");
   const ui = await import("./wr-recovery-center.jsx");
   const notify = await import("./ws-notify.jsx");
-  return { ...store, ...ui, ...notify, client };
+  return { ...store, ...ui, ...notify, client, wsKey: works.wsKey };
 }
 
 async function renderCenter(Component) {
@@ -60,8 +60,8 @@ afterEach(async () => {
 
 describe("同步与恢复中心", () => {
   it("冲突/候选可发现、可看差异、可复制，Esc 关闭后焦点回到入口", async () => {
-    const { WrRecovery, WrRecoveryCenter } = await loadRecovery();
-    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>作者当前正文。</p>");
+    const { WrRecovery, WrRecoveryCenter, wsKey } = await loadRecovery();
+    window.localStorage.setItem(wsKey("wr-doc:ch01s1"), "<p>作者当前正文。</p>");
     WrRecovery.createCandidate("ch01s1", "<p>AI 候选正文。</p>");
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });

@@ -3,7 +3,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installApiRouter } from "./test-helpers.js";
+import { installApiRouter, settleActiveWork, settleCatalog } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -26,8 +26,8 @@ async function loadWriter() {
   const client = await import("./lib/client.js");
   installApiRouter(client);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   client.apiPost.mockImplementation((url) => {
     if (/\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
       return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: `<p>${LONG}</p><p>${SHORT}</p>` } });
@@ -145,8 +145,8 @@ async function loadRoom({ doc = THREE, options = null, reply = null } = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
+  await settleActiveWork("prj-main", T);
+  await settleCatalog(T);
   client.apiPost.mockImplementation((url) => {
     if (/\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
       return Promise.resolve({ draft: { draft_id: "d1", revision_no: 1, content: doc } });

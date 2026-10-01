@@ -7,7 +7,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CHAP, installApiRouter } from "./test-helpers.js";
+import { DEFAULT_CHAP, installApiRouter, settleActiveWork } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(), apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn(),
@@ -41,9 +41,9 @@ function matchMedia() {
 async function loadWriter() {
   const client = await import("./lib/client.js");
   installApiRouter(client, { catalog: [DEFAULT_CHAP] });
-  await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
-  await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBe(1), T);
+  const { WsCatalog } = await import("./ws-catalog.jsx");
+  await settleActiveWork("prj-main", T);
+  await vi.waitFor(() => expect(WsCatalog.get().length).toBe(1), T);
   const store = await import("./wr-doc-store.jsx");
   const writer = await import("./ws-writer.jsx");
   const candidates = await import("./ws-writer-candidates.jsx");

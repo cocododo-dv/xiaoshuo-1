@@ -337,7 +337,8 @@ export function useSnowStepFlow({
     try {
       if (!workId) throw new Error("作品尚未就绪");
       if (flushDoc) flushDoc();
-      try { await SnowSync.retry(workId); } catch (e) { /* 存不上就算了：恢复前的样子还在本机快照里 */ }
+      /* 存不上就算了（flush 从不抛错，失败记在同步态上）：恢复前的样子还在本机快照里 */
+      await SnowSync.flush(workId);
       const res = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${S2_BE_KEY[key]}/restore`, { step_run_id: item.step_run_id });
       if (!res || !res.step) throw new Error("恢复回包缺少 step");
       let fe = null;

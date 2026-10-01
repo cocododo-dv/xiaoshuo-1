@@ -4,7 +4,8 @@ import { Tag, EmptyState } from "./ws-ui.jsx";
 import { RV_KINDS } from "./ws-review-store.js";
 
 /* 待办收件箱的展示件（2026-09-29 从 ws-review.jsx 拆出）：一张卡、优先级段头、清空时的空态，
-   以及「这张卡能不能直接划掉」「没动作的卡补哪些动作」两条规则。 */
+   以及「这张卡能不能直接划掉」这条规则。卡上的动作全由后端给：工作台投来的卡没写动作时后端补一个「知道了」
+   （review_cards.create），实时派生卡都带「去处理 / 稍后再说」，旧表行不再列进收件箱——前端不再补动作。 */
 
 /* RV_KINDS 的色板名（旧契约，主页也读）→ ws-ui 的语气 */
 export const RV_TONE = { crimson: "accent", rose: "danger", slate: "info", gold: "warn", sage: "ok" };
@@ -15,13 +16,6 @@ export const RV_BAND = { 1: { label: "优先处理", hint: "尽快处理" }, 2: 
 /* 决策类待办（带真实效果或候选项）与实时派生项不允许被「无决策地划掉」：
    派生项只能去源头处理（修好自动消失）或稍后；快捷键 E / 全部处理完遇到它们改为展开 */
 export const rvNeedsChoice = (it) => !!(it && (it.live || (it.actions || []).some(a => a.effect) || it.options));
-
-/* 没有动作的卡（旧表行）也要能用鼠标处理掉：补「知道了 / 稍后」。实时派生卡不能划掉，只给「稍后」。 */
-export function rvActionsOf(item) {
-  if (item.actions && item.actions.length) return item.actions;
-  const snooze = { label: "稍后", intent: "quiet", op: "snooze", fallback: true };
-  return item.live ? [snooze] : [{ label: "知道了", intent: "ghost", op: "resolve", fallback: true }, snooze];
-}
 
 export function RvBand({ band }) {
   const b = RV_BAND[band];
@@ -38,7 +32,7 @@ export function RvItem({ item, open, removing, selected, onToggle, onAct }) {
   const m = RV_KINDS[item.kind] || RV_KINDS.note;
   const Ic = I[m.icon] || I.Dot;
   const blocking = item.qualityLevel === "Q0" || item.qualityLevel === "Q1";
-  const actions = rvActionsOf(item);
+  const actions = item.actions || [];
   return (
     <article role="listitem" data-id={item.id} className={`rv-item t-${m.tone} ${open ? "is-open" : ""} ${removing ? "is-removing" : ""} ${selected ? "is-sel" : ""} ${item.priority === 1 ? "is-hot" : ""}`}>
       <span className="rv-spine" aria-hidden="true" />
