@@ -37,6 +37,7 @@ from novel_system.services.project_status import (
 from novel_system.services.qc_constraints import strip_reference_policy
 from novel_system.services.scene_design_ownership import is_snowflake_origin
 from novel_system.services.scene_rehome import rehome_scenes
+from novel_system.services.story_slots import forget_retired_chapter_goal
 
 
 def planned_scene_id(chapter_id: str, index: int, scene_plan: dict[str, Any]) -> str:
@@ -342,7 +343,22 @@ class _MaterializationRun:
         return self._finish(placement)
 
     def _prepare(self) -> None:
-        """落位之前：移走手建的空白占位章，取回随旧章一起进了回收站的计划内场景卡。"""
+        """落位之前：清掉旧物化补的样板目标，移走手建的空白占位章，取回随旧章一起进了回收站的计划内场景卡。"""
+        # 旧物化给没规划的章 / 场补的「推进本章：<章名>」只按「所在章现在的名字」认（story_slots）。这一次落位会给章
+        # 改名、把计划外的卡跟着锚点搬去别的章，之后就认不出来了；计划内的卡下面整张重写，计划外的卡（略过 / 待删的场）
+        # 不会——趁每一行还在它点名的那一章里，先把全作品的这句话清掉：确认写入之后不再留一句（S2 1）。
+        chapters = self.session.execute(
+            select(ChapterGoal).where(ChapterGoal.project_id == self.project.project_id)
+        ).scalars().all()
+        cards_by_chapter: dict[str, list[SceneCard]] = {}
+        for card in self.session.execute(
+            select(SceneCard)
+            .join(ChapterGoal, SceneCard.chapter_id == ChapterGoal.chapter_id)
+            .where(ChapterGoal.project_id == self.project.project_id)
+        ).scalars():
+            cards_by_chapter.setdefault(str(card.chapter_id), []).append(card)
+        for chapter in chapters:
+            forget_retired_chapter_goal(chapter, cards_by_chapter.get(chapter.chapter_id, ()))
         # 阶段 X：雪花的章进目录之前，先把手建的空白占位章（「第 1 章 / 开场」，一个字没写）移入回收站——
         # 必须在落位之前：章序（settle_chapter_order）是按那一刻还活跃的章排的，占位章留着就会排在雪花的章前面。
         # 只对雪花计划做；作者写过东西的章不动。

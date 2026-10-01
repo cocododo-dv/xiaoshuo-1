@@ -435,3 +435,155 @@ def test_deriving_chapter_plans_from_the_catalog_takes_no_canned_goal(session) -
 
     (derived,) = _derive_from_catalog(session, PROJECT_ID, [plan])
     assert (derived["title"], derived["summary"], derived["chapter_goal"]) == (TITLE, "", "")
+
+
+# ---------------------------------------------------------------------------
+# 改名 / 搬场 / 确认写入：样板只按「所在章的名字」认——名字要变、卡要搬走之前先把它去掉
+# ---------------------------------------------------------------------------
+
+
+def _pinned_chapter_plan(session, chapter: ChapterGoal):
+    plan = create_chapter_plan(session, PROJECT_ID, {"row_uid": "ch-a", "chapter_seq": 1, "title": TITLE})
+    plan.catalog_chapter_id = chapter.chapter_id
+    session.flush()
+    return plan
+
+
+def _assert_no_canned_goal_left(session, chapter: ChapterGoal, blank: SceneCard) -> None:
+    from novel_system.services.bundle_builder import BundleBuilder
+
+    assert (chapter.chapter_goal, chapter.main_plot_push) == ("", None)
+    assert (blank.scene_goal, blank.beats_json) == ("", [])
+    snapshot = BundleBuilder(session).build(blank.scene_id)["snapshot"]
+    assert CANNED_MARK not in json.dumps(snapshot["inline_digests"], ensure_ascii=False)
+    # 同章作者写的场原样留着
+    written = session.get(SceneCard, f"{chapter.chapter_id}_SC01")
+    assert (written.scene_goal, written.beats_json) == ("林昭在码头拆开旧信", ["拆开旧信", "送信人不肯交", "信被雨水泡烂"])
+
+
+def test_a_rename_in_the_chaptering_panel_drops_the_canned_goal_first(session) -> None:
+    """分章面板「只保存章表」/ 07 章表保存：目录那一章跟着改名（不重新物化）。"""
+    from novel_system.services.chapter_title_sync import follow_plan_titles
+
+    chapter, blank = _legacy_rows(session)
+    plan = _pinned_chapter_plan(session, chapter)
+    plan.title = "雨夜来信"
+    assert follow_plan_titles(session, PROJECT_ID) == [chapter.chapter_id]
+    session.commit()
+
+    assert chapter.narrative_json["title"] == "雨夜来信"
+    _assert_no_canned_goal_left(session, chapter, blank)
+
+
+def test_a_rename_at_the_desk_drops_the_canned_goal_first(session) -> None:
+    """章节编排改名：写穿到构思的章计划，目录播下的章名跟着换。"""
+    from novel_system.services.catalog import CatalogService
+
+    chapter, blank = _legacy_rows(session)
+    _pinned_chapter_plan(session, chapter)
+    session.commit()
+
+    result = CatalogService(session).update_chapter(PROJECT_ID, chapter.chapter_id, {"title": "雨夜来信"})
+    session.commit()
+    assert result["plan_title_synced"] is True
+    assert chapter.writer_brief_json["chapter_title"] == "雨夜来信"
+    _assert_no_canned_goal_left(session, chapter, blank)
+
+
+def test_a_resync_that_moves_a_card_drops_the_canned_goal_of_the_chapter_it_leaves(session) -> None:
+    """构思里整行空着的一场（09 没摘要、第 10 步没三拍）重新分章后归了另一章，回流把卡搬过去。"""
+    from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+
+    chapter, blank = _legacy_rows(session)
+    rain = ChapterGoal(
+        chapter_id="GOAL_CH09",
+        project_id=PROJECT_ID,
+        planned_scene_count=0,
+        chapter_goal=AUTHORED_GOAL,
+        narrative_json={"title": "雨城", "act": "act1"},
+        writer_brief_json={"source": "snowflake_method", "project_id": PROJECT_ID, "chapter_title": "雨城"},
+    )
+    session.add(rain)
+    plan = SnowflakeScenePlan(
+        scene_plan_id=f"scene_plan_{PROJECT_ID}_moved",
+        project_id=PROJECT_ID,
+        row_uid="s-moved",
+        scene_id=blank.scene_id,
+        chapter_id="GOAL_CH99",
+        scene_type="proactive",
+        status="approved",
+        pov_character_id="CHAR_LZ",
+    )
+    session.add(plan)
+    session.commit()
+    service = SnowflakeWorkspaceService(session)
+
+    # 搬不动（目标章还没物化）、或者不搬：卡上的旧值原样沿用——那句话在原章里照旧认得出来，也不多报一场待同步
+    assert service._chapter_left_behind(PROJECT_ID, plan, blank) is None
+    plan.chapter_id = chapter.chapter_id
+    assert service._chapter_left_behind(PROJECT_ID, plan, blank) is None
+    assert service._scene_card_resync_patch(plan, blank)["scene_goal"] == CANNED
+
+    plan.chapter_id = rain.chapter_id
+    session.commit()
+    assert service._chapter_left_behind(PROJECT_ID, plan, blank) is chapter
+    pending = service.resync_status(PROJECT_ID)["pending_scenes"]
+    assert {"scene_goal", "beats_json", "chapter_id"} <= set(pending[0]["changed_fields"])
+
+    service.resync_materialized_scenes(PROJECT_ID, {"scene_plan_ids": [plan.scene_plan_id]}, include_workspace=False)
+    session.commit()
+    assert blank.chapter_id == rain.chapter_id
+    assert (blank.scene_goal, blank.beats_json) == ("", [])
+    from novel_system.services.bundle_builder import BundleBuilder
+
+    snapshot = BundleBuilder(session).build(blank.scene_id)["snapshot"]
+    assert CANNED_MARK not in json.dumps(snapshot["inline_digests"], ensure_ascii=False)
+    # 搬完就同步了：补丁不再来回翻
+    assert service.resync_status(PROJECT_ID)["pending_count"] == 0
+
+
+def test_a_confirm_that_renames_a_chapter_leaves_no_canned_goal_behind(session) -> None:
+    """确认写入整张重写这一版计划里的场；计划外的卡（这一场被裁定略过 / 待删，没进这一版）不重写，而章要改名——
+    样板在落位之前就从全作品清掉。"""
+    from novel_system.services.materialization import materialize_outline_plan
+
+    chapter, blank = _legacy_rows(session)
+    written_id = f"{chapter.chapter_id}_SC01"
+    renamed = "雨夜来信"
+    plan_json = {
+        "source": "snowflake_method",
+        "project_id": PROJECT_ID,
+        "chapters": [
+            {
+                "chapter_id": chapter.chapter_id,
+                "title": renamed,
+                "chapter_goal": "",
+                "main_plot_push": "",
+                "narrative_json": {"title": renamed, "act": "act1", "spine": ""},
+                "writer_brief_json": {"source": "snowflake_method", "chapter_title": renamed},
+                "scenes": [
+                    {
+                        "scene_id": written_id,
+                        "chapter_id": chapter.chapter_id,
+                        "scene_seq": 1,
+                        "pov_character_id": "CHAR_LZ",
+                        "scene_goal": "林昭在码头拆开旧信",
+                        "beats_json": ["拆开旧信", "送信人不肯交", "信被雨水泡烂"],
+                        "scene_type": "proactive",
+                        "is_chapter_last": 1,
+                        "writer_brief_json": {"source": "snowflake_method", "scene_form": "proactive"},
+                    }
+                ],
+            }
+        ],
+    }
+    outline = OutlinePlan(
+        plan_id="outline_plan_goal_rename", project_id=PROJECT_ID, version=2, status="pending_review", plan_json=plan_json
+    )
+    session.add(outline)
+    session.flush()
+    materialize_outline_plan(session, session.get(StoryProject, PROJECT_ID), outline)
+    session.commit()
+
+    assert chapter.narrative_json["title"] == renamed
+    _assert_no_canned_goal_left(session, chapter, blank)

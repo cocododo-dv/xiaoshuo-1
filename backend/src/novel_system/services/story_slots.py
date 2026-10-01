@@ -26,9 +26,10 @@ RETIRED_CHAPTER_BOILERPLATE = frozenset(
 # nor a summary, until 2026-10-01: 「推进本章：<the chapter's title, or its
 # id>」. The same sentence became that chapter's main_plot_push, and the
 # scene_goal (and only beat) of a scene that had neither a summary nor a
-# title. Nobody wrote it; rows materialized before then keep it until the next
-# 确认写入. It names its chapter, so it is recognized per chapter
-# (planned_chapter_goal) — never by the prefix alone.
+# title. Nobody wrote it; rows materialized before then keep it until a writer
+# drops it: the next 确认写入, a rename of their chapter, or a resync that moves
+# the card (chapter_title_candidates). It names its chapter, so it is
+# recognized per chapter (planned_chapter_goal) — never by the prefix alone.
 RETIRED_CHAPTER_GOAL_PREFIX = "推进本章："
 
 # Historical UI scaffolds and canned text that were once persisted as if they
@@ -71,9 +72,14 @@ def chapter_title_candidates(chapter: Any) -> frozenset[str]:
     ChapterGoal row): its catalog title, the title the last materialization
     seeded, a hand-made chapter's title, and its id (the builder's fallback).
 
-    A chapter renamed at the desk after its last 确认写入 no longer carries the
-    old name; its canned goal then goes unrecognized until the next 确认写入
-    rewrites it."""
+    The sentence is only recognized while it sits in the chapter it names and
+    that chapter keeps the name. So every writer that would break the link
+    drops it first (forget_retired_chapter_goal / without_retired_chapter_goal):
+    a rename through either door (chapter_title_sync), a resync that moves a
+    card to another chapter, and every 确认写入 (materialization clears the
+    whole work before it renames chapters or moves cards). A link broken on the
+    code before 2026-10-01 (a rename, a move) leaves the sentence unrecognized
+    until the next 确认写入 rewrites the row."""
 
     if chapter is None:
         return frozenset()
@@ -128,6 +134,40 @@ def planned_beats(beats: Any, chapter: Any) -> list[Any]:
         return []
     titles = chapter_title_candidates(chapter)
     return [beat for beat in beats if not is_retired_chapter_goal(beat, titles)]
+
+
+def without_retired_chapter_goal(value: Any, chapter: Any) -> Any:
+    """``value`` exactly as stored, or ``""`` when it is the retired canned
+    goal of ``chapter``. For writers that carry a stored goal to where
+    ``chapter``'s names no longer apply (a card moving to another chapter):
+    unlike planned_chapter_goal it keeps every other value byte for byte,
+    blanks and old scaffolds included."""
+
+    return "" if is_retired_chapter_goal(value, chapter_title_candidates(chapter)) else value
+
+
+def forget_retired_chapter_goal(chapter: Any, cards: Iterable[Any] = ()) -> None:
+    """Drop the retired canned goal of ``chapter`` from the chapter row
+    (chapter_goal → "", main_plot_push → None: what the builder now stores for
+    "not planned") and from ``cards``, the scene cards that sit in it
+    (scene_goal → "", the canned beat leaves beats_json). Writers call it while
+    the sentence is still recognized, right before ``chapter``'s names change:
+    afterwards it would read as the author's goal. Every other value stays as
+    stored."""
+
+    titles = chapter_title_candidates(chapter)
+    if is_retired_chapter_goal(getattr(chapter, "chapter_goal", None), titles):
+        chapter.chapter_goal = ""
+    if is_retired_chapter_goal(getattr(chapter, "main_plot_push", None), titles):
+        chapter.main_plot_push = None
+    for card in cards:
+        if is_retired_chapter_goal(getattr(card, "scene_goal", None), titles):
+            card.scene_goal = ""
+        beats = getattr(card, "beats_json", None)
+        if isinstance(beats, (list, tuple)):
+            kept = [beat for beat in beats if not is_retired_chapter_goal(beat, titles)]
+            if len(kept) != len(beats):
+                card.beats_json = kept
 
 
 def normalize_story_slot_mapping(
