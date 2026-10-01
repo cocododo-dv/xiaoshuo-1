@@ -31,7 +31,8 @@ Alembic 的 `env.py` 与每个 `novel_system.tools.*` 都会拒绝导入另一�
   「请换回与数据库匹配的代码版本」，重启不会让库降级。不重启、原地 `alembic upgrade head` 也可以：结构跟上之后的第一个
   `/api/*` 请求或 `/ready` 探测会补跑启动时推迟的启动恢复与后台清扫。`--reload` 的开发后端在迁移落地之前就会热加载新模型，
   这段时间看到的就是这个 503。
-- 运维工具的 `--execute` 在库版本与代码不一致时拒绝写库（退出码 2，与 `/ready` 同一条标准）；干跑照常。
+- 会写库的运维工具（`reset_author_state`、`sync_prompt_templates`、`raise_llm_output_budget`、`refresh_style_reference_books`、
+  `purge_style_reference_books`）在库版本与代码不一致时拒绝 `--execute`（退出码 2，与 `/ready` 同一条标准）；干跑照常。
 - `20260802_0077` 合并过两条曾经发布过的分支（`20260717_0074 → 20260717_0075` 与 `20260722_0074 → 20260725_0076`）：停在
   任一分支上的库都直接 `alembic upgrade head`，不要手改 `alembic_version`。
 - `20260523_0036` 只在旧 `reference_learning` 表里真有行时要求 `backups/style_reference_legacy_*.json`（先导出再删）；新库与
@@ -51,8 +52,9 @@ Alembic 的 `env.py` 与每个 `novel_system.tools.*` 都会拒绝导入另一�
 5. 迁移测试升到**自己的** revision（`tests/support/migrations.py` 的 `migrate(path, revision, monkeypatch)` 只经 Alembic 建库），
    不要升到 `head`——之后的迁移会让断言失效。读 `CURRENT_SCHEMA_REVISION` 的老测试（0077 / 0080 / 0081 / 0082 / 0085 / 0086）
    随常量走。
-6. 删表或删列之前看 `tests/test_trash_purge_completeness.py`、`tests/test_reset_author_state.py`、
-   `tests/test_scene_rehome.py` 的清单守卫：新表要在永久清除、作者态重置、场景换章三处各做一次选择。
+6. 加了表就看三份清单守卫：`tests/test_trash_purge_completeness.py`（能指向作品对象的表要在永久清除里做选择）、
+   `tests/test_reset_author_state.py`（每张表要么是作者态重置的目标，要么写进 `PRESERVED_TABLES`）、`tests/test_scene_rehome.py`
+   （同时带 `scene_id` 与 `chapter_id` 的表要在场景换章里做选择）。
 
 ## 3. 各版本
 
