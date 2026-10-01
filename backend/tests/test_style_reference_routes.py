@@ -11,11 +11,9 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from novel_system.api.app import create_app
 from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from tests.support.api_client import AutoKeyTestClient
 
 
 SAMPLE_TXT = """这是一段较长的叙述文字,介绍清晨场景与人物心情,字数足以触发分段。
@@ -37,14 +35,6 @@ from tests.style_reference_route_helpers import (  # noqa: E402
     install_fake_classifier,
     wait_book_status,
 )
-
-
-def test_legacy_reference_books_routes_are_never_exposed() -> None:
-    with AutoKeyTestClient(create_app()) as client:
-        paths = {getattr(route, "path", "") for route in client.app.routes}
-
-    assert "/api/v1/reference-books" not in paths
-    assert not any(path.startswith("/api/v1/reference-books/") for path in paths)
 
 
 # ---------------------------------------------------------------------------
@@ -383,23 +373,6 @@ def test_reclassify_executes_and_purges_derived_data(
 # ---------------------------------------------------------------------------
 
 
-def test_lineage_and_debug_read_endpoints_are_gone(client: TestClient) -> None:
-    """没有界面调用的只读端点都删了（2026-09-30，#24a）：run 与发现只是文风卡行的血缘，依据由 ``GET /profiles/{id}``
-    给出；画像摘要在书库载荷里；叠层视图、单条读数、旧任务默认策略表同样没有消费方。"""
-    book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
-    for path in (
-        f"runs/{run_id}",
-        f"books/{book_id}/runs",
-        f"runs/{run_id}/findings",
-        "profiles",
-        "injection/layers",
-        "injection/task-defaults",
-        "readings/sr_reading_x",
-    ):
-        assert client.get(f"{PREFIX}/{path}").status_code in (404, 405), path
-
-
 # ---------------------------------------------------------------------------
 # Profiles endpoints
 # ---------------------------------------------------------------------------
@@ -516,17 +489,6 @@ def test_delete_binding_404(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 # 旧示例预览已删除(用的是早已不用的引擎,台账 U6):本场预览走 /injection-preview
 # ---------------------------------------------------------------------------
-
-
-def test_legacy_sample_preview_endpoint_is_gone(client: TestClient) -> None:
-    book_id = _import_book(client)
-    _, _, profile_id = _seed_full_chain(book_id)
-    resp = client.post(
-        f"{PREFIX}/profiles/{profile_id}/preview",
-        json={},
-        headers={"X-Idempotency-Key": "preview_gone"},
-    )
-    assert resp.status_code in (404, 405)
 
 
 def _book_calibration(client: TestClient, book_id: str) -> dict[str, Any]:

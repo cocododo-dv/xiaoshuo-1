@@ -369,7 +369,6 @@ def test_passage_patch_candidate_accepts_without_overwriting_final_and_learns_no
     # 写作偏好学习已退役（批准 #6）：采纳只记在候选行上，不再重建偏好画像、不往待办里塞「写作偏好」卡
     assert session.query(AuthorPreferenceProfile).count() == 0
     assert session.query(ReviewItem).count() == 0
-    assert client.get("/api/v1/author-preference-profile").status_code == 404
 
 
 def test_rejecting_passage_patch_updates_only_the_candidate(client: TestClient, session) -> None:

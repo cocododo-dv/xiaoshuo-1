@@ -35,12 +35,6 @@ def _render(profile_id: str, config: dict | None = None, *, scene_id: str | None
         return preview_render(session, profile_id, dict(config or {}), scene_id=scene_id)
 
 
-def test_binding_preview_endpoint_is_gone(client: TestClient) -> None:
-    """按已落盘绑定预览的 GET 端点删除(台账 U16):预览一律走 POST …/injection-preview,带当前配置。"""
-    binding_id, _ = _seed("gethappy")
-    assert client.get(f"{PREFIX}/bindings/{binding_id}/injection-preview").status_code in (404, 405)
-
-
 def test_dryrun_preview_v3_fields(client: TestClient) -> None:
     _, profile_id = _seed("v3fields")
     data = client.post(f"{PREFIX}/profiles/{profile_id}/injection-preview", json={}).json()["data"]

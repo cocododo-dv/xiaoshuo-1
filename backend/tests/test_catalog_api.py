@@ -231,16 +231,6 @@ def test_catalog_import_rejects_non_linear_approval_or_current(client, session):
     assert wrong_current.value.code == "CATALOG_IMPORT_CURRENT_INVALID"
 
 
-def test_catalog_import_route_is_gone(client):
-    project = _create_project(client)
-    response = client.post(
-        f"/api/v2/projects/{project['project_id']}/catalog/import",
-        json={"chapters": [{"title": "旧目录"}]},
-        headers={"X-Idempotency-Key": "catalog-import-gone"},
-    )
-    assert response.status_code in {404, 405}
-
-
 def test_draft_save_updates_scene_words_and_returns_rollup(client, session):
     project = _create_project(client)
     pid = project["project_id"]

@@ -1100,7 +1100,9 @@ def test_learn_route_requires_an_llm(client, session, monkeypatch) -> None:
     assert resp.status_code == 409 and resp.json()["error"]["code"] == "STYLE_REFERENCE_LLM_REQUIRED"
 
 
-def test_card_line_route_and_removed_routes(client, session, monkeypatch) -> None:
+def test_card_line_route_pins_or_excludes_one_line(client, session, monkeypatch) -> None:
+    """旧学习链路的写接口（books/{id}/runs、runs/{id}/synthesize、findings/{id}/review|user-feedback）都没了：
+    退役接口表 tests/test_retired_surface.py 钉着。"""
     _fake1, job = _learn(monkeypatch, session)
     profile_id = job.result_json["profile_id"]
     line = card_from_profile_json(_profile(profile_id).profile_json).all_lines()[0][1]
@@ -1118,13 +1120,6 @@ def test_card_line_route_and_removed_routes(client, session, monkeypatch) -> Non
         headers={"X-Idempotency-Key": "line-2"},
     )
     assert missing.status_code == 404
-    # 旧学习链路的写接口都没了
-    assert client.post(f"{PREFIX}/books/learn_book/runs", json={}, headers={"X-Idempotency-Key": "r"}).status_code in (404, 405)
-    run_id = job.result_json["run_id"]
-    assert client.post(f"{PREFIX}/runs/{run_id}/synthesize", json={}, headers={"X-Idempotency-Key": "s"}).status_code in (404, 405)
-    finding_id = session.scalars(select(StyleReferenceFinding.finding_id)).first()
-    for path in (f"findings/{finding_id}/review", f"findings/{finding_id}/user-feedback"):
-        assert client.post(f"{PREFIX}/{path}", json={}, headers={"X-Idempotency-Key": path}).status_code in (404, 405)
 
 
 def test_evidence_counts_are_consistent_with_the_rows(session, monkeypatch) -> None:

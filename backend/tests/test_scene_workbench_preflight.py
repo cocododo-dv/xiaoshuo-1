@@ -325,9 +325,6 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     assert preflight["blocking_items"] == []
     assert "missing_dependencies" not in preflight
     assert "create_actions" not in preflight
-    assert client.post(
-        "/api/v1/scenes/CH911_SC01/preflight/create-cards", headers={"X-Idempotency-Key": "gone-create-cards"}
-    ).status_code == 404
 
 
 def test_bundle_builds_without_voice_or_relation_cards(client, session: Session) -> None:

@@ -446,24 +446,6 @@ def test_import_path_is_disabled_without_configured_roots(client: TestClient, tm
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("method", "path"),
-    [
-        ("get", "/runs/sr_run_x"),
-        ("get", "/bindings/sr_bind_x/injection-preview"),
-        ("get", "/injection/task-defaults"),
-        ("get", "/imports/some-key/progress"),
-        ("post", "/profiles/sr_profile_x/preview"),
-        ("post", "/profiles/sr_profile_x/validate"),
-        ("get", "/reports/sr_rep_x"),
-        ("get", "/profiles/sr_profile_x/reports"),
-    ],
-)
-def test_removed_endpoints_are_gone(client: TestClient, method: str, path: str) -> None:
-    resp = client.request(method, f"{PREFIX}{path}", json={} if method == "post" else None, headers=_key("gone"))
-    assert resp.status_code in (404, 405), (path, resp.status_code)
-
-
 def test_bulk_delete_is_one_transaction_with_its_idempotency_record(client: TestClient, monkeypatch) -> None:
     """保存点只用来逐本收集「不存在」这类业务错误;整批删除与幂等记录一起提交或一起回滚——第二本删到一半
     进程出错时,第一本不能已经悄悄提交(pysqlite 旧式事务下外层 SAVEPOINT 的 RELEASE 就是提交)。"""

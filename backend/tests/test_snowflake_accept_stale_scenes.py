@@ -149,11 +149,3 @@ def test_accepting_10_accepts_the_stale_scene_plans_too(client, session) -> None
     assert all(plan.stale_accepted_at for plan in _plans(session, project_id))
 
 
-def test_the_scene_level_accept_stale_route_is_gone(client) -> None:
-    project_id = _create_project(client, key="accept-stale-route-gone")["project_id"]
-    response = client.post(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale",
-        json={},
-        headers={"X-Idempotency-Key": _intent_key("fold-route-gone")},
-    )
-    assert response.status_code in {404, 405}

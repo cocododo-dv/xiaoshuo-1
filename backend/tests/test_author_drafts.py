@@ -474,22 +474,6 @@ def test_only_continuation_variants_are_generated(client, session) -> None:
     assert session.query(AuthorDraftProposal).filter_by(draft_id=draft["draft_id"]).count() == 0
 
 
-def test_the_retired_proposal_routes_are_gone(client, session) -> None:
-    """采纳 ×2 / 放弃 / 对比 / 单条生成 / 列表：界面从没调过，已删（批准 #7）。"""
-    draft = _scene_draft(client, "AD_CONT_ROUTES")
-    draft_id = draft["draft_id"]
-    for method, path in (
-        ("post", f"/api/v1/author-drafts/{draft_id}/proposals/generate"),
-        ("post", f"/api/v1/author-drafts/{draft_id}/apply-proposal"),
-        ("get", f"/api/v1/author-drafts/{draft_id}/proposals"),
-        ("get", f"/api/v1/author-drafts/{draft_id}/proposals/missing/diff"),
-        ("post", "/api/v1/author-draft-proposals/missing/apply"),
-        ("post", "/api/v1/author-draft-proposals/missing/reject"),
-    ):
-        response = client.request(method, path, json={} if method == "post" else None)
-        assert response.status_code in {404, 405}, (method, path, response.status_code)
-
-
 def test_saving_the_author_draft_learns_no_preferences_and_never_diffs(client, session, monkeypatch) -> None:
     """写作偏好学习已退役（批准 #6）：保存不再把整场新旧正文逐字比一遍，也不再写偏好档案和「写作偏好」待办卡。"""
     import difflib
@@ -615,6 +599,4 @@ def test_ensure_creates_a_blank_scene_draft_when_the_scene_has_no_final(client, 
     # 阶段 X：空白稿就是空白——场景卡常驻在正文旁边，不再抄成脚手架塞进正文
     assert scene_draft["content"] == ""
     assert session.query(FinalScene).count() == 0
-    # ensure-blank 没有界面调用，已删（批准 #24a）：ensure 在没有权威正文时就给空白稿
-    gone = client.post("/api/v1/author-drafts/scene/AD500_SC01/ensure-blank")
-    assert gone.status_code in {404, 405}
+    # ensure-blank 没有界面调用，已删（批准 #24a，见 test_retired_surface）：ensure 在没有权威正文时就给空白稿

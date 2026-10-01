@@ -991,7 +991,6 @@ def test_activity_lists_the_classification_job(client: TestClient, monkeypatch) 
     assert canonical["steps"] == {"done": 1, "total": 17}
     assert canonical["cancellable"] is True
     assert not any(item["key"] == "act-key" or "compat_alias_of" in item for item in items)
-    assert client.get(f"{PREFIX}/imports/act-key/progress").status_code == 404
     gated.gate.set()
     wait_book_status(client, book_id)
     items = client.get(f"{PREFIX}/activity").json()["data"]["items"]

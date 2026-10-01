@@ -191,12 +191,3 @@ def test_scene_restore_blocked_when_chapter_trashed(client):
     assert blocked.status_code == 409
 
 
-def test_the_retired_catalog_delete_and_project_restore_routes_are_gone(client):
-    """删章 / 删场走 v1 的 trash，恢复作品走统一回收站（批准 #24a）；这三个没有界面调用的入口已删。"""
-    project = _create_project(client)
-    pid = project["project_id"]
-    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
-    scene_id = chapter["scenes"][0]["scene_id"]
-    assert client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}").status_code in {404, 405}
-    assert client.delete(f"/api/v2/projects/{pid}/catalog/scenes/{scene_id}").status_code in {404, 405}
-    assert client.post(f"/api/v2/projects/{pid}/restore", json={}).status_code in {404, 405}
