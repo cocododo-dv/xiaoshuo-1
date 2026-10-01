@@ -149,7 +149,7 @@ export function useAuthorSnow({ chapters, reload, showNotice, notifyError, goVie
     }
     setBusy(true);
     try {
-      const r = await SnowSync.resync();                  // POST /resync，内部已 WsCatalog.__refresh
+      const r = await SnowSync.resync();                  // POST /resync，内部已 WsCatalog.refresh
       reload();                                                   // 订阅也会收敛；这里让结果即时可见
       refreshResync();
       showNotice({ text: (r && r.synced) ? `已把 ${r.synced} 场的构思改动同步到目录` : "目录已经是最新的，没有要同步的", tone: (r && r.synced) ? "ok" : "neutral" });
