@@ -1,6 +1,6 @@
 # 风格参考（现行说明）
 
-> 风格参考模块的**现行说明**，对应 2026-09-23 风格参考 v3 及 2026-09-24 清理与优化之后的代码（Alembic head `20260924_0092`）。
+> 风格参考模块的**现行说明**，对应 2026-09-23 风格参考 v3、2026-09-24 清理与优化以及 2026-09-29 全系统重构之后的代码（迁移见[数据库迁移](migrations.md)）。
 > 本轮重构的设计、问题台账与完成日志见 [风格参考 v3 变更记录](style-reference-v3-2026-09-23.md)；更早的设计、评估与实施账本归档在
 > [history/style/](history/style/)，只描述当时的实现。本文与代码冲突时以代码为准，并回头改本文。
 
@@ -15,8 +15,8 @@
 
 ## 2. 三步（外加第四步「对照检查」）
 
-「风格」页（`frontend-react/src/ws-styleref*.jsx`；说法在 `ws-styleref-model.js`，请求与缓存在 `ws-styleref-store.js`，16 维 /
-段落类型 / 场面标签的唯一词表在 `ws-labels.js`）：
+「风格」页（`frontend-react/src/ws-styleref*.jsx`；说法在 `ws-styleref-model.js`，请求与缓存在 `ws-styleref-store.js`（写操作；底座
+`ws-styleref-store-core.js`、活动清单 `ws-styleref-store-activity.js`），16 维 / 段落类型 / 场面标签的唯一词表在 `labels/style-reference.js`）：
 
 1. **参考书**：导入 txt / md，选「原文能发到哪里」、勾权属声明；请求只做准备（解码、切段、剥副文本、记场界、落库），然后建 `classify` 作业。
 2. **学习文风**：一个按钮、一个 `learn` 作业（§4.3）；下面就是文风画像（气质、16 维文风卡、✓ / ✗、声音、尺度、禁用词）。
@@ -41,6 +41,9 @@
 | `style_reference_scene_windows` | 每场冻结一次的选窗（§5.2）；`params_json` 带 `book_id` / `profile_id`，删书 / 破坏式重新分类时随书删 |
 | `style_fidelity_readings` | 「像不像」读数（§7），按场景 / 画像记，不存章 id |
 | `style_reference_metric_events` | 只追加的审计遥测；清扫线程启动时与之后每 24 小时清一次 90 天前的行（`cleanup.cleanup_metric_events`） |
+
+作业表同样有保留期（`cleanup.prune_style_jobs`，批准 #23，随清扫线程每 24 小时一次）：结束了的对照检查作业留 30 天（读数留在读数表里，
+「像不像」的走势不受影响；留下的行里送检的原文换成哈希与字数），分类 / 学习作业每本书每种只留最近一个；没结束的、还在活动面板上的不删。
 
 迁移 `20260923_0090` 建作业 / 窗口 / 读数 / 每场选窗四张表；`20260923_0091` 删掉 👍/👎 表 `style_reference_finding_feedback`、旧回测表
 `style_reference_validation_reports` 与 `style_reference_findings.base_confidence`（降级只恢复结构）；`20260924_0092` 只改数据（绑定配置回填、
@@ -87,8 +90,8 @@
   都以「owner_token 仍是我、state 仍是 running」为条件——被清扫重排、取消、删书的作业，旧工人的写全部落空，自然停下。
 - 心跳 15 s，超过 60 s 算过期。FastAPI lifespan 启动常驻清扫线程（`start_job_sweeper`：启动时一次，之后每 30 s），把过期的 running
   放回 queued、派发所有 queued 到有界线程池（分类 / 学习 2 个工人；对照检查单独一条车道 2 个工人，不在长作业后面排队）；重复派发无害。
-  同一条线程启动时与之后每 24 小时清一次 90 天前的审计遥测行。
-  处理器在模块导入时注册（`import_job` / `learn_job` / `check_job`）。
+  同一条线程启动时与之后每 24 小时跑两项维护：清 90 天前的审计遥测行、作业表保留期。
+  处理器与维护任务由 `workers.install_workers()` 显式登记（lifespan 在启动清扫线程之前调用；不经应用直接跑作业的工具与测试也先调它）。
 - **进程退出不算失败**：lifespan 结束（`--reload`、停服）时 `shutdown_job_workers` 把「工人代」+1，在跑的处理器在下一个检查点
   （两秒内）抛 `JobInterrupted`，作业放回 queued（游标、attempt 保留），下次启动的清扫接着跑；Ctrl-C 同样放回队列。LLM 调用跑在守护线程里
   （`DaemonCallPool`），退出时不等在飞的网络请求（结果丢弃，续跑时重发那一两批；记账预留按 TTL 回收）。被 SIGKILL 的进程什么也做不了：
@@ -274,13 +277,15 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | 模块 | 接口 |
 |---|---|
 | `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`，还要 `X-Admin-Token`；没配 `NOVEL_SYSTEM_ADMIN_TOKEN` 时只放行回环客户端）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
-| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` · `GET /books/{id}/runs` · `GET /runs/{id}/findings` |
-| `profiles.py` | `GET /profiles`（摘要）· `GET /profiles/{id}`（文风画像页）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
-| `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` · `GET /injection/layers` |
+| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` |
+| `profiles.py` | `GET /profiles/{id}`（文风画像页；画像摘要在书库载荷里）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
+| `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` |
+| `checks.py` | `POST /checks` · `GET /checks/{job_id}` · `POST /checks/{job_id}/cancel`（§4.4、§7） |
 | `activity.py` | `GET /activity` |
 
-`api/routes/style_fidelity.py`：两个 `style-fidelity` 读接口、`GET /readings/{id}`、`POST /checks`、`GET /checks/{job_id}`、`POST /checks/{job_id}/cancel`（§4.4、§7）。
-已删除、不要加回来：`/imports/{key}/progress`、旧抽取 run 与 `/runs/{id}/synthesize`、示例预览 `/profiles/{id}/preview`、回测
+`api/routes/style_fidelity.py`：两个 `style-fidelity` 读接口（`/api/v1/scenes/{id}/style-fidelity`、`/api/v1/projects/{id}/style-fidelity`）。
+已删除、不要加回来（`backend/tests/test_retired_surface.py` 钉着）：`/imports/{key}/progress`、旧抽取 run 与 `/runs/{id}/synthesize`、
+`/books/{id}/runs`、`/runs/{id}/findings`、`GET /profiles`、`/injection/layers`、`/readings/{id}`、示例预览 `/profiles/{id}/preview`、回测
 `/profiles/{id}/validate` 与 `/reports`、`/bindings/{id}/injection-preview`、`/injection/task-defaults`、👍/👎。
 
 ## 10. 配置
@@ -301,7 +306,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 两次独立评审的噪声常有半分到一分，更细的容差会把好补丁当成变差退回）。评审节点的分数按模板 `structured_schema` 声明的刻度
 （`maximum`）逐个换算，越界的分丢掉（`review_scores`）；模板没声明刻度（旧提示词快照）时才按一次回答推断量级。
 
-模型节点（`llm_node_registry.py` 与 `config/models.yaml` 同名 task 必须一致）：分类两节点关推理、输出 8192；四个抽取节点与文风卡合成 16384；
+模型节点（默认值只写在 `llm_node_registry.py` 的 spec 里）：分类两节点关推理、输出 8192；四个抽取节点与文风卡合成 16384；
 `style_ref_protected_terms` 8192；`style_ref_tag_windows` 4096、关推理。起草与评审复用现有路由：`style_first_draft` / `style_targeted_revision`
 走 `style_draft`，`style_ref_check_judge` 走 `soft_qc`（5000），`scene_blueprint_facts` 走 `scene_blueprint`。
 
@@ -309,9 +314,10 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 
 - **提示词同步**：保存过提示词快照的安装读库内快照。改了任何风格模板都要 `python -m novel_system.tools.sync_prompt_templates`（干跑）再
   `--execute`；学习作业开工前核对模板契约，旧模板直接拒为 `STYLE_REFERENCE_LEARN_CONFIG_MISSING`，不白花调用。
-- **新节点要路由**：`style_ref_protected_terms` / `style_ref_tag_windows` 在保存过 models 快照的安装上要到系统配置「一键补齐」。
-- **输出预算**：库内快照优先于仓库文件，`node_routing` 优先于 `task_routing`；用 `python -m novel_system.tools.raise_llm_output_budget
-  --node <id> … --floor <n> --execute` 抬（分类 8192、抽取与合成 16384、`soft_qc` / `near_final_acceptance_review` 5000），分类节点另在系统配置里关推理。
+- **新节点要路由**：保存过 models 快照的安装上，快照里没有路由的节点 fail-closed（`LLM_ROUTE_NOT_CONFIGURED`）；到系统配置「一键补齐」。
+- **输出预算**：models 快照只存作者为每个节点选的服务与模型（迁移 `20260929_0096` 把旧快照里抄进去的参数都去掉了），温度、输出预算、
+  推理档位解析时取 spec——spec 里修好的默认值随发布直接生效。要高于默认值（例如某个中转的思考 token 特别多）时用
+  `python -m novel_system.tools.raise_llm_output_budget --node <id> --floor <n> --execute` 写成快照里的显式覆盖；分类节点的推理在 spec 里已关。
 - **云策略**：`local_only` 的书只有这一步**实际调用的节点路由**是本机模型（`ollama` 或回环地址）时才放行，否则 409
   `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`；`segments_only` 的书可被云端模型读来分类 / 学习，起草只送文风卡。
   - 参考进提示（起草、改稿、评审、规划、本场预览、对照检查）同样按**接收这份提示的节点**判，与全局运行时模型无关——全局是本机而起草节点
@@ -328,7 +334,8 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
   - 规划参考块（`planning_context`）不说节点时按全部消费节点判：项目级（雪花 09 / 10、起章名、章规划四节点）、场景级（场景蓝图、
     章架构、人物压力）、起章名；「仅本机」的书有一个消费节点走云端就不给参考块（规划照常，不报错）。
   - 未知 / 空策略：本机节点只送文风卡，云端节点 409 `STYLE_REFERENCE_CLOUD_POLICY_INVALID`。
-- **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（0090、0091、0092）。
+- **迁移**：停服、`python -m novel_system.tools.db_backup --backup <src.db> <dst.db>`，再 `alembic upgrade head`（风格参考相关的是 0090、0091、0092、
+  0094；各版本见[数据库迁移](migrations.md)）。
   0092 之后窗口标签是 v2：之前学过的书在下一次「学习文风」时重打全书标签（『龙族』520 窗约 65 次调用），此后重新学习只剩约 6 次调用。
 - **工具**（`backend/` 下，默认干跑、`--execute` 才写库，先备份）：`purge_style_reference_books --book ID`（可重复）和 / 或 `--id-prefix PREFIX`
   （至少 4 个字符；删书及全部派生数据，就是书库删除的 `cleanup.delete_reference_book`，绑定范围内的规划产物一并作废）；`refresh_style_reference_books --book ID | --all`（就绪的书剥副文本、重编号、保留场界、重算段型统计、顺带删掉旧库里的死键 `metrics` / `prose_shape_metrics`；段落变了

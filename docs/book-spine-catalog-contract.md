@@ -1,4 +1,15 @@
-# 一条书脊：构思 → 目录 → 三张台子（阶段 X，2026-09-19）
+# 一条书脊：构思 → 目录 → 三张台子（阶段 X–Z，2026-09-19 起）
+
+> 2026-09-29 全系统重构之后的对照（正文按各阶段当时写，下面这几条以现在的代码为准）：
+> - 07 长篇大纲的章节表是分章结果的**只读镜像**（批准 #18a）：改章结构、章名、章摘要的门只剩两扇——分章面板与章节编排；07 每一章
+>   行尾的「改名」打开面板并对准那一章；面板另有「只保存章表」。后端从不写前端缓存里的章表副本（`fe_scaffold.chapters`），见 §13.2。
+> - 09 章头、07「改名」与页头按钮开面板都走同一个回调，不再有 `ws:snow-chapter-plan` 事件；store 的通知改走各自的 `subscribe`。
+> - 声线卡 / 关系卡两张表与 bundle 里的两个可选槽位已删除（迁移 `20260929_0098`，§12）；物化不再写章级套话（§12 末）。
+> - 后端模块拆分：物化在 `services/materialization.py`，运行本章与定稿在 `services/chapter_final_flow.py`（`projects.py` 照旧转出），
+>   章表行的唯一读写处是 `services/snowflake_chapter_table.py`，目录读取在 `services/catalog_reader.py`，目录读取从此不写库
+>   （章序由各写入口压实，迁移 `20260929_0097` 补齐历史漂移）。
+> - 测试改了名：`test_project_overview_v2.py` → `test_project_overview.py`，`test_snowflake_chaptering_followups.py` →
+>   `test_snowflake_chapter_titles_and_emptied_chapters.py`；「预检阻断」的前端用例在 `ws-scene-job.test.jsx`。
 
 作者的原话：「雪花生成的章节感觉是孤立的，没有同步到 AI 起草台和写作台。」
 
@@ -96,9 +107,9 @@
 
 ## 8. 测试
 
-后端 `tests/test_catalog_book_spine.py`；前端 `ws-book-spine.test.jsx`（目录 store / 设计卡 / 同步状态）、`ws-scene-spine.test.jsx`、`ws-writer-spine.test.jsx`、`ws-snow-sync.test.jsx` 的阶段 X 用例。改动过契约的旧用例：`test_catalog_api.py`、`test_catalog_single_source.py`、`test_project_overview_v2.py`（slug）、`test_author_drafts.py`（空白稿）、`test_snowflake_chaptering.py`（幕）、`test_snowflake_chaptering_story_order.py`（手建章、拖场后的修复）、`scripts/smoke-phase3.mjs`（sid）。
+后端 `tests/test_catalog_book_spine.py`；前端 `ws-book-spine.test.jsx`（目录 store / 设计卡 / 同步状态）、`ws-scene-spine.test.jsx`、`ws-writer-spine.test.jsx`、`ws-snow-sync.test.jsx` 的阶段 X 用例。改动过契约的旧用例：`test_catalog_api.py`、`test_catalog_single_source.py`、`test_project_overview.py`（slug）、`test_author_drafts.py`（空白稿）、`test_snowflake_chaptering.py`（幕）、`test_snowflake_chaptering_story_order.py`（手建章、拖场后的修复）、`scripts/smoke-phase3.mjs`（sid）。
 
-阶段 Y：`tests/test_snowflake_stable_chapter_ids.py`（身份沿用、铸号、章序落位、手加场跟随）、`tests/test_scene_rehome.py`（运行时行跟着场换章 + 「每张带 scene_id / chapter_id 的表都做过选择」守卫 + 空旧章清得出回收站）、`tests/test_migration_0089_chapter_plan_catalog_chapter_id.py`、`test_catalog_book_spine.py` 的设计归属用例、`test_snowflake_chaptering_followups.py` 的回收 / 取回用例；前端 `ws-author.test.jsx`（只读行）、`ws-writer-spine.test.jsx`（大纲不可拖）、`ws-scene-spine.test.jsx`（决策条）。
+阶段 Y：`tests/test_snowflake_stable_chapter_ids.py`（身份沿用、铸号、章序落位、手加场跟随）、`tests/test_scene_rehome.py`（运行时行跟着场换章 + 「每张带 scene_id / chapter_id 的表都做过选择」守卫 + 空旧章清得出回收站）、`tests/test_migration_0089_chapter_plan_catalog_chapter_id.py`、`test_catalog_book_spine.py` 的设计归属用例、`test_snowflake_chapter_titles_and_emptied_chapters.py` 的回收 / 取回用例；前端 `ws-author.test.jsx`（只读行）、`ws-writer-spine.test.jsx`（大纲不可拖）、`ws-scene-spine.test.jsx`（决策条）。
 
 ## 9. 章的身份（阶段 Y，2026-09-20）
 
@@ -151,11 +162,11 @@
 - 铸占位卡的整条支路退役：`POST /api/v1/scenes/{id}/preflight/create-cards`、`create_missing_cards`、前端 `scnCreateCards` / 「补齐声线卡并重试」。预检仍然拦的只有真正要作者先处理的事：执行契约缺字段 / 过期（`SCENE_EXECUTION_CONTRACT_BLOCKED` / `_STALE`）与场景卡自相矛盾（`SCENE_CONSTRAINT_CONFLICT`）。
 - 起草台对终态任务只说一句话，而且是任务自己留下的原因：`scnTerminalJobMessage(job)`（`ws-scene-run.jsx`）同时供 `startRun` 的 catch 与「终态任务恢复」effect 使用——过去后者用一句笼统的话盖掉前者带着原因与出口的那句。修复之前留下的、带着 `VOICE_PROFILE_MISSING` 的旧任务行会如实显示「这项检查已经取消，直接重新起草即可」。任务控制条上的 `preflight_blocked` / `queued` / `blocked` / `cancelled` 有了作者可读的标签。
 
-测试：`test_scene_workbench_preflight.py`（缺卡不拦、有卡照旧注入）、`test_scene_run_jobs.py`、`test_fe_scene_run_guards.py`、`test_orchestrator_flow.py`（缺卡照常跑完）、`ws-scene-run.test.jsx` 的「预检阻断」三条（都在旧行为下变红）。
+测试：`test_scene_workbench_preflight.py`（缺卡不拦、有卡照旧注入）、`test_scene_run_jobs.py`、`test_fe_scene_run_guards.py`、`test_orchestrator_flow.py`（缺卡照常跑完）、`ws-scene-job.test.jsx` 的「预检阻断」三条（都在旧行为下变红）。
 
 **同一天查实的下一堵墙：防抄袭政策句被当成禁用词表。** 物化（`snowflake_workspace`、`projects.approve_outline_plan` 的兜底、v1 `snowflake_planner`）给每张场景卡的 `forbidden_text` 写「不得复制参考书原文表达、人物、设定或桥段。」——可这个字段的契约是「按字面查的禁用词，顿号 / 逗号分隔，`A|B` 为等价写法」（`qc_constraints.contains_forbidden_term`，硬质检 / 质量分级 `forbidden_text` = 已证实 Q1 / 终稿闸门 `continuity:forbidden_text` 共用）。这句话于是被拆成三个「禁用词」，其中一个是 **`人物`**：正文里出现「这号人物」「可疑人物」就是一条已证实的硬伤，归档被拦（真实作品的 17 张卡全部带着这句话）。和阶段 F 修过的 `must_include_text`（摘要冒充「必须包含」）是同一类毛病。现在：物化不再写这句话（计划没给禁用词就留空；重新物化顺手把旧卡上的清掉）；`qc_constraints.forbidden_terms` / `strip_reference_policy` 是读这个字段的唯一口径——字面检查、预检的约束冲突、分级证据、执行契约的 `must_withhold` 兜底、场景卡摘要里的 `Forbidden text:` 行都先剔掉政策句，作者真写的禁用词（含接在那句话后面的）照常生效。防抄袭本来就不靠这个字段：参考书 n-gram 查重（`style_plagiarism`，Q0）、受保护专名、风格注入里的红线段。测试：`test_qc_constraints.py`、`test_quality_classifier.py`、`test_scene_adopt_archive.py` 的 policy 用例（都在旧读法下变红）。
 
-还没做：`VoiceProfile` / `RelationProfile` 两张表与 bundle 里这两个可选槽位本身还在（测试夹具在用），是下一批减法的候选；章级的 `must_not` / `emotional_target` / `ending_effect` 仍是物化写下的套话（只进提示词，不做字面检查）。
+后来做完的（2026-09-29 重构）：`VoiceProfile` / `RelationProfile` 两张表、bundle 里这两个可选槽位与只靠声线卡的代词漂移检查一起删除（批准 #15，迁移 `20260929_0098`）；物化不再写章级的套话（章目标没有规划时存空串，「推进本章：<章名>」这类旧句子读的时候按「未规划」处理，见 `services/story_slots.py`）。
 
 ## 13. 一张章表、两扇门（阶段 Z，2026-09-20）
 
@@ -175,7 +186,7 @@
 ### 13.1 结构只有一个编辑器，两扇门
 
 - 分章面板 `WsChapterPlanPanel` 就是章结构（哪几场归哪一章、章的先后、幕、章名 / 章摘要）的编辑器。章节编排直接开得出来：全书编排页头 `整理章节结构`（`author-open-plan`；构思的闸门通过、**或**目录里已经有构思分出来的章时出现——某一步被改动、待重新确认时门不能跟着消失，面板自己会列出没过的那几项并带作者去补）、章节详情的构思条与右栏、全书体检的「还没起名的章」、空目录时的 `整理章节结构`（`author-empty-open-plan`）。同一个组件、同一条落库路径（`SnowSync.materialize`），确认后目录整份重拉，台面给一句回执。
-- 反方向的门：09 场景列表的章头是一颗按钮（`ws:snow-chapter-plan` → 开面板）；面板里每一场有 `在构思里改这一场`（`onGoToScene`：先 `ws:snow-step planning` 再 `ws:snow-scene`，与成稿中心 / 章节编排回跳同一组意图）。
+- 反方向的门：09 场景列表的章头是一颗按钮（与页头按钮同一个回调开面板）；07 只读章节表每一章行尾的「改名」也开面板并对准那一章；面板里每一场有 `在构思里改这一场`（`onGoToScene`：先 `ws:snow-step planning` 再 `ws:snow-scene`，与成稿中心 / 章节编排回跳同一组意图）。
 - **章结构的归属**（`services/chapter_structure_ownership.py`，叶子模块）：目录章来自雪花**并且**有一行没被软删的章计划钉着它（`catalog_chapter_id`）→ `structure.owner = plan`。这样的章：
   - 彼此的先后 → `POST …/catalog/chapter-order` 改变它们的相对顺序 → 409 `CATALOG_CHAPTER_ORDER_OWNED_BY_PLAN`；手建的章可以挪到任何两章之间；
   - 幕 → `PATCH …/catalog/chapters/{id}` 真的改了 `act` → 409 `CATALOG_CHAPTER_STRUCTURE_OWNED_BY_PLAN`（值没变的整卡回写照常通过）；
@@ -185,13 +196,12 @@
 
 ### 13.2 章名只有一个（`services/chapter_title_sync.py`，叶子模块）
 
-三扇门改的是同一个名字：
+两扇门改的是同一个名字（07 的章节表是只读镜像，2026-09-30 之前它是第三扇门）：
 
-| 门 | 怎么到另外两处 |
+| 门 | 怎么到另一处 |
 |---|---|
-| 章节编排 | 目录 PATCH 的同一事务里 `adopt_catalog_title`：章计划行改名 → 绑在上面的场重盖章名戳（09 的章头读它）→ 07 草稿的 `chapters` 与 `fe_scaffold.chapters` 镜像 → 目录那一行的种子 `writer_brief_json.chapter_title` 也跟上。回包 `plan_title_synced: true`；前端 `WsCatalog` 据此调 `SnowSync.adoptServerChapters()`（先排空未上行的编辑）——本机雪花缓存的合并规则是「本机为准」，不接的话下一次 07 上行会把旧章名当成作者的编辑同步回去 |
-| 07 章节表 | `_sync_chapter_plans` 末尾 `follow_plan_titles`：场的章名戳跟上；目录里那一章**还是上次由章表播下去的名字**时跟着改（和重新物化同一条规矩——阶段 Z 之前在台子上另起过名、没写穿的旧数据不被盖掉） |
-| 分章面板 | `save` + 物化（阶段 W「目录章名跟随章表」），不变 |
+| 章节编排 | 目录 PATCH 的同一事务里 `adopt_catalog_title`：章计划行改名 → 绑在上面的场重盖章名戳（09 的章头读它）→ 07 草稿的 `chapters` 镜像（`mirror_chapters_into_long_synopsis`）→ 目录那一行的种子 `writer_brief_json.chapter_title` 也跟上。回包 `plan_title_synced: true`；前端 `WsCatalog.onPlanTitlesSynced` 据此调 `SnowSync.adoptServerChapters()`（先排空未上行的编辑）——本机雪花缓存的合并规则是「本机为准」，不接的话本机还显示旧章名 |
+| 分章面板 | 「只保存章表」→ `save_chapter_plan` → `follow_plan_titles`：场的章名戳跟上；作者起的名字、而且目录里那一章**还是上次由章表播下去的名字**时当场跟过去（阶段 Z 之前在台子上另起过名、没写穿的旧数据不被盖掉）；系统起的「第 N 章」与拆章 / 并章等确认写入。「确认写入」→ `save` + 物化（阶段 W「目录章名跟随章表」） |
 
 种子 = 「上一次由章表播下去的名字」；两边一致时它等于当前章名，之后任何一扇门再改都还跟得上。把章名清空：雪花的章落回 `第 N 章`（不是「未命名章节」），`is_auto_chapter_title` 也把「未命名」认作占位——「AI 起章名」仍然会给它起名。
 
@@ -204,12 +214,13 @@
 
 ### 13.4 测试
 
-后端 `tests/test_chapter_structure_ownership.py`（载荷、改名写穿与回流、07 改名、先后 / 幕的 409、面板照常能改章序）；`tests/test_service_architecture.py` 守着两个新叶子模块不闭环（`catalog` → `snowflake_chaptering` 会经 `trash` 闭环，所以写穿逻辑在叶子里）。前端 `ws-author-derive.test.js`（派生层 + 体检）、`ws-author.test.jsx` 的阶段 Z 六条、`ws-catalog.test.jsx`（结构归属映射、改名后接章表）、`ws-snow.test.jsx`（09 章头开面板）。真实项目的库副本上走过一遍浏览器旅程：章节编排改名 → 后端面板 / 本机 07 章节表 / 09 章头同名，之后没有任何上行把旧名推回去。
+后端 `tests/test_chapter_structure_ownership.py`（载荷、改名写穿与回流、先后 / 幕的 409、面板照常能改章序）；`tests/test_service_architecture.py` 守着两个新叶子模块不闭环（`catalog` → `snowflake_chaptering` 会经 `trash` 闭环，所以写穿逻辑在叶子里）。前端 `ws-author-derive.test.js`（派生层 + 体检）、`ws-author.test.jsx` 的阶段 Z 六条、`ws-catalog.test.jsx`（结构归属映射、改名后接章表）、`ws-snow.test.jsx`（09 章头开面板）。真实项目的库副本上走过一遍浏览器旅程：章节编排改名 → 后端面板 / 本机 07 章节表 / 09 章头同名，之后没有任何上行把旧名推回去。
 
 ## 14. 没做的
 
-- 章级的张力 / POV / 时间 / 地点 / 入口出口 / 线索 / 对齐这组字段（`narrative_json`、目录 API、`import_catalog`、章节规划上下文的 `_chapter_card_slot`）还在——现在只是没有数据时不再冒充事实；它们没有编辑入口，是下一批减法的候选；读它们的界面（`ArrTensionCurve` / `ws-author-loom.jsx`、故事弧线 / 线索织布机镜头）已在 2026-09-21 删除，只剩存储与接口字段。
-- 章摘要 / 章目标在章节编排里只读（在分章面板 / 07 里改）。
+- 章级的张力 / POV / 时间 / 地点 / 入口出口 / 线索 / 对齐这组字段已在 2026-09-30 从目录 API、章节规划上下文与前端删掉（批准 #17a）：
+  章节编排的 AI 体检与编排方向改读各场的真实数据；库里旧的 `narrative_json` 值原样留着，不再读、不再写。
+- 章摘要 / 章目标在章节编排里只读（在分章面板里改）。
 - 新浏览器打开构思时 09 / 10 会各回声式 PATCH 两次（语义上是空操作，步骤状态不变）——与本阶段无关，未处理。
 - 章 slug（`chNN`）与 `#writer` 深链里的章序号仍是位置式的显示序号。
 - 章计划与目录章之间没有数据库级的唯一约束（一个目录章至多被一个活跃章计划钉住，由铸号与迁移回填的规则保证）。

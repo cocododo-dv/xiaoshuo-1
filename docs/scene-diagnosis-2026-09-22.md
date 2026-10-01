@@ -4,6 +4,22 @@
 
 这份文档是现行契约：一场正文「哪里有问题」只有**一份记录**，写作台的深改面板是**唯一的展示处**；文学质量视图、成稿门、起草台的评审和 AI 深评都读写这一份。
 
+> 2026-09-29 全系统重构之后的对照（正文按 2026-09-22 的代码写，下面这几条以现在的代码为准）：
+> - 模块变成了包：`services/scene_diagnosis/`（`vocabulary` / `text` / `calibration` / `findings` / `serialize` / `context` / `service`，
+>   门面是包的 `__init__`），`services/literary_quality/`（`dimensions` / `lexicons` / `rules` / `calibration` / `calibration_source` /
+>   `report` / `service` …），`writer_deep_review.py` 拆出 `writer_deep_review_{output,prompts,patches}.py`。`scene_diagnosis` 不是叶子模块。
+> - 规则维度是 **20** 维：永远为空的「有效留白」（`valid_ambiguity`）删了（批准 #13c）；下文的「21 维」都按 20 维读。
+> - 按参考书校准的规则读数住在 `literary_quality/calibration_source.py`（`compute_reference_rules`、`rule_calibration_for_policy`），
+>   文学质量视图、成稿门与写作台深改面板读同一份；路由不再往 `LiteraryQualityService` 里注入
+>   `SceneDiagnosisService.rule_calibration_for_scene`（那个方法已删）。节奏检查的读数仍在 `scene_diagnosis/calibration.py`。
+>   绑定了参考书的作品，校准读数每 6 小时在后台预热一次。
+> - 章组复审也按参考书校准（批准 #13a）；文学质量的章源与「章记忆终稿」一层都按各场当前终稿读时现拼。
+> - `writer_passage_patch` 是 v4：候选带 `paragraphs[]`，跨段改写按段落换回；选区超 2000 字时前端直接提示分段、后端也回 400
+>   `PASSAGE_PATCH_TOO_LONG`（不截断、不发请求）；模型一版可用的改写都没给出时 502 `WRITER_PASSAGE_PATCH_EMPTY`。没有正文可评时
+>   （这一场还没有正文，或一章的各场都还没有正文）AI 深评 409 `WRITER_DEEP_REVIEW_NO_TEXT`、局部深评 409
+>   `WRITER_PASSAGE_REVIEW_NO_TEXT`，都不调模型。
+> - 测试改了名：`test_scene_diagnosis_round3.py` → `test_scene_diagnosis_calibration_and_read_through.py`。
+
 ## 0. 改之前是什么样
 
 在代码里逐项核对（不是猜的）：
@@ -19,7 +35,7 @@
 
 ## 1. 一种发现形状
 
-`services/scene_diagnosis.py` 是聚合者（叶子模块，只依赖 `literary_quality`、模型与风格绑定解析）。每条发现：
+`services/scene_diagnosis/`（包，门面在 `__init__`）是聚合者：读 `literary_quality` 的规则发现、模型行与风格绑定。每条发现：
 
 ```
 signal_id        稳定 id，作者的「忽略」按它记
@@ -107,7 +123,7 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 
 **8.1 局部深评看整场（跨段的矛盾）。** `POST …/deep-review/passage` 的焦点可以是一段（`paragraph_index` / `excerpt`）、一段范围（`paragraph_start`–`paragraph_end`，含两端；一次最多 40 段）或一条发现所在的段（`signal_id`；跨段的发现把另一段也算进焦点）。模型看到的不再是「焦点段 ± 一段」而是**整场**（`passage_scope`：焦点段标【焦点段 N】、前后段标【上下文 N】、其余段标【第 N 段】全文；整场超过 12,000 字时远段只留开头，标【第 N 段·略】），用户消息尾部多一节「Cross-Paragraph Check」：焦点段与本场任何一段的事实 / 物件 / 时间 / 谁知道什么矛盾、重复、承接失落，都要报，并给 `related_excerpt`（另一段的原话，≤80 字）、`related_paragraph_index`（那一段标记里的序号）、`relation ∈ contradiction | repetition | continuity`。统一发现多一个 `related {excerpt, paragraph_index, start, end, kind, label, stale}`（另一段的原话钉到段；那句已不在正文里就 `stale`）。评审行记 `focus_paragraphs / paragraph_start / paragraph_end / whole_scene / about_signal_ids`；焦点段有交集、或复核同一条发现的旧行退位。模板 `writer_passage_review` v2（findings 成员的 properties 写明——schema-enforcing 中转对没声明 properties 的成员只会解码成 `{}`；`writer_deep_review` v6 同样补上）。写作台：深改姿态里选中跨几段的字，工具条按钮变成「AI 看这几段」（POST 范围）；面板行上标「与第 N 段矛盾 / 重复 / 承接」，展开给另一段的原话与「看第 N 段」，正文里另一段那句也标出来（`mark.wr-dx.is-related`）；独立看范围的结果显示「AI 看了第 2–3 段」。
 
-**8.2 21 维规则按参考书校准词表与维度。** `literary_quality.RuleCalibration`（数据在 `literary_quality`，算法在 `scene_diagnosis`，import 方向不变）：`compute_reference_rules` 把参考书按标题段 / 场分隔行切成单元、单元内按 ~2,400 字切窗口（最多 48 个，均匀取），量两样——(a) **词表词的密度**：「命中即毛病」的 14 张词表（`FAULT_LEXICONS`：模型腔、说明式对白、汇报式对白、总结式收尾、重复动作、意象、氛围意象、虚假清晰、装饰意象、动机说明、诗化收尾、感知过滤、冲突 / 和解）里每个词每万字的次数，一遍正则；每万字 ≥ 1 次的是这位作者的常用词（`habitual_needles`），规则不再按它们提示——除非稿子里的密度到了参考的 4 倍以上且至少 3 次（过量，照提示）；「缺席才是毛病」的词表（抉择 / 压力 / 代价 / 收尾动作）不动。(b) **每条规则在窗口上响的比例**：≥ 50% 的规则是这位作者的常态（`habitual_dimensions`），发现降为 `info`、带 `calibrated {kind: dimension_habit, share}`，`why` 说「参考作者的场里约 N% 也是这样，只作提示」；收尾三条（总结式收尾 / 收束驱动 / 诗化收尾）只在真实的单元末尾上量（最多 48 个，至少 8 个才算）。读数与节奏读数存在同一个进程缓存里（『龙族』：规则读数 ≈0.8 秒一次）；`craft_calibration.rules {habitual_needles, habitual_dimensions, dimension_shares, windows, endings, chars}`，`note` 把常用词与常态维度说出来。文学质量视图读同一份校准：路由把 `SceneDiagnosisService.rule_calibration_for_scene` 注进 `LiteraryQualityService(rule_calibration_resolver=…)`（`literary_quality` 不能 import `scene_diagnosis`），条目带 `rule_calibration`。真实项目（『龙族』绑定）：26 个常用词（看、手、血、眼、风、光、走、门、火、笑、因为…），常态维度 7 个（意象同质 100%、句式单调 100%、重复动作 85%、意象场复用 81%、抉择压力 58%、说明式对白 56%、动机说明 56%）；一场 25 段的作者稿从 5 条修订变成 2 条修订 + 3 条提示。没有绑定时词表与行为逐字不变。
+**8.2 21 维规则按参考书校准词表与维度。** `literary_quality.RuleCalibration`（数据与判法在 `literary_quality`；参考书一侧的读数当时在 `scene_diagnosis`，重构后搬进 `literary_quality/calibration_source.py`）：`compute_reference_rules` 把参考书按标题段 / 场分隔行切成单元、单元内按 ~2,400 字切窗口（最多 48 个，均匀取），量两样——(a) **词表词的密度**：「命中即毛病」的 14 张词表（`FAULT_LEXICONS`：模型腔、说明式对白、汇报式对白、总结式收尾、重复动作、意象、氛围意象、虚假清晰、装饰意象、动机说明、诗化收尾、感知过滤、冲突 / 和解）里每个词每万字的次数，一遍正则；每万字 ≥ 1 次的是这位作者的常用词（`habitual_needles`），规则不再按它们提示——除非稿子里的密度到了参考的 4 倍以上且至少 3 次（过量，照提示）；「缺席才是毛病」的词表（抉择 / 压力 / 代价 / 收尾动作）不动。(b) **每条规则在窗口上响的比例**：≥ 50% 的规则是这位作者的常态（`habitual_dimensions`），发现降为 `info`、带 `calibrated {kind: dimension_habit, share}`，`why` 说「参考作者的场里约 N% 也是这样，只作提示」；收尾三条（总结式收尾 / 收束驱动 / 诗化收尾）只在真实的单元末尾上量（最多 48 个，至少 8 个才算）。读数与节奏读数存在同一个进程缓存里（『龙族』：规则读数 ≈0.8 秒一次）；`craft_calibration.rules {habitual_needles, habitual_dimensions, dimension_shares, windows, endings, chars}`，`note` 把常用词与常态维度说出来。文学质量视图读同一份校准（当时由路由把场景诊断的解析器注进 `LiteraryQualityService`；重构后 `LiteraryQualityService` 经 `calibration_source` 自己取，见文首对照），条目带 `rule_calibration`。真实项目（『龙族』绑定）：26 个常用词（看、手、血、眼、风、光、走、门、火、笑、因为…），常态维度 7 个（意象同质 100%、句式单调 100%、重复动作 85%、意象场复用 81%、抉择压力 58%、说明式对白 56%、动机说明 56%）；一场 25 段的作者稿从 5 条修订变成 2 条修订 + 3 条提示。没有绑定时词表与行为逐字不变。
 
 **8.3 只通读改过的场。** 通读行的 `contract_field_refs_json` 记 `{kind: chapter, scope: all | changed, scenes: [{scene_id, scene_seq, sha256, layer, ref}], reviewed_scene_ids, carried_scene_ids, carried_from}`；章级 `ai.status` 从此按每场正文的哈希判（哪一场的字变了、多了一场有字的、少了一场 → `stale`；老的行没有哈希，退回时间戳），并给 `changed_scene_ids / changed_count / incremental_available / scope / reviewed_scene_ids / carried_scene_ids / carried_from`，每场条目带 `changed_since_review / carried`。`POST …/chapters/{id}/deep-review {scope: "all" | "changed"}`：`changed` 时改过的场全文（【第 N 场 · 本次通读】），未改的场只给开头 / 结尾 / 上一轮钉在它上面的发现（【第 N 场 · 未改 · 摘要】），用户消息尾部一节「Read-Through Scope」+ 上一轮的章级发现（让模型重说哪些还成立）；模型答完后未改的场沿用上一轮的发现（`carried_from`，写作台里 `origin.carried_from`，同一条 id），改过的场按模型的新发现，章级发现以模型的为准。上次之后没有场改过 → 不调模型，载荷带 `notice.code = CHAPTER_REVIEW_UP_TO_DATE`；上一轮没记哈希 → 退回整章。`_chapter_source` 从此只从各场的诊断正文拼（不再取章级作者稿 / 章记忆：发现要钉到各场的字上）。成稿中心：改前的通读且算得出改过的场时给「只通读改过的 N 场」（主）与「整章重新通读」，状态行说「改过 N 场：第 x 场」「上次只通读了改过的 N 场，其余沿用更早的通读」，场行标「通读后改过」「沿用上次通读」，发现标「沿用上次通读」。
 
