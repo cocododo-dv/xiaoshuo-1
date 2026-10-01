@@ -203,7 +203,7 @@ def test_author_draft_save_reports_words_delta(client, session):
     assert stats["last_active_at"]
 
 
-def test_dashboard_v2_shape_with_demo_seed(client, session):
+def test_dashboard_v2_shape_with_fixture_works(client, session):
     seed_fixture_works(session)
     session.commit()
 
@@ -248,7 +248,7 @@ def test_dashboard_v2_blank_project(client):
     assert data["chapters_recent"] == []
 
 
-def test_demo_seed_idempotent(client, session):
+def test_fixture_works_seed_is_idempotent(client, session):
     seed_fixture_works(session)
     seed_fixture_works(session)
     session.commit()

@@ -120,7 +120,7 @@ def test_derive_effects_create_entity_and_timeline_via_resolve(client):
     assert any(e["label"] == "第三潮汐事件" for e in timeline)
 
 
-def test_demo_seed_populates_library(client, session):
+def test_fixture_works_populate_the_library(client, session):
     seed_fixture_works(session)
     session.commit()
     overview = client.get("/api/v2/projects/work-a/library").json()["data"]
