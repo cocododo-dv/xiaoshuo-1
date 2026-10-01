@@ -17,9 +17,19 @@ import { escapeHtmlText } from "./manuscript-html.js";
 
 /* kind: copy（AI 写出来的每一版都照搬了参考书，被抄袭门拦下丢掉）| config（去系统设置）| not-ready（场景还没同步好）
         | too-long（选区超过一次改写的上限：请分段改写，没有「重试」）
+        | unsupported（选区碰到了不在段落里的散字，没法按段换回：没有「重试」）
+        | no-text（要看的那一场 / 那一段还没有字：没有「重试」）
         | empty（模型没给出可用结果）| unclear（服务器没说清原因：重试，也给去系统设置）| retry
    offersSettings：提示里要不要同时给「去系统设置」（config 与 unclear 为 true）。
+   actionLabel 为空：不给重试按钮（再点一次结果也一样）。
    抄袭门的拒绝也带 author_action（「去改写这些位置」），所以要先认它：过去它被当成「没有可用的模型」。 */
+const CJK_RE = /[\u3400-\u9fff]/;
+/* 服务端给的是一句中文时照用（拒绝类的错误码，后端的话就是给作者的）；英文原文从不给作者看 */
+function serverChinese(error, fallback) {
+  const message = String((error && error.message) || "").trim();
+  return message && CJK_RE.test(message) ? message : fallback;
+}
+
 export function wrAiError(error) {
   const code = String((error && error.code) || "");
   const details = (error && error.details) || {};
@@ -55,10 +65,38 @@ export function wrAiError(error) {
       actionLabel: "",
     };
   }
-  if (code === "no-result") {
+  if (code === "selection-unsupported") {
+    return {
+      kind: "unsupported",
+      message: "选中的字里有不在任何段落里的散字（旧稿留下的格式），改好了也没法按段换回去。选在段落之内再改写。",
+      actionLabel: "",
+    };
+  }
+  /* 服务端按同一个上限再拦一次（前端已先拦；字数口径对不上时才会走到这里）：照用它的中文说法，同样不给重试 */
+  if (code === "PASSAGE_PATCH_TOO_LONG") {
+    const length = Number(details.length) || 0;
+    return {
+      kind: "too-long",
+      message: serverChinese(error, `选区太长${length ? `（${length} 字）` : ""}，请分段改写。`),
+      actionLabel: "",
+    };
+  }
+  /* 深评 / 局部深评对着空正文：后端不调模型就回 409（没有 author_action），说的是哪里没有字——重试也一样，不给按钮 */
+  if (code === "WRITER_DEEP_REVIEW_NO_TEXT" || code === "WRITER_PASSAGE_REVIEW_NO_TEXT") {
+    return {
+      kind: "no-text",
+      message: serverChinese(error, "这一场还没有正文，没有可看的字。"),
+      actionLabel: "",
+    };
+  }
+  /* 模型给了结果、却没有一版能用（本地看到空结果 no-result，或后端的 WRITER_PASSAGE_PATCH_EMPTY：502、不带 author_action——
+     不是配置问题；reason paragraphs_collapsed = 每一版都把选中的几段挤成了一段） */
+  if (code === "no-result" || code === "WRITER_PASSAGE_PATCH_EMPTY") {
     return {
       kind: "empty",
-      message: "模型这次没有给出可用的结果。换个说法，或者稍后再试。",
+      message: details.reason === "paragraphs_collapsed"
+        ? "模型这次给的几版都把选中的几段挤成了一段，没有可用的结果。换个说法，或者稍后再试。"
+        : "模型这次没有给出可用的结果。换个说法，或者稍后再试。",
       actionLabel: "重试",
     };
   }

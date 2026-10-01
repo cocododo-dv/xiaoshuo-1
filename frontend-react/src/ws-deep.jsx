@@ -49,16 +49,18 @@ const WR_DX_VERDICT = {
 /* ==========================================================
    WrDeepDrawer — 写作台右栏 · 深改面板
    ========================================================== */
-/* 深评失败：无模型（后端 409 + author_action）给「去系统设置」，其余给重试（与写作台其他 AI 入口同一套翻译） */
+/* 深评失败：无模型（后端 409 + author_action）给「去系统设置」，其余给重试（与写作台其他 AI 入口同一套翻译）；
+   没有字可看（WRITER_*_NO_TEXT）只说一句、不给重试——再点一次结果也一样 */
 function DxAiError({ error, onRetry, onOpenSettings }) {
   const info = wrAiError(error);
   const configOnly = info.kind === "config";
-  const retry = !configOnly && onRetry
+  const quiet = configOnly || info.kind === "no-text";
+  const retry = !configOnly && onRetry && info.actionLabel
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry}>{info.actionLabel}</button> : null;
   const settings = info.offersSettings && onOpenSettings
     ? <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenSettings}>去系统设置</button> : null;
   return (
-    <Notice tone={configOnly ? "warn" : "danger"} className="wr-dxd-notice" actions={retry || settings ? <>{retry}{settings}</> : null}>
+    <Notice tone={quiet ? "warn" : "danger"} className="wr-dxd-notice" actions={retry || settings ? <>{retry}{settings}</> : null}>
       {info.message}
     </Notice>
   );

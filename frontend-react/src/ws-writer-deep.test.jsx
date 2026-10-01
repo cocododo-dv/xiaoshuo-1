@@ -310,6 +310,22 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     expect(go).toHaveBeenCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
   });
 
+  it("「AI 深评」对着空正文（409 WRITER_DEEP_REVIEW_NO_TEXT，不带 author_action）：照说服务端那句，不给「重试」也不叫去配置模型", async () => {
+    const noText = Object.assign(new Error("这一场还没有正文，没有可评的字。先写一段（或起草一稿）再跑 AI 深评。"), { code: "WRITER_DEEP_REVIEW_NO_TEXT", status: 409, details: {} });
+    const { WriterRoom, WrDocs } = await loadWriter({ aiRun: noText });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
+    await click(drawerButton(host, "AI 深评"));
+    await vi.waitFor(() => expect(drawer.textContent).toContain("这一场还没有正文，没有可评的字。"), T);
+    const notice = drawer.querySelector(".wr-dxd-ai .wr-dxd-notice");
+    expect([...notice.querySelectorAll("button")].map((node) => node.textContent.trim())).toEqual([]);
+    expect(notice.textContent).not.toContain("系统设置");
+  });
+
   it("「按诊断改写」：选中那一句回到起草，工具条按发现的改法直接出候选，改写请求带着发现的 id / 维度 / 改法", async () => {
     const { WriterRoom, WrDocs, client } = await loadWriter();
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");

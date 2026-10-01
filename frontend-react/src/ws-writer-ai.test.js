@@ -43,6 +43,38 @@ describe("选区改写的字数上限", () => {
     expect(info).toMatchObject({ kind: "too-long", message: "选区太长（2500 字），请分段改写。", actionLabel: "" });
     expect(info.offersSettings).toBeFalsy();
   });
+
+  it("服务端的 PASSAGE_PATCH_TOO_LONG（400）照用它的中文说法；没有中文时按字数说；都不给重试", () => {
+    const server = apiError("PASSAGE_PATCH_TOO_LONG", { status: 400, message: "选区太长（2003 字），一次最多改写 2000 字，请分段改写。", details: { length: 2003, limit: 2000 } });
+    expect(wrAiError(server)).toMatchObject({ kind: "too-long", message: "选区太长（2003 字），一次最多改写 2000 字，请分段改写。", actionLabel: "" });
+    expect(wrAiError(apiError("PASSAGE_PATCH_TOO_LONG", { status: 400, details: { length: 2003 } }))).toMatchObject({ kind: "too-long", message: "选区太长（2003 字），请分段改写。" });
+  });
+});
+
+describe("局部改写 v4 与深评的拒绝码", () => {
+  it("WRITER_PASSAGE_PATCH_EMPTY（502、不带 author_action）→ 模型没给出可用的结果，可以重试；不当成服务器故障，也不叫作者去配置模型", () => {
+    const info = wrAiError(apiError("WRITER_PASSAGE_PATCH_EMPTY", { status: 502, details: { reason: "no_options" } }));
+    expect(info).toMatchObject({ kind: "empty", actionLabel: "重试" });
+    expect(info.message).toContain("模型这次没有给出可用的结果");
+    expect(info.offersSettings).toBeFalsy();
+    const collapsed = wrAiError(apiError("WRITER_PASSAGE_PATCH_EMPTY", { status: 502, details: { reason: "paragraphs_collapsed" } }));
+    expect(collapsed).toMatchObject({ kind: "empty", actionLabel: "重试" });
+    expect(collapsed.message).toContain("挤成了一段");
+  });
+
+  it("WRITER_DEEP_REVIEW_NO_TEXT / WRITER_PASSAGE_REVIEW_NO_TEXT（409、不带 author_action）→ 说哪里没有字，照用服务端的中文，不给重试", () => {
+    const scene = wrAiError(apiError("WRITER_DEEP_REVIEW_NO_TEXT", { status: 409, message: "这一场还没有正文，没有可评的字。先写一段（或起草一稿）再跑 AI 深评。" }));
+    expect(scene).toMatchObject({ kind: "no-text", actionLabel: "", message: "这一场还没有正文，没有可评的字。先写一段（或起草一稿）再跑 AI 深评。" });
+    expect(scene.offersSettings).toBeFalsy();
+    const passage = wrAiError(apiError("WRITER_PASSAGE_REVIEW_NO_TEXT", { status: 409, message: "要看的那一段是空的，没有可看的字。" }));
+    expect(passage).toMatchObject({ kind: "no-text", actionLabel: "", message: "要看的那一段是空的，没有可看的字。" });
+    expect(wrAiError(apiError("WRITER_PASSAGE_REVIEW_NO_TEXT", { status: 409 })).message).toBe("这一场还没有正文，没有可看的字。");
+  });
+
+  it("WRITER_PASSAGE_PATCH_LLM_REQUIRED（409 + author_action）→ 去系统设置；_LLM_FAILED（502）→ 重试", () => {
+    expect(wrAiError(apiError("WRITER_PASSAGE_PATCH_LLM_REQUIRED", { status: 409, details: { author_action: { view: "settings" } } })).kind).toBe("config");
+    expect(wrAiError(apiError("WRITER_PASSAGE_PATCH_LLM_FAILED", { status: 502 })).kind).toBe("retry");
+  });
 });
 
 describe("续写候选的方向与快捷词", () => {
