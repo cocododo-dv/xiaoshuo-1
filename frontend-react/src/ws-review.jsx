@@ -117,8 +117,7 @@ function WsReview({ go }) {
     }
     else if (a.op === "snooze") snooze(item.id);
     else {
-      // 补出来的「知道了」不是卡上的动作，不带 action_index
-      if (!a.fallback) rvResolveAction(item, a);
+      rvResolveAction(item, a);
       resolve(item.id);
     }
   };

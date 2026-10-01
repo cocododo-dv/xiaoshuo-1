@@ -132,11 +132,12 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
   });
 });
 
-/* ---------- 视图：没有动作的卡也能用鼠标处理、键盘快捷键不吞按钮 ---------- */
+/* ---------- 视图：卡上的动作照后端给的画、键盘快捷键不吞按钮 ---------- */
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 
-/* 没有动作的工作台卡（后端给的 actions 是空的）：收件箱照样给「知道了 / 稍后」 */
+/* 工作台投来的普通卡：后端给没写动作的卡补一个「知道了」（review_cards.create），这张还带一个「稍后」。
+   前端不再自己补动作——收件箱里每一张卡（工作台卡、实时派生卡）都带着后端给的动作。 */
 const PLAIN_CARD = {
   id: "rv-plain",
   kind: "decision",
@@ -146,7 +147,10 @@ const PLAIN_CARD = {
   source: "fe_card",
   occurred_at: "2026-06-08T00:00:00Z",
   live: false,
-  actions: [],
+  actions: [
+    { label: "知道了", intent: "quiet", op: "resolve" },
+    { label: "稍后", intent: "quiet", op: "snooze" },
+  ],
 };
 
 describe("WsReview 视图", () => {
@@ -181,7 +185,7 @@ describe("WsReview 视图", () => {
     return { mod, client };
   }
 
-  it("没有动作的卡：来源是中文、补出「知道了 / 稍后」，「知道了」不带卡上的动作编号", async () => {
+  it("工作台卡：来源是中文、按后端给的动作画按钮，「知道了」带上它在卡上的动作编号", async () => {
     const { mod, client } = await mount([PLAIN_CARD]);
     const card = host.querySelector(".rv-item");
     expect(card.textContent).toContain("旧信要不要先拆开");
@@ -194,9 +198,9 @@ describe("WsReview 视图", () => {
     client.apiPost.mockClear();
     await act(async () => { card.querySelector(".rv-actions button").click(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 350)); });
-    // 补出来的「知道了」不是卡上的动作：resolve 不带 action_index
+    // 「知道了」是卡上的第 0 个动作：resolve 带上编号（后端按编号执行动作上的 effect，没有 effect 就只是划掉）
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v1/review-items/rv-plain/resolve", { project_id: "prj-main" }), T);
+      "/api/v1/review-items/rv-plain/resolve", { project_id: "prj-main", action_index: 0 }), T);
   });
 
   it("只有一个优先级段时不画段头", async () => {
