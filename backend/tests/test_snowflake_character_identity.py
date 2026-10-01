@@ -459,13 +459,16 @@ def test_ids_the_server_minted_before_the_deploy_reach_the_frontend_unchanged(se
     assert stored["psychological_profile"]["how_character_changes"] == "学会信人"
 
 
-def test_the_history_summary_speaks_the_frontend_ids(client) -> None:
-    """历史列表的一行摘要与同一项的草稿一样按前端口径：不冒出库里的 <作品>_c1。"""
+def test_the_history_item_speaks_the_frontend_ids(client) -> None:
+    """历史里一版的草稿按前端口径：不冒出库里的 <作品>_c1。列表项不再带那行把草稿叶子拼起来的摘要（它连内部 id
+    都拼进去，界面也不显示它，合并胶水 G7）。"""
+    import json
+
     project_id = _create(client, "历史摘要作品")
     _patch(client, project_id, "character_sheets", {"characters": [_sheet("c1", "林昭", "主角")]})
     response = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace/steps/character_sheets/history?include_draft=true")
     assert response.status_code == 200, response.text
     item = response.json()["data"]["items"][0]
     assert item["draft"]["characters"][0]["character_id"] == "c1"
-    assert item["draft_summary"].startswith("c1 林昭 主角"), item["draft_summary"]
-    assert project_id not in item["draft_summary"]
+    assert project_id not in json.dumps(item["draft"], ensure_ascii=False)
+    assert "draft_summary" not in item

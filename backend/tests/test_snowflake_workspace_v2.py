@@ -385,8 +385,8 @@ def test_workspace_v2_step_history_and_restore_keep_author_approval_gate(client,
     assert history_response.status_code == 200, history_response.text
     history = history_response.json()["data"]
     assert [item["version"] for item in history["items"]] == [2, 1]
-    assert history["items"][0]["draft_summary"]
-    assert "draft" not in history["items"][0]
+    # 列表只有元数据与出处：草稿（以及以前那行把内部 id 也拼进去的摘要）只在按版本预览时取
+    assert "draft" not in history["items"][0] and "draft_summary" not in history["items"][0]
 
     detail_response = client.get(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/book_brief/history?include_draft=true"

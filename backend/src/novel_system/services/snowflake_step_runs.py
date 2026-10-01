@@ -50,31 +50,6 @@ def would_wipe_story(previous: Any, incoming: Any) -> bool:
     )
 
 
-def draft_summary(value: Any, *, limit: int = 180) -> str:
-    """历史列表里一版草稿的一行摘要（前几段文字拼起来，截到 ``limit`` 字）。"""
-    pieces: list[str] = []
-
-    def visit(item: Any) -> None:
-        if len(" ".join(pieces)) >= limit:
-            return
-        if isinstance(item, str):
-            text = " ".join(item.split())
-            if text:
-                pieces.append(text)
-            return
-        if isinstance(item, list):
-            for child in item[:8]:
-                visit(child)
-            return
-        if isinstance(item, dict):
-            for child in item.values():
-                visit(child)
-
-    visit(value)
-    summary = " ".join(pieces)
-    return summary[:limit].rstrip()
-
-
 def step_run_payload(run: SnowflakeStepRun | None, *, include_diagnosis: bool = True) -> dict[str, Any] | None:
     """一版草稿的元数据。``diagnosis_json`` 是 ``health`` 的一份深拷贝，只有 GET 的工作台还带它（B06-05）。"""
     if run is None:
@@ -104,9 +79,11 @@ def step_run_payload(run: SnowflakeStepRun | None, *, include_diagnosis: bool = 
 
 
 def step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = False) -> dict[str, Any]:
-    """历史列表里的一版（草稿只在预览某一版时带）。交给前端：摘要与草稿里的角色 id 都按草稿口径
-    （剥掉服务端补的作品前缀，见 ``snowflake_character_ids``）——摘要里不该冒出库里的内部 id。"""
-    presented = present_draft(run.project_id, run.draft_json or {})
+    """历史列表里的一版：只有元数据与出处，草稿只在预览某一版时带。交给前端的草稿按草稿口径（角色 id 剥掉服务端补的
+    作品前缀，见 ``snowflake_character_ids``）。
+
+    以前每一项还带一行 ``draft_summary``（把草稿里每一个字符串叶子拼起来：内部 id、枚举值、fe_* 写穿键都在里面）；
+    「服务器上保存的版本」不显示它、也没有别的读者，去掉了（合并胶水 G7，P03-R4 的余下部分）。"""
     payload = {
         "step_run_id": run.step_run_id,
         "version": run.version,
@@ -120,10 +97,9 @@ def step_run_history_payload(run: SnowflakeStepRun, *, include_draft: bool = Fal
         "stale_accepted_note": run.stale_accepted_note,
         "generation_source": str((run.health_json or {}).get("generation_source") or ""),
         "trigger_source": str((run.health_json or {}).get("trigger_source") or ""),
-        "draft_summary": draft_summary(presented),
     }
     if include_draft:
-        payload["draft"] = deepcopy(presented)
+        payload["draft"] = deepcopy(present_draft(run.project_id, run.draft_json or {}))
     return payload
 
 
