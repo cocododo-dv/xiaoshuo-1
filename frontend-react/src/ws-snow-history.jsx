@@ -4,7 +4,7 @@ import { WsDialog } from "./ws-dialog.jsx";
 import { CloseButton, Notice, Tag } from "./ws-ui.jsx";
 import { apiGet } from "./lib/client.js";
 import { recentOrDayTimeLabel } from "./lib/format.js";
-import { S2_BE_KEY, S2_STEPS, s2Ancestors, s2StepText } from "./ws-snow-model.js";
+import { S2_BE_KEY, S2_STEPS, s2AdoptServerScaffold, s2Ancestors, s2KeepServerOwned, s2StepText } from "./ws-snow-model.js";
 import { feFromCanon, stripFe } from "./ws-snow-canon.js";
 import { countChars } from "./lib/text.js";
 
@@ -79,10 +79,12 @@ export function S2Ref({ active, drafts, scaffolds }) {
 }
 
 /* ---- 回滚预览：快照 vs 当前，看清再恢复 ----
-   两边都是带栏名的分步文本（s2StepText）；视角名、04 名册、第 10 步的场序取 refs（现在的整份脚手架）。 */
+   两边都是带栏名的分步文本（s2StepText）；视角名、04 名册、第 10 步的场序取 refs（现在的整份脚手架）。
+   07 的章表、09 的「所在章」只有服务端写得了，回滚不动它们（s2KeepServerOwned，与 applySnap 同一条），
+   快照那一栏也就写现在的——差别只摆回滚真会换掉的内容。 */
 export function S2SnapDiff({ h, current, refs, onApply, onClose }) {
   const st = S2_STEPS.find(s => s.key === h.key) || {};
-  const oldText = s2StepText(h.key, h.snap.draft, h.snap.scaffold, refs).trim();
+  const oldText = s2StepText(h.key, h.snap.draft, s2KeepServerOwned(h.key, h.snap.scaffold, refs), refs).trim();
   const curText = s2StepText(h.key, current.draft, current.scaffold, refs).trim();
   const same = oldText === curText;
   return (
@@ -209,24 +211,42 @@ function versionTime(item) {
   return Number.isFinite(t) ? recentOrDayTimeLabel(t) : "";
 }
 
-/* 一版服务端草稿 → 带栏名的分步文本（与回滚预览同一份写法）。第 10 步的场序与题名取那一版自己的场景行；
-   07 的章表换成现在这一张——恢复 07 只恢复五段展开的文字，章表留着现在的分章（服务端 keep_live_chapter_table），
-   预览里两边就是同一张章表，差别只在文字上。 */
-export function s2VersionText(key, draft, refs) {
+/* 这一步作者自己写的内容（带栏名的分步文本）：07 不算章表——那是分章结果的只读镜像，不是这一步写的。
+   空串 = 这一步还空着（服务器版本预览判「这一版是空的」用它）。 */
+export function s2StepOwnText(key, draft, scaffold, refs) {
+  const own = key === "outline" && scaffold && typeof scaffold === "object" ? { ...scaffold, chapters: [] } : scaffold;
+  return s2StepText(key, draft, own, refs).trim();
+}
+
+/* 一版服务端草稿恢复到本机会是什么样（与回滚预览同一份写法），返回 { text, own }：
+   · text ——「会恢复成这样」那一栏。与恢复走同一条路：规范草稿反推脚手架（feFromCanon），再按 s2AdoptServerScaffold
+     落进现在的整份脚手架——只活在前端的 09 线索、03 错误信念恢复后接着用，预览里也就还在；07 的章表、09 的「所在章」
+     留着现在的（s2KeepServerOwned：恢复只换这一步的内容，不动分章——服务端 keep_live_chapter_table 同一条）。
+     第 10 步只换那一版里有的场：服务端恢复时只改那一版带着的场，之后才加的场规划不动；场序与题名按现在的 09。
+   · own —— 只算那一版自己的内容（不含接着用的前端内容、不含现在的章表）。空串 = 这一版是空的，恢复它等于清空这一步。
+   以前两样是同一个串：07 一分过章，旧版本那一栏就总有现在的章表，空版本也给恢复——一键清空 07 的五段展开。 */
+export function s2VersionPreview(key, draft, scaffolds) {
+  const all = scaffolds || {};
   const canon = stripFe(draft || {});
   const fe = feFromCanon(key, canon);
-  const ownRefs = key === "planning" ? { ...(refs || {}), scenes: (feFromCanon("scenes", canon).scaffold || {}) } : refs;
-  const scaffold = key === "outline" && fe.scaffold
-    ? { ...fe.scaffold, chapters: (((refs || {}).outline || {}).chapters) || [] }
+  if (!fe.scaffold) {
+    const text = s2StepText(key, fe.text != null ? fe.text : "", null, all).trim();
+    return { text, own: text };
+  }
+  const incoming = key === "planning"
+    ? { ...fe.scaffold, plans: { ...((all.planning || {}).plans || {}), ...(fe.scaffold.plans || {}) } }
     : fe.scaffold;
-  return s2StepText(key, fe.text != null ? fe.text : "", scaffold, ownRefs).trim();
+  const adopted = s2AdoptServerScaffold(all, key, s2KeepServerOwned(key, incoming, all));
+  // 那一版自己的第 10 步按它自己的场景行读（之后删掉的场的规划也算这一版的内容）
+  const ownRefs = key === "planning" ? { ...all, scenes: feFromCanon("scenes", canon).scaffold || {} } : all;
+  return { text: s2StepText(key, "", adopted[key], adopted).trim(), own: s2StepOwnText(key, "", fe.scaffold, ownRefs) };
 }
 
 /* 恢复前要说清的后果：07 只恢复文字（章表是分章结果，不跟着回去）；09 / 10 会动场景与整理之后的场景卡 */
 const RESTORE_WARNING = {
   outline: "只恢复五段展开的文字。章节表（章名、章界、每章有哪几场）保持现在的分章——章表只在分章面板里改。",
   scenes: "场景列表会回到这一版：这一版里没有的场会从场景列表删去（已经建了场景卡的场留在目录里，等你在分章面板里决定保留还是删除），之后加的场、改过的形态与视角也一并回到这一版的样子。",
-  planning: "每一场的三拍、坩埚、钩子等规划会回到这一版，之后改过的会被替换（形态与视角仍以 09 为准）。场景卡等你重新确认第 10 步之后才跟着更新。",
+  planning: "这一版里有的每一场，三拍、坩埚、钩子等规划会回到这一版，之后改过的会被替换（形态与视角仍以 09 为准；这一版之后才加的场不动）。场景卡等你重新确认第 10 步之后才跟着更新。",
 };
 
 export function S2ServerVersions({ workId, step, refreshKey, onPreview }) {
@@ -298,16 +318,18 @@ export function S2ServerVersions({ workId, step, refreshKey, onPreview }) {
   );
 }
 
-/* 服务器版本预览：那一版（会恢复成这样）vs 现在（本机此刻的内容）。restore 由工作台做；09 / 10 / 07 先把后果说清楚。 */
+/* 服务器版本预览：那一版（会恢复成这样）vs 现在（本机此刻的内容）。restore 由工作台做；09 / 10 / 07 先把后果说清楚。
+   「一样」比的是恢复之后本机会是的样子（s2VersionPreview 的 text）；「空」只看那一版自己的内容（own）。 */
 export function S2VersionDiff({ diff, current, refs, onRestore, onClose }) {
   const st = S2_STEPS.find(s => s.key === diff.key) || {};
   const item = diff.item || {};
   const status = s2VersionStatus(item);   // 预览的总是旧版本（现在的那一版没有「预览」）
   const source = s2VersionSource(item);
-  const oldText = diff.draft ? s2VersionText(diff.key, diff.draft, refs) : "";
+  const preview = diff.draft ? s2VersionPreview(diff.key, diff.draft, refs) : { text: "", own: "" };
+  const oldText = preview.text;
   const curText = s2StepText(diff.key, current.draft, current.scaffold, refs).trim();
   const same = !!diff.draft && oldText === curText;
-  const empty = !!diff.draft && !oldText;
+  const empty = !!diff.draft && !preview.own;
   const skipped = item.status === "skipped";
   const warning = RESTORE_WARNING[diff.key] || "";
   const canRestore = !!diff.draft && !diff.loading && !diff.restoring && !same && !empty && !skipped;

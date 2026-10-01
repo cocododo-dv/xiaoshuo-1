@@ -7,7 +7,7 @@ import { useFocusTrap, isImeComposing } from "./ws-dialog.jsx";
 import {
   S2_BE_KEY, S2_STEPS, S2_STATE_LABEL,
   s2AdoptServerScaffold, s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates,
-  s2FindStepKey, s2LandingStep, s2MergeScaffolds, s2PrependHistory, s2SettlePlanning, s2StepMarkdown,
+  s2FindStepKey, s2KeepServerOwned, s2LandingStep, s2MergeScaffolds, s2PrependHistory, s2SettlePlanning, s2StepMarkdown,
 } from "./ws-snow-model.js";
 import {
   activeWorkId, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
@@ -374,13 +374,16 @@ export function useSnowStepFlow({
     }
   };
   const restoreSnap = (h) => { if (h && h.snap) setSnapDiff(h); };
+  /* 回滚一份本机快照。07 的章表、09 的「所在章」只有服务端写得了（重评 R11），上行也不带它们：回滚不换它们，
+     留着现在的（s2KeepServerOwned）——以前快照里那张旧章表会回到只读镜像里，改名的目标、导出、引用上下文都跟着
+     旧章表走，直到下一次水合。回滚预览（S2SnapDiff）按同一条规矩摆两栏。 */
   const applySnap = (h) => {
     if (!h || !h.snap) return;
     const st = S2_STEPS.find(s => s.key === h.key); if (!st) return;
     // 回滚前先给当前状态留底，回滚本身也可被撤销
     const backup = snapNow(h.key);
     setDrafts(prev => ({ ...prev, [h.key]: h.snap.draft || "" }));
-    if (h.snap.scaffold) setScaffolds(prev => s2SettlePlanning({ ...prev, [h.key]: JSON.parse(JSON.stringify(h.snap.scaffold)) }));
+    if (h.snap.scaffold) setScaffolds(prev => s2SettlePlanning({ ...prev, [h.key]: s2KeepServerOwned(h.key, JSON.parse(JSON.stringify(h.snap.scaffold)), prev) }));
     setHistory(prev => s2PrependHistory(prev, { t: Date.now(), who: "我", action: "回滚快照", note: `${st.num} ${st.name} ← ${formatLocaleMonthDayTime(h.t)}`, key: h.key, snap: backup }));
     selectStep(h.key); setTabFor(h.key, "edit"); setSnapDiff(null);
     showToast(`已回滚 · ${st.name}`, "gold");
@@ -526,16 +529,21 @@ export function useSnowMoreMenu({
   const [resetOpen, setResetOpen] = useSS(false);
   /* 清空十步构思（原「重置」）。它不只是清本机：视图清空后 SnowSync 会把每一步的空稿上行到服务器
      （同步过的步骤都在账上，清空是作者的编辑）。所以它住在「更多」菜单的危险区，先开一个说清后果的对话框；
-     清空前给每一步留一份快照进「历史」，可以逐步回滚。 */
+     清空前给每一步留一份快照进「历史」，可以逐步回滚。07 的章表不清：它是服务端分章的只读镜像，07 的上行不带它，
+     服务端的分章也不随这一下清掉（s2KeepServerOwned）——清了本机就是一张「章表空着」的假象，直到下一次水合。 */
   const resetAll = () => {
     const now = Date.now();
-    // 只给真写过东西的步骤留底：空白脚手架里也有「c1 / 主角」这类默认值，不能算内容
+    // 只给真写过东西的步骤留底：空白脚手架里也有「c1 / 主角」这类默认值，不能算内容；07 只剩章表时也不算（章表不清）
     const blank = s2BlankScaffolds();
+    const mine = (key, scaffold) => s2KeepServerOwned(key, scaffold, blank);
     const backups = S2_STEPS
       .map(st => ({ t: now, who: "我", action: "清空前留底", note: `${st.num} ${st.name}`, key: st.key, snap: snapNow(st.key) }))
-      .filter(h => h.snap && s2Content(h.snap.draft, h.snap.scaffold).trim() !== s2Content("", blank[h.key]).trim());
+      .filter(h => h.snap && s2Content(h.snap.draft, mine(h.key, h.snap.scaffold)).trim() !== s2Content("", blank[h.key]).trim());
     setDrafts(s2DefaultDrafts());
-    setScaffolds(s2MergeScaffolds(null));
+    setScaffolds(prev => {
+      const fresh = s2MergeScaffolds(null);
+      return { ...fresh, outline: s2KeepServerOwned("outline", fresh.outline, prev) };
+    });
     setChecks(s2DefaultChecks());
     setStates(s2DefaultStates());
     setHistory(prev => s2PrependHistory(prev, [{ t: now, who: "我", action: "清空十步构思", note: `${backups.length} 步清空前留了快照`, key: activeKey, snap: null }, ...backups]));

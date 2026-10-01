@@ -305,3 +305,118 @@ describe("构思 · 历史 · 服务器上保存的版本（R15a）", () => {
     expect(document.querySelector('[data-testid="snow-version-old"]').textContent).toBe(OLD);
   });
 });
+
+/* 「会恢复成这样」那一栏按恢复真走的路算（复核 Q2b-R1 / R3）：只活在前端的 09 线索、03 错误信念恢复后接着用；
+   07 的章表、09 的「所在章」留着现在的（恢复不动分章）；第 10 步只换那一版带着的场。「空」只看那一版自己的内容——
+   以前 07 一分过章，旧版本那一栏就总带着现在的章表，五段展开全空的旧版本也给恢复（一键清空 07）；而线索、错误信念
+   在预览里像是会丢，内容一模一样的旧版本也给恢复（白白多一版待确认、确认过的步骤变回「待重新确认」）。 */
+describe("构思 · 历史 · 服务器版本预览只说恢复真会换掉的（复核 Q2b）", () => {
+  const diffs = [];
+  const unmountDiffs = async () => {
+    while (diffs.length) {
+      const { root, host } = diffs.pop();
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  };
+  afterEach(unmountDiffs);
+  /* 直接渲染预览对话框（对话框走 portal 挂在 body 上：先卸掉上一个）：scaffolds = 现在的整份脚手架，
+     draft = 那一版在服务器上的规范草稿 */
+  async function renderDiff(key, draft, scaffolds, currentDraft = "") {
+    await unmountDiffs();
+    const { S2VersionDiff } = await import("./ws-snow-history.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    diffs.push({ root, host });
+    const diff = { key, item: { version: 1, status: "superseded", step_run_id: "run_old_1" }, loading: false, error: "", restoring: false, draft };
+    await act(async () => root.render(
+      <S2VersionDiff diff={diff} current={{ draft: currentDraft, scaffold: scaffolds[key] }} refs={scaffolds} onRestore={vi.fn()} onClose={vi.fn()} />,
+    ));
+    const old = document.querySelector('[data-testid="snow-version-old"]');
+    return {
+      restore: document.querySelector('[data-testid="snow-version-restore"]'),
+      body: document.querySelector('[data-testid="snow-version-dialog"]').textContent,
+      old: old ? old.textContent : null,
+    };
+  }
+  const model = () => import("./ws-snow-model.js");
+  const canon = () => import("./ws-snow-canon.js");
+
+  it("07：那一版的五段展开全空——现在分过章也判「这一版是空的」、不给恢复；那一版自己的旧章表不算内容（R1）", async () => {
+    const { s2BlankScaffolds } = await model();
+    const scaffolds = { ...s2BlankScaffolds(), outline: {
+      expansions: { setup: "林昭回到雨城的那一夜", d1: "", d2: "", d3: "", resolution: "" },
+      chapters: [{ row_uid: "cr1", id: "01", act: 1, title: "雨城来信", summary: "", spine: "灾一" }],
+    } };
+    let view = await renderDiff("outline", { paragraphs: ["", "", "", "", ""], chapters: [] }, scaffolds);
+    expect(view.body).toContain("这一版是空的");
+    expect(view.old).toBeNull();
+    expect(view.restore.disabled).toBe(true);
+    const stale = [{ row_uid: "old1", chapter_seq: 1, act: 1, title: "旧章表里的一章", summary: "旧的章摘要", spine: "" }];
+    view = await renderDiff("outline", { paragraphs: ["", "", "", "", ""], chapters: stale }, scaffolds);
+    expect(view.body).toContain("这一版是空的");
+    expect(view.restore.disabled).toBe(true);
+    // 有展开的旧版本照常可恢复：那一栏是它的文字配现在的章表
+    view = await renderDiff("outline", { paragraphs: ["旧的铺垫展开", "", "", "", ""], chapters: stale }, scaffolds);
+    expect(view.restore.disabled).toBe(false);
+    expect(view.old).toContain("铺垫：旧的铺垫展开");
+    expect(view.old).toContain("雨城来信");
+    expect(view.old).not.toContain("旧章表里的一章");
+  });
+
+  it("09：线索与每场挂的线恢复后接着用、「所在章」跟现在的分章——服务器那一版就是现在的内容时说「一样」、不给恢复（R3）", async () => {
+    const { s2BlankScaffolds } = await model();
+    const { canonFromFE } = await canon();
+    const scaffolds = { ...s2BlankScaffolds(), scenes: {
+      lines: [{ id: "main", name: "主线", kind: "main" }, { id: "L1", name: "旧案", kind: "sub", refract: "沉默也是一种撒谎" }],
+      list: [{ id: "row_a", type: "proactive", line: "L1", pov: "", place: "码头", event: "林昭去码头取旧信", crucible: "船要开了", fn: "", spine: "", chapter: "雨城来信" }],
+    } };
+    // 服务器上那一版 = 现在推上去的内容（线索不上行）；行上的章标签是那时的分章留下的旧章名
+    const stamped = (draft) => ({ scenes: draft.scenes.map(r => ({ ...r, chapter_id: "work-a_CH01", chapter_title: "旧章名" })) });
+    const same = stamped(canonFromFE("scenes", { scaffolds }));
+    let view = await renderDiff("scenes", same, scaffolds);
+    expect(view.body).toContain("这一版与现在的内容一样");
+    expect(view.restore.disabled).toBe(true);
+    // 内容真有不同时照常给恢复；那一栏里线索、挂的线、现在的「所在章」都在
+    const changed = stamped(canonFromFE("scenes", { scaffolds: { ...scaffolds, scenes: { ...scaffolds.scenes,
+      list: [{ ...scaffolds.scenes.list[0], event: "林昭在码头烧掉旧信" }] } } }));
+    view = await renderDiff("scenes", changed, scaffolds);
+    expect(view.restore.disabled).toBe(false);
+    expect(view.old).toContain("事件：林昭在码头烧掉旧信");
+    expect(view.old).toContain("支线「旧案」：折射道德前提——沉默也是一种撒谎");
+    expect(view.old).toContain("线索：旧案");
+    expect(view.old).toContain("所在章：雨城来信");
+    expect(view.old).not.toContain("旧章名");
+  });
+
+  it("03：错误信念只活在前端、恢复后接着用——同一份内容说「一样」（R3）", async () => {
+    const { s2BlankScaffolds } = await model();
+    const { canonFromFE } = await canon();
+    const scaffolds = { ...s2BlankScaffolds(), paragraph: { ...s2BlankScaffolds().paragraph, setup: "林昭回到雨城", premiseF: "守口如瓶", premiseT: "说出真相" } };
+    const view = await renderDiff("paragraph", canonFromFE("paragraph", { scaffolds }), scaffolds);
+    expect(view.body).toContain("这一版与现在的内容一样");
+    expect(view.restore.disabled).toBe(true);
+  });
+
+  it("10：恢复只换那一版带着的场——之后才加的场规划不动、预览里写现在的；那一版的场全没规划就是空的", async () => {
+    const { s2BlankScaffolds } = await model();
+    const scaffolds = { ...s2BlankScaffolds(),
+      scenes: { lines: [], list: [
+        { id: "row_a", type: "proactive", line: "main", pov: "", place: "码头", event: "林昭去码头取旧信", crucible: "", fn: "", spine: "", chapter: "" },
+        { id: "row_b", type: "proactive", line: "main", pov: "", place: "档案室", event: "林昭翻出案卷", crucible: "", fn: "", spine: "", chapter: "" },
+      ] },
+      planning: { sel: "row_a", plans: { row_a: { goal: "现在的目标甲" }, row_b: { goal: "现在的目标乙" } } },
+    };
+    const version = { scenes: [{ row_uid: "row_a", summary: "林昭去码头取旧信", primary_form: "proactive", goal: "旧的目标甲" }] };
+    let view = await renderDiff("planning", version, scaffolds);
+    expect(view.body).toContain("这一版之后才加的场不动");
+    expect(view.restore.disabled).toBe(false);
+    expect(view.old).toContain("目标：旧的目标甲");
+    expect(view.old).toContain("目标：现在的目标乙");
+    expect(view.old).not.toContain("现在的目标甲");
+    view = await renderDiff("planning", { scenes: [{ row_uid: "row_a", summary: "林昭去码头取旧信", primary_form: "proactive" }] }, scaffolds);
+    expect(view.body).toContain("这一版是空的");
+    expect(view.restore.disabled).toBe(true);
+  });
+});

@@ -2,7 +2,8 @@
    雪花十步 · 空白脚手架与缓存归一（叶子模块：只 import 同层的步骤文案 ws-snow-guide.js 与纯推导 ws-snow-derive.js）
    ----------------------------------------------------------
    新作品的空白十步、本机缓存读入时的归一（缺的键补齐、第 10 步 plan 摘掉形态 / 视角，换了人的视角记进历史），
-   以及服务端整步脚手架落进视图状态时保住只活在前端的内容。视图与同步层共用这一条边界。
+   服务端整步脚手架落进视图状态时保住只活在前端的内容，以及本机整份换掉一步时留着只有服务端写得了的分章。
+   视图与同步层共用这一条边界。
    从 ws-snow-model.js 拆出（2026-09-29）；ws-snow-model.js 原样转出这里的全部名字。
    ========================================================== */
 
@@ -136,6 +137,22 @@ export function s2PreserveFeOnly(key, prev, next) {
 /* 服务端回来的整步脚手架落进视图状态：保住只活在前端的内容，并按第 10 步的规矩摘掉 plan 里的形态 / 视角 */
 export function s2AdoptServerScaffold(scaffolds, key, next) {
   return s2SettlePlanning({ ...scaffolds, [key]: s2PreserveFeOnly(key, (scaffolds || {})[key], next) });
+}
+/* 只有服务端写得了的那两样（重评 R11）：07 的章表（分章结果的只读镜像）与 09 每一场的「所在章」标签。
+   本机把一步整份换成别的样子——回滚一份快照、清空十步构思、预览一版服务器上的旧版本——都不改服务端的分章：
+   上行不带它们，服务端恢复旧版本时也留着现在的分章。本机要是换成旧的，改名的目标、导出、引用上下文就跟着
+   一张旧章表走，直到下一次水合才回来；预览也会把章表的差别当成会恢复的内容摆出来。
+   这里把 next（要换上的这一步脚手架）里的这两样换回 current（现在的整份脚手架）里的：09 的场按 id 对位，
+   现在没有的场标签留空（它归哪一章由服务端的分章说了算）。别的步骤、形状不对的值原样返回；不改传进来的对象。 */
+export function s2KeepServerOwned(key, next, current) {
+  if (!next || typeof next !== "object" || Array.isArray(next)) return next;
+  const now = (current && current[key]) || {};
+  if (key === "outline") return { ...next, chapters: Array.isArray(now.chapters) ? now.chapters : [] };
+  if (key === "scenes" && Array.isArray(next.list)) {
+    const label = new Map((Array.isArray(now.list) ? now.list : []).filter(s => s && s.id).map(s => [s.id, s.chapter || ""]));
+    return { ...next, list: next.list.map(s => (s && typeof s === "object" ? { ...s, chapter: label.get(s.id) || "" } : s)) };
+  }
+  return next;
 }
 /* 历史时间线添几条到最前（entries 可以是一条或一组，按给的顺序排在最前）：最多留 80 条，只有最近 20 条带可回滚的
    内容快照（控制本机缓存的体积）。记一笔、清空十步、回滚快照、从服务器恢复都按这一条规矩记账。 */

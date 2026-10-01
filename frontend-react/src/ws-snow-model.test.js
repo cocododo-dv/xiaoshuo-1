@@ -10,7 +10,7 @@ import { WS_SNOW_STEPS } from "./ws-nav.js";
 import {
   S2_BE_KEY, S2_BE_STEPS, S2_STEPS, S2_STEP_DATA,
   s2AdoptServerScaffold, s2Ancestors, s2BlankScaffolds, s2BlockedStep, s2FindStepKey, s2InferSpine, s2LandingStep, s2LineStats,
-  s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanPovChanges, s2PlanSlots, s2PlanState, s2PovSettleEntry, s2PreserveFeOnly,
+  s2KeepServerOwned, s2MergeScaffolds, s2NormalizeState, s2PacingRuns, s2PlanAuto, s2PlanPovChanges, s2PlanSlots, s2PlanState, s2PovSettleEntry, s2PreserveFeOnly,
   S2_DEFAULT_LINES, s2ReorderScenes, s2SceneAuto, s2SceneLines, s2SceneListStats, s2SettlePlanning, s2StaleMap, s2UpstreamDrift,
   s2StepLines, s2StepMarkdown, s2StepText,
 } from "./ws-snow-model.js";
@@ -276,6 +276,31 @@ describe("缓存归一与服务端脚手架的落地（F02-01 / F02-02）", () =
     const listed = s2AdoptServerScaffold(prev, "scenes", { lines: [], list: [{ id: "S01", type: "reactive", pov: "c2", line: "main" }] });
     expect(listed.scenes.list[0].line).toBe("L1");
     expect(listed.scenes.lines).toEqual([{ id: "L1", kind: "sub" }]);
+  });
+
+  it("s2KeepServerOwned（复核 Q2b-R5）：07 的章表、09 的「所在章」换回现在的；别的照旧，不改传进来的对象", () => {
+    const current = {
+      outline: { expansions: { setup: "现在" }, chapters: [{ row_uid: "c1", title: "雨城来信" }] },
+      scenes: { lines: [], list: [{ id: "S01", chapter: "雨城来信" }, { id: "S02", chapter: "" }] },
+    };
+    const oldOutline = { expansions: { setup: "快照" }, chapters: [{ row_uid: "old1", title: "旧章表里的一章" }] };
+    const outline = s2KeepServerOwned("outline", oldOutline, current);
+    expect(outline).toEqual({ expansions: { setup: "快照" }, chapters: [{ row_uid: "c1", title: "雨城来信" }] });
+    expect(oldOutline.chapters[0].title).toBe("旧章表里的一章");
+    // 现在还没有章表：换上去的也没有
+    expect(s2KeepServerOwned("outline", oldOutline, {}).chapters).toEqual([]);
+    // 09：按 id 对位；现在没有的场标签留空（归哪一章由服务端的分章定）
+    const oldScenes = { lines: [{ id: "L1" }], list: [{ id: "S02", event: "旧事", chapter: "旧章名" }, { id: "S01", chapter: "" }, { id: "S09", chapter: "旧章名" }] };
+    const scenes = s2KeepServerOwned("scenes", oldScenes, current);
+    expect(scenes.list.map(r => [r.id, r.chapter])).toEqual([["S02", ""], ["S01", "雨城来信"], ["S09", ""]]);
+    expect(scenes.list[0].event).toBe("旧事");
+    expect(scenes.lines).toBe(oldScenes.lines);
+    expect(oldScenes.list[0].chapter).toBe("旧章名");
+    // 别的步骤、形状不对的值原样返回
+    const para = { setup: "x" };
+    expect(s2KeepServerOwned("paragraph", para, current)).toBe(para);
+    expect(s2KeepServerOwned("outline", null, current)).toBeNull();
+    expect(s2KeepServerOwned("scenes", { lines: [] }, current)).toEqual({ lines: [] });
   });
 });
 
