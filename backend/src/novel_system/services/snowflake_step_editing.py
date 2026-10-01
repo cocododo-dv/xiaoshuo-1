@@ -19,7 +19,8 @@ from novel_system.services.hash_engine import sha256_text
 from novel_system.services.snowflake_chapter_table import carry_stored_chapters, keep_live_chapter_table
 from novel_system.services.snowflake_character_ids import RosterSource, canonical_character_id, canonicalize_draft
 from novel_system.services.snowflake_draft_merge import overlay_keeping_members
-from novel_system.services.snowflake_staleness import semantic_payload
+from novel_system.services.snowflake_scene_rows import SCENE_PLAN_STEPS
+from novel_system.services.snowflake_staleness import semantic_payload, strip_scene_row_packaging
 from novel_system.services.snowflake_step_catalog import CHARACTER_STEPS, step_definition_view
 from novel_system.services.snowflake_step_diagnosis import diagnose_step_pressure, step_completeness
 from novel_system.services.snowflake_step_drafts import merge_step_draft
@@ -331,6 +332,11 @@ class SnowflakeStepEditingMixin:
         # R11（批准 #18a）：07 的章表是分章结果的只读镜像、章表行只有一个写入方——恢复一版旧的 07 只恢复它的文字，
         # 章结构（章行、分章面板 / 写作台起的章名、场景归属）保留现表，与整步生成同一条规矩（复核 P04-R3，主管决定）
         chapters_kept = step_key == "long_synopsis" and keep_live_chapter_table(self.session, project.project_id, draft)
+        if step_key in SCENE_PLAN_STEPS and isinstance(draft.get("scenes"), list):
+            # 场的包装（归哪一章、章名、章目标、章内序、计划行状态）同样只有分章面板与服务端写：旧版本的行带着当时的
+            # 包装（自动保存存的就是工作台的行），原样同步回去会把旧章名 / 旧章目标盖到现在的每一个场景计划上，下一次
+            # 「确认本步」带 sync_catalog 回流时还会写进场景卡和目录的章（复核 Q2b-R2）。恢复只换这一步的内容，包装保留现在的
+            draft["scenes"] = [strip_scene_row_packaging(row) for row in draft["scenes"]]
         refs = self._input_refs(step_key, latest_by_step)
         refs["restored_from_step_run_id"] = source_run.step_run_id
         run = self._runs.new_run(

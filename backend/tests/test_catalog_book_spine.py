@@ -32,11 +32,13 @@ from novel_system.services.catalog_placeholders import AUTO_TRASHED_PLACEHOLDER_
 from novel_system.services.scene_design_ownership import PLAN_OWNED_SCENE_FIELDS
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, misplaced_scene_plan_ids
 from tests.test_snowflake_chaptering import (
+    _SPINE_AT,
     _approve,
     _create_project,
     _detail,
     _pass_triage,
     _patch,
+    _scene,
     _seed,
 )
 from tests.test_snowflake_chaptering_story_order import _confirm, _payload
@@ -238,9 +240,14 @@ def test_short_titles_come_from_the_first_clause() -> None:
 def test_the_catalog_carries_the_whole_design_card(client, session) -> None:
     project_id = _create_project(client, "spine-design")
     _seed(client, project_id)
+    # 事件（摘要）是 09 的一栏：在场景列表里写（第 10 步的草稿改不动它）
+    summary = "一封没有寄信人的信把她拉回雨城，信封里只有一张二十年前的车票。"
+    scenes = [_scene(f"S{i:02d}", i, summary if i == 1 else f"事件{i}", _SPINE_AT.get(i, "")) for i in range(1, 13)]
+    _patch(client, project_id, "scene_list", {"scenes": scenes})
+    _approve(client, project_id, "scene_list")
     details = [_detail(f"S{i:02d}", i, f"事件{i}") for i in range(1, 13)]
     details[0].update({
-        "title": "雨夜来信", "summary": "一封没有寄信人的信把她拉回雨城，信封里只有一张二十年前的车票。",
+        "title": "雨夜来信", "summary": summary,
         "story_time": "第一夜 · 23:40", "expected_reader_emotion": "不安", "hook": "车票背面有她母亲的字迹。",
         "exit_change": "她决定回去", "must_include_text": "你欠这座城一个交代。", "target_length_band": "1200-1500",
         "reaction": "她盯着车票看了很久", "dilemma": "回去，还是装作没看见", "decision": "订了最早的一班车",

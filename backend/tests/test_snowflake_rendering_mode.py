@@ -26,6 +26,7 @@ from novel_system.db.models import (
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService
 from novel_system.services.scene_structure_brief import render_scene_structure_brief
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService, _rhythm_report
+from novel_system.services.snowflake_scene_rows import SCENE_LIST_OWNED_FIELDS
 from novel_system.services.snowflake_staleness import semantic_payload
 from novel_system.services.snowflake_steps import RENDERING_MODES, SUMMARY_LENGTH_BAND, _scene_detail_seed, effective_rendering_mode
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
@@ -85,8 +86,8 @@ def _seed(session) -> SnowflakeWorkspaceService:
     return service
 
 
-#: 已有场景计划上只归 09 改的字段（第 10 步的草稿不改它们，见 snowflake_workspace.SCENE_LIST_OWNED_FIELDS）
-_LIST_OWNED = ("primary_form", "scene_type", "pov_character_id")
+#: 已有场景计划上只归 09 改的字段（第 10 步的草稿不改它们）
+_LIST_OWNED = SCENE_LIST_OWNED_FIELDS
 
 
 def _edit_plan(service: SnowflakeWorkspaceService, row_uid: str, **fields) -> None:

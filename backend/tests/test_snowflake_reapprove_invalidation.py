@@ -340,7 +340,8 @@ def test_reapproving_scene_details_invalidates_only_the_changed_scenes_runtime(c
 
     for row in rows:
         if row["scene_id"] == changed["scene_id"]:
-            row["summary"] = "作者改了这一场：她没有追送信人，而是回家把信烧了。"
+            # 改的是第 10 步自己的一栏（事件 / 地点 / 坩埚归 09，第 10 步的草稿改不动它们）
+            row["exit_change"] = "作者改了这一场：她没有追送信人，而是回家把信烧了。"
     patched = client.patch(f"/api/v2/projects/{pid}/snowflake-workspace/steps/scene_details", json={"draft": {"scenes": rows}})
     assert patched.status_code == 200, patched.text
     approved = client.post(

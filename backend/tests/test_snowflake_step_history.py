@@ -168,3 +168,123 @@ def test_history_route_accepts_a_version_filter(client) -> None:
     )
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "SNOWFLAKE_STEP_RUN_NOT_FOUND"
+
+
+@pytest.mark.parametrize(("step_key", "content_field"), [("scene_list", "summary"), ("scene_details", "goal")])
+def test_restoring_an_older_09_or_10_keeps_the_live_chapter_packaging(session, step_key, content_field) -> None:
+    """复核 Q2b-R2：章的包装（每场归哪一章、章名、章目标）只有一个写入方——分章面板（R11）。旧的 09 / 10 版本的行带着
+    当时的包装（前端自动保存存的就是工作台的行），以前恢复时原样同步回现在的每一个场景计划：章表行是新章名 / 新目标，
+    场景计划却是旧的，下一次「确认本步」带 sync_catalog 回流时再把旧章目标写进场景卡和目录的章。恢复只换这一步的
+    内容（这里换掉一场的一栏：09 的事件、10 的目标），包装保留现在的——与恢复 07 保留现表同一条。"""
+    from sqlalchemy import select
+
+    from novel_system.db.models import SnowflakeScenePlan
+    from novel_system.services.snowflake_chapter_table import live_chapter_plans
+
+    service = _seed(session)
+    chaptering = SnowflakeChapteringService(session)
+
+    def live_plans() -> list[SnowflakeScenePlan]:
+        return list(
+            session.execute(
+                select(SnowflakeScenePlan).where(
+                    SnowflakeScenePlan.project_id == PROJECT_ID, SnowflakeScenePlan.removed_at.is_(None)
+                )
+            ).scalars()
+        )
+
+    def chapter_once(row_uid: str, title: str, goal: str) -> None:
+        chaptering.save(
+            PROJECT_ID,
+            {
+                "replace_chapters": True,
+                "chapters": [{"row_uid": row_uid, "title": title, "act": 1, "chapter_goal": goal}],
+                "assignments": [{"scene_plan_id": plan.scene_plan_id, "chapter_row_uid": row_uid} for plan in live_plans()],
+            },
+        )
+        session.flush()
+
+    chapter_once("new:1", "旧章名", "旧目标")
+    rows = next(step for step in service.workspace(PROJECT_ID)["steps"] if step["step_key"] == step_key)["draft"]["scenes"]
+    assert {(row["chapter_title"], row["chapter_goal"]) for row in rows} == {("旧章名", "旧目标")}
+    session.add(
+        SnowflakeStepRun(
+            step_run_id="run-old",
+            project_id=PROJECT_ID,
+            step_key=step_key,
+            version=0,
+            status="superseded",
+            draft_json={"scenes": [dict(row, **{content_field: "旧版本里的一栏"}) if row["row_uid"] == "u1" else dict(row) for row in rows]},
+            health_json={},
+            input_refs_json={},
+        )
+    )
+    session.flush()
+    # 之后在分章面板里改了章名与章目标
+    [chapter] = live_chapter_plans(session, PROJECT_ID)
+    chapter_once(chapter.row_uid, "新章名", "新目标")
+
+    result = service.restore_step(PROJECT_ID, step_key, {"step_run_id": "run-old"})
+    session.flush()
+    session.expire_all()
+
+    plans = live_plans()
+    assert {(plan.chapter_title, plan.chapter_goal) for plan in plans} == {("新章名", "新目标")}
+    assert {plan.chapter_plan_id for plan in plans} == {chapter.chapter_plan_id}
+    assert getattr(next(plan for plan in plans if plan.row_uid == "u1"), content_field) == "旧版本里的一栏"  # 内容确实恢复了
+    assert {(row["chapter_title"], row["chapter_goal"]) for row in result["step"]["draft"]["scenes"]} == {("新章名", "新目标")}
+    [chapter] = live_chapter_plans(session, PROJECT_ID)
+    assert (chapter.title, chapter.chapter_goal) == ("新章名", "新目标")
+
+
+def test_restoring_an_older_10_keeps_the_scenes_and_fields_09_owns(session) -> None:
+    """复核 Q2b 新发现：哪些场存在、场的事件 / 地点 / 坩埚 / 形态 / 视角都归 09，第 10 步只管它自己那几栏。以前恢复一版
+    旧的 10：09 之后删掉的场被复活（又回到 09 的列表、分章面板与物化里），旧的事件 / 地点被盖回现在的场上。现在恢复只换
+    10 自己的栏；存下的这一版 10 也照场上的样子写（删掉的场不在里面，09 的那几栏是现在的值）。没刷新的旧标签页的 10
+    自动保存走同一条路：带着删掉的场也不复活它。"""
+    from sqlalchemy import select
+
+    from novel_system.db.models import SnowflakeScenePlan
+    from tests.test_snowflake_rendering_mode import _scene_rows
+
+    service = _seed(session)
+    rows = next(st for st in service.workspace(PROJECT_ID)["steps"] if st["step_key"] == "scene_details")["draft"]["scenes"]
+    old = [dict(row, summary="旧的摘要", location="旧地点", goal="旧的目标") if row["row_uid"] == "u1" else dict(row) for row in rows]
+    session.add(
+        SnowflakeStepRun(
+            step_run_id="run-10-old", project_id=PROJECT_ID, step_key="scene_details", version=0,
+            status="superseded", draft_json={"scenes": old}, health_json={}, input_refs_json={},
+        )
+    )
+    session.flush()
+    # 09：那一版之后作者删掉了 u3
+    service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": [r for r in _scene_rows() if r["row_uid"] != "u3"]}})
+    session.flush()
+
+    def plans_by_uid(*, live: bool) -> dict[str, SnowflakeScenePlan]:
+        query = select(SnowflakeScenePlan).where(SnowflakeScenePlan.project_id == PROJECT_ID)
+        if live:
+            query = query.where(SnowflakeScenePlan.removed_at.is_(None))
+        return {plan.row_uid: plan for plan in session.execute(query).scalars()}
+
+    result = service.restore_step(PROJECT_ID, "scene_details", {"step_run_id": "run-10-old"})
+    session.flush()
+    session.expire_all()
+
+    live = plans_by_uid(live=True)
+    assert sorted(live) == ["u1", "u2"], "恢复旧的 10 复活了 09 删掉的场"
+    assert plans_by_uid(live=False)["u3"].removed_at is not None
+    assert (live["u1"].summary, live["u1"].location) == ("取账本", "码头"), "恢复旧的 10 改了 09 的栏"
+    assert live["u1"].goal == "旧的目标"  # 10 自己的栏确实恢复了
+    restored = session.get(SnowflakeStepRun, result["step_run"]["step_run_id"])
+    stored = {row["row_uid"]: row for row in restored.draft_json["scenes"]}
+    assert sorted(stored) == ["u1", "u2"]
+    assert (stored["u1"]["summary"], stored["u1"]["location"], stored["u1"]["goal"]) == ("取账本", "码头", "旧的目标")
+
+    # 没刷新的旧标签页：10 的自动保存还带着 u3（和它旧的事件）——同样不复活、不改 09 的栏
+    stale_tab = [dict(row) for row in old]
+    service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": stale_tab}})
+    session.flush()
+    session.expire_all()
+    assert sorted(plans_by_uid(live=True)) == ["u1", "u2"]
+    assert plans_by_uid(live=True)["u1"].summary == "取账本"

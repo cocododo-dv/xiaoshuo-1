@@ -1586,11 +1586,12 @@ def test_workspace_v2_computes_rule_first_scene_diagnostics_and_blocks_auto_rewr
     ]:
         _approve_generated_step(client, project["project_id"], step_key)
 
-    # 形态归 09（第 10 步的草稿不改已有场的形态 / 视角）：先在场景列表里把前两场的形态对调并确认
+    # 形态、事件、坩埚归 09（第 10 步的草稿不改已有场的这些栏）：先在场景列表里把前两场的形态对调、清空第一场的
+    # 事件与坩埚、给第二场写上坩埚，并确认
     workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
     listed = [dict(row) for row in next(step for step in workspace["steps"] if step["step_key"] == "scene_list")["draft"]["scenes"]]
-    listed[0].update(primary_form="reactive", scene_type="reactive")
-    listed[1].update(primary_form="proactive", scene_type="proactive")
+    listed[0].update(primary_form="reactive", scene_type="reactive", summary="", crucible="")
+    listed[1].update(primary_form="proactive", scene_type="proactive", crucible="The heroine cannot leave without losing the only witness.")
     relisted = client.patch(
         f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_list",
         json={"draft": {"scenes": listed}},

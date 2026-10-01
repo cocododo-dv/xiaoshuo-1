@@ -52,8 +52,13 @@ SCENE_PATCH_FIELDS = {
     # 阶段 N：作者的破例理由（原著：不过关也可以放行，但要知道理由）。
     "exception_reason",
 }
-#: 已有场景计划行上只归 09 场景列表改的字段（第 10 步的草稿不改它们）
-SCENE_LIST_OWNED_FIELDS = ("primary_form", "scene_type", "pov_character_id")
+#: 已有场景计划行上只归 09 场景列表（章的包装归分章面板）改的字段：交给前端的 09 行（:func:`scene_list_payload`）上的
+#: 内容，坩埚的两个写法都算。第 10 步的草稿不改它们——它只管自己那几栏（三拍、代价、在场、篇幅、呈现……）。以前只护着
+#: 形态与视角：恢复一版旧的 10、模型交回来的 10 都会把旧的事件 / 地点 / 坩埚 / 脊柱标记盖回现在的场上（复核 Q2b 新发现）
+SCENE_LIST_OWNED_FIELDS = (
+    "primary_form", "scene_type", "pov_character_id", "summary", "location", "crucible", "scene_crucible", "spine",
+    "chapter_role", "chapter_title", "chapter_goal", "scene_seq",
+)
 
 #: 产出场景计划的两步（09 场景列表 / 10 场景规划）：它们的「已复核」连同过期的场景计划一起复核
 SCENE_PLAN_STEPS = frozenset({"scene_list", "scene_details"})

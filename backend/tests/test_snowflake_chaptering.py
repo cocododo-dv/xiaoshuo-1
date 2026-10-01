@@ -945,6 +945,20 @@ def test_readding_the_scene_clears_the_orphan_flag(client, session) -> None:
     assert not _blockers(client, project_id), "场加回来了，blocker 还在"
 
 
+def test_a_scene_details_write_does_not_bring_an_orphan_back(client, session) -> None:
+    """哪些场存在归 09：第 10 步的草稿（恢复一版旧的 10、没刷新的旧标签页的自动保存）带着一场已经从 09 删掉、但物化过的
+    场（孤儿）时，不算「加回来了」——孤儿标记与分章面板的 blocker 照旧挂着，等作者处置。以前 10 的同步也清这个标记。"""
+    project_id, orphan = _make_orphan(client, session, "orphan-details")
+    _approve(client, project_id, "scene_list")
+
+    _patch(client, project_id, "scene_details",
+           {"scenes": [_detail(f"S{i:02d}", i, f"事件{i}", _SPINE_AT.get(i, "")) for i in range(1, 13)]})
+    session.expire_all()
+    session.refresh(orphan)
+    assert orphan.orphaned_flag, "第 10 步的草稿把孤儿当成回到了场景列表"
+    assert _blockers(client, project_id)
+
+
 def test_keeping_the_prose_resolves_the_blocker_without_touching_the_scene_card(client, session) -> None:
     """「保留正文」：目录里那一场留着（可能已经写了几千字），构思侧不再管它。"""
     project_id, orphan = _make_orphan(client, session, "orphan-keep")

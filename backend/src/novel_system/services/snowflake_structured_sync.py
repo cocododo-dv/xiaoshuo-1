@@ -39,6 +39,27 @@ from novel_system.services.snowflake_step_catalog import (
 from novel_system.services.snowflake_step_diagnosis import diagnose_scene_detail
 from novel_system.services.value_coercion import coerce_string_list, int_or_default
 
+#: 09 那几栏里算故事内容的（语义比较看得见的；章的包装键不在其列——语义比较剥掉它们，章内序还要等 renumber 重算）：
+#: 第 10 步存下的草稿行按场上现在的值重写它们，见 :func:`_restamp_scene_list_fields`
+_SCENE_LIST_CONTENT_FIELDS = (
+    "primary_form", "scene_type", "pov_character_id", "summary", "location", "crucible", "scene_crucible", "spine",
+    "chapter_role",
+)
+
+
+def _restamp_scene_list_fields(item: dict[str, Any], plan_payload: dict[str, Any]) -> bool:
+    """第 10 步存下的一行里 09 的那几栏写成场上现在的值（行里有这一栏才写）；写了返回 True。
+
+    第 10 步不改这几栏（``SCENE_LIST_OWNED_FIELDS``），恢复一版旧的 10、模型交回来的 10 却带着旧的 / 另拟的事件、地点、
+    坩埚：存下的草稿照写场上的样子，草稿与场景计划才是同一个故事——前端下一次原样的自动保存与它语义相同，不会把
+    「从历史恢复」/「AI 生成」的出处冲成「你写的」。"""
+    changed = False
+    for key in _SCENE_LIST_CONTENT_FIELDS:
+        if key in item and item[key] != plan_payload[key]:
+            item[key] = plan_payload[key]
+            changed = True
+    return changed
+
 
 class SnowflakeStructuredSyncMixin:
     """见模块说明。与其它 ``snowflake_*`` 混入类一起组成 ``SnowflakeWorkspaceService``（B06-07）：
@@ -145,6 +166,7 @@ class SnowflakeStructuredSyncMixin:
         seen_row_uids: set[str] = set()
         seen_scene_ids: set[str] = set()
         touched_row_uids: set[str] = set()
+        skipped_rows: list[dict[str, Any]] = []
         # 本作品的全部场景计划（含软删的：同一 row_uid 回来要复活它）一次读进来，逐行对位查字典——
         # 以前每一行两三条查询，60 场的自动保存光对位就是一百多条语句（B06-06）。新建与认领 row_uid 时同步更新两张表。
         known_plans = list(
@@ -179,17 +201,22 @@ class SnowflakeStructuredSyncMixin:
                 plan = by_scene_id.get(incoming_scene_id)
             if plan is not None and plan.row_uid and plan.row_uid in seen_row_uids:
                 plan = None  # 已被本轮前一条认领，不能二次绑定
+            if step_key == "scene_details" and plan is not None and plan.removed_at:
+                # 哪些场存在归 09：第 10 步的草稿（恢复一版旧的 10、旧标签页的自动保存）带着 09 之后删掉的场时，这一行
+                # 整个跳过——不复活它，也不另起一行（复核 Q2b 新发现：以前复活后它回到 09 的列表、分章面板与物化里）
+                skipped_rows.append(item)
+                continue
             created = plan is None
             if plan is not None and plan.removed_at:
                 # 作者把删掉的场又加了回来（同一 row_uid）：复活，而不是撞唯一索引。
                 plan.removed_at = None
                 plan.removed_by = None
-            if plan is not None and plan.orphaned_flag:
+            if step_key == "scene_list" and plan is not None and plan.orphaned_flag:
                 # 孤儿标记必须在这里清，不能只在上面那个「复活」分支里清：已物化的场被删时
                 # 走的是**打标记不软删**那条路（removed_at 保持 NULL），所以复活分支永远
                 # 摸不到它。结果是 orphaned_flag 只写不清，分章面板的 blocker 永久挂着、
                 # 「确认分章」按钮再也点不动——而它自己的提示语还写着「请先决定」。
-                # 场回到了场景列表里，按定义就不再是孤儿。
+                # 场回到了场景列表里，按定义就不再是孤儿。第 10 步的草稿带着它不算「回来了」（哪些场存在归 09）。
                 plan.orphaned_flag = 0
 
             input_chapter_id = str(item.get("chapter_id") or current_chapter_id or f"{project_id}_CH01").strip()
@@ -247,8 +274,9 @@ class SnowflakeStructuredSyncMixin:
             patch.pop("scene_id", None)
             patch.pop("chapter_id", None)
             if step_key == "scene_details" and not created:
-                # 形态与视角归 09（场景列表）：第 10 步只深化三拍，不改已有行的这两样（F02-01 的后端兜底——
-                # 前端第 10 步曾把渲染时的默认值冻进本地计划，推 10 时把 09 刚改过的形态与视角改回去）。
+                # 09 的那几栏（形态、视角、事件、地点、坩埚、脊柱标记、章内功能）与章的包装归 09 / 分章面板：第 10 步
+                # 只深化它自己的几栏，不改已有行的这些（F02-01 的后端兜底——前端第 10 步曾把渲染时的默认值冻进本地
+                # 计划，推 10 时把 09 刚改过的形态与视角改回去；恢复一版旧的 10 会把旧的事件 / 地点 / 坩埚盖回来）。
                 for key in SCENE_LIST_OWNED_FIELDS:
                     patch.pop(key, None)
             self._apply_scene_patch(plan, patch)
@@ -264,7 +292,10 @@ class SnowflakeStructuredSyncMixin:
                 plan.title = str(item.get("title") or item.get("summary") or f"场景 {index:02d}").strip()
             if created and not plan.chapter_title:
                 plan.chapter_title = str(item.get("chapter_title") or chapter_id).strip()
-            plan.diagnosis_json = diagnose_scene_detail(scene_plan_payload(plan))
+            plan_payload = scene_plan_payload(plan)
+            plan.diagnosis_json = diagnose_scene_detail(plan_payload)
+            if step_key == "scene_details" and not created and _restamp_scene_list_fields(item, plan_payload):
+                minted = True
 
             seen_row_uids.add(row_uid)
             seen_scene_ids.add(scene_id)
@@ -277,6 +308,11 @@ class SnowflakeStructuredSyncMixin:
                 item["scene_id"] = scene_id
                 item["chapter_id"] = chapter_id
                 minted = True
+
+        if skipped_rows:
+            # 跳过的行也不留在存下的这一版 10 里（草稿与场景计划一致）
+            scenes[:] = [row for row in scenes if not any(row is skipped for skipped in skipped_rows)]
+            minted = True
 
         if step_key == "scene_list" and touched_row_uids:
             self._reconcile_removed_scene_plans(project_id, touched_row_uids, plans=known_plans)

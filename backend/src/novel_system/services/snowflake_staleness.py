@@ -202,7 +202,7 @@ def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(scenes, list):
         # 阶段 C：rendering_mode 的默认值 full 与「缺席」同义——阶段 C 之前存的草稿没有这个键，
         # 前端水合后总会把 full 发回来；不剥掉默认值，已确认的场景规划会在升级当刻被打回待审。
-        result["scenes"] = [_strip_packaging_keys(_strip_default_rendering_mode(item)) for item in scenes]
+        result["scenes"] = [strip_scene_row_packaging(_strip_default_rendering_mode(item)) for item in scenes]
     return result
 
 
@@ -220,7 +220,9 @@ _SCENE_ROW_PACKAGING_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _strip_packaging_keys(item: Any) -> Any:
+def strip_scene_row_packaging(item: Any) -> Any:
+    """一行场景去掉包装键（上面那张表）。语义比较用它；恢复一版旧的 09 / 10 时也用它——旧版本的行带着当时的包装，
+    原样同步回去会把旧章名 / 旧章目标盖到现在的场景计划上（复核 Q2b-R2，见 ``restore_step``）。"""
     if not isinstance(item, dict):
         return item
     return {key: value for key, value in item.items() if key not in _SCENE_ROW_PACKAGING_KEYS}
