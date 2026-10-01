@@ -136,6 +136,10 @@ const CAT_SID_LIST_KEYS = ["scn-queue:v1", "scn-queue-dismissed:v1"];
    · planTitlesSynced：台子上改的章名被后端写穿到章计划后、目录重拉之前 await（fn(workId)）——雪花缓存接章表。 */
 const catLoadedHooks = new Set();
 const catPlanTitleHooks = new Set();
+/* HMR / 单测 resetModules 之后这个实例就退役了（下一个实例加载时 retireModuleListeners 执行文件末尾登记的清理）：
+   它还在路上的装载回来照常更新自己的缓存，但不再叫 loaded 登记口——登记它们的旧正文 store 也跟着退役了，
+   叫它们只会拿旧状态去碰共享的 localStorage 与请求。 */
+let catRetired = false;
 function catRegister(set, fn) {
   if (typeof fn !== "function") return () => {};
   set.add(fn);
@@ -241,7 +245,7 @@ const catLoader = createKeyedLoader({
     delete catErrorMap[workId];
     catNotify();
     catPushTotals();
-    catLoadedHooks.forEach((fn) => { try { fn(workId); } catch (e) {} });
+    if (!catRetired) catLoadedHooks.forEach((fn) => { try { fn(workId); } catch (e) {} });
   },
   onError(workId, e) {
     catErrorMap[workId] = e instanceof Error ? e : new Error("章节目录加载失败");
@@ -494,6 +498,7 @@ window.addEventListener("ws:work-changed", catOnWorkChanged);
 
 
 adoptModuleListeners("ws-catalog", () => {
+  catRetired = true;
   window.removeEventListener("ws:work-changed", catOnWorkChanged);
   clearTimeout(catTotalsTimer);
 });

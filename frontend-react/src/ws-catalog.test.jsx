@@ -65,6 +65,31 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(mod.WsCatalog.get()).toHaveLength(1);
   });
 
+  it("退役的实例（单测 resetModules / HMR 之后）：在路上的装载回来照常落进自己的缓存，但不再叫 onLoaded 登记口", async () => {
+    const client = await import("./lib/client.js");
+    installApiRouter(client);
+    const route = client.apiGet.getMockImplementation();
+    let release;
+    const oldCatalog = new Promise((resolve) => { release = resolve; });
+    let hold = true;
+    client.apiGet.mockImplementation((url) => (hold && url === "/api/v2/projects/prj-main/catalog" ? oldCatalog : route(url)));
+    const old = await import("./ws-catalog.jsx");
+    const loaded = vi.fn();
+    old.WsCatalog.onLoaded(loaded);
+    await settleActive();
+    await vi.waitFor(() => expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog"), T);
+
+    hold = false;
+    vi.resetModules();
+    const fresh = await import("./ws-catalog.jsx"); // 新实例加载：旧实例退役
+    await vi.waitFor(() => expect(fresh.WsCatalog.ready()).toBe(true), T);
+
+    release({ chapters: [DEFAULT_CHAP] });
+    await vi.waitFor(() => expect(old.WsCatalog.ready()).toBe(true), T);
+    expect(old.WsCatalog.get()[0].title).toBe(DEFAULT_CHAP.title);
+    expect(loaded).not.toHaveBeenCalled();
+  });
+
   it("renameScene 同步改缓存并 PATCH 到后端场景端点", async () => {
     const { mod, client } = await loadCatalog();
     const { WsCatalog } = mod;
