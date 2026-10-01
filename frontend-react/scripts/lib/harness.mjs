@@ -12,10 +12,12 @@
 // · resetSession({ work })：清空本机存储（API 地址照旧）、可选地设好当前作品，重载并等应用装好（waitForApp）。
 // · store：页面里经 window.__wsStores（src/ws-test-seam.js，只在开发服务器上有）拿——
 //     page.evaluate(async () => { const { WsCatalog } = await window.__wsStores.load("WsCatalog"); … })
-// · 等状态，不等时间：waitUntil(probe) 在 Node 侧轮询，直到 probe() 给出真值。page.waitForFunction 不等异步谓词
-//   （谓词返回的 Promise 本身就是真值，当场返回）——以前 phase3「编排台改章题」等后端落库就栽在这上面；各套件
-//   原来每轮约 79 s 的固定 waitForTimeout 也换成等页面元素 / store / 后端数据（phase6 资料库的间歇失败就是固定时长
-//   赶不上懒加载路由的冷编译）。只有「这段时间里不该出现什么」的观察窗口还是定长的（observe）。
+// · 等状态，不等时间：waitUntil(probe) 在 Node 侧轮询，直到 probe() 给出真值。异步条件不要交给 page.waitForFunction：
+//   异步谓词返回的 Promise 本身就是真值，Playwright 只求值这一次、不再轮询，等这个 Promise 落定就带着落定的值返回
+//   （哪怕是 false；条件不成立也不会接着等到超时，只有这一次求值本身超过时限才超时）——以前 phase3「编排台改章题」
+//   等后端落库就栽在这上面：只等了一趟 fetch，就带着当时读到的章题往下走。各套件原来每轮约 79 s 的固定
+//   waitForTimeout 也换成等页面元素 / store / 后端数据（phase6 资料库的间歇失败就是固定时长赶不上懒加载路由的
+//   冷编译）。只有「这段时间里不该出现什么」的观察窗口还是定长的（observe）。
 // · check(label, fn)：一条检查，失败只记数、打印首行，后面的照跑；finish()：关浏览器、列出页面错误、设退出码。
 // · reseedFixtures()：重灌中性测试夹具（run-smokes.mjs 在每套之前调；单跑一套之前想要干净的夹具也可以调）。
 import { spawnSync } from "node:child_process";

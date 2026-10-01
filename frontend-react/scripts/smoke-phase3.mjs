@@ -38,7 +38,8 @@ await check("主页（dashboard 兜底 + 目录同源）渲染", async () => {
 
 await check("编排台改章题 → 后端落库 + 主页一致", async () => {
   // 第 1 章已批准并锁定；通过编排台编辑当前进行中的第 8 章，覆盖真实 UI 保存路径。
-  // 等后端落库要在 Node 侧轮询：page.waitForFunction 不等异步谓词（以前这里当场就返回，偶尔读到改名前的章题）。
+  // 等后端落库要在 Node 侧轮询：page.waitForFunction 遇到异步谓词只求值一次、带着落定的值返回（哪怕是 false），
+  // 不会接着轮询（以前这里只等了一趟 fetch 就往下走，偶尔读到改名前的章题）。
   await goView("author", '.arr-card:has-text("样章08")');
   await page.click('.arr-card:has-text("样章08")');
   const titleInput = page.locator('input[aria-label="章节标题"]');
