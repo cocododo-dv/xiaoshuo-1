@@ -11,6 +11,7 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.support.scene_generation import PATCHED_SCENE_TEXT, STYLE_SCENE_TEXT
 
 
 # ---------------------------------------------------------------- 可靠成稿模式：一场普通场景，替身起草 / 质检，组装编排器（test_qc_grading_reliable_mode）
@@ -38,12 +39,6 @@ def response(payload: dict, *, request_id: str, model: str) -> LLMResponse:
         usage={"input_tokens": 60, "output_tokens": 18, "total_tokens": 78},
         finish_reason="stop",
     )
-
-
-# 合成场景：有「选」、有代价、结尾有动作——过得了准终稿的房风场景机制门（B03-16b：以前产品代码里有一条认
-# 「Provider-generated」字头的旁路替测试跳过这道门，现在删了）
-STYLE_SCENE_TEXT = "Provider-generated style scene text. She has to choose, and the cost is the ledger. She turns and leaves."
-PATCHED_SCENE_TEXT = "Provider-generated patched scene text. She has to choose, and the cost is the ledger. She turns and leaves."
 
 
 class FakeSceneClient(AccountedGenerateMixin):

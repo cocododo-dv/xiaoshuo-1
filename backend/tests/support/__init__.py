@@ -21,6 +21,7 @@ pytest.register_assert_rewrite(
     "tests.support.llm_fakes",
     "tests.support.migrations",
     "tests.support.qc",
+    "tests.support.scene_generation",
     "tests.support.scene_pipeline",
     "tests.support.schema",
     "tests.support.seed",
