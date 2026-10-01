@@ -34,6 +34,7 @@ from novel_system.services.reference_copy_gate import (
 )
 from novel_system.services.style_reference.check_job import start_check_job
 from novel_system.services.style_reference.validation import check_plagiarism
+from tests.support.style_reference import ensure_project as _seed_project
 
 pytestmark = pytest.mark.usefixtures("style_workers")
 
@@ -446,16 +447,6 @@ def _seed_ingested_book(seed: str) -> str:
         )
         session.commit()
         return result.book.book_id
-
-
-def _seed_project(project_id: str) -> str:
-    from novel_system.db.models import StoryProject
-
-    with SessionLocal() as session:
-        if session.get(StoryProject, project_id) is None:
-            session.add(StoryProject(project_id=project_id, title="合成作品", outline_text=""))
-            session.commit()
-    return project_id
 
 
 def test_apply_profile_persists_injection_config():

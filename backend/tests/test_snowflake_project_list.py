@@ -6,28 +6,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-
-from sqlalchemy import event
-
 from novel_system.db.models import ChapterGoal, SceneCard, StoryProject
-from novel_system.db.session import engine
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-
-
-@contextmanager
-def _count_statements():
-    counter = {"n": 0}
-
-    def _count(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
-        counter["n"] += 1
-
-    target = engine()
-    event.listen(target, "before_cursor_execute", _count)
-    try:
-        yield counter
-    finally:
-        event.remove(target, "before_cursor_execute", _count)
+from tests.support.sql import count_statements as _count_statements
 
 
 def _project(session, project_id: str) -> None:

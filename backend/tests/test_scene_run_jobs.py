@@ -19,7 +19,8 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
-from tests.support.catalog import create_job_chapter_and_scene as _create_chapter_and_scene
+from tests.support.catalog import job_chapter_and_scene as _create_chapter_and_scene
+from tests.support.seed import seed_chapter, seed_scene
 
 
 def _seed_job_scene(
@@ -46,7 +47,7 @@ def _seed_job_scene(
 
 
 def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> None:
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
 
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
 
@@ -84,7 +85,7 @@ def test_replaying_the_create_request_redispatches_a_job_that_is_still_queued(cl
     """B12-07：派发在事务提交之后、经 after_commit 做，同一个幂等键重放时再派发一次——提交与派发之间进程退出
     （--reload、崩溃）留下的排队任务，由客户端的重试接上，不必等下一次启动恢复。已经在跑 / 已结束的任务重放不派发。
     以前派发挂在只有真执行时才填的闭包上，重放一律不派发。"""
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     dispatched: list[str] = []
     monkeypatch.setattr(
         "novel_system.api.routes.scenes.start_scene_run_job_worker",
@@ -115,7 +116,7 @@ def test_replaying_the_create_request_redispatches_a_job_that_is_still_queued(cl
 
 
 def test_start_false_never_dispatches_even_on_replay(client, monkeypatch) -> None:
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     dispatched: list[str] = []
     monkeypatch.setattr(
         "novel_system.api.routes.scenes.start_scene_run_job_worker",
@@ -136,25 +137,20 @@ def test_scene_run_workers_run_at_most_two_pipelines_at_once(client, monkeypatch
 
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     for seq in (2, 3):
-        created = client.post(
-            "/api/v1/scenes",
-            json={
-                "scene_id": f"CHJOB_SC0{seq}",
-                "chapter_id": "CHJOB",
-                "scene_seq": seq,
-                "pov_character_id": "",
-                "onstage_chars_json": [],
-                "location": "Control room",
-                "scene_goal": f"Queue run {seq}",
-                "beats_json": ["start", "poll"],
-                "target_length_band": "short",
-                "scene_type": "test",
-            },
-            headers={"X-Idempotency-Key": f"scene-job-lane-{seq}"},
+        seed_scene(
+            f"CHJOB_SC0{seq}",
+            chapter_id="CHJOB",
+            scene_seq=seq,
+            pov_character_id="",
+            onstage_chars_json=[],
+            location="Control room",
+            scene_goal=f"Queue run {seq}",
+            beats_json=["start", "poll"],
+            target_length_band="short",
+            scene_type="test",
         )
-        assert created.status_code == 200, created.text
     lock = Lock()
     release = Event()
     started: list[str] = []
@@ -209,7 +205,7 @@ def test_scene_run_job_idempotency_replay_never_runs_the_pipeline_twice(client, 
 
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     release = Event()
     runs: list[str] = []
 
@@ -307,7 +303,7 @@ def test_claimed_scene_job_starts_at_planning_not_at_the_draft(client, session, 
     """B03-03：认领时写的是 neutral_running（「中性稿」），而管线先做的是规划；认领写 planning_running。"""
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
     observed: list[str] = []
 
@@ -388,44 +384,32 @@ def test_scene_run_job_serialization_prefers_authoritative_scene_column(session)
     assert serialized["scene_id"] == "SCENE_COLUMN"
 
 
-def _create_job_block_scene(client, *, key: str, **scene_fields) -> None:
-    chapter_response = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": "CHJOB_BLOCK",
-            "planned_scene_count": 1,
-            "chapter_goal": "Run scene preflight blocker",
-            "main_plot_push": "Expose blocker before worker start",
-            "emotional_target": "Keep operator informed",
-            "ending_effect": "Pollable blocked state",
-        },
-        headers={"X-Idempotency-Key": f"chapter-job-block-create-{key}"},
+def _create_job_block_scene(**scene_fields) -> None:
+    seed_chapter(
+        "CHJOB_BLOCK",
+        planned_scene_count=1,
+        chapter_goal="Run scene preflight blocker",
+        main_plot_push="Expose blocker before worker start",
+        emotional_target="Keep operator informed",
+        ending_effect="Pollable blocked state",
     )
-    assert chapter_response.status_code == 200
-    scene_response = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": "CHJOB_BLOCK_SC01",
-            "chapter_id": "CHJOB_BLOCK",
-            "scene_seq": 1,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A"],
-            "location": "Control room",
-            "scene_goal": "Expose a preflight blocker before drafting",
-            "beats_json": ["start", "block"],
-            "target_length_band": "short",
-            "scene_type": "test",
-            "is_chapter_last": 1,
-            **scene_fields,
-        },
-        headers={"X-Idempotency-Key": f"scene-job-preflight-block-{key}"},
-    )
-    assert scene_response.status_code == 200
+    fields = {
+        "pov_character_id": "CHAR_A",
+        "onstage_chars_json": ["CHAR_A"],
+        "location": "Control room",
+        "scene_goal": "Expose a preflight blocker before drafting",
+        "beats_json": ["start", "block"],
+        "target_length_band": "short",
+        "scene_type": "test",
+        "is_chapter_last": 1,
+        **scene_fields,
+    }
+    seed_scene("CHJOB_BLOCK_SC01", chapter_id="CHJOB_BLOCK", scene_seq=1, **fields)
 
 
 def test_scene_run_job_returns_preflight_blocker_before_starting_worker(client) -> None:
     # 场景卡自相矛盾（必须写进去的词同时被禁用）是起草前真正要作者先处理的事
-    _create_job_block_scene(client, key="conflict", must_include_text="铜钥匙", forbidden_text="铜钥匙")
+    _create_job_block_scene(must_include_text="铜钥匙", forbidden_text="铜钥匙")
 
     response = client.post("/api/v1/scenes/CHJOB_BLOCK_SC01/run/jobs")
 
@@ -445,7 +429,7 @@ def test_scene_run_job_is_not_blocked_by_missing_voice_or_relation_cards(client)
 
     真实作品的每一次「开始起草」都以 blocked / VOICE_PROFILE_MISSING 结束。缺卡不再拦起草。
     """
-    _create_job_block_scene(client, key="no-cards", onstage_chars_json=["CHAR_B", "CHAR_C"])
+    _create_job_block_scene(onstage_chars_json=["CHAR_B", "CHAR_C"])
 
     response = client.post("/api/v1/scenes/CHJOB_BLOCK_SC01/run/jobs?start=false")
 
@@ -460,7 +444,7 @@ def test_scene_run_job_is_not_blocked_by_missing_voice_or_relation_cards(client)
 
 
 def test_scene_run_job_latest_qc_exposes_issue_keys_for_operator_next_action(client, session) -> None:
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     session.add(
         QcReport(
             qc_report_id="qc_CHJOB_SC01_hard_v1",
@@ -499,7 +483,7 @@ def test_scene_run_job_not_found_uses_structured_error(client) -> None:
 def test_scene_run_job_worker_uses_job_id_as_execution_id(client, monkeypatch) -> None:
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
     assert response.status_code == 200
     job_id = response.json()["data"]["job_id"]
@@ -544,7 +528,7 @@ def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
     from novel_system.services import scene_run_jobs as job_module
     from novel_system.services.orchestrator import Orchestrator as RealOrchestrator
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]
     first_job = session.get(ChapterRunJob, first["job_id"])
     state = session.get(SceneRunState, "CHJOB_SC01")
@@ -618,7 +602,7 @@ def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
 
 
 def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(client) -> None:
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
 
     response = client.post(
         "/api/v1/scenes/CHJOB_SC01/run/jobs?start=false",
@@ -631,7 +615,7 @@ def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(clien
 
 def _create_budget_resume_job(client, session) -> tuple[str, str]:
     """一场被预算闸拦下的首跑 + 作者「追加预算后续跑」建的续跑任务（未启动）→ (父任务 id, 续跑任务 id)。"""
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]
     first_job = session.get(ChapterRunJob, first["job_id"])
     state = session.get(SceneRunState, "CHJOB_SC01")
@@ -721,7 +705,7 @@ def test_worker_failure_after_losing_its_lease_does_not_raise_out_of_the_thread(
 
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
 
     class _LeaseTakenOver:
@@ -766,7 +750,7 @@ def test_worker_whose_claim_was_rolled_back_fails_the_unowned_job_instead_of_lea
     （error_details.retryable，认领路径可以重领），不再永远停在 queued、也不把异常抛出线程。"""
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     job_id = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false").json()["data"]["job_id"]
     state = session.get(SceneRunState, "CHJOB_SC01")
     state.active_run_job_id = "scene_run_other_owner"
@@ -793,7 +777,7 @@ def test_worker_whose_claim_was_rolled_back_fails_the_unowned_job_instead_of_lea
 def test_scene_job_retry_reuses_execution_checkpoint_without_recharging(client, session, monkeypatch) -> None:
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
     job_id = response.json()["data"]["job_id"]
     observed_execution_ids: list[str] = []
@@ -916,7 +900,7 @@ def test_duplicate_worker_does_not_reopen_terminal_job(
 ) -> None:
     from novel_system.services import scene_run_jobs as job_module
 
-    _create_chapter_and_scene(client)
+    _create_chapter_and_scene()
     response = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs?start=false")
     job_id = response.json()["data"]["job_id"]
     provider_dispatches = 0

@@ -22,7 +22,7 @@ def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -
     地方能写这两类卡，真实作品的场永远过不了这一关。批准 #15（重评 R8）之后卡不再进 bundle，两张表随迁移 0098
     删掉：起草照常，bundle 里既没有这两节，也没有它们的出处。
     """
-    seed_story(client)
+    seed_story()
 
     response = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
@@ -41,7 +41,7 @@ def test_run_full_scene_runs_without_voice_and_relation_cards(client, session) -
 
 
 def test_run_full_scene_archives_memory_and_updates_status(client, session) -> None:
-    seed_story(client)
+    seed_story()
 
     response = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
@@ -114,7 +114,7 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
 
 
 def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(client, session) -> None:
-    seed_story(client)
+    seed_story()
 
     first_run = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
@@ -184,7 +184,7 @@ def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(c
 
 
 def test_workbench_generation_summary_can_resolve_from_current_final_scene_provenance(client, session) -> None:
-    seed_story(client)
+    seed_story()
 
     response = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",

@@ -43,6 +43,7 @@ from tests.support.style_reference import (
     structure_rows as _synthetic_rows,
     voice_shares as _voice,
 )
+from tests.support.snowflake import working_payload_of as _snowflake_prompt_payload
 
 GOLDEN_CORPUS = (
     Path(__file__).resolve().parent / "golden" / "style_reference" / "corpus" / "luxun_short_stories.txt"
@@ -551,12 +552,6 @@ def _seed_snowflake_project(session, project_id: str) -> None:
             )
         )
     session.commit()
-
-
-def _snowflake_prompt_payload(request) -> dict:
-    prompt = "\n".join(str(m.get("content", "")) for m in request.messages)
-    body = prompt.split("Working payload:\n", 1)[1].rsplit("\n\nRequired top-level", 1)[0]
-    return json.loads(body)
 
 
 def test_snowflake_scene_steps_carry_the_structure_reference(session, captured_snowflake_requests) -> None:

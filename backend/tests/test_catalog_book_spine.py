@@ -45,6 +45,7 @@ from tests.support.chaptering import (
     seed_chaptering as _seed,
     workspace_base as _base,
 )
+from tests.support.seed import seed_project
 
 
 def _scene_ids(client, project_id: str) -> list[str]:
@@ -515,12 +516,8 @@ def test_a_written_scene_is_never_auto_trashed(client, session) -> None:
 
 def test_the_desks_may_ask_about_any_work_without_tripping_an_error(client) -> None:
     """写作台 / AI 起草台对每部作品都会问「有没有待同步」；不是雪花法的作品如实回答，而不是 409。"""
-    created = client.post(
-        "/api/v1/projects", json={"title": "手写的书", "outline_text": "第一章\n第二章"},
-        headers={"X-Idempotency-Key": "spine-plain-project"},
-    )
-    assert created.status_code == 200, created.text
-    project_id = created.json()["data"]["project"]["project_id"]
+    project_id = "PRJ_SPINE_PLAIN"
+    seed_project(project_id, title="手写的书", outline_text="第一章\n第二章")
     response = client.get(f"/api/v2/projects/{project_id}/snowflake-workspace/resync-status")
     assert response.status_code == 200, response.text
     assert response.json()["data"] == {

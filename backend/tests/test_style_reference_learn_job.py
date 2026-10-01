@@ -69,6 +69,7 @@ from tests.learn_fakes import (
     default_extract,
     paragraphs_of,
 )
+from tests.support.style_reference import load_job as _job
 
 pytestmark = pytest.mark.usefixtures("style_workers")
 
@@ -145,13 +146,6 @@ def _start(book_id: str, **kwargs) -> str:
         job = learn_job.start_learn_job(db, book_id, **kwargs)
         db.commit()
         return job.job_id
-
-
-def _job(job_id: str) -> StyleReferenceJob:
-    with SessionLocal() as db:
-        job = db.get(StyleReferenceJob, job_id)
-        db.expunge(job)
-        return job
 
 
 def _profile(profile_id: str) -> StyleReferenceProfile:

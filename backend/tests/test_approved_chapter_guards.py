@@ -10,6 +10,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.canon_continuity import CanonContinuityService
+from tests.support.catalog import mark_chapter_approved as _approve_chapter
 
 
 _sequence = 0
@@ -48,18 +49,6 @@ def _create_chapter(
         f"/api/v2/projects/{project_id}/catalog/chapters",
         {"title": title, "current": current},
     )["chapter"]
-
-
-def _approve_chapter(session, project_id: str, chapter_id: str) -> None:
-    project = session.get(StoryProject, project_id)
-    chapter = session.get(ChapterGoal, chapter_id)
-    assert project is not None and chapter is not None
-    approved = list(project.approved_chapter_ids_json or [])
-    if chapter_id not in approved:
-        approved.append(chapter_id)
-    project.approved_chapter_ids_json = approved
-    chapter.state = "approved"
-    session.commit()
 
 
 def _archive_scene(session, scene: SceneCard, *, content: str) -> None:

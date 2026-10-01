@@ -13,10 +13,11 @@ import json
 
 import pytest
 
-from novel_system.db.models import ChapterGoal, GenerationPlanningArtifact, LlmCall, SceneCard, StoryProject
+from novel_system.db.models import ChapterGoal, GenerationPlanningArtifact, LlmCall, SceneCard
 from novel_system.services.chapter_plan_llm import sanitize_plan_patch
 from novel_system.services.llm_client import LLMResponse
 from tests.accounted_llm_fakes import accounted_generate_method
+from tests.support.catalog import mark_chapter_approved as _approve_chapter
 
 pytestmark = pytest.mark.usefixtures("online_pipeline")
 
@@ -66,18 +67,6 @@ def _fake_llm(captured: list, payload: dict):
         )
 
     return accounted_generate_method(fake_generate)
-
-
-def _approve_chapter(session, project_id: str, chapter_id: str) -> None:
-    project = session.get(StoryProject, project_id)
-    chapter = session.get(ChapterGoal, chapter_id)
-    assert project is not None and chapter is not None
-    approved = list(project.approved_chapter_ids_json or [])
-    if chapter_id not in approved:
-        approved.append(chapter_id)
-    project.approved_chapter_ids_json = approved
-    chapter.state = "approved"
-    session.commit()
 
 
 _ARCH_PAYLOAD = {

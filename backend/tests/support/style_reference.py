@@ -23,6 +23,7 @@ from novel_system.db.models import (
     StoryProject,
     StyleReferenceBook,
     StyleReferenceInjectionBinding,
+    StyleReferenceJob,
     StyleReferenceProfile,
     StyleReferenceRun,
 )
@@ -458,3 +459,23 @@ def windows_attempt(
         source_bundle_id=bundle_id,
         details_json={"style_reference_runtime": runtime},
     )
+
+
+# ---------------------------------------------------------------- 作业行与一部空作品（test_style_reference_jobs / _learn_job / _routes / _hardening）
+
+
+def load_job(job_id: str) -> StyleReferenceJob:
+    """在一个新会话里读出作业行（脱离会话，读字段不再碰库）。"""
+    with SessionLocal() as db:
+        job = db.get(StyleReferenceJob, job_id)
+        db.expunge(job)
+        return job
+
+
+def ensure_project(project_id: str) -> str:
+    """没有就建一部空的合成作品（绑定画像要有作品可绑）。"""
+    with SessionLocal() as session:
+        if session.get(StoryProject, project_id) is None:
+            session.add(StoryProject(project_id=project_id, title="合成作品", outline_text=""))
+            session.commit()
+    return project_id

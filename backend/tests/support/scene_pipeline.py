@@ -3,55 +3,38 @@
 from __future__ import annotations
 
 from novel_system.db.models import ChapterGoal, SceneCard, SceneRunState, StoryProject
+from tests.support.seed import seed_chapter, seed_project, seed_scene
 
 
-# ---------------------------------------------------------------- 经 v1 接口建一部作品、一章一场（test_orchestrator_flow）
+# ---------------------------------------------------------------- 一部作品、一章一场（test_orchestrator_flow）
 
 
-def seed_story(client) -> None:
-    project_response = client.post(
-        "/api/v1/projects",
-        json={
-            "title": "orchestrator flow",
-            "outline_text": "A reunion opens an old-letter mystery.",
-        },
-        headers={"X-Idempotency-Key": "orchestrator-project-seed"},
+def seed_story() -> None:
+    seed_project("PRJ_ORCHESTRATOR_FLOW", title="orchestrator flow", outline_text="A reunion opens an old-letter mystery.")
+    seed_chapter(
+        "CH001",
+        project_id="PRJ_ORCHESTRATOR_FLOW",
+        planned_scene_count=3,
+        chapter_goal="重逢与试探成立",
+        main_plot_push="旧信线索被正式打开",
+        emotional_target="由迟疑转为警觉",
+        ending_effect="留有余波",
     )
-    project_id = project_response.json()["data"]["project"]["project_id"]
-    client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": "CH001",
-            "project_id": project_id,
-            "planned_scene_count": 3,
-            "chapter_goal": "重逢与试探成立",
-            "main_plot_push": "旧信线索被正式打开",
-            "emotional_target": "由迟疑转为警觉",
-            "ending_effect": "留有余波",
-        },
-        headers={"X-Idempotency-Key": "chapter-seed"},
-    )
-    client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": "CH001_SC01",
-            "chapter_id": "CH001",
-            "project_id": project_id,
-            "scene_seq": 1,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A", "CHAR_B"],
-            "location": "旧城门廊",
-            "scene_goal": "让两人重新见面并建立张力",
-            "beats_json": ["重逢", "试探", "留钩子"],
-            # This suite exercises archive/provenance mechanics with the offline
-            # deterministic prose stub; hard-text constraints have dedicated QC
-            # and final-text-gate coverage.
-            "must_include_text": "",
-            "target_length_band": "short",
-            "scene_type": "reunion",
-            "is_chapter_last": 0,
-        },
-        headers={"X-Idempotency-Key": "scene-seed-1"},
+    seed_scene(
+        "CH001_SC01",
+        chapter_id="CH001",
+        project_id="PRJ_ORCHESTRATOR_FLOW",
+        scene_seq=1,
+        pov_character_id="CHAR_A",
+        onstage_chars_json=["CHAR_A", "CHAR_B"],
+        location="旧城门廊",
+        scene_goal="让两人重新见面并建立张力",
+        beats_json=["重逢", "试探", "留钩子"],
+        # 这组用例测的是归档 / 出处机制（在线记账替身起草）；硬性文本约束另有专门的质检与成稿门用例
+        must_include_text="",
+        target_length_band="short",
+        scene_type="reunion",
+        is_chapter_last=0,
     )
 
 

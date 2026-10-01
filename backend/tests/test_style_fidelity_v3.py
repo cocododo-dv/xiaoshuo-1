@@ -990,10 +990,10 @@ def test_archive_hook_records_the_final_reading_and_is_idempotent(session) -> No
 
 
 def test_adopt_route_records_an_adopt_reading(client, session) -> None:
-    from tests.support.catalog import create_v1_chapter as _create_chapter, create_v1_scene as _create_scene
+    from tests.support.catalog import manuscript_chapter as _create_chapter, manuscript_scene as _create_scene
 
-    _create_chapter(client, "chapter_fid_adopt")
-    _create_scene(client, "scene_fid_adopt", chapter_id="chapter_fid_adopt", scene_seq=1)
+    _create_chapter("chapter_fid_adopt")
+    _create_scene("scene_fid_adopt", chapter_id="chapter_fid_adopt", scene_seq=1)
     _book, profile_id = seed_reference(session, "fid_adopt", chapters=14, per_chapter=100)
     bind(session, profile_id, binding_id="bind_fid_adopt", scope="scene", scope_ref_id="scene_fid_adopt")
     text = "潮水退去以后，他在闸门前站了很久，才把手里的灯放下。" * 30

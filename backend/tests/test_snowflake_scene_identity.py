@@ -23,6 +23,7 @@ from novel_system.db.models import (
     SceneCard,
     SnowflakeScenePlan,
 )
+from tests.support.chaptering import patch_step as _patch_step
 
 
 # --------------------------------------------------------------------------- helpers
@@ -46,15 +47,6 @@ def _create_project(client, key: str, *, chapters: int = 12) -> str:
     )
     assert response.status_code == 200, response.text
     return response.json()["data"]["project"]["project_id"]
-
-
-def _patch_step(client, project_id: str, step_key: str, draft: dict) -> dict:
-    response = client.patch(
-        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
-        json={"draft": draft, "force": True},
-    )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]
 
 
 def _approve_step(client, project_id: str, step_key: str) -> None:

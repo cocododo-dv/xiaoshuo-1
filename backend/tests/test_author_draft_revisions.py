@@ -3,45 +3,36 @@
 from __future__ import annotations
 
 from novel_system.db.models import AuthorDraftRevision
+from tests.support.seed import seed_chapter, seed_scene
 
 
-def _create_chapter(client, chapter_id: str) -> None:
-    response = client.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": chapter_id,
-            "planned_scene_count": 1,
-            "chapter_goal": f"目标 {chapter_id}",
-            "main_plot_push": "推进主线",
-            "emotional_target": "情绪转折",
-            "ending_effect": "留下余味",
-        },
-        headers={"X-Idempotency-Key": f"rev-chapter-{chapter_id}"},
+def _create_chapter(chapter_id: str) -> None:
+    seed_chapter(
+        chapter_id,
+        planned_scene_count=1,
+        chapter_goal=f"目标 {chapter_id}",
+        main_plot_push="推进主线",
+        emotional_target="情绪转折",
+        ending_effect="留下余味",
     )
-    assert response.status_code == 200
 
 
-def _create_scene(client, scene_id: str, *, chapter_id: str) -> None:
-    response = client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": scene_id,
-            "chapter_id": chapter_id,
-            "scene_seq": 1,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A"],
-            "location": "档案室",
-            "scene_goal": f"场景目标 {scene_id}",
-            "beats_json": ["发现", "选择"],
-            "exit_change": "关系改变",
-            "hook": "尾钩",
-            "target_length_band": "medium",
-            "scene_type": "reunion",
-            "is_chapter_last": 1,
-        },
-        headers={"X-Idempotency-Key": f"rev-scene-{scene_id}"},
+def _create_scene(scene_id: str, *, chapter_id: str) -> None:
+    seed_scene(
+        scene_id,
+        chapter_id=chapter_id,
+        scene_seq=1,
+        pov_character_id="CHAR_A",
+        onstage_chars_json=["CHAR_A"],
+        location="档案室",
+        scene_goal=f"场景目标 {scene_id}",
+        beats_json=["发现", "选择"],
+        exit_change="关系改变",
+        hook="尾钩",
+        target_length_band="medium",
+        scene_type="reunion",
+        is_chapter_last=1,
     )
-    assert response.status_code == 200
 
 
 def _ensure_draft(client, scene_id: str) -> dict:
@@ -76,8 +67,8 @@ def _age_latest_snapshot(session, draft_id: str, *, minutes: int = 10) -> None:
 
 def test_autosaves_in_one_window_share_one_snapshot(client, session) -> None:
     """自动保存按 5 分钟时段合并（批准 #8）：同一时段里接连保存只留一份快照，存的是最新的正文。"""
-    _create_chapter(client, "CH_REV_1")
-    _create_scene(client, "SC_REV_1", chapter_id="CH_REV_1")
+    _create_chapter("CH_REV_1")
+    _create_scene("SC_REV_1", chapter_id="CH_REV_1")
     draft = _ensure_draft(client, "SC_REV_1")
 
     assert _save(client, draft["draft_id"], 1, "第一版正文。").status_code == 200
@@ -96,8 +87,8 @@ def test_autosaves_in_one_window_share_one_snapshot(client, session) -> None:
 
 
 def test_revision_content_is_retrievable(client, session) -> None:
-    _create_chapter(client, "CH_REV_2")
-    _create_scene(client, "SC_REV_2", chapter_id="CH_REV_2")
+    _create_chapter("CH_REV_2")
+    _create_scene("SC_REV_2", chapter_id="CH_REV_2")
     draft = _ensure_draft(client, "SC_REV_2")
     assert _save(client, draft["draft_id"], 1, "潮水在夜里退去。").status_code == 200
     _age_latest_snapshot(session, draft["draft_id"])
@@ -118,8 +109,8 @@ def test_revision_content_is_retrievable(client, session) -> None:
 def test_the_promoted_revision_is_never_folded_into_a_later_autosave(client, session) -> None:
     from novel_system.db.models import AuthorDraft
 
-    _create_chapter(client, "CH_REV_4")
-    _create_scene(client, "SC_REV_4", chapter_id="CH_REV_4")
+    _create_chapter("CH_REV_4")
+    _create_scene("SC_REV_4", chapter_id="CH_REV_4")
     draft = _ensure_draft(client, "SC_REV_4")
     assert _save(client, draft["draft_id"], 1, "晋升成权威正文的那一版。").status_code == 200
     row = session.get(AuthorDraft, draft["draft_id"])
@@ -134,8 +125,8 @@ def test_the_promoted_revision_is_never_folded_into_a_later_autosave(client, ses
 
 
 def test_the_revision_list_pages_when_asked(client, session) -> None:
-    _create_chapter(client, "CH_REV_5")
-    _create_scene(client, "SC_REV_5", chapter_id="CH_REV_5")
+    _create_chapter("CH_REV_5")
+    _create_scene("SC_REV_5", chapter_id="CH_REV_5")
     draft = _ensure_draft(client, "SC_REV_5")
     for revision_no in (1, 2, 3):
         assert _save(client, draft["draft_id"], revision_no, f"第{revision_no}版。").status_code == 200
@@ -157,8 +148,8 @@ def test_the_revision_list_pages_when_asked(client, session) -> None:
 
 
 def test_conflict_save_does_not_snapshot(client, session) -> None:
-    _create_chapter(client, "CH_REV_3")
-    _create_scene(client, "SC_REV_3", chapter_id="CH_REV_3")
+    _create_chapter("CH_REV_3")
+    _create_scene("SC_REV_3", chapter_id="CH_REV_3")
     draft = _ensure_draft(client, "SC_REV_3")
     assert _save(client, draft["draft_id"], 1, "正式的一版。").status_code == 200
 

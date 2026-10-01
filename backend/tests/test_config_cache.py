@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 from sqlalchemy import event, update
 
 from novel_system.api.app import create_app
@@ -33,6 +32,7 @@ from novel_system.services.prompt_builder import (
 from novel_system.services.system_config import SystemConfigService, validate_config
 from tests.support.api_client import AutoKeyTestClient
 from tests.support.schema import stamp_schema_revision
+from tests.support.seed import seed_chapter, seed_scene
 
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -453,39 +453,29 @@ def test_injected_runner_and_builder_are_kept(session) -> None:
 # ---------------------------------------------------------------- 回归守卫：只读请求
 
 
-def _seed_scene(api: TestClient) -> None:
-    chapter = api.post(
-        "/api/v1/chapters",
-        json={
-            "chapter_id": "CH930",
-            "planned_scene_count": 1,
-            "chapter_goal": "林昭在雨城找到旧信",
-            "main_plot_push": "案卷重开",
-            "emotional_target": "不安",
-            "ending_effect": "悬念",
-        },
-        headers={"X-Idempotency-Key": "config-cache-chapter"},
+def _seed_scene() -> None:
+    seed_chapter(
+        "CH930",
+        planned_scene_count=1,
+        chapter_goal="林昭在雨城找到旧信",
+        main_plot_push="案卷重开",
+        emotional_target="不安",
+        ending_effect="悬念",
     )
-    assert chapter.status_code == 200, chapter.json()
-    scene = api.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": "CH930_SC01",
-            "chapter_id": "CH930",
-            "scene_seq": 1,
-            "pov_character_id": "CHAR_A",
-            "onstage_chars_json": ["CHAR_A", "CHAR_B"],
-            "location": "雨城旧档案室",
-            "scene_goal": "林昭拿到旧信",
-            "beats_json": ["翻案卷", "发现旧信"],
-            "must_include_text": "旧信",
-            "target_length_band": "short",
-            "scene_type": "discovery",
-            "is_chapter_last": 0,
-        },
-        headers={"X-Idempotency-Key": "config-cache-scene"},
+    seed_scene(
+        "CH930_SC01",
+        chapter_id="CH930",
+        scene_seq=1,
+        pov_character_id="CHAR_A",
+        onstage_chars_json=["CHAR_A", "CHAR_B"],
+        location="雨城旧档案室",
+        scene_goal="林昭拿到旧信",
+        beats_json=["翻案卷", "发现旧信"],
+        must_include_text="旧信",
+        target_length_band="short",
+        scene_type="discovery",
+        is_chapter_last=0,
     )
-    assert scene.status_code == 200, scene.json()
 
 
 READ_PATHS = (
@@ -500,7 +490,7 @@ READ_PATHS = (
 def test_read_paths_never_reparse_config_and_never_write(monkeypatch) -> None:
     # 不进 lifespan：没有后台清扫线程，这段时间里库上的每一条语句都来自下面的请求
     api = AutoKeyTestClient(create_app())
-    _seed_scene(api)
+    _seed_scene()
     yaml_parses = _count_yaml_parses(monkeypatch)
     template_loads = _count_calls(monkeypatch, prompt_builder, "load_prompt_templates")
     writes: list[str] = []

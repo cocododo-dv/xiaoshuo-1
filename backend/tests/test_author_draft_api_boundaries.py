@@ -1,13 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-
-def _validation_issues(response) -> list[dict[str, str]]:
-    payload = response.json()
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "REQUEST_VALIDATION_FAILED"
-    return payload["error"]["details"]["issues"]
+from tests.support.api_client import validation_issues as _validation_issues
 
 
 @pytest.mark.parametrize(

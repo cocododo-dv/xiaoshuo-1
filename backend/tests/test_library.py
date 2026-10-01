@@ -12,23 +12,25 @@ def _idem() -> dict:
     return {"X-Idempotency-Key": f"lib-test-{uuid.uuid4().hex[:10]}"}
 
 from novel_system.db.models import StoryCharacter
+from novel_system.services.snowflake_steps import SNOWFLAKE_METHOD_VERSION
+from tests.support.seed import seed_project
 
 
-def _create_project(client) -> dict:
-    response = client.post(
-        "/api/v1/projects",
-        json={
-            "title": "盐镇来信",
-            "genre": "悬疑",
-            "target_chapter_count": 2,
-            "target_word_count": 100000,
-            "outline_text": "怀梅在盐场捡到一枚注销的旧工牌。\n她追查工牌主人。\n真相牵出家史。",
-            "planning_mode": "snowflake",
-        },
-        headers={"X-Idempotency-Key": f"create-{uuid.uuid4().hex}"},
+def _create_project() -> dict:
+    """一部雪花作品（与 v1 建作品接口落的那一行一样：雪花方法版本、探索模式）。"""
+    project_id = f"PRJ_LIB_{uuid.uuid4().hex[:10].upper()}"
+    seed_project(
+        project_id,
+        title="盐镇来信",
+        genre="悬疑",
+        target_chapter_count=2,
+        target_word_count=100000,
+        outline_text="怀梅在盐场捡到一枚注销的旧工牌。\n她追查工牌主人。\n真相牵出家史。",
+        planning_mode="snowflake",
+        snowflake_schema_version=SNOWFLAKE_METHOD_VERSION,
+        snowflake_workflow_mode="explore",
     )
-    assert response.status_code == 200, response.text
-    return response.json()["data"]["project"]
+    return {"project_id": project_id}
 
 
 def _seed_character(session, project_id: str, character_id: str = "CHAR_HM") -> StoryCharacter:
@@ -46,7 +48,7 @@ def _seed_character(session, project_id: str, character_id: str = "CHAR_HM") -> 
 
 
 def test_library_overview_merges_characters_and_entities(client, session) -> None:
-    project = _create_project(client)
+    project = _create_project()
     _seed_character(session, project["project_id"])
 
     created = client.post(
@@ -70,7 +72,7 @@ def test_library_overview_merges_characters_and_entities(client, session) -> Non
 
 
 def test_library_entity_validation_and_update(client) -> None:
-    project = _create_project(client)
+    project = _create_project()
 
     missing_name = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
@@ -106,7 +108,7 @@ def test_library_entity_validation_and_update(client) -> None:
 
 
 def test_library_relations_validate_refs_and_scope(client, session) -> None:
-    project = _create_project(client)
+    project = _create_project()
     character = _seed_character(session, project["project_id"])
     entity = client.post(
         f"/api/v2/projects/{project['project_id']}/library/entities",
@@ -144,7 +146,7 @@ def test_library_relations_validate_refs_and_scope(client, session) -> None:
     assert self_loop.status_code == 400
     assert self_loop.json()["error"]["code"] == "LIBRARY_RELATION_SELF_LOOP"
 
-    other_project = _create_project(client)
+    other_project = _create_project()
     cross_scope = client.get(f"/api/v2/projects/{other_project['project_id']}/library")
     assert cross_scope.status_code == 200
     assert cross_scope.json()["data"]["entities"] == []
@@ -165,7 +167,7 @@ def test_library_character_and_entity_delete_cascades_relations(client, session)
 
     此前 characters/entities 无 DELETE 端点（405），前端删除仅清本地、refetch 后复活。
     """
-    project = _create_project(client)
+    project = _create_project()
     pid = project["project_id"]
     character = _seed_character(session, pid)
     entity = client.post(

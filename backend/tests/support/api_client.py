@@ -45,4 +45,12 @@ class AutoKeyTestClient(TestClient):
         return super().request(method, url, headers=headers, **kwargs)
 
 
-__all__ = ["AutoKeyTestClient", "IDEMPOTENCY_HEADER", "MUTATING_METHODS", "with_idempotency_key"]
+def validation_issues(response) -> list[dict[str, str]]:
+    """一个被请求校验挡下的回包（``REQUEST_VALIDATION_FAILED``）里逐字段的问题清单。"""
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+    return payload["error"]["details"]["issues"]
+
+
+__all__ = ["AutoKeyTestClient", "IDEMPOTENCY_HEADER", "MUTATING_METHODS", "validation_issues", "with_idempotency_key"]

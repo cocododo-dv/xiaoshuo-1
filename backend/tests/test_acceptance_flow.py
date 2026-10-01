@@ -9,7 +9,7 @@ pytestmark = pytest.mark.usefixtures("online_orchestrator_runner")
 
 
 def test_l3_acceptance_smoke(client) -> None:
-    seed_story(client)
+    seed_story()
     run_scene = client.post(
         "/api/v1/scenes/CH001_SC01/run/full",
         headers={"X-Idempotency-Key": "acceptance-scene-1"},

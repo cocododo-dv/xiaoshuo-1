@@ -15,8 +15,9 @@ from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.support.style_reference import (
-    SAMPLE_TXT,
+    ensure_project as _seed_project,
     import_sample_book as _import_book,
+    SAMPLE_TXT,
     seed_full_chain as _seed_full_chain,
 )
 
@@ -280,16 +281,6 @@ def test_reclassify_executes_and_purges_derived_data(
 # ---------------------------------------------------------------------------
 # Profiles endpoints
 # ---------------------------------------------------------------------------
-
-
-def _seed_project(project_id: str) -> str:
-    from novel_system.db.models import StoryProject
-
-    with SessionLocal() as session:
-        if session.get(StoryProject, project_id) is None:
-            session.add(StoryProject(project_id=project_id, title="合成作品", outline_text=""))
-            session.commit()
-    return project_id
 
 
 def test_book_payload_carries_the_profile_summary(client: TestClient) -> None:

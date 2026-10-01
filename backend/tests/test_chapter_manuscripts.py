@@ -10,8 +10,8 @@ from novel_system.db.models import (
 )
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from tests.support.catalog import (
-    create_v1_chapter as _create_chapter,
-    create_v1_scene as _create_scene,
+    manuscript_chapter as _create_chapter,
+    manuscript_scene as _create_scene,
 )
 
 
@@ -80,14 +80,14 @@ def _is_binding_lookup(statement: str) -> bool:
 
 
 def test_manuscript_detail_query_count_does_not_grow_with_scene_count(client, session) -> None:
-    _create_chapter(client, "CHM_QUERY_ONE")
-    _create_scene(client, "CHM_QUERY_ONE_SC01", chapter_id="CHM_QUERY_ONE", scene_seq=1)
+    _create_chapter("CHM_QUERY_ONE")
+    _create_scene("CHM_QUERY_ONE_SC01", chapter_id="CHM_QUERY_ONE", scene_seq=1)
     _finalize_scene(session, "CHM_QUERY_ONE_SC01", "CHM_QUERY_ONE", "one")
 
-    _create_chapter(client, "CHM_QUERY_MANY")
+    _create_chapter("CHM_QUERY_MANY")
     for scene_seq in range(1, 9):
         scene_id = f"CHM_QUERY_MANY_SC{scene_seq:02d}"
-        _create_scene(client, scene_id, chapter_id="CHM_QUERY_MANY", scene_seq=scene_seq)
+        _create_scene(scene_id, chapter_id="CHM_QUERY_MANY", scene_seq=scene_seq)
         _finalize_scene(session, scene_id, "CHM_QUERY_MANY", f"scene {scene_seq}")
 
     one_scene_queries = _service_queries(
@@ -105,10 +105,10 @@ def test_manuscript_detail_query_count_does_not_grow_with_scene_count(client, se
 
 
 def test_chapter_manuscript_detail_assembles_current_final_scenes_and_marks_missing(client, session) -> None:
-    _create_chapter(client, "CHM100", goal="Read the current manuscript")
-    _create_scene(client, "CHM100_SC02", chapter_id="CHM100", scene_seq=2, is_chapter_last=1)
-    _create_scene(client, "CHM100_SC01", chapter_id="CHM100", scene_seq=1)
-    _create_scene(client, "CHM100_SC03", chapter_id="CHM100", scene_seq=3)
+    _create_chapter("CHM100", goal="Read the current manuscript")
+    _create_scene("CHM100_SC02", chapter_id="CHM100", scene_seq=2, is_chapter_last=1)
+    _create_scene("CHM100_SC01", chapter_id="CHM100", scene_seq=1)
+    _create_scene("CHM100_SC03", chapter_id="CHM100", scene_seq=3)
     _finalize_scene(session, "CHM100_SC02", "CHM100", "second scene text")
     _finalize_scene(session, "CHM100_SC01", "CHM100", "first scene text")
 
@@ -139,9 +139,9 @@ def test_chapter_manuscript_detail_assembles_current_final_scenes_and_marks_miss
 
 
 def test_chapter_manuscript_detail_compares_aggregate_with_current_assembled_text(client, session) -> None:
-    _create_chapter(client, "CHM200", goal="Compare final aggregate")
-    _create_scene(client, "CHM200_SC01", chapter_id="CHM200", scene_seq=1)
-    _create_scene(client, "CHM200_SC02", chapter_id="CHM200", scene_seq=2, is_chapter_last=1)
+    _create_chapter("CHM200", goal="Compare final aggregate")
+    _create_scene("CHM200_SC01", chapter_id="CHM200", scene_seq=1)
+    _create_scene("CHM200_SC02", chapter_id="CHM200", scene_seq=2, is_chapter_last=1)
     _finalize_scene(session, "CHM200_SC01", "CHM200", "alpha")
     _finalize_scene(session, "CHM200_SC02", "CHM200", "beta")
     aggregate_row_id = _set_final_aggregate(session, "CHM200", "alpha\nbeta")
@@ -178,9 +178,9 @@ def test_chapter_manuscript_detail_scans_current_manuscript_for_protected_source
         "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
         '["盐湾学院", "欧文·灰港"]',
     )
-    _create_chapter(client, "CHM250", goal="Scan protected terms")
-    _create_scene(client, "CHM250_SC01", chapter_id="CHM250", scene_seq=1)
-    _create_scene(client, "CHM250_SC02", chapter_id="CHM250", scene_seq=2, is_chapter_last=1)
+    _create_chapter("CHM250", goal="Scan protected terms")
+    _create_scene("CHM250_SC01", chapter_id="CHM250", scene_seq=1)
+    _create_scene("CHM250_SC02", chapter_id="CHM250", scene_seq=2, is_chapter_last=1)
     _finalize_scene(session, "CHM250_SC01", "CHM250", "第一场是干净的原创线索。")
     _finalize_scene(session, "CHM250_SC02", "CHM250", "第二场错误出现了盐湾学院与欧文·灰港。")
 
@@ -200,8 +200,8 @@ def test_chapter_manuscript_scans_the_chapter_against_the_bound_reference(client
     """风格参考 v3：成稿中心的整章读数走唯一抄袭门——每场绑定的书 + 画像的受保护专名，只报位置与哈希。"""
     from tests.reference_copy_fixtures import PROTECTED_NAME, seed_bound_reference
 
-    _create_chapter(client, "CHM251")
-    _create_scene(client, "CHM251_SC01", chapter_id="CHM251", scene_seq=1, is_chapter_last=1)
+    _create_chapter("CHM251")
+    _create_scene("CHM251_SC01", chapter_id="CHM251", scene_seq=1, is_chapter_last=1)
     _finalize_scene(session, "CHM251_SC01", "CHM251", f"{PROTECTED_NAME}打开了档案柜。")
     refs = seed_bound_reference(
         session,
@@ -226,8 +226,8 @@ def test_chapter_manuscript_scan_reads_the_manuscript_not_a_stale_aggregate(clie
     与参考书重合的旧字，正文里已经改掉——不报重合（S1 27；以前把汇总也拼进去一起查）。"""
     from tests.reference_copy_fixtures import REFERENCE_PASSAGE, seed_bound_reference
 
-    _create_chapter(client, "CHM252")
-    _create_scene(client, "CHM252_SC01", chapter_id="CHM252", scene_seq=1, is_chapter_last=1)
+    _create_chapter("CHM252")
+    _create_scene("CHM252_SC01", chapter_id="CHM252", scene_seq=1, is_chapter_last=1)
     _finalize_scene(session, "CHM252_SC01", "CHM252", "守夜人换了一种说法，自己写下了这一夜。")
     refs = seed_bound_reference(session, seed="stale_aggregate", scope="scene", scope_ref_id="CHM252_SC01")
     _set_final_aggregate(session, "CHM252", f"旧的章汇总：{REFERENCE_PASSAGE}")
@@ -242,13 +242,13 @@ def test_chapter_manuscript_scan_reads_the_manuscript_not_a_stale_aggregate(clie
 
 
 def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(client, session) -> None:
-    _create_chapter(client, "CHM300", goal="Visible chapter")
-    _create_scene(client, "CHM300_SC01", chapter_id="CHM300", scene_seq=1)
-    _create_scene(client, "CHM300_SC02", chapter_id="CHM300", scene_seq=2, is_chapter_last=1)
+    _create_chapter("CHM300", goal="Visible chapter")
+    _create_scene("CHM300_SC01", chapter_id="CHM300", scene_seq=1)
+    _create_scene("CHM300_SC02", chapter_id="CHM300", scene_seq=2, is_chapter_last=1)
     _finalize_scene(session, "CHM300_SC01", "CHM300", "visible text")
 
-    _create_chapter(client, "CHM301", goal="Trashed chapter")
-    _create_scene(client, "CHM301_SC01", chapter_id="CHM301", scene_seq=1, is_chapter_last=1)
+    _create_chapter("CHM301", goal="Trashed chapter")
+    _create_scene("CHM301_SC01", chapter_id="CHM301", scene_seq=1, is_chapter_last=1)
     trash_chapter = client.post(
         "/api/v1/chapters/trash",
         json={"chapter_ids": ["CHM301"]},
@@ -256,7 +256,7 @@ def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(c
     )
     assert trash_chapter.status_code == 200
 
-    _create_scene(client, "CHM300_SC03", chapter_id="CHM300", scene_seq=3)
+    _create_scene("CHM300_SC03", chapter_id="CHM300", scene_seq=3)
     trash_scene = client.post(
         "/api/v1/scenes/trash",
         json={"scene_ids": ["CHM300_SC03"]},
@@ -277,7 +277,7 @@ def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(c
 
 
 def test_chapter_manuscript_empty_chapter_and_active_aggregate_fallback(client, session) -> None:
-    _create_chapter(client, "CHM400", goal="No scenes yet")
+    _create_chapter("CHM400", goal="No scenes yet")
     _set_final_aggregate(session, "CHM400", "legacy aggregate", row_id="chapter_memory_final_CHM400_v2")
     state = session.get(ChapterState, "CHM400")
     assert state is not None
