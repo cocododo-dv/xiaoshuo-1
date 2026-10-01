@@ -1,5 +1,4 @@
-// 资料库：store（ws-library-store.js）的读取 / 关系双向索引 / 写入（diff→PATCH、关系增删、失败回滚），
-// 过渡期门面（ws-library-data.jsx / ws-library-edit.jsx）挂的 window 接缝，以及资料页视图。
+// 资料库：store（ws-library-store.js）的读取 / 关系双向索引 / 写入（diff→PATCH、关系增删、失败回滚），以及资料页视图。
 //
 // 断言取向（对齐 ws-catalog.test 范式）：断「可观测结果」+「仅失败路径触发的 alert」。
 // 失败回滚断 alert + 以服务端为准重读（又发了一次 /library GET）；端点路由断精确 URL+body（可证伪）。
@@ -78,10 +77,9 @@ async function loadLib(lib = libResponse()) {
   // 先让 WsWorks 落到真实激活作品，再读资料库（store 只在有人要时才拉）
   const { WsWorks } = await import("./ws-works.jsx");
   await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
-  const data = await import("./ws-library-data.jsx");
-  const edit = await import("./ws-library-edit.jsx");
-  await data.libRefetch();
-  return { client, data, edit };
+  const store = await import("./ws-library-store.js");
+  await store.libRefetch();
+  return { client, store };
 }
 
 const libraryGets = (client) => client.apiGet.mock.calls.filter(c => /\/library$/.test(c[0])).length;
@@ -94,19 +92,18 @@ describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("relation 双向挂载：lin 与 zhou 互为对方 links（带 relationId/type）", async () => {
-    const { data } = await loadLib();
-    const lin = data.LIB_BY_ID["lin"];
-    const zhou = data.LIB_BY_ID["zhou"];
+    const { store } = await loadLib();
+    const lin = store.libLive().byId["lin"];
+    const zhou = store.libLive().byId["zhou"];
     expect(lin.links.find(l => l.id === "zhou")).toMatchObject({ id: "zhou", relationId: "r1", type: "conflict" });
     // 反向 backlink 必须存在（可证伪：libFetch 若只挂 from_ref 单向，则 zhou.links 找不到 lin）
     expect(zhou.links.find(l => l.id === "lin")).toMatchObject({ id: "lin", relationId: "r1" });
   });
 
   it("空 library 不抛、缓存清空", async () => {
-    const { data } = await loadLib({ characters: [], entities: [], timeline: [], relations: [] });
-    expect(data.LIB_ENTRIES.length).toBe(0);
-    expect(data.libLive().entries).toEqual([]);
-    expect(data.libLoadState().status).toBe("ready");
+    const { store } = await loadLib({ characters: [], entities: [], timeline: [], relations: [] });
+    expect(store.libLive().entries).toEqual([]);
+    expect(store.libLoadState().status).toBe("ready");
   });
 
   it("A→B 快速切换时立即隔离旧快照，且 A 的迟到响应不能覆盖 B", async () => {
@@ -125,27 +122,27 @@ describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
 
     const { WsWorks } = await import("./ws-works.jsx");
     await vi.waitFor(() => expect(WsWorks.list().map(w => w.id)).toEqual(["project-a", "project-b"]), T);
-    const data = await import("./ws-library-data.jsx");
-    const off = data.libSubscribe(() => {});   // 像资料页一样挂上：开始读 A
-    expect(data.LIB_ENTRIES).toHaveLength(0);
-    expect(data.libLoadState()).toMatchObject({ pid: "project-a", status: "loading" });
+    const store = await import("./ws-library-store.js");
+    const off = store.libSubscribe(() => {});   // 像资料页一样挂上：开始读 A
+    expect(store.libLive().entries).toHaveLength(0);
+    expect(store.libLoadState()).toMatchObject({ pid: "project-a", status: "loading" });
 
     WsWorks.setActive("project-b");
-    await vi.waitFor(() => expect(data.LIB_ENTRIES.map(e => e.name)).toEqual(["乙角色"]), T);
+    await vi.waitFor(() => expect(store.libLive().entries.map(e => e.name)).toEqual(["乙角色"]), T);
 
     projectA.resolve(namedLibrary("char-a", "甲角色"));
     await projectA.promise;
     await Promise.resolve();
-    expect(data.LIB_ENTRIES.map(e => e.name)).toEqual(["乙角色"]);
-    expect(data.LIB_BY_ID["char-a"]).toBeUndefined();
-    expect(data.libLive().entries.map(e => e.name)).toEqual(["乙角色"]);
+    expect(store.libLive().entries.map(e => e.name)).toEqual(["乙角色"]);
+    expect(store.libLive().byId["char-a"]).toBeUndefined();
+    expect(store.libLive().entries.map(e => e.name)).toEqual(["乙角色"]);
     off();
   });
 });
 
 /* store 本身：import 不拉数据，第一个用到的人才拉（写作台 / 章节编排直接 import 它，不必先开过「资料」页——审计 F05-01）；
-   快照不可变，变了就换一份；门面只挂还有人读的几个窗口名 */
-describe("资料库 store：按需拉取、不可变快照、窗口接缝", () => {
+   快照不可变，变了就换一份 */
+describe("资料库 store：按需拉取、不可变快照", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.spyOn(window, "alert").mockImplementation(() => {});
@@ -251,22 +248,6 @@ describe("资料库 store：按需拉取、不可变快照、窗口接缝", () =
     }
   });
 
-  it("门面只挂还有人读的窗口名：LIB_ENTRIES / LIB_BY_ID / LIB_CATS（写作台、章节编排、冒烟）与 LIB_persist / LIB_live", async () => {
-    await activeWork();
-    const data = await import("./ws-library-data.jsx");
-    await import("./ws-library-edit.jsx");
-    await data.libRefetch();
-    expect(window.LIB_ENTRIES).toBe(data.LIB_ENTRIES);
-    expect(window.LIB_ENTRIES.map(e => e.name)).toContain("林岑");
-    expect(window.LIB_BY_ID.lin.name).toBe("林岑");
-    expect(window.LIB_CATS.map(c => c.id)).toEqual(["people", "world", "events"]);
-    expect(window.LIB_live().byId.lin.name).toBe("林岑");
-    expect(typeof window.LIB_persist).toBe("function");
-    for (const gone of ["LIB_refetch", "LIB_relationsRaw", "LIB_subscribe", "LIB_snapshot", "LIB_loadEdits", "LIB_applyEdit",
-      "LIB_loadAdds", "LIB_persistAdds", "LIB_newEntry", "LIB_seedOn", "DossierEdit", "DossierCreate"]) {
-      expect(window[gone], gone).toBeUndefined();
-    }
-  });
 });
 
 describe("WsLibrary 视图与异步资料快照连通", () => {
@@ -323,11 +304,11 @@ describe("WsLibrary 视图与异步资料快照连通", () => {
 
     const { WsWorks } = await import("./ws-works.jsx");
     await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
-    const data = await import("./ws-library-data.jsx");
+    const store = await import("./ws-library-store.js");
     const { WsLibrary } = await import("./ws-library.jsx");
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(await data.libRefetch()).toBe(false);
-    expect(data.libLoadState().status).toBe("error");
+    expect(await store.libRefetch()).toBe(false);
+    expect(store.libLoadState().status).toBe("error");
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -348,7 +329,7 @@ describe("WsLibrary 视图与异步资料快照连通", () => {
 
       // 真读到了空库：这时才是「还是空的 · 新建第一份档案」
       mode = "empty";
-      await act(async () => { await data.libRefetch(); });
+      await act(async () => { await store.libRefetch(); });
       await vi.waitFor(() => expect(host.textContent).toContain("这部作品的档案库还是空的"), T);
       expect(host.textContent).toContain("新建第一份档案");
     } finally {
@@ -366,9 +347,9 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
   afterEach(() => vi.restoreAllMocks());
 
   it("people 字段 patch 打到 characters 端点（kind→role + details.blurb）", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPatch.mockClear();
-    edit.LIB_persist({ lin: { name: "林岑·改", kind: "新角色", blurb: "新简述" } });
+    store.LIB_persist({ lin: { name: "林岑·改", kind: "新角色", blurb: "新简述" } });
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/characters/lin",
       expect.objectContaining({
@@ -379,20 +360,20 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
   });
 
   it("events patch 走 timeline 端点（label/note，而非 name/role）", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPatch.mockClear();
-    edit.LIB_persist({ e1: { name: "事件改名", blurb: "新备注" } });
+    store.LIB_persist({ e1: { name: "事件改名", blurb: "新备注" } });
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/timeline/e1",
       { label: "事件改名", note: "新备注" }), T);
   });
 
   it("links 增边→POST relations；删旧边→DELETE relations/{relationId}", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPost.mockClear();
     client.apiDelete.mockClear();
     // lin 原有 →zhou(r1)。新 links 仅含 →arch：应删 r1、增 lin→arch。
-    edit.LIB_persist({ lin: { links: [{ id: "arch", type: "ally", rel: "工作于" }] } });
+    store.LIB_persist({ lin: { links: [{ id: "arch", type: "ally", rel: "工作于" }] } });
     await vi.waitFor(() => expect(client.apiDelete).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/relations/r1"), T);
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
@@ -401,10 +382,10 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
   });
 
   it("event 作为 relation 终点被跳过（不产生 to_ref=event: 的 POST）", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPost.mockClear();
     // 保留 →zhou(避免删边)，新增 →e1(事件终点应被守卫跳过)
-    expect(await edit.LIB_persist({ lin: { links: [
+    expect(await store.LIB_persist({ lin: { links: [
       { id: "zhou", type: "conflict", rel: "宿敌", relationId: "r1" },
       { id: "e1", type: "related", rel: "卷入" },
     ] } })).toBe(true); // persist 全程跑完
@@ -414,10 +395,10 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
   });
 
   it("PATCH 失败→alert 告警且以服务端为准重读回滚", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     const before = libraryGets(client);
     client.apiPatch.mockRejectedValueOnce(new Error("boom"));
-    expect(await edit.LIB_persist({ lin: { name: "会失败" } })).toBe(false);
+    expect(await store.LIB_persist({ lin: { name: "会失败" } })).toBe(false);
     expect(window.alert).toHaveBeenCalled();                                  // 仅失败路径调 alert
     await vi.waitFor(() => expect(libraryGets(client)).toBe(before + 1), T); // 回滚 = 重拉服务端
   });
@@ -425,17 +406,17 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
   /* 审计 F05-02：同一份表单保存两次（中间服务端被别处改过，例如构思第 04 步给人物改了名），第二次必须照样发出去——
      以前按「这个会话上次发过的 patch」去重，第二次被静默跳过还报「已保存」，刷新后显示的是别处改的名字 */
   it("同一份 patch 再保存一次照样 PATCH（不按上次发过的内容去重）", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPatch.mockClear();
-    expect(await edit.LIB_persist({ lin: { name: "甲" } })).toBe(true);
-    expect(await edit.LIB_persist({ lin: { name: "甲" } })).toBe(true);
+    expect(await store.LIB_persist({ lin: { name: "甲" } })).toBe(true);
+    expect(await store.LIB_persist({ lin: { name: "甲" } })).toBe(true);
     const patches = client.apiPatch.mock.calls.filter(c => /\/characters\/lin$/.test(c[0]));
     expect(patches).toHaveLength(2);
     expect(patches[1][1]).toEqual(expect.objectContaining({ name: "甲" }));
   });
 
   it("关系写入失败不会把整次编辑误标成功；相同 patch 可重试", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPost.mockClear();
     client.apiPatch.mockClear();
     client.apiPost.mockRejectedValueOnce(new Error("relation unavailable"));
@@ -444,10 +425,10 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
       { id: "arch", type: "ally", rel: "工作于" },
     ] };
 
-    expect(await edit.LIB_persist({ lin: patch })).toBe(false);
+    expect(await store.LIB_persist({ lin: patch })).toBe(false);
     expect(window.alert).toHaveBeenCalled();
     client.apiPost.mockResolvedValueOnce({});
-    expect(await edit.LIB_persist({ lin: patch })).toBe(true);
+    expect(await store.LIB_persist({ lin: patch })).toBe(true);
 
     const relationPosts = client.apiPost.mock.calls.filter(c => /\/library\/relations$/.test(c[0]));
     expect(relationPosts).toHaveLength(2);
@@ -462,9 +443,9 @@ describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () 
   afterEach(() => vi.restoreAllMocks());
 
   it("人物的标签与置顶写进 details（人物没有 tags 列）", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPatch.mockClear();
-    expect(await edit.LIB_persist({ lin: { tags: ["主线"], pinned: true } })).toBe(true);
+    expect(await store.LIB_persist({ lin: { tags: ["主线"], pinned: true } })).toBe(true);
     const call = client.apiPatch.mock.calls.find(c => /\/characters\/lin$/.test(c[0]));
     expect(call).toBeTruthy();
     expect(call[1].details).toEqual(expect.objectContaining({ tags: ["主线"], pinned: true }));
@@ -472,28 +453,28 @@ describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () 
   });
 
   it("世界的类型按中文名反查写回 entity.kind", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPatch.mockClear();
-    await edit.LIB_persist({ arch: { kind: "机构" } });
+    await store.LIB_persist({ arch: { kind: "机构" } });
     expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/entities/arch",
       expect.objectContaining({ kind: "faction" }));
   });
 
   it("大事记的时间、所在章与相关档案写进 time_label / chapter_ref / entity_refs", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPatch.mockClear();
-    await edit.LIB_persist({ e1: { timeLabel: "开篇前三年", chapterRef: "prj-main_CH02", links: [{ id: "zhou" }, { id: "arch" }] } });
+    await store.LIB_persist({ e1: { timeLabel: "开篇前三年", chapterRef: "prj-main_CH02", links: [{ id: "zhou" }, { id: "arch" }] } });
     expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/timeline/e1",
       { time_label: "开篇前三年", chapter_ref: "prj-main_CH02", entity_refs: ["character:zhou", "entity:arch"] });
   });
 
   it("改了已有关系的类型或标签：先删旧关系再建新关系（以前直接被跳过）", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPost.mockClear();
     client.apiDelete.mockClear();
-    expect(await edit.LIB_persist({ lin: { links: [{ id: "zhou", type: "ally", rel: "旧识", relationId: "r1" }] } })).toBe(true);
+    expect(await store.LIB_persist({ lin: { links: [{ id: "zhou", type: "ally", rel: "旧识", relationId: "r1" }] } })).toBe(true);
     expect(client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-main/library/relations/r1");
     expect(client.apiPost).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/relations",
@@ -501,10 +482,10 @@ describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () 
   });
 
   it("关系没变时不发任何关系请求", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPost.mockClear();
     client.apiDelete.mockClear();
-    await edit.LIB_persist({ lin: { name: "林岑", links: [{ id: "zhou", type: "conflict", rel: "宿敌", relationId: "r1" }] } });
+    await store.LIB_persist({ lin: { name: "林岑", links: [{ id: "zhou", type: "conflict", rel: "宿敌", relationId: "r1" }] } });
     expect(client.apiDelete).not.toHaveBeenCalled();
     expect(client.apiPost).not.toHaveBeenCalled();
   });
@@ -512,14 +493,14 @@ describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () 
   it("没写标签的关系不把英文类型键当成标签显示", async () => {
     const lib = libResponse();
     lib.relations[0].note = "";
-    const { data } = await loadLib(lib);
-    expect(data.LIB_BY_ID.lin.links.find(l => l.id === "zhou")).toMatchObject({ rel: "", type: "conflict" });
+    const { store } = await loadLib(lib);
+    expect(store.libLive().byId.lin.links.find(l => l.id === "zhou")).toMatchObject({ rel: "", type: "conflict" });
   });
 
   it("新建先落后端，返回服务端 id 并刷新列表", async () => {
-    const { client, edit } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiPost.mockResolvedValueOnce({ entity_id: "ENT_NEW" });
-    const id = await edit.LIB_createEntry("world", "钟楼", { kind: "location" });
+    const id = await store.LIB_createEntry("world", "钟楼", { kind: "location" });
     expect(id).toBe("ENT_NEW");
     expect(client.apiPost).toHaveBeenCalledWith(
       "/api/v2/projects/prj-main/library/entities",
@@ -527,11 +508,11 @@ describe("WsLibrary 编辑层：每个可编辑字段都真的写回后端", () 
   });
 
   it("删除人物遇到「仍在使用」时说清原因并返回 false", async () => {
-    const { client, edit, data } = await loadLib();
+    const { client, store } = await loadLib();
     client.apiDelete.mockRejectedValueOnce(Object.assign(new Error("character is still referenced"), {
       code: "LIBRARY_CHARACTER_IN_USE", details: { dependencies: { catalog_scenes: 2, snowflake_scenes: 1 } },
     }));
-    expect(await edit.LIB_deleteEntry(data.LIB_BY_ID.lin)).toBe(false);
+    expect(await store.LIB_deleteEntry(store.libLive().byId.lin)).toBe(false);
     expect(client.apiDelete).toHaveBeenCalledWith("/api/v2/projects/prj-main/library/characters/lin");
     expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("3 处"));
   });
@@ -557,8 +538,8 @@ async function mountLibrary(lib) {
   window.localStorage.setItem("ws_active_work_v1", "prj-main");
   const { WsWorks } = await import("./ws-works.jsx");
   await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
-  const data = await import("./ws-library-data.jsx");
-  await data.libRefetch();
+  const store = await import("./ws-library-store.js");
+  await store.libRefetch();
   const { WsLibrary } = await import("./ws-library.jsx");
   const host = document.createElement("div");
   document.body.appendChild(host);

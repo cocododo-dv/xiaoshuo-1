@@ -45,8 +45,6 @@ const TEST_SEAM = "ws-test-seam.js";
 const KNOWN_WINDOW_WRITERS = [
   "wr-doc-store.jsx",
   "ws-catalog.jsx",
-  "ws-library-data.jsx",
-  "ws-library-edit.jsx",
   "ws-review.jsx",
   "ws-snow-sync.jsx",
   "ws-works.jsx",
