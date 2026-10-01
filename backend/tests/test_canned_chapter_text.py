@@ -118,3 +118,40 @@ def test_chapter_payloads_and_the_planning_context_say_not_planned(session) -> N
     chapter.must_not = "不写梦境"
     assert lifecycle.serialize_chapter(chapter)["emotional_target"] == "  由迟疑转入警觉  "
     assert ChapterPlanningContextBuilder(session)._constraints_slot(chapter)["must_not"] == "不写梦境"
+
+
+def test_the_workbench_diagnostics_read_the_canned_chapter_text_as_not_planned(session) -> None:
+    """起草台工作台的诊断部分（``?include=diagnostics``）印章目标块：旧的样板情绪目标 / 结尾效果算「没规划」（None），
+    作者写的照给（P09b 把工作台搬进 services/scene_workbench.py，S1 9 退役样板句；I7 合并胶水 G3）。"""
+    from novel_system.services.scene_workbench import SceneWorkbenchService
+
+    chapter = _legacy_chapter(session, "CANNED_CH07")
+    session.add(
+        SceneCard(
+            scene_id="CANNED_CH07_SC01",
+            chapter_id="CANNED_CH07",
+            project_id=PROJECT_ID,
+            scene_seq=1,
+            scene_goal="林昭在雨城码头等送信人",
+        )
+    )
+    session.commit()
+
+    block = SceneWorkbenchService(session).payload("CANNED_CH07_SC01", diagnostics=True)["chapter_goal"]
+    assert block == {
+        "chapter_id": "CANNED_CH07",
+        "chapter_goal": "林昭把旧信交给案卷室。",
+        "main_plot_push": "林昭把旧信交给案卷室。",
+        "emotional_target": None,
+        "ending_effect": None,
+    }
+
+    # 作者写的原样给
+    chapter.emotional_target = "由迟疑转入警觉"
+    chapter.ending_effect = "旧信落进案卷室的那一刻，门外有人敲了三下"
+    session.commit()
+    block = SceneWorkbenchService(session).payload("CANNED_CH07_SC01", diagnostics=True)["chapter_goal"]
+    assert (block["emotional_target"], block["ending_effect"]) == (
+        "由迟疑转入警觉",
+        "旧信落进案卷室的那一刻，门外有人敲了三下",
+    )

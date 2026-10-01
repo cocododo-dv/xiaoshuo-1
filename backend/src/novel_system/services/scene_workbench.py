@@ -43,6 +43,7 @@ from novel_system.services.scene_budget import lifecycle_budget_payload
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import latest_style_notices
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
+from novel_system.services.story_slots import planned_text
 from novel_system.services.text_input import clean_backfill_markers
 
 # ``GET …/workbench?include=diagnostics``：连同诊断部分一起给（测试与排障用）
@@ -179,8 +180,9 @@ class SceneWorkbenchService:
                 "chapter_id": chapter.chapter_id,
                 "chapter_goal": chapter.chapter_goal,
                 "main_plot_push": chapter.main_plot_push,
-                "emotional_target": chapter.emotional_target,
-                "ending_effect": chapter.ending_effect,
+                # 作者写了才有值；雪花物化以前写的样板句算「没规划」（story_slots.planned_text）
+                "emotional_target": planned_text(chapter.emotional_target),
+                "ending_effect": planned_text(chapter.ending_effect),
             },
             "scene_card": {
                 "scene_id": scene.scene_id,
