@@ -17,12 +17,14 @@
 ## 开发与发布
 
 - [发布检查清单](release-checklist.md)：CI、Windows、React E2E 和 WSL Chroma 发布门。
+- [数据库迁移](migrations.md)：怎么升级、怎么写新迁移、各版本做了什么、哪些不可逆、重构的部署顺序。
 
 ## 当前专项记录
 
 - [章节编排 LLM 接入设计（2026-07-16，已实现）](chapter-arrangement-llm-design-2026-07-16.md)：章节蓝图一等公民 + 上下文底座 + 候选/补全/体检三通道与只填空补丁纪律。
 - [雪花「整理成章节结构」重新设计（2026-07-25，已实施）](snowflake-chaptering-design-2026-07-25.md)：构思侧章表一等公民 + 可预览分章 + scene_id 撞号与幽灵场两个数据缺陷的修复方案；现行契约见上面的雪花方法契约。
 - [风格参考 v3 变更记录（2026-09-23）](style-reference-v3-2026-09-23.md)：以参考为标准的一次性重构——作者的决定、16 维度与策略选择器的评估结论、目标架构与接口、全部问题台账与各工作包的完成日志；现行说明见上面的「风格参考」。
+- [CLAUDE.md 工程日志（2026-09，原样存档）](history/claude-md-log-2026-09.md)：瘦身之前的 `CLAUDE.md` 全文——阶段 A–Z 与 2026-09 各轮的工程记录、迁移叙述、减法批次一清单。
 - 风格参考的历史文档（只描述当时的实现，现行说明见 [风格参考](style-reference.md)），归档在 `docs/history/style/`：
   [v1.1 设计](history/style/style_reference_module_design_v1.1.md)、[实施账本](history/style/style-reference-progress.md)、[Phase 3 完成记录](history/style/style-reference-phase3-backlog.md)、[RAG v2 内容克制检索](history/style/style-reference-rag-content-independence.md)、[运行时契约与反馈闭环](history/style/style-reference-runtime-contract.md)、[动态模仿 v2（2026-08-20）](history/style/style-reference-dynamic-imitation-v2-2026-08-20.md)、[风格模仿 v2 执行方案（2026-09-05）](history/style/style-imitation-v2-plan-2026-09-05.md)、[样例优先（2026-09-09）](history/style/style-exemplar-first-2026-09-09.md)、[风格直起与结构跟随（2026-09-12）](history/style/style-first-draft-plan-2026-09-12.md)、[保真修补（2026-09-14）](history/style/style-fidelity-fixes-2026-09-14.md)、[风格参考优先（2026-09-22）](history/style/style-reference-first-2026-09-22.md)。
 
