@@ -67,9 +67,9 @@ export function useSnowWorkbenchApi(live) {
 }
 
 /* 右栏：09 / 10 是两张宽表，默认收起、把宽度让给表格；其余步骤默认展开。作者的选择按两组记住。
-   窄屏（≤1180）右栏本来就折成抽屉，这个偏好不参与。 */
+   窄屏（≤1280，与 ws-snow.css 的抽屉断点同一个数）右栏本来就折成抽屉，这个偏好不参与。 */
 const s2RailGroup = (key) => (key === "scenes" || key === "planning" ? "table" : "form");
-const S2_NARROW_QUERY = "(max-width: 1180px)";
+const S2_NARROW_QUERY = "(max-width: 1280px)";
 
 /* ---- 落在哪一步 · 页签 · 外部跳转 ---- */
 export function useSnowLanding({ workId: snowWorkId, myKey, initialStep, states, health: beHealth, latestRef, setScaffolds }) {

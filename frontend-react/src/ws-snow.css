@@ -47,7 +47,7 @@
   border-radius: 3px;
   background: var(--line-2);
 }
-@media (max-width: 1279px) { .snow-strip-bar { display: none; } }
+@media (max-width: 1280px) { .snow-strip-bar { display: none; } }
 .snow-strip-tick.s-done   { background: var(--sage); }
 .snow-strip-tick.s-active { background: var(--crimson); box-shadow: 0 0 0 3px var(--crimson-wash); }
 .snow-strip-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
@@ -294,20 +294,16 @@
   gap: 16px;
   overflow-y: auto;
 }
-@media (max-width: 1280px) {
-  .snow-cols { grid-template-columns: 240px minmax(0, 1fr) 280px; }
-}
-/* 本步上下文：宽屏可收起的第三栏；窄屏（≤1180）折成抽屉 */
+/* 本步上下文：宽屏可收起的第三栏；窄屏（≤1280）折成抽屉。断点挪到文档刻度上（批准 #26c）：以前抽屉从 ≤1180 起，
+   1181–1280 之间三栏挤成 240 / 中间 / 280，中间的编辑区只剩 600–700px；挪到 1100 会挤到 517px（截图对比过），
+   所以挪到 1280——这一段改成抽屉，编辑区宽出 280px，右栏点 ⓘ 打开。JS 的 S2_NARROW_QUERY 同一个数。 */
 .sf-ctx-drawer-head { display: none; }
 .sf-ctx-scrim { display: none; }
-@media (min-width: 1181px) {
+@media (min-width: 1281px) {
   .snow-cols[data-rail="off"] { grid-template-columns: 280px minmax(0, 1fr); }
   .snow-cols[data-rail="off"] > .snow-ctx { display: none; }
 }
-@media (min-width: 1181px) and (max-width: 1280px) {
-  .snow-cols[data-rail="off"] { grid-template-columns: 240px minmax(0, 1fr); }
-}
-@media (max-width: 1180px) {
+@media (max-width: 1280px) {
   .snow-cols { grid-template-columns: 236px minmax(0, 1fr); }
   .sf-ctx-open-label { display: none; }
   /* 关着时 visibility:hidden：抽屉里的按钮不再落进 Tab 顺序、读屏也读不到 */
@@ -324,7 +320,9 @@
   .sf-ctx-scrim.show { opacity: 1; pointer-events: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .snow-ctx, .sf-ctx-scrim { transition: none !important; } }
-@media (max-width: 760px) {
+/* ≤900 收起左侧十步列表（以前 ≤760）：761–900 之间列表占 236px，编辑区只剩 460–600px、页脚的同步状态被挤成一个勾；
+   收起后翻步用页脚的上一步 / 下一步与 ⌘K。 */
+@media (max-width: 900px) {
   .snow-cols { grid-template-columns: 1fr; }
   .snow-steps { display: none; }
 }
