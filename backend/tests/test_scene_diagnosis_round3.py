@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
     StyleReferenceBook,
+    StyleReferenceInjectionBinding,
     StyleReferenceParagraph,
     StyleReferenceProfile,
     StyleReferenceRun,
@@ -30,10 +31,8 @@ from novel_system.services.literary_quality import (
     poisson_tail,
     wilson_lower_bound,
 )
-from novel_system.services.style_policy import StylePolicy
 from novel_system.services.scene_diagnosis import (
     RULE_CALIBRATION_MIN_ENDINGS,
-    SceneDiagnosisService,
     compute_reference_rules,
     passage_scope,
     rule_calibration_from_reference,
@@ -200,7 +199,7 @@ def test_endings_come_from_chapters_scene_breaks_or_transitions_and_are_honest_w
     assert rule_calibration_from_reference(none).level_for("ending_drive") is None
 
 
-def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_breaks: list[int] | None = None, deliberate: bool = False) -> None:
+def _bind_reference_book(session, *, paragraphs: list[str], scene_breaks: list[int] | None = None, deliberate: bool = False) -> None:
     session.add(StyleReferenceBook(book_id="book_r3", title="旧信", source_kind="upload", cloud_policy="segments_only", text_checksum="r3", stats_json={"scene_breaks": scene_breaks or []}))
     session.add(StyleReferenceRun(run_id="run_r3", book_id="book_r3", status="completed", phase="synthesize", dispatch_state="completed", requested_layers_json=["language"]))
     session.add_all(
@@ -218,17 +217,27 @@ def _bind_reference_book(session, monkeypatch, *, paragraphs: list[str], scene_b
             for index, text in enumerate(paragraphs)
         ]
     )
-    session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="旧信画像", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
-    session.commit()
-    # 风格参考 v3：诊断按 StylePolicy 判绑定（校准看 bound，房风标记看「让位」）；画像的刻意复沓从库里读
-    monkeypatch.setattr(
-        SceneDiagnosisService,
-        "style_policy",
-        lambda self, scene: StylePolicy(bound=True, style_first=True, mode="live", profile_id="prof_r3", book_id="book_r3"),
+    session.add(StyleReferenceProfile(profile_id="prof_r3", book_id="book_r3", run_id="run_r3", title="旧信画像", status="active", profile_json={"voice_signature": {"deliberate_repetition": deliberate}}))
+    session.flush()
+    # 风格参考 v3：诊断按 StylePolicy 判绑定（校准看 bound，房风标记看「让位」）；画像的刻意复沓从库里读。
+    # 一条真的全局绑定（作者手笔直起）：深改面板与文学质量视图各自按当前活动绑定现解析——两处读到同一个策略、
+    # 同一份校准，靠的是产品代码，不是给其中一处打的桩（I7：文学质量路由不再注入场景诊断的解析器）
+    session.add(
+        StyleReferenceInjectionBinding(
+            binding_id="bind_r3",
+            profile_id="prof_r3",
+            scope="global",
+            scope_ref_id=None,
+            task_type="scene_generation",
+            strategy="mixed",
+            config_json={"draft_mode": "style_first"},
+            status="active",
+        )
     )
+    session.commit()
 
 
-def test_bound_scene_reads_the_reference_rule_calibration_and_the_quality_view_agrees(client: TestClient, session, monkeypatch) -> None:
+def test_bound_scene_reads_the_reference_rule_calibration_and_the_quality_view_agrees(client: TestClient, session) -> None:
     _seed_scene(session)  # 第 1 段有「突然意识到」——房风词表下是一条模型腔
     house = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert house["style_bound"] is False and house["craft_calibration"]["rules"] is None
@@ -237,7 +246,7 @@ def test_bound_scene_reads_the_reference_rule_calibration_and_the_quality_view_a
 
     # 没有标题段的书，靠导入时记下的场界切单元
     flat = _reference_book(units=12, titles=False)
-    _bind_reference_book(session, monkeypatch, paragraphs=flat, scene_breaks=[index for index in range(119, len(flat), 120)])
+    _bind_reference_book(session, paragraphs=flat, scene_breaks=[index for index in range(119, len(flat), 120)])
     bound = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert bound["style_bound"] is True
     rules = bound["craft_calibration"]["rules"]

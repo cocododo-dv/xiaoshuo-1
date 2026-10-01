@@ -11,14 +11,10 @@ from novel_system.api.requests.literary_quality import (
 )
 from novel_system.api.response import respond
 from novel_system.services.literary_quality import LiteraryQualityService
-from novel_system.services.scene_diagnosis import SceneDiagnosisService
 
-
-def _quality_service(session: Session) -> LiteraryQualityService:
-    """文学质量视图与写作台深改面板读同一份参考书校准（2026-09-22 第三轮）。"""
-
-    return LiteraryQualityService(session, rule_calibration_resolver=SceneDiagnosisService(session).rule_calibration_for_scene)
-
+# 文学质量视图与写作台深改面板读同一份参考书校准（2026-09-22 第三轮）：服务自己经
+# ``literary_quality.calibration_source`` 按这一场当前的活动绑定现解析（与深改面板同一个策略，B04-21），
+# 路由不再注入场景诊断的解析器。
 router = APIRouter(tags=["literary_quality"])
 
 
@@ -32,7 +28,7 @@ def literary_quality_overview(
     project_id: str | None = None,
     session: Session = Depends(get_session),
 ):
-    payload = _quality_service(session).overview(
+    payload = LiteraryQualityService(session).overview(
         text_layer=text_layer,
         chapter_id=chapter_id,
         risk_type=risk_type,
@@ -53,7 +49,7 @@ def literary_quality_analyze_text(
         request,
         session,
         payload=body,
-        action=lambda: _quality_service(session).analyze_text(body),
+        action=lambda: LiteraryQualityService(session).analyze_text(body),
     )
 
 
@@ -68,5 +64,5 @@ def literary_quality_chapter_set_review(
         request,
         session,
         payload=body,
-        action=lambda: _quality_service(session).chapter_set_review(body),
+        action=lambda: LiteraryQualityService(session).chapter_set_review(body),
     )
