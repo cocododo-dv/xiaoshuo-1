@@ -2,7 +2,8 @@
    雪花十步 · 步骤文案与写作指引（叶子模块：只 import 步骤目录 snow-steps.js）
    ----------------------------------------------------------
    步骤目录加上视图用的文案（S2_STEPS）、前后端步骤键映射、三大灾难与五个回头自问，
-   以及每一步的写作指引与编辑形态（S2_STEP_DATA：任务、写法、清单、建议字数、脚手架种类）。
+   每一步的写作指引与编辑形态（S2_STEP_DATA：任务、写法、清单、建议字数、脚手架种类），
+   以及各编辑器每一栏的名字（S2_AUD_FIELDS …，编辑器与分步文本共用）。
    从 ws-snow-model.js 拆出（2026-09-29）；ws-snow-model.js 原样转出这里的全部名字。
    ========================================================== */
 
@@ -250,3 +251,73 @@ export const S2_STEP_DATA = {
     },
   },
 };
+
+/* ---- 编辑器各栏的名字（01 / 03 / 04 / 05 / 06 / 07 / 08）----
+   编辑器与「导出大纲」「引用上下文」「回滚预览」「服务器上保存的版本」的分步文本（ws-snow-text.js）共用这一份：
+   f 是脚手架里的键，label 是作者看到的名字，hint / desc / tone 只给编辑器用。2026-10 从编辑器模块挪到这里（审计 F02-12）。 */
+
+/* 09 的线索种类（主线 / 线索 / 支线）——场景表的织线与分步文本共用 */
+export const S2_LINE_KIND_LABEL = { main: "主线", thread: "线索", sub: "支线" };
+
+/* 01 读者定位：类型之外的六栏 */
+export const S2_AUD_FIELDS = [
+  { f: "reader",   label: "读者画像", hint: "谁？年龄、阅读口味、她为何被这种故事吸引", rows: 2 },
+  { f: "pleasure", label: "核心快感", hint: "用「她读完会觉得 ___」一句话锁定", rows: 2, accent: true },
+  { f: "source",   label: "快感来源", hint: "这种快感具体从哪来——叙述、主题、节奏？", rows: 2 },
+  { f: "emotion",  label: "期待读者情绪", hint: "压力升级中，读者持续感到什么——揪心、压迫、向前的拉力？", rows: 2 },
+  { f: "stance",   label: "叙述人称与时态", hint: "全书用什么人称、什么时态、视角纪律——如「第三人称限知，过去时，每场固定一个视角人物」；起草时有约束力", rows: 1 },
+  { f: "exclude",  label: "反向定位", hint: "「我不为谁写 / 不写什么」——砍掉犹豫", rows: 2, danger: true },
+];
+
+/* 03 一段话概括的五句（灾难二是道德前提翻转的那一句） */
+export const S2_BEATS = [
+  { f: "setup",      label: "铺垫",   act: "开场",      desc: "交代背景，引入 1–2 位主角" },
+  { f: "d1",         label: "灾难一", act: "第一幕末",  desc: "逼主角入局、做出承诺", tone: "crimson" },
+  { f: "d2",         label: "灾难二", act: "第二幕中点", desc: "道德前提翻转：错误信念 → 正确信念", tone: "gold", flip: true },
+  { f: "d3",         label: "灾难三", act: "第二幕末",  desc: "逼主角（与反派）走向终局", tone: "crimson" },
+  { f: "resolution", label: "结局",   act: "第三幕",    desc: "终极对决 + 收束（喜 / 悲 / 苦甜）" },
+];
+
+/* 05 一页梗概的五段（07 的五段展开也按它们走） */
+export const S2_SYN_BEATS = [
+  { f: "setup",      label: "铺垫",   ref: "setup", tone: "slate",   desc: "世界观与初始处境" },
+  { f: "d1",         label: "灾难一", ref: "d1",    tone: "crimson", desc: "触发事件 · 第一幕末" },
+  { f: "d2",         label: "灾难二", ref: "d2",    tone: "gold",    desc: "认知翻转 · 中点" },
+  { f: "d3",         label: "灾难三", ref: "d3",    tone: "crimson", desc: "升级 · 第二幕末" },
+  { f: "resolution", label: "结局",   ref: "resolution", tone: "slate", desc: "高潮走向与收尾" },
+];
+
+/* 04 角色摘要表 */
+export const S2_CHAR_FIELDS = [
+  { f: "role",     label: "角色",          hint: "主角 / 对立面 / 导师 / 帮手…", short: true },
+  { f: "goal",     label: "目标（具体）",  hint: "这个故事里她要的、看得见的东西" },
+  { f: "ambition", label: "抱负（抽象）",  hint: "她对人生说不出口的渴望" },
+  { f: "conflict", label: "阻碍",          hint: "什么挡在她和目标之间" },
+  // 阶段 D：价值观按书里的句式一行一条（2–3 条，互相有张力）；脚手架仍存一个字符串，换行分隔
+  { f: "values",   label: "价值观",        hint: "「没有什么比 ___ 更重要」写 2–3 条，互相有张力——主角和对手这句话必须冲突", kind: "values", prefix: "没有什么比", suffix: "更重要", wide: true },
+  { f: "epiphany", label: "顿悟",          hint: "故事结束时她学到什么（反派常无）" },
+  // 阶段 D：书里的角色表还有两栏——这个角色自己的一句话 / 一段话故事线（规范键 one_sentence_summary / one_paragraph_summary）
+  { f: "storyline",      label: "一句话故事线", hint: "她自己的故事，一句话：要什么、谁挡着、代价是什么", wide: true },
+  { f: "storyline_para", label: "一段话故事线", hint: "扩成一段：她怎样进入故事、三次灾难怎样打在她身上、她的结局，以及她能生出哪些场景", rows: 3, wide: true },
+];
+
+/* 06 角色背景 */
+export const S2_BACKSTORY_FIELDS = [
+  { f: "belief",   label: "信念起点",   hint: "故事开始前她相信什么？怎么形成的？" },
+  { f: "wound",    label: "第一道裂缝", hint: "哪件事第一次动摇了她——她的旧伤" },
+  { f: "desire",   label: "内心渴望",   hint: "她真正渴望的是什么？为何渴望" },
+  { f: "fear",     label: "隐秘恐惧",   hint: "最怕被人发现什么——故事将击中的靶心" },
+  { f: "relation", label: "关系与行为", hint: "与其他角色的纠葛；压力下她会怎么做" },
+  // 阶段 D：书里的第 5 步——从每个角色的视角把整本书讲一遍（规范值是 synopsis 里的第六个前缀行「视角故事：」）
+  { f: "povstory",  label: "视角故事",   hint: "从她的视角把整个故事讲一遍：她看见什么、以为什么、要什么、付出什么——半页到一页", rows: 5, accent: true },
+];
+
+/* 08 角色全档案 */
+export const S2_PROFILE_FIELDS = [
+  { f: "physical",      label: "生理",       hint: "外貌、习惯、标志性细节" },
+  { f: "psych",         label: "心理",       hint: "核心恐惧、渴望、创伤" },
+  { f: "environment",   label: "环境",       hint: "家庭、工作、人际" },
+  { f: "personality",   label: "性格",       hint: "口头禅、矛盾面" },
+  { f: "contradiction", label: "内在矛盾",   hint: "嘴上说的 vs 实际做的", accent: true },
+  { f: "views",         label: "两个版本的她", hint: "别人眼中的她 ／ 她自己眼中的她", accent: true },
+];

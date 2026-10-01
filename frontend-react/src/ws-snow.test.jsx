@@ -602,6 +602,49 @@ describe("阶段 M · 09/10 交互", () => {
     expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
   });
 
+  it("批准 #18b：导出大纲与「引用上下文」是带栏名的分步文本——不印行 id、角色键与 proactive / main / full 这些内部值", async () => {
+    const row = "row_00112233445566aa";
+    window.localStorage.setItem(CACHE, JSON.stringify({ scaffolds: {
+      characters: { sel: "c1", chars: { c1: { name: "林岑", role: "主角", goal: "拿到账本", ambition: "", values: "", conflict: "", epiphany: "" } } },
+      scenes: { lines: [], list: [{ id: row, type: "proactive", line: "main", pov: "c1", place: "码头", event: "取账本", crucible: "船要开了", fn: "起势", spine: "" }] },
+      planning: { sel: row, plans: { [row]: { goal: "拿到账本", conflict: "", setback: "", rendering: "full" } } },
+    } }));
+    const blobs = [];
+    const create = URL.createObjectURL;
+    const revoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((blob) => { blobs.push(blob); return "blob:snow-export"; });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      const host = await renderAt("planning");
+      const refTab = [...host.querySelectorAll('[role="tab"]')].find(b => b.textContent.includes("引用上下文"));
+      await act(async () => refTab.click());
+      const cards = [...host.querySelectorAll(".ref-card-body")].map(el => el.textContent).join("\n");
+      expect(cards).toContain("S01 · 主动 · 视角 林岑 · 码头");
+      expect(cards).toContain("林岑（主角）");
+      expect(cards).not.toMatch(/row_|proactive|\bmain\b|\bc1\b/);
+      await act(async () => host.querySelector('[data-testid="snow-more"]').click());
+      await act(async () => document.querySelector('[data-testid="snow-export-outline"]').click());
+      expect(blobs).toHaveLength(1);
+      // jsdom 的 Blob 没有 text()：用 FileReader 读回导出的 Markdown
+      const md = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsText(blobs[0]);
+      });
+      expect(md).toContain("## 09 场景列表");
+      expect(md).toContain("- **S01 · 主动 · 视角 林岑 · 码头**\n  - **事件**：取账本");
+      expect(md).toContain("## 10 场景规划");
+      expect(md).toContain("  - **目标**：拿到账本");
+      expect(md).not.toMatch(/row_|proactive|reactive|\bmain\b|\bc1\b|\bfull\b/);
+    } finally {
+      // jsdom 没有这两个函数：导出 1.5 秒后还会调一次 revokeObjectURL，换回 undefined 会在用例之后抛错——换成空函数
+      URL.createObjectURL = create || (() => "");
+      URL.revokeObjectURL = revoke || (() => {});
+    }
+  });
+
   it("09 灾难标记：没有显式标记时按「功能」一栏推断，只显示、不写回", async () => {
     const seeded = threeScenes();
     seeded.scaffolds.scenes.list[1].fn = "灾难一·一幕高潮";

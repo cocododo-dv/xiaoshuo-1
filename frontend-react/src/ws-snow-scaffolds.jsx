@@ -1,6 +1,7 @@
 import React from "react";
 import { S2Audience, S2Beats, S2ChapterOutline, S2SynopsisBeats } from "./ws-snow-editors-story.jsx";
-import { S2_BACKSTORY_FIELDS, S2_PROFILE_FIELDS, S2CharDeep, S2CharSheet } from "./ws-snow-editors-cast.jsx";
+import { S2CharDeep, S2CharSheet } from "./ws-snow-editors-cast.jsx";
+import { S2_BACKSTORY_FIELDS, S2_PROFILE_FIELDS } from "./ws-snow-model.js";
 import { S2SceneList } from "./ws-snow-scene-list.jsx";
 import { S2ScenePlan } from "./ws-snow-scene-plan.jsx";
 import { countChars } from "./lib/text.js";

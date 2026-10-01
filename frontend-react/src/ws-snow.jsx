@@ -410,7 +410,7 @@ function WsSnowflake({ initialStep }) {
 
       {upDiff && <S2UpstreamDiff diff={upDiff} onClose={() => setUpDiff(null)} />}
       {snapDiff && (
-        <S2SnapDiff h={snapDiff} current={{ draft: drafts[snapDiff.key] || "", scaffold: scaffolds[snapDiff.key] }}
+        <S2SnapDiff h={snapDiff} current={{ draft: drafts[snapDiff.key] || "", scaffold: scaffolds[snapDiff.key] }} refs={scaffolds}
           onApply={() => applySnap(snapDiff)} onClose={() => setSnapDiff(null)} />
       )}
       {importOpen && (

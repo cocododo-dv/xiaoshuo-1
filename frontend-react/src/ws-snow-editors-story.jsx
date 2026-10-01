@@ -6,6 +6,7 @@ import { chapterNoInTitle, isAutoChapterTitle } from "./labels/catalog.js";
 import { S2AutoText } from "./ws-snow-fields.jsx";
 import { S2ExpansionRow } from "./ws-snow-editor-parts.jsx";
 import { countChars } from "./lib/text.js";
+import { S2_AUD_FIELDS, S2_BEATS, S2_SYN_BEATS } from "./ws-snow-model.js";
 
 /* ==========================================================
    雪花编辑器 · 情节轨（2026-09-29 从 ws-snow-scaffolds.jsx 拆出）
@@ -16,14 +17,6 @@ import { countChars } from "./lib/text.js";
 
 /* ---- 01 读者定位：类型 / 读者画像 / 核心快感 / 来源 / 反向定位 ---- */
 const S2_AUD_GENRES = ["文学悬疑", "言情", "硬核推理", "科幻", "奇幻", "历史", "青春", "惊悚"];
-const S2_AUD_FIELDS = [
-  { f: "reader",   label: "读者画像", hint: "谁？年龄、阅读口味、她为何被这种故事吸引", rows: 2 },
-  { f: "pleasure", label: "核心快感", hint: "用「她读完会觉得 ___」一句话锁定", rows: 2, accent: true },
-  { f: "source",   label: "快感来源", hint: "这种快感具体从哪来——叙述、主题、节奏？", rows: 2 },
-  { f: "emotion",  label: "期待读者情绪", hint: "压力升级中，读者持续感到什么——揪心、压迫、向前的拉力？", rows: 2 },
-  { f: "stance",   label: "叙述人称与时态", hint: "全书用什么人称、什么时态、视角纪律——如「第三人称限知，过去时，每场固定一个视角人物」；起草时有约束力", rows: 1 },
-  { f: "exclude",  label: "反向定位", hint: "「我不为谁写 / 不写什么」——砍掉犹豫", rows: 2, danger: true },
-];
 export function S2Audience({ scaffold, onScaffold }) {
   const set = (f, v) => onScaffold(s => ({ ...s, [f]: v }));
   const filled = ["genre", ...S2_AUD_FIELDS.map(f => f.f)].filter(k => (scaffold[k] || "").trim()).length;
@@ -61,13 +54,6 @@ export function S2Audience({ scaffold, onScaffold }) {
 }
 
 /* ---- 03 一段话概括：五句骨架 + 中点的道德前提翻转 ---- */
-const S2_BEATS = [
-  { f: "setup",      label: "铺垫",   act: "开场",      desc: "交代背景，引入 1–2 位主角" },
-  { f: "d1",         label: "灾难一", act: "第一幕末",  desc: "逼主角入局、做出承诺", tone: "crimson" },
-  { f: "d2",         label: "灾难二", act: "第二幕中点", desc: "道德前提翻转：错误信念 → 正确信念", tone: "gold", flip: true },
-  { f: "d3",         label: "灾难三", act: "第二幕末",  desc: "逼主角（与反派）走向终局", tone: "crimson" },
-  { f: "resolution", label: "结局",   act: "第三幕",    desc: "终极对决 + 收束（喜 / 悲 / 苦甜）" },
-];
 export function S2Beats({ scaffold, onScaffold }) {
   return (
     <div className="sf-scaffold sf-beats">
@@ -97,13 +83,6 @@ export function S2Beats({ scaffold, onScaffold }) {
 }
 
 /* ---- 05 一页梗概：五段，每段锚定 03 的一句脊柱节拍（1→5 分形展开可见） ---- */
-const S2_SYN_BEATS = [
-  { f: "setup",      label: "铺垫",   ref: "setup", tone: "slate",   desc: "世界观与初始处境" },
-  { f: "d1",         label: "灾难一", ref: "d1",    tone: "crimson", desc: "触发事件 · 第一幕末" },
-  { f: "d2",         label: "灾难二", ref: "d2",    tone: "gold",    desc: "认知翻转 · 中点" },
-  { f: "d3",         label: "灾难三", ref: "d3",    tone: "crimson", desc: "升级 · 第二幕末" },
-  { f: "resolution", label: "结局",   ref: "resolution", tone: "slate", desc: "高潮走向与收尾" },
-];
 export function S2SynopsisBeats({ scaffold, onScaffold, refs }) {
   const paras = scaffold.paras || {};
   const para03 = (refs && refs.paragraph) || {};

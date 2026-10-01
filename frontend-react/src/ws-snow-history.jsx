@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { recentOrDayTimeLabel } from "./lib/format.js";
-import { S2_STEPS, s2Ancestors, s2Content } from "./ws-snow-model.js";
+import { S2_STEPS, s2Ancestors, s2StepText } from "./ws-snow-model.js";
 import { countChars } from "./lib/text.js";
 
 /* ==========================================================
@@ -55,7 +55,8 @@ export function S2Ref({ active, drafts, scaffolds }) {
       </div>
       {ancs.map(k => {
         const s = S2_STEPS.find(x => x.key === k);
-        const text = clip(s2Content(drafts[k], scaffolds[k]), 160);
+        // 带栏名的分步文本（批准 #18b）：不再把 09 的行 id、角色键、proactive 这些内部值印进引用卡片
+        const text = clip(s2StepText(k, drafts[k], scaffolds[k], scaffolds), 160);
         return (
           <div key={k} className="card-flat ref-card">
             <div className="ref-card-h"><span className={`sf-trk-tag trk-${s.track}`}>{s.num}</span><span className="fw-600">{s.name}</span></div>
@@ -73,11 +74,12 @@ export function S2Ref({ active, drafts, scaffolds }) {
   );
 }
 
-/* ---- 回滚预览：快照 vs 当前，看清再恢复 ---- */
-export function S2SnapDiff({ h, current, onApply, onClose }) {
+/* ---- 回滚预览：快照 vs 当前，看清再恢复 ----
+   两边都是带栏名的分步文本（s2StepText）；视角名、04 名册、第 10 步的场序取 refs（现在的整份脚手架）。 */
+export function S2SnapDiff({ h, current, refs, onApply, onClose }) {
   const st = S2_STEPS.find(s => s.key === h.key) || {};
-  const oldText = s2Content(h.snap.draft, h.snap.scaffold).trim();
-  const curText = s2Content(current.draft, current.scaffold).trim();
+  const oldText = s2StepText(h.key, h.snap.draft, h.snap.scaffold, refs).trim();
+  const curText = s2StepText(h.key, current.draft, current.scaffold, refs).trim();
   const same = oldText === curText;
   return (
     <WsDialog onClose={onClose} labelledBy="sf-snap-title" describedBy="sf-snap-desc" size="lg" className="sf-diff-dialog">

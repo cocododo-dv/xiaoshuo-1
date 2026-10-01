@@ -6,7 +6,7 @@ import { useFocusTrap, isImeComposing } from "./ws-dialog.jsx";
 import {
   S2_STEPS, S2_STATE_LABEL,
   s2BlankScaffolds, s2BlockedStep, s2Content, s2DefaultChecks, s2DefaultDrafts, s2DefaultStates, s2FindStepKey,
-  s2LandingStep, s2MergeScaffolds, s2SettlePlanning,
+  s2LandingStep, s2MergeScaffolds, s2SettlePlanning, s2StepMarkdown,
 } from "./ws-snow-model.js";
 import {
   activeWorkId, s2Load, s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS,
@@ -483,11 +483,12 @@ export function useSnowMoreMenu({
     } finally { setImportBusy(false); }
   };
   const workTitle = () => { try { return (WsWorks && WsWorks.active && WsWorks.active().title) || ""; } catch (e) { return ""; } };
-  /* export the whole snowflake as a Markdown outline (real download) */
+  /* 整份雪花导出成 Markdown（真下载）。每一步是带栏名的分步文本（s2StepMarkdown：一栏一行，角色 / 场景 / 章各成一组）——
+     以前把脚手架里的字符串叶子原样拼起来，行 id、角色键、proactive / main 这些内部值都印进了大纲（批准 #18b） */
   const exportOutline = useStableCallback(() => {
     const lines = [`# 雪花大纲 · ${workTitle() || "未命名作品"}`, "", `> 导出于 ${new Date().toLocaleString("zh-CN")} · 已确认 ${doneCount}/10${staleCount ? ` · ${staleCount} 需复核` : ""}`, ""];
     S2_STEPS.forEach(s => {
-      const text = s2Content(drafts[s.key], scaffolds[s.key]).trim();
+      const text = s2StepMarkdown(s.key, drafts[s.key], scaffolds[s.key], scaffolds).trim();
       const st = states[s.key];
       const tag = staleMap[s.key] ? "需复核" : (S2_STATE_LABEL[st] || st);
       lines.push(`## ${s.num} ${s.name}　[${tag}]`);
@@ -506,7 +507,7 @@ export function useSnowMoreMenu({
   const moreItems = useSM(() => [
     { label: "导入结构", hint: "粘贴十步规范 JSON，逐步保存并批准", icon: <I.Download size={14} />, testId: "snow-import-open",
       onSelect: () => { setImportError(""); setImportOpen(true); } },
-    { label: "导出大纲", hint: "全书十步导出为 Markdown", icon: <I.UploadCloud size={14} />, onSelect: exportOutline },
+    { label: "导出大纲", hint: "全书十步导出为 Markdown", icon: <I.UploadCloud size={14} />, testId: "snow-export-outline", onSelect: exportOutline },
     { separator: true },
     { label: "清空十步构思…", hint: "服务器会记一版空稿，清空前的内容留在「历史」里", icon: <I.Trash size={14} />, danger: true, testId: "snow-reset-open",
       onSelect: () => setResetOpen(true) },
