@@ -314,3 +314,62 @@ def test_restoring_an_older_10_keeps_the_scenes_and_fields_09_owns(session) -> N
     session.expire_all()
     assert sorted(plans_by_uid(live=True)) == ["u1", "u2"]
     assert plans_by_uid(live=True)["u1"].summary == "取账本"
+
+
+def test_a_same_story_save_after_restoring_an_older_10_keeps_the_provenance_when_09_moved_on(session) -> None:
+    """复核 I6-R2：工作台交给前端的 10 是从**全部**活着的场景计划现建的，不是存下的那一版——恢复一版旧的 10 只存那一版的
+    行，09 在那一版之后加过的场照旧挂在场上、也在交出去的草稿里；09 里改过的事件同理。前端恢复后立刻改写本机缓存，下一次
+    原样的自动保存就带着它们：与存下的草稿语义不同、与交出去的那份相同。那不是作者改了第 10 步，还是「从历史恢复」；
+    作者真改了第 10 步的一栏才是「你写的」。"""
+    from tests.test_snowflake_rendering_mode import _scene_rows
+
+    service = _seed(session)
+
+    def presented_rows() -> list[dict]:
+        return [dict(row) for row in next(
+            step for step in service.workspace(PROJECT_ID)["steps"] if step["step_key"] == "scene_details"
+        )["draft"]["scenes"]]
+
+    session.add(
+        SnowflakeStepRun(
+            step_run_id="run-10-v1", project_id=PROJECT_ID, step_key="scene_details", version=0,
+            status="superseded", draft_json={"scenes": presented_rows()}, health_json={}, input_refs_json={},
+        )
+    )
+    session.flush()
+    # 那一版之后：09 加了第 4 场，10 给它排了三拍
+    fourth = {"row_uid": "u4", "scene_seq": 4, "summary": "夜访证人", "primary_form": "proactive", "scene_type": "proactive",
+              "location": "旅馆", "crucible": "证人只肯见一次", "pov_character_id": "c1", "chapter_role": "转向"}
+    service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": [*_scene_rows(), fourth]}})
+    service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": [
+        dict(row, goal="问出那晚的事", conflict="证人三次改口", setback="证人被带走") if row["row_uid"] == "u4" else row
+        for row in presented_rows()
+    ]}})
+    session.flush()
+
+    restored = service.restore_step(PROJECT_ID, "scene_details", {"step_run_id": "run-10-v1"})
+    run_id = restored["step_run"]["step_run_id"]
+    session.flush()
+    assert len(session.get(SnowflakeStepRun, run_id).draft_json["scenes"]) == 3  # 存下的是那一版的行
+    draft = dict(restored["step"]["draft"])
+    assert [row["row_uid"] for row in draft["scenes"]] == ["u1", "u2", "u3", "u4"]  # 交出去的是场上的全部
+
+    fe_keys = {"fe_text": "", "fe_scaffold": {"sel": "u1"}, "fe_checks": [], "fe_state": "active"}
+    service.update_step(PROJECT_ID, "scene_details", {"draft": {**draft, **fe_keys, "fe_t": 2}})
+    session.flush()
+    run = session.get(SnowflakeStepRun, run_id)
+    assert run.status == "pending_review" and run.draft_json["fe_t"] == 2  # 原位改写
+    assert run.health_json["generation_source"] == "history_restore", "09 后加的场随自动保存回来，出处被冲成了「你写的」"
+
+    # 09 里又改了第 2 场的事件：10 的下一次自动保存带着新事件——仍不是作者改了第 10 步
+    service.update_step(PROJECT_ID, "scene_list", {"draft": {"scenes": [
+        dict(row, summary="消化挫败，连夜搬走") if row["row_uid"] == "u2" else row for row in [*_scene_rows(), fourth]
+    ]}})
+    service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": presented_rows(), **fe_keys, "fe_t": 3}})
+    session.flush()
+    assert session.get(SnowflakeStepRun, run_id).health_json["generation_source"] == "history_restore"
+
+    edited = [dict(row, goal="作者改过的目标") if row["row_uid"] == "u1" else row for row in presented_rows()]
+    service.update_step(PROJECT_ID, "scene_details", {"draft": {"scenes": edited, **fe_keys, "fe_t": 4}})
+    session.flush()
+    assert session.get(SnowflakeStepRun, run_id).health_json["generation_source"] == "author"

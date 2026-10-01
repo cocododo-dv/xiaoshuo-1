@@ -254,8 +254,11 @@ class SnowflakeStepEditingMixin:
             # 照例把同一份规范草稿带着新的 fe_* 写穿键（与章的包装）再存一次——不是作者改了故事，出处照旧；以前它被
             # 改成「你写的」，AI 栏的出处一秒后就没了、版本列表也说「你写的」。故事真的改了才算作者写的
             provenance: dict[str, Any] = {"generation_source": "author"}
-            if same_semantic_draft:
-                provenance.update(_kept_provenance(latest.health_json))
+            kept = _kept_provenance(latest.health_json)
+            if kept and kept != provenance and (
+                same_semantic_draft or self._echoes_presented_scene_rows(project.project_id, step_key, draft, latest_by_step)
+            ):
+                provenance.update(kept)
             StepRunStore.rewrite_pending(
                 run,
                 draft=draft,
@@ -291,6 +294,23 @@ class SnowflakeStepEditingMixin:
             self._sync_structured_step_data(project, step_key, draft, run)
         self.session.flush()
         return self._step_saved_response(project.project_id, step_key, run, include_workspace=include_workspace)
+
+    def _echoes_presented_scene_rows(
+        self, project_id: str, step_key: str, draft: dict[str, Any], latest_by_step: dict[str, SnowflakeStepRun]
+    ) -> bool:
+        """09 / 10 交给前端的草稿是从**全部**活着的场景计划现建的（``_draft_for_step``），不是存下的那一版：恢复一版旧的 10
+        只存那一版的行，09 后来加的场、改的事件却照旧在场上、也在交出去的草稿里，前端下一次原样的自动保存就带着它们。
+        与交出去的那份语义相同 = 作者没改这一步（复核 I6-R2；在本次同步之前比，场上还是交出去时的样子）。"""
+        if step_key not in SCENE_PLAN_STEPS:
+            return False
+        presented = self._draft_for_step(
+            step_key,
+            latest_by_step.get(step_key),
+            latest_by_step,
+            project_id=project_id,
+            scene_plans=self._scene_plans(project_id, latest_by_step=latest_by_step),
+        )
+        return semantic_payload(draft) == semantic_payload(merge_step_draft(step_key, presented, latest_by_step=latest_by_step))
 
     def _step_saved_response(
         self, project_id: str, step_key: str, run: SnowflakeStepRun, *, include_workspace: bool
