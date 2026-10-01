@@ -89,7 +89,6 @@ def _seed(session) -> None:
                 status="approved",
             )
         )
-    # bundle 构建要求 POV 角色有活动声线档、两名同场角色有活动关系档；只为让 BundleBuilder 走通。
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,

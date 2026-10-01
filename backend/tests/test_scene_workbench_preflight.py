@@ -330,36 +330,20 @@ def test_workbench_preflight_does_not_block_on_missing_voice_or_relation_cards(c
     ).status_code == 404
 
 
-def test_bundle_builds_without_voice_or_relation_cards_and_ignores_leftover_ones(
-    client, session: Session
-) -> None:
-    """缺卡时 bundle 照常构建（过去 409 BUNDLE_SOURCE_MISSING）；批准#15（重评 R8）之后库里留着的卡也不再注入：
-
-    两次构建的上下文与哈希一样，既没有这两节，也没有它们的出处。
-    """
+def test_bundle_builds_without_voice_or_relation_cards(client, session: Session) -> None:
+    """缺卡时 bundle 照常构建（过去 409 BUNDLE_SOURCE_MISSING）。批准#15（重评 R8）之后两张卡片表已经删了：bundle
+    既没有这两节，也没有它们的出处；角色身份契约照常从人物资料来。"""
     from novel_system.services.bundle_builder import BundleBuilder
 
     create_chapter(client, "CH912")
     create_scene(client, chapter_id="CH912", scene_id="CH912_SC01")
 
-    bare = BundleBuilder(session).build("CH912_SC01")
-    bare_snapshot = bare["snapshot"]
-    assert "voice_card" not in bare_snapshot["inline_digests"]
-    assert "relation_card" not in bare_snapshot["inline_digests"]
-    assert "voice_profile_id" not in bare_snapshot["source_version_refs"]
-    assert "relation_profile_id" not in bare_snapshot["source_version_refs"]
+    snapshot = BundleBuilder(session).build("CH912_SC01")["snapshot"]
+    assert "voice_card" not in snapshot["inline_digests"]
+    assert "relation_card" not in snapshot["inline_digests"]
+    assert not [key for key in snapshot["source_version_refs"] if key.startswith(("voice_profile", "relation_profile"))]
     # 角色身份契约不依赖这两张卡
-    assert "CHAR_A" in bare_snapshot["inline_digests"]["character_contract"]
-
-    carded = BundleBuilder(session).build("CH912_SC01")
-    carded_snapshot = carded["snapshot"]
-    assert "voice_card" not in carded_snapshot["inline_digests"]
-    assert "relation_card" not in carded_snapshot["inline_digests"]
-    assert not [
-        key for key in carded_snapshot["source_version_refs"] if key.startswith(("voice_profile", "relation_profile"))
-    ]
-    assert carded_snapshot["inline_digests"] == bare_snapshot["inline_digests"]
-    assert carded["bundle_snapshot_hash"] == bare["bundle_snapshot_hash"]
+    assert "CHAR_A" in snapshot["inline_digests"]["character_contract"]
 
 
 def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(client) -> None:
