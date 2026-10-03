@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 from sqlalchemy import select
 
@@ -782,6 +784,122 @@ def test_keeping_the_live_table_also_drops_an_old_frontend_cache_copy(client, se
 
     assert [item["row_uid"] for item in draft["chapters"]] == [row.row_uid for row in live]
     assert draft["fe_scaffold"] == {"expansions": {"setup": "一幕"}}
+
+
+def _old_tab_07_body(hydrated: dict, *, setup: str) -> dict:
+    """R11 之前的前端一次 07 上行的请求体（终审 A-3 按那一版前端的真实上行抓下来的形状）：``canonFromFE("outline")``
+    的五段展开 + 它那张章表（规范的 ``chapters``，每次都带），再加整份写穿缓存（``fe_text / fe_scaffold / fe_checks /
+    fe_state / fe_t``，脚手架里还有一份章表），``force: true``。章表是旧标签页水合时服务端那一版 07 的（``hydrated``）。"""
+    chapters = [item for item in hydrated.get("chapters") or [] if isinstance(item, dict)]
+    keys = ("setup", "d1", "d2", "d3", "resolution")
+    expansions = dict(zip(keys, (list(hydrated.get("paragraphs") or []) + [""] * 5)[:5]))
+    expansions["setup"] = setup
+    return {
+        "draft": {
+            "paragraphs": [expansions[key] for key in keys],
+            "chapters": [
+                {"row_uid": item.get("row_uid") or "", "chapter_seq": index, "act": item.get("act") or 1,
+                 "title": item.get("title") or "", "summary": item.get("summary") or "",
+                 "spine": item.get("spine") or "", "chapter_goal": item.get("chapter_goal") or ""}
+                for index, item in enumerate(chapters, start=1)
+            ],
+            "fe_text": "",
+            "fe_scaffold": {
+                "expansions": expansions,
+                "chapters": [
+                    {"row_uid": item.get("row_uid") or "", "id": f"{index:02d}", "act": item.get("act") or 1,
+                     "title": item.get("title") or "", "summary": item.get("summary") or "",
+                     "spine": item.get("spine") or "", "goal": item.get("chapter_goal") or ""}
+                    for index, item in enumerate(chapters, start=1)
+                ],
+            },
+            "fe_checks": [False, False, False],
+            "fe_state": "done",
+            "fe_t": 1_790_000_000_000,
+        },
+        "force": True,
+    }
+
+
+def test_an_old_tab_07_push_with_its_own_chapter_table_changes_no_chapter(client, session) -> None:
+    """终审 A-3：部署之前打开、一直没刷新的旧标签页（R11 之前的前端）每次上行 07 都带着自己水合时的那张章表——规范的
+    ``chapters`` 加上整份写穿缓存。带着写穿缓存的上行不是 API 调用方：那张过时的章表不收、不同步——作者部署后在章节
+    编排里改的章名（章表行、07 镜像、目录）与分章面板里拆出来的章、场景归属一样不动；这一次上行里改的 07 展开照常收下。
+    以前它被当成显式章表同步：章名改回旧的（系统章名时目录与章表从此两个名字）、新拆的章被删、它的场退回「未分章」。
+    只带规范章表、不带写穿缓存的 API 调用方照旧按它同步。"""
+    from tests.support.chaptering import catalog_chapters, confirm_payload, materialized_project
+
+    project_id = materialized_project(client, "old-tab-07")
+    hydrated = copy.deepcopy(_latest_07(session, project_id).draft_json)  # 旧标签页水合的这一版 07
+    assert len(hydrated["chapters"]) >= 2
+
+    # 部署之后（刷新过的页面 / 另一台设备）：章节编排里给第二章起名，分章面板「只保存章表」把第一章的最后一场拆成新的一章
+    target = catalog_chapters(client, project_id)[1]
+    renamed = client.patch(f"/api/v2/projects/{project_id}/catalog/chapters/{target['chapter_id']}", json={"title": "码头旧信"})
+    assert renamed.status_code == 200, renamed.text
+    panel = client.post(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview", json={"strategy": "keep_current"}
+    ).json()["data"]
+    payload = confirm_payload(panel)
+    first = payload["chapters"][0]
+    moved = [item for item in payload["assignments"] if item["chapter_row_uid"] == first["row_uid"]][-1]
+    payload["chapters"].insert(1, {"row_uid": "new:1", "title": "拆出来的一章", "act": first["act"], "spine": "",
+                                   "chapter_goal": "", "summary": ""})
+    moved["chapter_row_uid"] = "new:1"
+    saved = client.patch(f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan", json=payload)
+    assert saved.status_code == 200, saved.text
+    table = _table_snapshot(session, project_id)
+    bindings = _bindings(session, project_id)
+    assert {"码头旧信", "拆出来的一章"} <= {row[2] for row in table}
+
+    # 旧标签页里改了 07 的一段展开：上行带着它那张旧章表（没有拆出来的章、第二章还是旧名）
+    response = client.patch(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/long_synopsis",
+        json=_old_tab_07_body(hydrated, setup="旧标签页里补的一段展开"),
+    )
+    assert response.status_code == 200, response.text
+
+    assert _table_snapshot(session, project_id) == table, "旧标签页那张过时的章表被同步成了章表行"
+    assert _bindings(session, project_id) == bindings, "旧标签页的章表改动了场景归属"
+    titles = {item["chapter_id"]: item["title"] for item in catalog_chapters(client, project_id)}
+    assert titles[target["chapter_id"]] == "码头旧信"
+    stored = _latest_07(session, project_id).draft_json
+    assert [(item["row_uid"], item["title"]) for item in stored["chapters"]] == [(row[0], row[2]) for row in table]
+    assert "chapters" not in stored["fe_scaffold"]
+    assert stored["paragraphs"][0] == "旧标签页里补的一段展开"
+
+    # API 调用方（不带写穿缓存）显式给的章表照旧同步：改名落到章表行与目录
+    api_table = [dict(item, title="API 改的名") if item["title"] == "码头旧信" else dict(item) for item in stored["chapters"]]
+    response = client.patch(
+        f"/api/v2/projects/{project_id}/snowflake-workspace/steps/long_synopsis",
+        json={"draft": {"paragraphs": stored["paragraphs"], "chapters": api_table}},
+    )
+    assert response.status_code == 200, response.text
+    assert "API 改的名" in {row[2] for row in _table_snapshot(session, project_id)}
+    titles = {item["chapter_id"]: item["title"] for item in catalog_chapters(client, project_id)}
+    assert titles[target["chapter_id"]] == "API 改的名"
+
+
+def test_carry_stored_chapters_tells_an_api_table_from_an_old_frontend_copy() -> None:
+    """``carry_stored_chapters`` 的规则（终审 A-3）：没带章表（或空表）→ 沿用存着的；带了章表、不带写穿缓存（API 调用方）
+    → 照它同步；章表与写穿缓存（任何 ``fe_*`` 键）一起上来（R11 之前的前端）→ 沿用存着的、不同步。"""
+    from types import SimpleNamespace
+
+    from novel_system.services.snowflake_chapter_table import carry_stored_chapters
+
+    stored = [{"row_uid": "chrow_a", "title": "存着的一章"}]
+    sent_table = [{"row_uid": "chrow_a", "title": "上行的一章"}]
+    stored_run = SimpleNamespace(draft_json={"paragraphs": ["一"], "chapters": stored})
+
+    def carry(sent: dict) -> tuple[bool, list]:
+        draft = {**copy.deepcopy(sent), "chapters": copy.deepcopy(sent.get("chapters") or [])}
+        return carry_stored_chapters(draft, sent, stored_run), draft["chapters"]
+
+    assert carry({"paragraphs": ["一"]}) == (True, stored)
+    assert carry({"paragraphs": ["一"], "chapters": []}) == (True, stored)
+    assert carry({"paragraphs": ["一"], "chapters": sent_table}) == (False, sent_table)
+    assert carry({"paragraphs": ["一"], "chapters": sent_table, "fe_state": "done"}) == (True, stored)
+    assert carry({"paragraphs": ["一"], "chapters": sent_table, "fe_text": "", "fe_t": 1}) == (True, stored)
 
 
 def test_a_frontend_payload_missing_chapters_cannot_wipe_the_chapter_table(session) -> None:

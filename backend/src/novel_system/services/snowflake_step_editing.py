@@ -226,7 +226,8 @@ class SnowflakeStepEditingMixin:
         )
         latest = latest_by_step.get(step_key)
         # R11（批准 #18a）：07 的章表是分章结果的只读镜像，前端不再上行它——没带章表时沿用存着的那一份（必须在下面的
-        # 语义比较之前：缺席的章表会被默认值补成空表，已确认的 07 就被打回待审），也不去同步章表行。显式带了照旧同步。
+        # 语义比较之前：缺席的章表会被默认值补成空表，已确认的 07 就被打回待审），也不去同步章表行。显式带了照旧同步
+        # （只认 API 调用方：章表与前端写穿缓存一起上来的是没刷新的旧标签页，那张过时的章表同样沿用、不同步，终审 A-3）。
         chapters_carried = step_key == "long_synopsis" and carry_stored_chapters(draft, body.get("draft"), latest)
 
         # 防静默回退：已批准/已跳过步骤收到无故事含义的 re-PATCH 时保持原状态与版本。

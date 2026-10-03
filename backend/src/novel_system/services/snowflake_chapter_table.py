@@ -366,7 +366,8 @@ def soft_delete_unlisted_chapters(
 # 2026-09-30（R11，批准 #18a）起 07 的章表是分章结果的**只读镜像**：分章面板（与章节编排改名）是唯一改章的地方，
 # 07 只显示。07 保存不带章表时沿用存着的那一份（``carry_stored_chapters``），07 重新生成时只要有章表行就保留现表、
 # 不收模型的章（``keep_live_chapter_table``）。显式给了章表的保存照旧同步成行——只剩 API 调用方：前端（Q1c 起）
-# 07 上行不带章表，水合也只读规范的 ``chapters``。
+# 07 上行不带章表，水合也只读规范的 ``chapters``。带着前端写穿缓存（``fe_*`` 键）又带着章表的上行不是 API 调用方，
+# 是 R11 之前的前端（部署前打开、一直没刷新的旧标签页）：它那张章表是过时的副本，当作没带（终审 A-3）。
 #
 # 前端写穿缓存里的章表（``fe_scaffold.chapters``）后端从不写；还留着的旧副本（R11 之前的前端写进去的、没刷新的
 # 旧标签页上行带来的、从历史里恢复的旧版本带着的）在三处写 07 草稿的地方一律去掉，也从不拿它同步章表行。
@@ -423,10 +424,16 @@ def carry_stored_chapters(draft: dict[str, Any], sent_draft: Any, stored_run: An
     返回 False，照旧同步。
 
     上行的写穿缓存里带着章表的（R11 之前的前端、没刷新的旧标签页）那一份一律去掉、不收：章表行只认规范的 ``chapters``。
+    规范的 ``chapters`` 与写穿缓存（任何 ``fe_*`` 键）一起上来的同样不收、照沿用处理：今天的前端 07 上行从不带章表，
+    API 调用方不带写穿缓存，两样都带的只有 R11 之前的前端——它的 ``canonFromFE("outline")`` 每次都带上自己那张章表。
+    部署前打开、一直没刷新的旧标签页里那张是过时的副本：照它同步，作者部署后在章节编排 / 分章面板里改的章名与分章就被
+    改回去、新拆的章被删掉（终审 A-3）。这一次保存里别的改动（07 的五段展开）照常收下。
     """
     _drop_frontend_chapter_copy(draft)
-    sent = sent_draft.get("chapters") if isinstance(sent_draft, dict) else None
-    if isinstance(sent, list) and any(isinstance(item, dict) for item in sent):
+    sent = sent_draft if isinstance(sent_draft, dict) else {}
+    chapters = sent.get("chapters")
+    explicit = isinstance(chapters, list) and any(isinstance(item, dict) for item in chapters)
+    if explicit and not any(str(key).startswith("fe_") for key in sent):
         return False
     stored = (getattr(stored_run, "draft_json", None) or {}).get("chapters") if stored_run is not None else None
     draft["chapters"] = deepcopy(stored) if isinstance(stored, list) else []
