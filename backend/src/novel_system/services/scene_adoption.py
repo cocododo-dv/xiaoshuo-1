@@ -181,6 +181,9 @@ def adopt_current(
                 "note": "atomic scene adoption",
             },
             actor_ref=actor_ref,
+            # 采纳单独留一份修订快照：同一 5 分钟时段里作者刚手写、被这一稿替换的那一版不被它并掉
+            # （批准 #8 是「自动保存至多一份 + 每次采纳一份」，终审 A-1）
+            snapshot_origin="adopted",
         )
         saved_draft = saved.get("draft") or {}
         saved_revision_no = saved_draft.get("revision_no")

@@ -1,4 +1,5 @@
-"""作者稿的修订快照：自动保存按 5 分钟时段合并、晋升的那一版与建稿那一版永远留着（批准 #8），版本对比的列表与单版正文。"""
+"""作者稿的修订快照：自动保存按 5 分钟时段合并（整段删改另起一行）、晋升 / 采纳的那一版与建稿那一版永远留着（批准 #8），
+版本对比的列表与单版正文。"""
 from __future__ import annotations
 
 import uuid
@@ -11,13 +12,18 @@ from novel_system.db.models import AuthorDraft, AuthorDraftRevision, utcnow
 from novel_system.services.errors import DomainError
 from novel_system.services.manuscript_html import sanitize_manuscript_html
 from novel_system.services.pagination import paginate_select, resolve_pagination_request
-from novel_system.services.writing_stats import count_words
+from novel_system.services.writing_stats import compact_visible_text, count_words
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 #: 自动保存的修订快照合并的时段长度（秒）：同一个 5 分钟时段里至多留一份
 REVISION_COALESCE_SECONDS = 300
+#: 「整段删改」的门槛（编辑器口径的可见字数，去空白）：一次保存删掉 / 换掉上一份快照里至少
+#: min(上限, max(下限, 那一份字数的一半)) 个字，就不并进这一时段的快照（终审 A-2）。打字、退格、删一句照旧并；
+#: 全选删除、接受一大段改写、从同步与恢复整篇换回不并
+DESTRUCTIVE_EDIT_CAP_CHARS = 200
+DESTRUCTIVE_EDIT_FLOOR_CHARS = 40
 
 
 def _same_revision_window(earlier: str | None, later: str) -> bool:
@@ -32,12 +38,48 @@ def _same_revision_window(earlier: str | None, later: str) -> bool:
     return int(earlier_at.timestamp()) // REVISION_COALESCE_SECONDS == int(later_at.timestamp()) // REVISION_COALESCE_SECONDS
 
 
+def _shared_prefix_length(first: str, second: str, limit: int) -> int:
+    """两段文字共同开头的长度（至多 ``limit``）。二分 + 切片比较：整场几万字时也不逐字走 Python 循环。"""
+    low, high = 0, limit
+    while low < high:
+        middle = (low + high + 1) // 2
+        if first[low:middle] == second[low:middle]:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def _removed_chars(old: str, new: str) -> int:
+    """``new`` 比 ``old`` 删掉或换掉了几个字：去掉两份共同的开头与结尾，旧稿剩下的就是这一次拿走的。只认一处连续的
+    改动——两处隔开的删改按整个跨度算，宁可多算（多留一行快照）。"""
+    limit = min(len(old), len(new))
+    prefix = _shared_prefix_length(old, new, limit)
+    suffix = _shared_prefix_length(old[::-1], new[::-1], limit - prefix)
+    return len(old) - prefix - suffix
+
+
+def cuts_snapshot(previous: str | None, current: str | None) -> bool:
+    """这一次保存是不是「整段删改」：从上一份快照里删掉 / 换掉的可见字（编辑器口径，去空白，与快照的 ``words``
+    同一条规则）够了 ``DESTRUCTIVE_EDIT_*`` 的门槛。"""
+    old = compact_visible_text(previous)
+    threshold = min(DESTRUCTIVE_EDIT_CAP_CHARS, max(DESTRUCTIVE_EDIT_FLOOR_CHARS, len(old) // 2))
+    return _removed_chars(old, compact_visible_text(current)) >= threshold
+
+
 class AuthorDraftRevisionsMixin:
     session: "Session"
 
     def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:
         """记一份修订快照。自动保存（``edited``）按 5 分钟时段合并（批准 #8）：同一时段里接着上一份自动保存快照写，
-        只留这一时段最新的正文——除非上一份就是晋升过权威正文的那一版（它永远留着）；建稿那一版（``created``）也永远留着。
+        只留这一时段最新的正文。三种情况不并、另起一行：
+
+        - 上一份是晋升过权威正文的那一版（它永远留着）；
+        - 上一份是建稿（``created``）或采纳并归档（``adopted``）的那一版：它们永远单独一行。「自动保存 5 分钟至多一份
+          + 每次采纳 / 晋升一份」是相加——采纳那一行不会被后来的自动保存改写，采纳本身也不并进这一时段被它替换的
+          手写稿（采纳传的来源是 ``adopted``，终审 A-1）；
+        - 这一次保存是「整段删改」（``cuts_snapshot``：全选删除、接受一大段改写……）：删改之前的那一版留在上一行，
+          同一时段里接着的保存再并进新起的这一行（终审 A-2）。
 
         写作台停笔 900 毫秒就自动保存一次，过去每存一次就多一行全文快照（一晚上一场几百份），版本对比的列表一次全给。
         """
@@ -48,6 +90,8 @@ class AuthorDraftRevisionsMixin:
         ).scalar_one_or_none()
         if existing is not None:
             return
+        # 合并判断与新行的时间戳用同一个时刻（新行不再取列默认值）
+        now = utcnow()
         if origin == "edited":
             latest = self.session.execute(
                 select(AuthorDraftRevision)
@@ -55,12 +99,12 @@ class AuthorDraftRevisionsMixin:
                 .order_by(AuthorDraftRevision.revision_no.desc())
                 .limit(1)
             ).scalar_one_or_none()
-            now = utcnow()
             if (
                 latest is not None
                 and latest.origin == "edited"
                 and latest.revision_no != draft.last_promoted_revision_no
                 and _same_revision_window(latest.created_at, now)
+                and not cuts_snapshot(latest.content, draft.content)
             ):
                 latest.revision_no = int(draft.revision_no)
                 latest.content = draft.content or ""
@@ -77,6 +121,7 @@ class AuthorDraftRevisionsMixin:
                 words=count_words(draft.content or ""),
                 origin=origin,
                 created_by=actor_ref or "author_draft",
+                created_at=now,
             )
         )
 
