@@ -8,39 +8,28 @@
 - `NOVEL_SYSTEM_LOCAL_ONLY=false`：显式开启远程访问，同时必须设置 `NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN`，所有非健康请求都要携带 `X-Novel-Access-Token`。
 - 第一方 React 前端可在构建时设置 `VITE_NOVEL_SYSTEM_ACCESS_TOKEN`。该值会进入浏览器资产，只适合可信作者使用的受限网络；它不能替代账号、权限和租户隔离。
 - 远程模式的共享 token 不是用户身份系统，因此服务端会忽略客户端 `X-Operator-Ref`，审计主体统一记为 `remote-access-token`；需要区分真实用户时必须在可信代理之后接入正式认证/RBAC。
-- 远程模式下同时收紧 `NOVEL_SYSTEM_CORS_ORIGINS`，并在主机防火墙或可信反向代理处限制来源。
+- 远程模式下同时收紧 `NOVEL_SYSTEM_CORS_ORIGINS`，并在主机防火墙或可信反向代理处限制来源。构建时的
+  `VITE_NOVEL_SYSTEM_API_BASE` 不是本机回环地址时，前端构建会把它的 origin 自动补进 `index.html` CSP 的 `connect-src`。
+- 每个写接口都要带 `X-Idempotency-Key`（缺了 400 `IDEMPOTENCY_KEY_REQUIRED`）：同键同载荷重放上一次的响应，同键不同载荷 409。
+  React 客户端每个写请求都带键。重放缓存只留 72 小时（见下文「定期维护」）。
 
-## 向量后端与 Chroma 隔离
+## LLM 用量：记账与读数
 
-- 默认 `NOVEL_SYSTEM_VECTOR_BACKEND=memory`，默认哈希锁安装不包含 Chroma。
-- Chroma 仅作为 WSL/Linux 中的显式可选依赖：`cd backend && UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --locked --extra dev --extra chroma`，随后再设置 `NOVEL_SYSTEM_VECTOR_BACKEND=chroma`。
-- 当前集成只允许进程内 `PersistentClient`。不要运行或暴露 Chroma 自带的 HTTP/FastAPI 服务；当前锁定版本仍受 `CVE-2026-45829` 的服务端代码注入问题影响，上游发布修复版前必须保持这一网络隔离。
+每一次真正发给供应商的请求都经记账层（预留 → 派发 → 结算，三段各自短事务，等网络时不占写事务）；账本与成本看板的读数照常记录，
+不依赖任何上限。
 
-## LLM 硬额度
-
-**所有额度默认关闭（`0` = 不限制）。** 本系统是单作者本机服务，硬额度挡不住任何第三方，只会在作者写到一半时把生成拦下来，因此不预设上限；需要给自己上闸门时，把对应环境变量设成正数即可立即生效。
-
-启用后的额度在真正调用供应商之前原子检查：达到上限时请求不会发给模型，也不会被记成已消费 token。一道闸门都没启用时，派发前的检查会直接短路，不做任何计数扫描。
-
-关掉额度不等于停止记账：账本与成本看板的用量读数照常记录，只是不再有上限可比对，看板对应行显示为「未设限」。唯一的例外是「今日金额」行——它按上表的 env 单价计价，与看板其余成本数字（走 `config/pricing.yaml` 快照）不是同一口径，未启用金额闸门时恒为 0，因此只在该闸门启用时才显示。
-
-| 环境变量 | 默认值 | 说明 |
-|---|---:|---|
-| `NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT` | `0`（不限制） | 全实例 UTC 日 token 上限 |
-| `NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT` | `0`（不限制） | 全实例 UTC 月 token 上限 |
-| `NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT` | `0`（不限制） | 单项目 UTC 日 token 上限 |
-| `NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT` | `0`（不限制） | 全实例 UTC 日请求上限 |
-| `NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS` | `0`（不限制） | 同时在途的供应商请求上限 |
-| `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` | `3600` | 启动时回收无场景/任务所有权的陈旧 LLM 预留前，至少等待的秒数 |
-| `NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD` | `0` | 可选日美元上限；`0` 表示不用金额闸门 |
-| `NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD` | `0` | 金额估算所用输入单价 |
-| `NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD` | `0` | 金额估算所用输出单价 |
-
-启用金额上限时必须至少配置一种 token 单价。不同供应商或模型价格不同时，应使用能够覆盖风险的保守单价；系统内的金额仍是治理估算，不是供应商账单。
-
-启用后，全局日/月/项目 token 配额对尚未结束的调用按 reservation 占位，对终态调用按供应商返回的实际 `total_tokens`（缺失时按保守估算）计费。场景预算的 `budget_charged_tokens` 仍受 reservation 上限约束；它不是全局供应商用量口径。
-
-供应商真实用量超出 reservation（典型来源：思考型中转把 reasoning token 计入 `completion_tokens` 且不受 `max_tokens` 封顶）只在**有栅栏武装**时拦截响应（`LLM_USAGE_EXCEEDS_RESERVATION`：任一全局配额，或武装态的场景预算）。没有任何栅栏时，响应照常交付并按真实用量落账，超出量记在审计摘要的 `usage_overage_tokens`，后端日志记一条 warning。
+- **没有全局额度闸。** 以前六个只能用环境变量打开、默认全关的全局上限（日 / 月 / 本作品日 token、日请求数、并发数、日金额）
+  与按环境变量单价算的「今日金额」已经删除（2026-09-30）。`NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT`、`…_MONTHLY_TOKEN_LIMIT`、
+  `…_PROJECT_DAILY_TOKEN_LIMIT`、`…_DAILY_REQUEST_LIMIT`、`…_MAX_CONCURRENT_REQUESTS`、`…_DAILY_COST_LIMIT_USD`、
+  `…_INPUT_COST_PER_MILLION_USD`、`…_OUTPUT_COST_PER_MILLION_USD` 还设着也没有效果，后端启动时记一条警告。
+- 成本看板的「全局用量」只是读数：今日 / 本月 / 本作品今日的 token、今日请求数、正在飞的调用数（按已结算的物理尝试的实际
+  `total_tokens` 算，UTC 日 / 月）。看板以 token 为主；金额只算 `config/pricing.yaml` 里写了单价的模型，其余标「未定价」。
+- **唯一还在的闸是场景预算**，默认关（`NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=0`）。设成正数 N 时，新初始化的场景端到端
+  上限是 N × 单发基线，派发前按场景做条件预留。
+- 供应商真实用量超出预留（典型来源：思考型中转把 reasoning token 计入 `completion_tokens` 且不受 `max_tokens` 封顶）只在这一场的
+  场景预算**武装着**时拦截响应（`LLM_USAGE_EXCEEDS_RESERVATION`）。没有武装时，响应照常交付并按真实用量落账，超出量记在审计
+  摘要的 `usage_overage_tokens`，后端日志记一条 warning。
+- `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS`（默认 `3600`）：启动对账只动这么久以前、没有场景 / 任务所有权的陈旧预留。
 
 ## 内容与来源安全
 
@@ -51,9 +40,15 @@
 
 ## 后台恢复边界
 
-服务启动时会恢复尚未派发的场景/章节任务，并通过数据库租约和任务 CAS 防止同波重复执行。已有活跃 lease 的任务不会被抢占。风格参考的段落分类、学习文风与对照检查是作业表（`style_reference_jobs`）上的持久作业：工人的每一次写都以作业的 `owner_token` 为条件，心跳超过 60 秒的作业由常驻清扫线程（启动时一次，之后每 30 秒）放回队列、从游标续跑，重启或 `--reload` 不需要人工介入；旧抽取流程留下的「运行中」记录在启动时标为失败（`STYLE_REFERENCE_RUN_RETIRED`），对那本书重新「学习文风」即可。
+服务启动时会恢复尚未派发的场景/章节任务，并通过数据库租约和任务 CAS 防止同波重复执行；运行中每 60 秒再巡检一次租约过期的孤儿任务。已有活跃 lease 的任务不会被抢占。进程退出（停服、`--reload`）时，本进程持有的运行任务租约就地到期，重启后的恢复立刻接着跑，不必等租约自然过期。场景任务一次最多跑两条管线，章节任务一次一章。风格参考的段落分类、学习文风与对照检查是作业表（`style_reference_jobs`）上的持久作业：工人的每一次写都以作业的 `owner_token` 为条件，心跳超过 60 秒的作业由常驻清扫线程（启动时一次，之后每 30 秒）放回队列、从游标续跑，重启或 `--reload` 不需要人工介入。旧抽取流程留下的「运行中」记录与没有作业可续的「分类中」书由迁移 `20260929_0094` 一次标为失败（`STYLE_REFERENCE_RUN_RETIRED`），对那本书重新「学习文风」即可。
+
+数据库结构落后于代码时（`--reload` 先于迁移加载了新代码），后端不拿旧结构跑启动恢复与后台清扫，`/api/*` 统一回 503 `SERVICE_NOT_READY`「数据库结构需要升级：请重启后端（启动脚本会自动升级）」；结构跟上之后的第一个 `/api/*` 请求或 `/ready` 探测补跑被推迟的那一段。
 
 启动恢复还会对超过 `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` 的 legacy LLM 预留做保守对账：仅处理没有 `scene_id`、没有 `run_job_id` 且不是 scene scope 的调用；未派发预留会释放，已派发但没有持久化结果的预留会标记失败并按估算用量落账。场景与任务所有权链路由各自的 lease/checkpoint 恢复负责，不进入这项扫描。
+
+### 定期维护
+
+运行任务的巡检线程顺带执行全系统的定期维护：幂等重放缓存按 72 小时保留期每 6 小时清理一次（启动后的第一拍不清，部署时的备份要先做完）；绑定了参考书的作品，参考校准的读数每 6 小时预热一次。风格作业清扫线程另跑两项：遥测按 90 天留存、作业表按保留期清理（对照检查的作业记录 30 天后删，读数留着；每本书的分类 / 学习作业只留最近一次）。SQLite 删行不会让库文件变小：部署时用 `compact_db` 压缩一次（见下一节）。
 
 当前执行器仍是进程内线程池，不是外部持久队列。需要多主机、高可用或不可信多用户访问时，应另行引入身份授权、租户隔离、外部任务队列、密钥托管和集中审计；现有远程开关不代表这些能力已经具备。
 
@@ -72,7 +67,9 @@ cd ..
 powershell -ExecutionPolicy Bypass -File scripts\db_backup_drill.ps1
 ```
 
-Linux 恢复演练入口为 `bash scripts/db_backup_drill.sh`。两个演练脚本都只破坏系统临时目录中的副本，不改动传入的真实源库。
+Linux 恢复演练入口为 `bash scripts/db_backup_drill.sh`。两个演练脚本都只破坏系统临时目录中的副本，不改动传入的真实源库。备份旁边的清单只记文件名（不记绝对路径）。
+
+部署时压缩库（服务全部停掉、备份做完之后）：`python -m novel_system.tools.compact_db <库文件>` 先干跑看会清掉多少行，再加 `--execute`——清掉过期的重放缓存、把 `auto_vacuum` 切成 INCREMENTAL、`VACUUM`、完整性与外键检查、截断 WAL。库还在被使用时它拒绝执行。完整的部署顺序见[数据库迁移](migrations.md)。
 
 ## 历史 LLM 审计载荷脱敏
 

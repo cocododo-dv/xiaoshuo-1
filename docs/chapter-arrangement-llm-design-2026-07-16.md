@@ -1,3 +1,14 @@
+> 历史设计记录：2026-07-16 的设计与实现记录，正文按当时写、保持原样；路径不动（代码注释按章节号引用它）。之后变了的：
+> - **伏笔 / 张力 / 作者偏好三路输入已退役**：伏笔账本与张力曲线在 2026-09 减法里删除；章级的张力 / 线索 / 视角 · 时间 · 地点 · 入口 · 出口字段
+>   2026-09-30 删除（没有任何地方能填），邻章交接、章结构邻域、近几章的视角分布改为从**各场**的真实数据现算；写作偏好学习 2026-09-30 删除。
+> - 体检码 `FORESHADOW_OVERDUE` 删除；`TENSION_FLAT` 改为看本章各场的冲突 / 挫折与蓝图的升级路线（「压力没有升级」）。
+> - **fail-closed**：没有可用模型时蓝图生成与 candidates / fill / review 一律 409 `CHAPTER_PLAN_LLM_NOT_CONFIGURED` + `author_action`，
+>   不再有离线 fallback；新增 `GET …/plan/gaps`（按空槽算的待补清单，不需要模型）。写接口一律要 `X-Idempotency-Key`（偏差 ② 不再成立）。
+> - 前端 store 是 `ws-author-ai-store.js`（`WsAuthorAi`），视图 `ws-author-ai.jsx`；文中的 `ws-chapter-plan.jsx` / `ws-author-plan.jsx` 已不存在。
+>
+> 现行实现以 `services/chapter_plan_llm.py`、`services/chapter_planning_context.py`、`api/routes/chapter_plan.py` 的模块说明为准；
+> 雪花构思一侧的分章见[一条书脊：构思 → 目录 → 三张台子](book-spine-catalog-contract.md)。
+
 # 章节编排 LLM 接入设计 —— 场景卡规划（2026-07-16）
 
 > 状态：**已实现（P1–P4 全部落地，2026-07-16）**。对应模块：React 工作台「章节编排」

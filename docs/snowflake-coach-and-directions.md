@@ -37,11 +37,11 @@
 
 ## 4. 后端契约
 
-- `POST …/steps/{step_key}/fe-candidates`：**fail-closed**（LLM 未启用 409 `SNOWFLAKE_LLM_NOT_CONFIGURED`，与教练同一条路；以前回 `source=fallback` + 空列表）。请求：`target_chars`、`ask`（作者对这一组方向的要求，≤600 字）、`draft_override`（与 generate / assistant 同源的本地最新规范草稿）、`focus_scene_id`（仅 `scene_details`）；旧字段 `context` / `draft` 仍接受。提示载荷：`author_ask`、`current_canonical_draft`（含本地最新编辑）、`focus_scene`、`author_direction_brief`。结果落成 `turn_kind=candidates` 的回合（`candidates_json = {items, target_chars}`）；回包 `{source, llm_call_id, candidates, turn_id, turn, assistant_history}`。模型给不出方向 → 502 `SNOWFLAKE_CANDIDATES_EMPTY`，不写回合。
+- `POST …/steps/{step_key}/fe-candidates`：**fail-closed**（LLM 未启用 409 `SNOWFLAKE_LLM_NOT_CONFIGURED`，与教练同一条路；以前回 `source=fallback` + 空列表）。请求：`target_chars`、`ask`（作者对这一组方向的要求，≤600 字）、`draft_override`（与 generate / assistant 同源的本地最新规范草稿）、`focus_scene_id`（仅 `scene_details`）；旧字段 `context` / `draft` 2026-09-30 删除（前端早已不发，请求体不收多余字段）。提示载荷：`author_ask`、`current_canonical_draft`（含本地最新编辑）、`focus_scene`、`author_direction_brief`。结果落成 `turn_kind=candidates` 的回合（`candidates_json = {items, target_chars}`）；回包 `{source, llm_call_id, candidates, turn_id, turn, assistant_history}`。模型给不出方向 → 502 `SNOWFLAKE_CANDIDATES_EMPTY`，不写回合。
 - `POST …/steps/{step_key}/generate`：新增 `direction_turn_id`（方向来自哪一回合）与 `direction_index`（方向回合的第几条）。服务端按回合种类推出 `direction_kind`（方向回合 → `candidate`，问答回合 → `coach_reply`），生成成功后在回合上记 `adoption_json = {step_run_id, candidate_index, adopted_at}`，在这一版 `health_json.direction` 记 `{kind, turn_id, candidate_index, label, sha}`。回合不存在 / 不属于本作品 → 404 `SNOWFLAKE_DIRECTION_TURN_NOT_FOUND`；编号不对 → 400 `SNOWFLAKE_DIRECTION_INDEX_INVALID`；指了回合没带正文 → 400 `SNOWFLAKE_DIRECTION_TEXT_REQUIRED`。
 - `POST …/assistant`：每轮的要点差异随回合落表（`brief_delta_json`），`assistant_history` 里每条回合带 `turn_kind` / `candidates` / `brief_delta` / `adoption`。教练看到的 `conversation.recent_turns` 里，方向回合是 `{kind: "candidates", message, directions[{label, tag, text}], chosen}`，问答回合是 `{kind: "chat", …, adopted_as_direction}`——作者选定的方向等于作者接受了它，教练可以把它记为要点里的「决定」。
 - 迁移 `20260917_0088`：`snowflake_assistant_turns` 加 `turn_kind`（历史行回填 `chat`）、`candidates_json`、`brief_delta_json`、`adoption_json`。
-- 提示词：`snowflake_workspace_assistant` v6、`snowflake_step_candidates` v6——已保存过提示词快照的安装要跑 `python -m novel_system.tools.sync_prompt_templates --execute`。
+- 提示词：`snowflake_workspace_assistant` v6、`snowflake_step_candidates` v6（2026-09-30 起 v7）——已保存过提示词快照的安装要跑 `python -m novel_system.tools.sync_prompt_templates --execute`。
 
 ## 5. 有意不做的事
 
@@ -51,8 +51,8 @@
 
 ## 6. 同一批的两处加固（2026-09-18）
 
-- **方向节点的输出预算** 1800 → 4096（`llm_node_registry` 与 `config/models.yaml` 两处一致）：三条方向各可到 400 字，再加思考 token，1800 每次都被截断，只能靠客户端的翻倍重试出结果。已存过 models 快照的安装用 `python -m novel_system.tools.raise_llm_output_budget --node snowflake_step_candidates --floor 4096 --execute`。
-- **水合闸门与抹空保护**：新浏览器或清过缓存的会话里，水合失败（或只是比视图的首次自动保存慢）时，一份从没水合过的空白默认稿以前会强制覆盖十步，而未确认步骤在服务端是原位改写、没有历史可回。现在同步层在本会话读到服务端之前绝不上行，从没动过的空白步让位给服务端内容、也从不拿去覆盖服务端；服务端对「整步抹空」另起一版，旧稿留在历史里，可用 `POST …/steps/{step_key}/restore` 取回。底部同步状态会写「读不到服务器上的构思版本，已暂停上行以免覆盖服务器内容；本机版本已保留」，点重试即可。
+- **方向节点的输出预算** 1800 → 4096：三条方向各可到 400 字，再加思考 token，1800 每次都被截断，只能靠客户端的翻倍重试出结果。（当时还要在 `config/models.yaml` 与已存的 models 快照里各改一遍；2026-09-30 起默认值只在 `llm_node_registry` 的 spec 里，快照只记作者选的服务与模型，spec 的改动随发布直接生效。）
+- **水合闸门与抹空保护**：新浏览器或清过缓存的会话里，水合失败（或只是比视图的首次自动保存慢）时，一份从没水合过的空白默认稿以前会强制覆盖十步，而未确认步骤在服务端是原位改写、没有历史可回。现在同步层在本会话读到服务端之前绝不上行，从没动过的空白步让位给服务端内容、也从不拿去覆盖服务端；服务端对「整步抹空」另起一版，旧稿留在历史里：构思这一步的「历史」页签上「服务器上保存的版本」列着它，可以预览、直接恢复（`POST …/steps/{step_key}/restore`）。底部同步状态会写「读不到服务器上的构思版本，已暂停上行以免覆盖服务器内容；本机版本已保留」，点重试即可。
 
 ## 7. 测试
 
