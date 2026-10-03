@@ -348,6 +348,54 @@ describe("设计系统守卫", () => {
     expect(values("ws-ui.css", ".ws-page-actions > .btn", "height")).toEqual(["34px"]);
   });
 
+  it("条件块（@container / @media）里的声明不被后面同一选择器的无条件规则盖掉（它们不加优先级，次序决定谁赢）", () => {
+    // 写作台窄顶栏的收拢态（权威正文状态只剩一个点、进度环收起）就是这样从没生效过：容器查询写在 wr-redesign.css，
+    // 同一选择器的基础规则在后加载的 wr-desk.css 里（2026-10-03 恢复，作者的决定）。样式表按 main.jsx 的导入次序连起来看
+    const main = fs.readFileSync(path.join(srcDir, "main.jsx"), "utf8");
+    const order = [...main.matchAll(/import "\.\/([^"]+\.css)";/g)].map((m) => m[1]);
+    const rules = [];
+    const norm = (s) => s.replace(/\s+/g, " ").trim();
+    for (const file of order) {
+      const css = fs.readFileSync(path.join(srcDir, file), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+      const walk = (text, cond) => {
+        let i = 0;
+        while (i < text.length) {
+          const open = text.indexOf("{", i);
+          if (open < 0) break;
+          const prelude = text.slice(i, open).replace(/^[\s;}]+/, "").trim();
+          let depth = 1; let j = open + 1;
+          while (j < text.length && depth) { if (text[j] === "{") depth += 1; else if (text[j] === "}") depth -= 1; j += 1; }
+          const body = text.slice(open + 1, j - 1);
+          if (/^@(media|container|supports)\b/.test(prelude)) walk(body, norm(prelude));
+          else if (!prelude.startsWith("@")) {
+            const props = body.split(";").map((d) => d.split(":")[0].trim()).filter(Boolean);
+            // 逗号只在括号外才分开选择器（:is(a, b) 是一个）
+            const selectors = []; let depthP = 0; let start = 0;
+            for (let k = 0; k < prelude.length; k += 1) {
+              if (prelude[k] === "(") depthP += 1; else if (prelude[k] === ")") depthP -= 1;
+              else if (prelude[k] === "," && !depthP) { selectors.push(prelude.slice(start, k)); start = k + 1; }
+            }
+            selectors.push(prelude.slice(start));
+            for (const selector of selectors.map(norm)) rules.push({ file, at: rules.length, selector, props, cond });
+          }
+          i = j;
+        }
+      };
+      walk(css, null);
+    }
+    // 后面那条盖得住：同一个属性，或包含它的简写（padding 盖 padding-left）；后面只写了简写里的一个分量不算
+    const shorthand = (prop) => (prop.match(/^(padding|margin|border|background|inset|gap|font|overflow)-/) || [])[1];
+    const shadowed = [];
+    for (const rule of rules.filter((r) => r.cond)) {
+      for (const prop of rule.props) {
+        const later = rules.find((r) => !r.cond && r.at > rule.at && r.selector === rule.selector
+          && r.props.some((p) => p === prop || p === shorthand(prop)));
+        if (later) shadowed.push(`${rule.file}: ${rule.cond} ${rule.selector} { ${prop} } ← ${later.file}`);
+      }
+    }
+    expect(shadowed).toEqual([]);
+  });
+
   it("断点落在文档刻度上（刻度外的只减不增）", () => {
     const found = new Set();
     for (const { file, source } of FILES.filter(({ file }) => file.endsWith(".css"))) {

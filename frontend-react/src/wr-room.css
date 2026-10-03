@@ -5,8 +5,9 @@
    their words. Everything else is summoned, then dissolves.
    下半部分：书桌布局 + 进度线 + 质感打磨（原 wr-desk.css，排在原位，层叠次序不变）。
    合并时把书桌样式对七个基础选择器的重定义折回了基础规则（.wr-root 的书桌变量、.wr-count、.wr-goal、
-   .wr-sc-name）；.wr-ring 与 .wr-canonical-state 在窄顶栏容器查询里被书桌样式盖掉、从没生效过的几条声明删掉；
-   .wr-scroll 在窄窗下的左右内边距仍是条件规则，留在原位。渲染逐条不变。
+   .wr-sc-name）；.wr-scroll 在窄窗下的左右内边距仍是条件规则，留在原位。渲染逐条不变。
+   窄顶栏的收拢态（权威正文状态只剩一个点、进度环收起）拆成两份样式表时被后加载的书桌样式盖掉、从没生效过；
+   作者 2026-10-03 决定恢复原设计：那两段容器查询挪到各自基础规则之后（容器查询不加优先级，次序决定谁赢）。
    ========================================================== */
 
 /* 保存点 / 笔记状态点「正在保存」时的呼吸 */
@@ -115,13 +116,7 @@
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
   }
   .wr-top .wr-posture .seg-btn { padding: 4px 8px; }
-  /* 只收窄成一个点：胶囊的边框、底色与内边距照基础规则（原先写在这里的 padding: 0 / border: 0 / 透明底色
-     排在后加载的书桌样式之前，从来没生效过——合并时删掉，渲染不变） */
-  .wr-canonical-state { width: 16px; justify-content: center; }
-  .wr-canonical-state .wr-canonical-text {
-    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
-  }
-  .wr-canonical-state .wr-canonical-dot { display: inline-block; }
+  /* 权威正文状态的收拢态在下面「顶栏右侧的状态组」里、排在胶囊的基础规则之后 */
 }
 @container wrtop (max-width: 720px) {
   .wr-save-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -722,6 +717,16 @@
 .wr-canonical-state.is-current { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, var(--line-1)); }
 .wr-canonical-state.is-dirty, .wr-canonical-state.is-promoting, .wr-canonical-state.is-review { color: var(--warn-ink); }
 .wr-canonical-state.is-error, .wr-canonical-state.is-reconcile { color: var(--danger-ink); }
+/* 窄顶栏（容器 ≤900px）：权威正文状态只剩一个有颜色的点，文字只给读屏（作者 2026-10-03 决定恢复原设计）。
+   必须排在上面的胶囊基础规则之后——容器查询不加优先级，排在前面就被盖掉：拆成两份样式表那几个月正是这样，
+   胶囊一直带着边框与底色、只是被挤窄 */
+@container wrtop (max-width: 900px) {
+  .wr-canonical-state { width: 16px; padding: 0; border: 0; background: transparent; justify-content: center; }
+  .wr-canonical-state .wr-canonical-text {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  .wr-canonical-state .wr-canonical-dot { display: inline-block; }
+}
 .wr-canonical-promote {
   height: 26px; box-sizing: border-box;
   border: 1px solid var(--line-2); border-radius: 999px; background: var(--paper-0);
@@ -784,6 +789,10 @@
   transition: stroke-dashoffset var(--dur) var(--ease), stroke var(--dur) var(--ease);
 }
 .wr-ring-fill.is-full { stroke: var(--ok); }
+/* 更窄（容器 ≤720px）：进度环收起，只留字数（同上，排在 .wr-ring 的基础规则之后才生效） */
+@container wrtop (max-width: 720px) {
+  .wr-ring { display: none; }
+}
 
 /* refined scene-goal — wraps cleanly, no clipping */
 .wr-goal-v { flex: 1; min-width: 0; }
