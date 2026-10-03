@@ -223,6 +223,20 @@ describe("WsQuality 维度标签完整性", () => {
     const backend = [...block.matchAll(/"([a-z_]+)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
     expect(Object.entries(mod.QUALITY_DIMS)).toEqual(backend);
   });
+
+  it("正文层下拉只给后端收的层：「章记忆终稿」已删（2026-10-03），其余每一项都在后端 QUALITY_TEXT_LAYERS 里", async () => {
+    const { mod } = await loadStore();
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../backend/src/novel_system/services/literary_quality/dimensions.py"), "utf8");
+    const start = source.indexOf("QUALITY_TEXT_LAYERS = {");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const backend = [...source.slice(start, source.indexOf("}", start)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    const options = mod.QUALITY_TEXT_LAYERS.map((o) => o.v);
+    expect(options).toEqual(["author_draft_preferred", "runtime_final_scene", "chapter_assembled"]);
+    expect(options.every((v) => backend.includes(v))).toBe(true);
+    expect(backend).not.toContain("chapter_memory_final");
+    expect(mod.QUALITY_TEXT_LAYERS.map((o) => o.l)).not.toContain("章记忆终稿");
+  });
 });
 
 describe("WsQuality store（章组复审 chapter-set-review）", () => {

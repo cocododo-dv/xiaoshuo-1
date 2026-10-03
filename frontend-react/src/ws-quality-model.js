@@ -24,11 +24,11 @@ export function qDimensionOptions(serverDimensions) {
   return QUALITY_DIM_KEYS.map((key) => ({ key, label: ruleDimensionLabel(key) }));
 }
 
-/* text_layer 下拉（后端另支持 runtime） */
+/* text_layer 下拉（后端另支持 runtime）。「章记忆终稿」一层已删（2026-10-03 作者的决定：读时现拼之后它与
+   「整章拼装」几乎一样，后端对它回 400） */
 export const QUALITY_TEXT_LAYERS = [
   { v: "author_draft_preferred", l: "作者稿优先" },
   { v: "runtime_final_scene", l: "运行末场" },
-  { v: "chapter_memory_final", l: "章记忆终稿" },
   { v: "chapter_assembled", l: "整章拼装" },
 ];
 export const QUALITY_MIN_SEVERITIES = FINDING_SEVERITY_ORDER;
@@ -37,7 +37,6 @@ export const Q_ITEM_LAYER = {
   author_draft: "作者稿",
   author_draft_preferred: "作者稿",
   runtime_final_scene: "运行末场",
-  chapter_memory_final: "章记忆终稿",
   chapter_assembled: "整章拼装",
   runtime: "运行稿",
 };

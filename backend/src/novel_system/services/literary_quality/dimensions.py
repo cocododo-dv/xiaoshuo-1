@@ -83,7 +83,6 @@ QUALITY_TEXT_LAYERS = {
     "author_draft_preferred",
     "runtime",
     "runtime_final_scene",
-    "chapter_memory_final",
     "chapter_assembled",
 }
 

@@ -136,8 +136,8 @@ def test_literary_quality_overview_prefers_author_drafts_and_does_not_mutate_run
 
 
 def test_literary_quality_overview_falls_back_to_runtime_text_and_derives_chapter_text_on_read(client, session) -> None:
-    """R13：章的正文读时现拼。存下来的章汇总（这里故意是一份过期的）既不是默认层的章源，也不是「章记忆终稿」层的
-    章源——前者拼各场当前终稿，后者现拼这一章归档过的各场记忆。"""
+    """R13：章的正文读时现拼。存下来的章汇总（这里故意是一份过期的）不是默认层的章源——默认层拼各场当前终稿。
+    「章记忆终稿」一层已删（作者 2026-10-03 的决定：读时现拼之后它与「整章拼装」几乎一样），挑它是 400。"""
     final_row_id = _seed_quality_scene(session, chapter_id="LQ200", scene_id="LQ200_SC01")
     final = session.get(FinalScene, final_row_id)
     session.add(
@@ -183,13 +183,14 @@ def test_literary_quality_overview_falls_back_to_runtime_text_and_derives_chapte
     assert runtime_items[0]["text_layer"] == "runtime_final_scene"
 
     memory_response = client.get("/api/v1/literary-quality/overview?text_layer=chapter_memory_final&chapter_id=LQ200")
-    assert memory_response.status_code == 200
-    memory_items = memory_response.json()["data"]["items"]
-    assert [item["object_type"] for item in memory_items] == ["chapter"]
-    assert memory_items[0]["text_layer"] == "chapter_memory_final"
-    assert memory_items[0]["source_ref"] == "chapter_memory:LQ200"
-    # 现拼的是那一场的记忆（与终稿同文），不是那份过期的汇总：两层读到的是同一段文字
-    assert memory_items[0]["fingerprint"] == chapter_item["fingerprint"]
+    assert memory_response.status_code == 400
+    assert memory_response.json()["error"]["code"] == "LITERARY_QUALITY_LAYER_INVALID"
+    chapter_set = client.post(
+        "/api/v1/literary-quality/chapter-set-review",
+        json={"chapter_ids": ["LQ200"], "text_layer": "chapter_memory_final"},
+    )
+    assert chapter_set.status_code == 400
+    assert chapter_set.json()["error"]["code"] == "LITERARY_QUALITY_LAYER_INVALID"
 
 
 def test_literary_quality_detects_template_reuse() -> None:

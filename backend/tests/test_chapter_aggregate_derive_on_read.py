@@ -260,10 +260,10 @@ def test_chapter_readers_include_scenes_archived_after_the_chapter_last_one(clie
     assert near_final["source_text_ref"] == f"chapter_assembled:{chapter_id}"
     assert near_final["content"] == "第一场后起草、后归档。\n\n第二场（本章最后一场）先起草、先归档。"
 
-    # 显式挑「章记忆终稿」这一层也是读时现拼：这一章此刻归档过的各场记忆，按场序
-    memory_layer = _quality_chapter_source(session, chapter_id, "chapter_memory_final")
-    assert memory_layer["text_layer"] == "chapter_memory_final"
-    assert memory_layer["content"] == "第一场后起草、后归档。\n第二场（本章最后一场）先起草、先归档。"
+    # 章汇总读时现拼（重建存下来的那一份、归档时都按它）：这一章此刻归档过的各场记忆，按场序
+    derived = Aggregator(session).derive_final_aggregate(chapter_id)
+    assert derived.status == "derived"
+    assert derived.content == "第一场后起草、后归档。\n第二场（本章最后一场）先起草、先归档。"
 
 
 def test_chapter_readers_follow_a_scene_reorder(client, session) -> None:
@@ -280,8 +280,7 @@ def test_chapter_readers_follow_a_scene_reorder(client, session) -> None:
     assert _quality_chapter_source(session, chapter_id)["content"] == "第二场正文。\n\n第一场正文。"
     near_final = NearFinalAcceptanceService(session)._chapter_source(session.get(ChapterGoal, chapter_id))
     assert near_final["content"] == "第二场正文。\n\n第一场正文。"
-    assert _quality_chapter_source(session, chapter_id, "chapter_memory_final")["content"] == "第二场正文。\n第一场正文。"
-    assert _overview_chapter_item(client, chapter_id, "chapter_memory_final")["text_layer"] == "chapter_memory_final"
+    assert Aggregator(session).derive_final_aggregate(chapter_id).content == "第二场正文。\n第一场正文。"
 
 
 # ---------------------------------------------------------------------------------------------- 晋升：汇总重建不成只记日志，重放不看汇总
