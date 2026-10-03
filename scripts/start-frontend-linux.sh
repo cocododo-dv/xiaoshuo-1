@@ -11,7 +11,7 @@
 #                               already active version) puts an nvm node on PATH
 #   3. ~/.local/node/bin        a plain tarball install (the Ubuntu dev host)
 #   4. whatever `node` is already on PATH
-# The frontend needs Node >= 18.18 (package.json "engines"); Node 22 is what CI tests.
+# The frontend needs Node >= 20.19 (package.json "engines"); Node 22 is what CI tests.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

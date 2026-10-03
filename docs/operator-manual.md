@@ -6,7 +6,7 @@
 
 ## 1. 启动与停止
 
-环境要求：Python 3.12、Node.js ≥ 18.18（推荐 22）与 npm。首次使用先装好后端的锁定环境与 React 前端依赖，再启动：
+环境要求：Python 3.12、Node.js ≥ 20.19（推荐 22）与 npm。首次使用先装好后端的锁定环境与 React 前端依赖，再启动：
 
 ```bash
 cd backend && uv sync --locked --extra dev && cd ..
@@ -21,7 +21,7 @@ scripts/start-all-linux.sh          # Linux；Windows 是 .\start-dev.cmd
 - 存活检查：`http://127.0.0.1:8000/live`
 - 就绪检查：`http://127.0.0.1:8000/ready`
 
-启动脚本会先升级数据库，再启动后端与 React 前端；日志与进程号在 `.codex-run/`。Windows 脚本端口冲突时会选择可用端口并把实际地址写入 `.codex-run/`。Node 版本太旧（低于 18.18）或缺前端依赖时，一键启动（`scripts/start-all-linux.sh`）与单独重启前端（`scripts/start-frontend-linux.sh`）都在停掉任何服务之前直接说明该做什么（装 Node 22，或先 `npm ci`）并退出，正在跑的服务不受影响。日常使用以下命令管理进程：
+启动脚本会先升级数据库，再启动后端与 React 前端；日志与进程号在 `.codex-run/`。Windows 脚本端口冲突时会选择可用端口并把实际地址写入 `.codex-run/`。Node 版本太旧（低于 20.19）或缺前端依赖时，一键启动（`scripts/start-all-linux.sh`）与单独重启前端（`scripts/start-frontend-linux.sh`）都在停掉任何服务之前直接说明该做什么（装 Node 22，或先 `npm ci`）并退出，正在跑的服务不受影响。日常使用以下命令管理进程：
 
 ```bash
 scripts/stop-all-linux.sh           # Windows：.\stop-dev.cmd / .\restart-dev.cmd

@@ -1,6 +1,6 @@
 # frontend-react — 创作工作台
 
-Vite + React 18 前端，默认端口 `5174`。仓库根目录的 `scripts/start-all-linux.sh`（Windows：`start-dev.cmd`）一次拉起后端与本工程。需要 Node.js ≥ 18.18（`package.json` 的 `engines`；推荐 22，CI 用 22）。
+Vite + React 18 前端，默认端口 `5174`。仓库根目录的 `scripts/start-all-linux.sh`（Windows：`start-dev.cmd`）一次拉起后端与本工程。需要 Node.js ≥ 20.19（`package.json` 的 `engines`；推荐 22，CI 用 22）。
 
 ## 当前产品入口
 

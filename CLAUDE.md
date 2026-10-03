@@ -67,9 +67,9 @@ publication arbiter.
   `scripts/verify_release.ps1` (that plus the React contract E2E).
 
 ### Frontend (`frontend-react/`, Vite + React 18)
-`npm ci` · `npm run dev` (:5174) · `npm run lint` (ESLint 9 flat config: `react-hooks/rules-of-hooks` is an error,
+`npm ci` · `npm run dev` (:5174) · `npm run lint` (ESLint 10 flat config: `react-hooks/rules-of-hooks` is an error,
 `exhaustive-deps` a warning, stale disable comments are errors) · `npm test` (vitest, ≈100 files / ≈1,700 tests,
-about ten minutes single-worker here) · `npm run build`. `engines.node` is `>=18.18`; CI uses Node 22. Build-time API
+about ten minutes single-worker here) · `npm run build`. `engines.node` is `>=20.19`; CI uses Node 22. Build-time API
 base `VITE_NOVEL_SYSTEM_API_BASE` (default `http://127.0.0.1:8000`).
 
 ### Contract E2E

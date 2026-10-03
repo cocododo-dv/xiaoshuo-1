@@ -54,10 +54,12 @@ dev_wait_http_ok() {
 }
 
 # Oldest Node the React frontend runs on — keep equal to frontend-react/package.json
-# "engines" (ESLint 9's floor; Vite 6 / Vitest 3 need 18 as well). Node 22 is the
-# version CI tests and the one every message recommends.
-DEV_NODE_FLOOR_MAJOR=18
-DEV_NODE_FLOOR_MINOR=18
+# "engines" (ESLint 10's floor, approved 2026-10-03; Vite 6 / Vitest 3 only need 18).
+# ESLint 10 itself takes ^20.19 || ^22.13 || >=24: on Node 21 or 22.0–22.12 the app runs
+# and only `npm run lint` refuses. Node 22 is the version CI tests and the one every
+# message recommends.
+DEV_NODE_FLOOR_MAJOR=20
+DEV_NODE_FLOOR_MINOR=19
 
 # Put a Node toolchain for the React frontend on PATH — first hit wins:
 #   1. $NOVEL_SYSTEM_NODE_BIN   directory holding node/npm (explicit override)
