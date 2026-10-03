@@ -49,6 +49,23 @@ async function withBusy(key, fn, refreshAfter) {
   }
 }
 
+/* 保存一个模型服务时后端收的字段（POST /llm/providers 的 LlmProviderConfigRequest：多一个键就 422）。
+   卡片上的「启用」开关拿 overview 里那一项原样改 enabled 再存，而 overview 项还带着只读的 secret（密钥状态）——
+   以前它跟着上行，开关每点一次都 422、服务的启停一次也没改成。存之前只挑这几个键，哪个调用方都不会再带多余的键；
+   没带 api_key 的保存沿用后端已存的密钥。 */
+const PROVIDER_SAVE_KEYS = [
+  "provider_id", "provider_type", "account_id", "base_url", "enabled",
+  "credential_mode", "api_mode", "models", "provider_options", "api_key",
+];
+
+function providerSaveBody(payload) {
+  const body = {};
+  for (const key of PROVIDER_SAVE_KEYS) {
+    if (payload && payload[key] !== undefined) body[key] = payload[key];
+  }
+  return body;
+}
+
 /* 管理令牌只读 sessionStorage。旧版存在 localStorage 里的那一份不再搬过来（批准 #25，重评 R16），
    但照旧随手抹掉：管理口令不能留在 localStorage 里（幂等，与 setAdminToken 同一条） */
 function adminToken() {
@@ -98,10 +115,11 @@ const WsAiProviders = {
     return presets;
   },
 
-  /* 保存(新增或编辑)一个模型服务;成功后重拉 overview */
+  /* 保存(新增或编辑,含卡片上的启用开关)一个模型服务:只发后端收的字段(providerSaveBody);成功后重拉 overview */
   async saveProvider(payload) {
-    return withBusy(`save:${payload.provider_id}`, () =>
-      apiAdminPost("/api/v1/system-config/llm/providers", payload, adminToken()), "always");
+    const body = providerSaveBody(payload);
+    return withBusy(`save:${body.provider_id}`, () =>
+      apiAdminPost("/api/v1/system-config/llm/providers", body, adminToken()), "always");
   },
 
   /* 删除一个模型服务(连同后端密钥);节点路由不随删,orphaned 列表随返回值带回。

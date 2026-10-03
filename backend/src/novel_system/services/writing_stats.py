@@ -63,10 +63,16 @@ def visible_manuscript_text(text: str | None) -> str:
     return "".join(parser.parts)
 
 
+def compact_visible_text(text: str | None) -> str:
+    """编辑器口径的可见文本、去掉全部空白：字数就是它的长度（``count_words``）。"""
+
+    return _WS_RE.sub("", visible_manuscript_text(text))
+
+
 def count_words(text: str | None) -> int:
     """编辑器口径：可见文本去空白后的 Unicode code-point 数。"""
 
-    return len(_WS_RE.sub("", visible_manuscript_text(text)))
+    return len(compact_visible_text(text))
 
 
 def _local_day(now: datetime) -> str:

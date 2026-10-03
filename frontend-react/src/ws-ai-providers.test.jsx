@@ -53,6 +53,32 @@ describe("WsAiProviders store(AI 模型接入)", () => {
     expect(mod.WsAiProviders.state().busy["save:my_openai"]).toBeUndefined();
   });
 
+  it("saveProvider:只发后端收的字段——overview 项里只读的 secret 不上行,表单填的 api_key 照发", async () => {
+    // 卡片上的「启用」开关拿 overview 里那一项原样改 enabled 再存;后端请求模型 extra=forbid,带着 secret 就 422
+    const { client, mod } = await loadStore();
+    client.apiAdminPost.mockResolvedValue({ provider: { provider_id: "relay_a" } });
+    const overviewEntry = {
+      provider_id: "relay_a", provider_type: "openai", account_id: null, base_url: "http://relay.example/v1",
+      enabled: true, credential_mode: "api_key", api_mode: "responses", models: ["model-x"], provider_options: {},
+      secret: { configured: true, decryptable: true, hint: "sk-...WXYZ" },
+    };
+    await mod.WsAiProviders.saveProvider({ ...overviewEntry, enabled: false });
+    const [url, body, token] = client.apiAdminPost.mock.calls[0];
+    expect(url).toBe("/api/v1/system-config/llm/providers");
+    expect(body).toEqual({
+      provider_id: "relay_a", provider_type: "openai", account_id: null, base_url: "http://relay.example/v1",
+      enabled: false, credential_mode: "api_key", api_mode: "responses", models: ["model-x"], provider_options: {},
+    });
+    expect(body).not.toHaveProperty("secret");
+    expect(typeof token).toBe("string");
+    expect(mod.WsAiProviders.state().busy["save:relay_a"]).toBeUndefined();
+
+    await mod.WsAiProviders.saveProvider({ provider_id: "relay_a", provider_type: "openai", api_key: "sk-new", enabled: true, models: [] });
+    expect(client.apiAdminPost.mock.calls[1][1]).toEqual({
+      provider_id: "relay_a", provider_type: "openai", api_key: "sk-new", enabled: true, models: [],
+    });
+  });
+
   it("deleteProvider:DELETE 正确地址 + 清本地探活结果 + 重拉 overview", async () => {
     const { client, mod } = await loadStore();
     client.apiAdminPost.mockResolvedValueOnce({ ok: true, message: "pong" });

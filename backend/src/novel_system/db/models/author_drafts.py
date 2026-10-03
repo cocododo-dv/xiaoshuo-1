@@ -133,7 +133,11 @@ class AuthorDraftEvent(Base):
 
 
 class AuthorDraftRevision(Base):
-    """正文修订快照（FE-ALIGN F2）：每次 revision_no 推进时存一行完整内容。"""
+    """正文修订快照（FE-ALIGN F2）：一行一份完整内容，记着它是第几版（``revision_no``）。
+
+    不是每推进一个修订号就一行：写作台的自动保存（``origin=edited``）按 5 分钟时段并成一行，只留这一时段最新的
+    正文（批准 #8）；建稿（``created``）、采纳并归档（``adopted``）、晋升过的那一版和整段删改之前的那一版各自
+    单独留着（规则见 ``services/author_drafts/revisions.py``）。"""
 
     __tablename__ = "author_draft_revisions"
     __table_args__ = (

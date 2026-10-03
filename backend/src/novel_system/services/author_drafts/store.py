@@ -97,7 +97,17 @@ class AuthorDraftStoreMixin:
         scene = self.session.get(SceneCard, object_id)
         return scene_project_id(self.session, scene) if scene is not None else None
 
-    def save(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
+    def save(
+        self,
+        draft_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_ref: str = "operator",
+        snapshot_origin: str = "edited",
+    ) -> dict[str, Any]:
+        """保存作者稿（修订号 CAS）。``snapshot_origin`` 是这一版修订快照的来源，只在服务端内部传、不是请求字段：
+        写作台的自动保存是 ``edited``（按 5 分钟时段合并，批准 #8）；采纳并归档（``scene_adoption``）传 ``adopted``，
+        永远单独留一行，不吃掉同一时段里被它替换的手写稿（终审 A-1，见 ``_snapshot_revision``）。"""
         draft = self._require_draft(draft_id)
         previous_content = draft.content or ""
         base_revision_no = payload.get("base_revision_no")
@@ -187,7 +197,7 @@ class AuthorDraftStoreMixin:
             note=_optional_text(payload, "note"),
             payload={"base_revision_no": base_revision_no, "revision_no": draft.revision_no},
         )
-        self._snapshot_revision(draft, actor_ref=actor_ref, origin="edited")
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin=snapshot_origin)
         self.session.flush()
         response = self._draft_response(draft)
         response["changed"] = True

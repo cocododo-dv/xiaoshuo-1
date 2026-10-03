@@ -331,6 +331,35 @@ describe("设置页", () => {
     }
   });
 
+  it("服务卡片的「启用」开关：只发后端收的字段（不带概览里只读的 secret），存完重拉概览、不报错", async () => {
+    // 以前开关把整份概览项（含 secret）原样上行，后端 extra=forbid 每次 422「请求内容不符合接口要求」，启停从没改成
+    window.sessionStorage.setItem("ws_settings_tab_v1", "ai");
+    const view = await mountSettings();
+    try {
+      await vi.waitFor(() => expect(view.host.querySelector('#set-provider-relay_a [role="switch"]')).toBeTruthy());
+      const toggle = view.host.querySelector('#set-provider-relay_a [role="switch"]');
+      expect(toggle.getAttribute("aria-label")).toBe("启用");
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+      const overviewReads = () => view.client.apiGet.mock.calls.filter(([url]) => url === "/api/v1/system-config/llm").length;
+      const readsBefore = overviewReads();
+
+      await click(toggle);
+
+      const saves = () => view.client.apiAdminPost.mock.calls.filter(([url]) => url === "/api/v1/system-config/llm/providers");
+      await vi.waitFor(() => expect(saves()).toHaveLength(1));
+      const [, body] = saves()[0];
+      expect(body).not.toHaveProperty("secret");
+      expect(body).toEqual({
+        provider_id: "relay_a", provider_type: "openai", base_url: "http://relay.example/v1", enabled: false,
+        credential_mode: "api_key", api_mode: "responses", models: ["model-x", "model-y"],
+      });
+      await vi.waitFor(() => expect(overviewReads()).toBeGreaterThan(readsBefore));
+      expect(view.host.querySelector(".set-flash")).toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
   it("高级路由用中文功能名（与成本看板同一张表），不再印后端的英文 label", async () => {
     window.sessionStorage.setItem("ws_settings_tab_v1", "ai");
     const view = await mountSettings();
