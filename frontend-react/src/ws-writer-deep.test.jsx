@@ -414,9 +414,9 @@ describe("写作台 · 深改时正文只读，也不能续写", () => {
   });
 });
 
-describe("写作台 · 1000–1279 宽时的深改", () => {
+describe("写作台 · 1101–1280 宽时的深改（断点在文档刻度上，批准 #26c）", () => {
   it("上下文栏在这个宽度叠放；深改时诊断栏改为停靠、不画遮罩，回起草后又收回叠放", async () => {
-    Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMediaAt(1100) });
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: matchMediaAt(1200) });
     const { WriterRoom, WrDocs } = await loadWriter();
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
