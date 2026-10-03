@@ -66,8 +66,8 @@ function wrMatches(query) {
   try { return typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(query).matches; } catch (e) { return false; }
 }
 /* 断点一律写成 max-width：单测里的 matchMedia 桩对任何查询都回 false，表示「宽屏」 */
-const WR_MQ_NARROW = "(max-width: 999px)";   // 大纲也不再停靠
-const WR_MQ_MID = "(max-width: 1279px)";     // 上下文栏改为叠在稿纸上的抽屉
+const WR_MQ_NARROW = "(max-width: 1100px)";   // 大纲也不再停靠
+const WR_MQ_MID = "(max-width: 1280px)";     // 上下文栏改为叠在稿纸上的抽屉
 
 function useWrMedia(query) {
   const [hit, setHit] = useState(() => wrMatches(query));

@@ -27,7 +27,7 @@ const { useState, useEffect, useMemo, useRef } = React;
    │          │  裁决条（开始 / 采纳 / 退回）     │ 尝试 · 记录│
    └──────────┴─────────────────────────────────┴──────────┘
    中间按这一场的状态换内容：待起草 → 设计卡；运行中 → 起草说明；待复核 → 正文与裁决；已归档 → 定稿。
-   证据栏没东西可看时整栏收起；窄于 1120px 时变成从右侧拉出的抽屉。
+   证据栏没东西可看时整栏收起；窄于 1100px（含）时变成从右侧拉出的抽屉。
    这个文件只负责摆放：状态在 ws-scene-board-state.js（台面 / 运行）与 ws-scene-adopt.jsx（采用），
    各栏在 ws-scene-spine / -stage / -decide / -evidence，与后端说话的在 ws-scene-api.js。
    ========================================================== */
@@ -55,7 +55,7 @@ function WsSceneBoard({ go, t }) {
   const designSync = useDesignSync();
   const [spineFilter, setSpineFilter] = useState("all");   // all = 全书 · active = 只看在办 · review = 只看待复核
   const [logOpen, setLogOpen] = useState(tw.scnLog !== false);
-  const [evidenceOpen, setEvidenceOpen] = useState(false);  // 窄屏（≤1120px）证据抽屉
+  const [evidenceOpen, setEvidenceOpen] = useState(false);  // 窄屏（≤1100px）证据抽屉
   const [compare, setCompare] = useState(null);           // 正在看复盘的那次尝试
   useEffect(() => { setCompare(null); }, [pickedId]);
 
@@ -70,7 +70,7 @@ function WsSceneBoard({ go, t }) {
     },
   } : {});
   /* 抽屉的焦点：拉开时落在抽屉的关闭按钮上；收起时焦点若还在抽屉里（或已掉到 body）就回到「证据」按钮。
-     抽屉只在 ≤1120px 出现、没有遮罩，所以不锁焦点，只负责进出。宽屏时关闭按钮不显示，focus 什么也不做。 */
+     抽屉只在 ≤1100px 出现、没有遮罩，所以不锁焦点，只负责进出。宽屏时关闭按钮不显示，focus 什么也不做。 */
   const eviToggleRef = useRef(null);
   const eviWasOpenRef = useRef(false);
   useEffect(() => {

@@ -681,7 +681,7 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 
 /* ---------- responsive ---------- */
 /* ≤1360：右栏变成抽屉，从编辑器页头的「体检」按钮拉出（DOM 一直在，只是移出视口） */
-@media (max-width: 1360px) {
+@media (max-width: 1280px) {
   .arr-main-detail { grid-template-columns: 264px minmax(0, 1fr); }
   .arr-ctx-toggle { display: inline-flex; }
   .arr-ctx {
@@ -697,7 +697,7 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
   .arr-main-detail.is-ctx-open .arr-ctx-scrim { display: block; position: absolute; inset: 0; z-index: calc(var(--z-drawer) - 1); background: var(--scrim); }
 }
 /* ≤1180：左栏收成一列章号（整章名在按钮的无障碍名和悬停提示里），把宽度让给编辑器 */
-@media (max-width: 1180px) {
+@media (max-width: 1100px) {
   .arr-main-detail { grid-template-columns: 60px minmax(0, 1fr); }
   .arr-rail-head, .arr-rail-stat { display: none; }
   .arr-rail-list { padding: var(--s2) 6px; }

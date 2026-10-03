@@ -38,7 +38,7 @@ export function useArrPref(key, fallback) {
    右栏只在 ≤1360 是抽屉（页头「体检」按钮拉出来，ws-author.css 的同一个断点）。抽屉开着时窗口变宽（最大化、缩放、
    收起开发者工具），右栏回到静态一列：「体检」按钮、关闭按钮、遮罩全都隐藏了，焦点陷阱却还开着——Tab 永远落在
    那个看不见的关闭按钮上，也关不掉。所以断点一过就把抽屉关上。jsdom 没有 matchMedia：没有就不管。 */
-const ARR_CTX_DRAWER_QUERY = "(max-width: 1360px)";
+const ARR_CTX_DRAWER_QUERY = "(max-width: 1280px)";
 
 export function useCtxDrawer() {
   const [open, setOpen] = useState(false);

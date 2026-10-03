@@ -544,7 +544,7 @@
 }
 .wr-dock-btn.accent kbd { color: var(--on-accent); background: color-mix(in srgb, var(--on-accent) 16%, transparent); border-color: color-mix(in srgb, var(--on-accent) 30%, transparent); }
 /* 窄窗：工具条只留图标（按钮文字仍在，读屏与悬停提示照旧） */
-@media (max-width: 999px) {
+@media (max-width: 1100px) {
   .wr-dock-btn { padding: 0 11px; }
   .wr-dock-label, .wr-dock kbd {
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
@@ -845,7 +845,7 @@
    so the columns read as panels framing a page.
    Dissolves in immersion for pure floating focus.
    ========================================================== */
-@media (min-width: 1000px) {
+@media (min-width: 1101px) {
   .wr-root[data-layout="desk"] .wr-scroll {
     background:
       radial-gradient(120% 130% at 50% 42%, transparent 56%, color-mix(in srgb, var(--scrim) 16%, transparent) 100%),
@@ -881,10 +881,10 @@
   }
 }
 /* 1200 以下稿纸边距收窄：两栏都停靠时正文一行仍能放下三十来个字 */
-@media (min-width: 1000px) and (max-width: 1199px) {
+@media (min-width: 1101px) and (max-width: 1280px) {
   .wr-root[data-layout="desk"][data-immersion="off"] .wr-measure { max-width: calc(var(--measure) + 64px); padding: 44px 32px 48px; }
 }
-@media (max-width: 999px) {
+@media (max-width: 1100px) {
   .wr-scroll { padding-left: 16px; padding-right: 16px; }
 }
 

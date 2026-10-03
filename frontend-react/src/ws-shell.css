@@ -212,7 +212,7 @@
   .ws-mode-switch { height: 26px; margin-top: 4px; }
   .ws-mode-btn { height: 20px; }
 }
-@media (max-height: 680px) {
+@media (max-height: 820px) {
   .ws-item { height: 30px; }
   .ws-foot-btn { height: 28px; }
 }
@@ -424,7 +424,7 @@
 .ws-nw-acc.is-sel { box-shadow: 0 0 0 2px var(--paper-1), 0 0 0 4px var(--acc); }
 .ws-nw-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--line-1); background: var(--paper-2); }
 
-@media (max-width: 720px) {
+@media (max-width: 640px) {
   .ws-nw-row2 { grid-template-columns: 1fr; }
 }
 

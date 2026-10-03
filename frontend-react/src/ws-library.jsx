@@ -54,7 +54,7 @@ function WsLibrary({ go }) {
   const [sort, setSort]     = useLb("recent");
   const [editing, setEditing] = useLb(false);
   const [creating, setCreating] = useLb(false);
-  const [pane, setPane]     = useLb("list");        /* 窄屏（≤820px）只显示一栏：list | detail */
+  const [pane, setPane]     = useLb("list");        /* 窄屏（≤900px）只显示一栏：list | detail */
   const [pinOverride, setPinOverride] = useLb({});   /* 置顶的乐观值，服务端刷新后撤掉 */
   const listRef = useLbRef(null);
   const pendingEdit = useLbRef(null);   /* 新建后自动进入编辑态的目标 id */

@@ -726,7 +726,7 @@ describe("章节编排 · 服务端目录真相", () => {
     };
     const other = { matches: false, addEventListener: () => {}, removeEventListener: () => {} };
     const queries = [];
-    Object.defineProperty(window, "matchMedia", { configurable: true, value: (query) => { queries.push(query); return query === "(max-width: 1360px)" ? mq : other; } });
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: (query) => { queries.push(query); return query === "(max-width: 1280px)" ? mq : other; } });
     try {
       localStorage.setItem("arr.mode", JSON.stringify("detail"));
       localStorage.setItem("arr.picked", JSON.stringify("ch01"));
@@ -736,10 +736,10 @@ describe("章节编排 · 服务端目录真相", () => {
 
       await act(async () => click(host.querySelector('[data-testid="arr-ctx-toggle"]')));
       expect(host.querySelector("#arr-ctx").className).toContain("is-open");
-      expect(queries).toContain("(max-width: 1360px)");           // 与 ws-author.css 的抽屉断点是同一个
+      expect(queries).toContain("(max-width: 1280px)");           // 与 ws-author.css 的抽屉断点是同一个
       expect(listeners.size).toBe(1);
 
-      mq.matches = false;                                          // 最大化 / 缩放：宽过 1360
+      mq.matches = false;                                          // 最大化 / 缩放：宽过 1280
       await act(async () => { listeners.forEach((fn) => fn({ matches: false })); });
       expect(host.querySelector("#arr-ctx").className).not.toContain("is-open");
       expect(host.querySelector('[data-testid="arr-ctx-toggle"]').getAttribute("aria-expanded")).toBe("false");

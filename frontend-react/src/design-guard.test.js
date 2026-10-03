@@ -40,25 +40,9 @@ const MAX_Z_INDEX_LITERALS_ABOVE_40 = 0;
 const DOCUMENTED_BREAKPOINTS = new Set(["max-width: 1440px", "max-width: 1280px", "max-width: 1100px",
   "max-width: 900px", "max-width: 640px", "min-width: 1441px", "min-width: 1281px", "min-width: 1101px",
   "min-width: 901px", "min-width: 641px", "max-height: 820px"]);
-// 刻度外、暂时留着的断点（"文件: 条件"）。棘轮：只删不加——挪到刻度上会改变 1440 / 1100 两档
-// 之外某个真实宽度的布局，要逐个看过再挪。
-const KNOWN_OFF_SCALE_BREAKPOINTS = [
-  "wr-recovery.css: max-width: 760px",
-  "wr-room.css: max-width: 1199px",
-  "wr-room.css: max-width: 999px",
-  "wr-room.css: min-width: 1000px",
-  "ws-author.css: max-width: 1180px",
-  "ws-author.css: max-width: 1360px",
-  "ws-library.css: max-width: 820px",
-  "ws-manuscripts.css: max-width: 1080px",
-  "ws-manuscripts.css: max-width: 980px",
-  "ws-scene.css: max-width: 1120px",
-  "ws-scene.css: max-width: 1320px",
-  "ws-home.css: max-width: 720px",
-  "ws-home.css: max-width: 960px",
-  "ws-shell.css: max-height: 680px",
-  "ws-shell.css: max-width: 720px",
-];
+// 刻度外、暂时留着的断点（"文件: 条件"）。棘轮：只删不加。2026-10-03 最后十五个也逐页截图对比后挪到了刻度上
+// （批准 #26c），名单清空——新的断点直接落在刻度上。
+const KNOWN_OFF_SCALE_BREAKPOINTS = [];
 // 颜料字压在同色 -wash 底上、但容器里只有 aria-hidden 图标的规则（"文件: 选择器"）。图形只需 3:1，
 // 颜料在自己的 wash 上够用；容器里一旦放字，就得换成 --*-ink 并从这里删掉。
 const ICON_ONLY_PIGMENT_ON_WASH = [

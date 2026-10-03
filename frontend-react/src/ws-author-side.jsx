@@ -10,8 +10,8 @@ import { chapterHeading, chapterLabel } from "./labels/catalog.js";
 
 /* ==========================================================
    章节详情的两侧
-   · ArrRail —— 左边的章节序列（≤1180 收成一列章号）
-   · ArrChapterContext —— 右边的章节体检 + 视角 · 时空（≤1360 变成从页头「体检」按钮拉出的抽屉；
+   · ArrRail —— 左边的章节序列（≤1100 收成一列章号）
+   · ArrChapterContext —— 右边的章节体检 + 视角 · 时空（≤1280 变成从页头「体检」按钮拉出的抽屉；
      jsdom 里没有媒体查询，它一直在 DOM 里）
    ========================================================== */
 
@@ -29,7 +29,7 @@ function ArrCheckRow({ ok, warn, label, val }) {
 function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose, onConfigureModel }) {
   const facts = arrChapterFacts(ch);
   const asideRef = React.useRef(null);
-  /* 只有抽屉形态（≤1360，页头「体检」按钮拉出来）才会 open：焦点进抽屉、Tab 不逃出去、关上后回到「体检」按钮。
+  /* 只有抽屉形态（≤1280，页头「体检」按钮拉出来）才会 open：焦点进抽屉、Tab 不逃出去、关上后回到「体检」按钮。
      抽屉开着时它就是模态对话框（role=dialog + aria-modal），读屏用户知道自己被关在这一块里；
      宽屏第三栏形态只是一块有名字的区域。 */
   useFocusTrap(asideRef, open);
@@ -118,7 +118,7 @@ function ArrRail({ chapters, numOf, pickedId, onPick, rowDnd, boardDnd, onBack, 
                           onMove(c.id, e.key === "ArrowUp" ? -1 : 1);
                         }}>
                         <span className={`arr-rail-grip ${movable ? "" : "is-fixed"}`} aria-hidden="true"><I.GripVertical size={13} /></span>
-                        {/* 只在收窄成一列章号时出现（≤1180）：紧凑的「1」，完整叫法在按钮的无障碍名与提示里 */}
+                        {/* 只在收窄成一列章号时出现（≤1100）：紧凑的「1」，完整叫法在按钮的无障碍名与提示里 */}
                         <span className="arr-rail-num tab-num" aria-hidden="true">{Number(numOf[c.id]) || numOf[c.id]}</span>
                         <span className="arr-rail-body">
                           <span className="arr-rail-name text-serif">{head.title || head.num}</span>

@@ -215,7 +215,7 @@
 .hm-chaps-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); margin-bottom: 10px; }
 
 /* home — responsive (narrow desk / preview) */
-@media (max-width: 960px) {
+@media (max-width: 900px) {
   .hm-top { grid-template-columns: 1fr; align-items: stretch; gap: 20px; }
   .hm-book { align-self: flex-start; border-left: 0; border-top: 1px solid var(--line-1); padding: 16px 0 0; }
   .hm-hero { grid-template-columns: 1fr; }
@@ -265,7 +265,7 @@
 .hm-start-desc { font-size: var(--fs-sm); color: var(--ink-3); line-height: 1.6; flex: 1; }
 .hm-start-cta { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-sm); font-weight: 600; color: var(--accent-ink); margin-top: 4px; }
 
-@media (max-width: 720px) {
+@media (max-width: 640px) {
   .hm-start-grid { grid-template-columns: 1fr; }
 }
 
