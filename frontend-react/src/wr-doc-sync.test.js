@@ -3634,7 +3634,7 @@ describe("复核七 · 两个标签页：A 页刚建的一场正在等服务端�
     expect(window.localStorage.getItem(storageKey("wr-doc-pending:", "s1"))).toBeNull();
   });
 
-  it("NB7-2 B 页的目录还认不出这一场（刚建、B 页的目录里还没有它）：刚写的这种标记先不动——不说「不在目录里了」，不删 A 页的本机稿和标记；A 页那一句照常存上", async () => {
+  it("NB7-2 B 页的目录还认不出这一场（刚建、B 页的目录里还没有它）：A 页的本机稿和标记都不动、A 页那一句照常存上；B 页先复制一份进同步与恢复并提示一次（I3-5，作者 2026-10-03 的决定）——不说「不在目录里了」", async () => {
     const TEXT = "<p>新建的这一场，A 页刚写下的第一段。</p>";
     const shared = sharedServer("", 1);
     const tabA = await openTab(shared, { opts: { catalog: [chapterCopy(), tmpChapter()] } });
@@ -3650,17 +3650,46 @@ describe("复核七 · 两个标签页：A 页刚建的一场正在等服务端�
     const mark = window.localStorage.getItem(markKey);
     vi.resetModules();                                                       // B 页：它的目录里还没有这一章
     const tabB = await openTab(shared, { opts: { catalog: [chapterCopy()] } });
-    await tick(150);
-    window.dispatchEvent(new Event("focus"));                                // B 页窗口聚焦也一样
+    await vi.waitFor(() => expect(recoveryHtml(tabB.mod)).toEqual([TEXT]), T);
+    window.dispatchEvent(new Event("focus"));                                // B 页窗口聚焦再扫一遍：不多放、不再提示
     await tick(50);
+    expect(tabB.mod.WrRecovery.list()).toEqual([expect.objectContaining({ sid: R6_TMP, html: TEXT, durable: true })]);
+    expect(alertTexts().filter((message) => message.includes("还没确认存到服务端"))).toHaveLength(1);
     expect(alertTexts().filter((message) => message.includes("不在目录里了") || message.includes("新建这一场时写下"))).toEqual([]);
-    expect(window.localStorage.getItem(slotKey)).toBe(TEXT);
+    expect(window.localStorage.getItem(slotKey)).toBe(TEXT);                // A 页的本机稿与标记原样：A 页还在建它
     expect(window.localStorage.getItem(markKey)).toBe(mark);
-    expect(tabB.mod.WrRecovery.list()).toEqual([]);
     shared.hooks.ensure = null;
     held.resolve();                                                          // A 页那一次回来了：那一句存上
     expect(await savedA).toBe("saved");
     expect(shared.content).toBe(TEXT);
+  });
+
+  it("NB7-2b 建场一直没有结果（那一页关掉了）：宽限过了照常收下——字已经在同步与恢复里，不多放一份、不再提示，本机键与标记这时才清掉", async () => {
+    const TEXT = "<p>新建的这一场写下的第一段，那一页随后关掉了。</p>";
+    const shared = sharedServer("", 1);
+    const tabA = await openTab(shared, { opts: { catalog: [chapterCopy(), tmpChapter()] } });
+    await tabA.mod.WrDocs.hydrate("ch01s1");
+    shared.hooks.ensure = () => new Promise(() => {});                       // A 页的建场永远停在路上
+    tabA.mod.WrDocs.load(R6_TMP);
+    tabA.mod.WrDocs.save(R6_TMP, TEXT).catch(() => {});
+    await tick(50);
+    const slotKey = storageKey("wr-doc:", R6_TMP);
+    const markKey = storageKey("wr-doc-pending:", R6_TMP);
+    expect(window.localStorage.getItem(markKey)).not.toBeNull();
+    vi.resetModules();                                                       // 刷新之后的这一页：目录里没有这一场
+    shared.hooks.ensure = null;
+    const tabB = await openTab(shared, { opts: { catalog: [chapterCopy()] } });
+    await vi.waitFor(() => expect(recoveryHtml(tabB.mod)).toEqual([TEXT]), T);
+    expect(alertTexts().filter((message) => message.includes("还没确认存到服务端"))).toHaveLength(1);
+    expect(window.localStorage.getItem(slotKey)).toBe(TEXT);
+    const realNow = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => realNow + 11 * 60 * 1000);  // 十一分钟之后
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(window.localStorage.getItem(markKey)).toBeNull(), T);
+    expect(window.localStorage.getItem(slotKey)).toBeNull();
+    expect(tabB.mod.WrRecovery.list()).toEqual([expect.objectContaining({ sid: R6_TMP, html: TEXT, durable: true })]);
+    expect(alertTexts().filter((message) => message.includes("新建这一场时写下") || message.includes("不在目录里了"))).toEqual([]);
+    expect(alertTexts().filter((message) => message.includes("还没确认存到服务端"))).toHaveLength(1);
   });
 });
 

@@ -338,7 +338,7 @@ describe("复核七 · 创建第一章后马上动笔；场景建到了服务端
 });
 
 describe("复核七 · 创建第一章后马上动笔，建章还在路上时刷新了页面；服务端其实建好了（NB7-1b · W1-R7B-1 · W1-R7B-2）", () => {
-  it("NB7-1b 刷新之后不说这一场「不在目录里了」（刚写的、认不出是哪一场的这种标记先不动）；那一段还在这台电脑的本机存储里，没有丢", async () => {
+  it("NB7-1b 刷新之后不说这一场「不在目录里了」，那一段马上复制进同步与恢复并提示一次（I3-5，作者 2026-10-03 的决定：过去这十分钟里它只在本机缓存里，打开的新场是空的、没有任何提示）；本机键与标记照旧不动（建场也许还在另一个标签页里）", async () => {
     const w = newWorld();
     const ctx = await loadWriter(w);
     const first = await render(<ctx.WriterRoom t={{}} setTweak={() => {}} />);
@@ -365,6 +365,8 @@ describe("复核七 · 创建第一章后马上动笔，建章还在路上时刷
     await act(async () => { window.dispatchEvent(new Event("focus")); });
     await wait(200);
     expect(alerts().filter((message) => message.includes("不在目录里了"))).toEqual([]);
+    expect(alerts().filter((message) => message.includes("还没确认存到服务端"))).toHaveLength(1);
+    expect(again.WrRecovery.list().filter((entry) => plain(entry.html).includes("第一句"))).toEqual([expect.objectContaining({ durable: true })]);
     expect(heldKeys()).toHaveLength(1);                                      // 没被当成孤儿扔掉
     expect(Object.keys(window.localStorage).some((key) => key.startsWith("wr-doc-pending:") && key.includes(tmp))).toBe(true);
   }, LONG);

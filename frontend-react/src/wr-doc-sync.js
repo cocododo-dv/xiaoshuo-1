@@ -441,6 +441,9 @@ const NOTICE = {
   // 刷新了）——不说它「不在目录里了」（复核七 W1-R7B-1）
   tmpGone: "新建这一场时写下、那一刻还没存到服务端的正文放进了「同步与恢复」（这里认不出它现在是目录里的哪一场）。这一场要是已经出现在目录里，打开它、从「同步与恢复」复制过去就行；也可以导出。",
   tmpGoneVolatile: "新建这一场时写下、那一刻还没存到服务端的正文因为浏览器存储空间不足，只留在本次会话的「同步与恢复」里（本机缓存里也还留着一份）——刷新或关掉页面前请打开它复制或导出。",
+  // 同一种认不出、标记却是刚写的（建场也许还在另一个标签页里等服务端）：本机键不动，字先复制一份（作者 2026-10-03 的决定，复核 I3-5）
+  tmpPending: "刚才新建的那一场写下的字还没确认存到服务端（建场的回包没回来，或页面在建场途中刷新了），先复制了一份到「同步与恢复」。这一场要是已经出现在目录里、打开却是空的，从「同步与恢复」复制过去就行；要是另一个标签页正在建它，它会照常存上，这一份可以删掉。",
+  tmpPendingVolatile: "刚才新建的那一场写下的字还没确认存到服务端；浏览器存储空间不足，复制的那一份只留在本次会话的「同步与恢复」里（本机缓存里也还留着一份）——刷新或关掉页面前请打开它复制或导出。",
   // 上次会话把整场清空了、没同步上，服务端之后又往前走了（复核六 W1-R6B-5：过去一声不响就换回了旧稿）
   clearedAtLoad: "上次会话（或另一个标签页）你把这一场整场清空了，那一下还没同步到服务端；服务端之后又有了新的一版，编辑器显示的是它。还要清空的话，在编辑器里再清一次。",
   clearedLocked: "这一章已批准锁定：上次会话（或另一个标签页）你把这一场整场清空了、还没同步到服务端，这一下存不上了，编辑器显示的是服务端上的正文。要改写请先到成稿中心重新打开本章。",
@@ -1661,8 +1664,10 @@ const ORPHAN_GRACE_MS = 10 * 60 * 1000;
    同一次会话里目录记得别名；刷新过了（或是另一个标签页新建的）凭标记里记下的后端 scene_id 找到它（复核七 W1-R7A-3：过去这时
    说这一场「不在目录里了」，那一段字留进同步与恢复时也不带 scene_id，「恢复」恢复不了）。新名字下另有本机稿、另有状态机的，那一段字
    留进同步与恢复（挂在新名字下），照实说是另一个标签页（或上次打开时）留下的。认不出是哪一场的：乐观新建的临时 sid、标记又是刚写的
-   ——另一个标签页也许正在建它、等它的服务端，先不动（过去这一页把它说成「不在目录里了」，还删掉了那一页的未同步标记，复核七
-   W1-R7B-2）；别的留进同步与恢复并告诉作者：正式编号的场不在目录里了（写作台再也打不开它），临时 sid 的照实说是新建时写下的字
+   ——另一个标签页也许正在建它、等它的服务端，本机键与标记都不动（过去这一页把它说成「不在目录里了」，还删掉了那一页的未同步标记，
+   复核七 W1-R7B-2），但字先复制一份进同步与恢复并告诉作者（作者 2026-10-03 的决定，复核 I3-5：过去这十分钟里那段字只在本机缓存里，
+   刷新之后写作台打开的新场是空的、还显示「草稿已保存」，没有任何提示）；宽限过了照常收下——同一段字已经在同步与恢复里，不再多放一份、
+   不再提示。别的留进同步与恢复并告诉作者：正式编号的场不在目录里了（写作台再也打不开它），临时 sid 的照实说是新建时写下的字
    （复核七 W1-R7B-1） */
 function sweepOrphanMarkers(workId) {
   let notice = null;
@@ -1681,7 +1686,19 @@ function sweepOrphanMarkers(workId) {
       }
     }
     const tmp = TMP_SID.test(sid);
-    if (!current && tmp && at.at != null && Date.now() - at.at < ORPHAN_GRACE_MS) return;
+    if (!current && tmp && at.at != null && Date.now() - at.at < ORPHAN_GRACE_MS) {
+      const held = readSlot(scene);
+      if (held == null || !hasAuthorText(held)) return;
+      const target = { workId, sid, sceneId: at.sceneId || null };
+      // 这一场先前已复制过（字后来又变了）的不再提示：另一个标签页还在往里写时，聚焦一次提示一次就成了刷屏
+      const copiedBefore = recoveryList().some((entry) => entry.workId === workId && entry.sid === sid
+        && entry.reason === KEEP_REASONS.tmpPending);
+      const { entry, created } = keepText(target, held, KEEP_REASONS.tmpPending, `场景 ${sid} · 未同步本地稿`, "unsynced");
+      if (entry && created && !copiedBefore && (!notice || entry.durable === false)) {
+        notice = { m: target, kind: "tmpPending", durable: entry.durable !== false };
+      }
+      return;
+    }
     const slot = readSlot(scene);
     if (slot == null || !hasAuthorText(slot)) {
       dropSceneKeys(scene);
@@ -1698,6 +1715,7 @@ function sweepOrphanMarkers(workId) {
   const tone = notice.durable ? "warn" : "danger";
   if (notice.kind === "renamed") recoveryNotice(notice.m, notice.durable ? NOTICE.otherTab : NOTICE.otherTabVolatile, tone);
   else if (notice.kind === "tmpGone") recoveryNotice(notice.m, notice.durable ? NOTICE.tmpGone : NOTICE.tmpGoneVolatile, tone);
+  else if (notice.kind === "tmpPending") recoveryNotice(notice.m, notice.durable ? NOTICE.tmpPending : NOTICE.tmpPendingVolatile, tone);
   else recoveryNotice(notice.m, notice.durable ? NOTICE.gone : NOTICE.goneVolatile, tone);
 }
 
@@ -2191,6 +2209,7 @@ const KEEP_REASONS = {
   pending: "上次会话没同步上的本机稿换成服务端版本时，编辑器里还有没保存的改动",
   gone: "这一场已经不在目录里了（新建没能存到服务端，或在别处移到了回收站），本机还有没同步上的正文",
   tmpGone: "新建这一场时写下、那一刻还没存到服务端的正文（这里认不出它现在是目录里的哪一场）",
+  tmpPending: "新建这一场时写下、还没确认存到服务端的正文（建场还没有结果；这里认不出它现在是目录里的哪一场，本机缓存里也还留着）",
   renamed: "新建的场换成正式编号时，新编号下已另有一份本机稿；这是新建时写下、还没同步上的正文",
   own: "编辑器换成这一页先前存上的那一稿（它的保存回包当时没回来）时还有没保存的改动",
   restoreUnsynced: "编辑器换成恢复的正文时，这一场先前交出去的这一稿还没同步上服务端",
