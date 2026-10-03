@@ -60,7 +60,8 @@ function Get-RecordedRootProcessIds {
     )
 
     $recorded = New-Object System.Collections.Generic.List[int]
-    foreach ($pidFileName in @("backend.pid")) {
+    # The React leg counts too: off its default port 5174 it is only recorded in frontend-react.pid
+    foreach ($pidFileName in @("backend.pid", "frontend-react.pid")) {
         $pidFile = Join-Path $RunDir $pidFileName
         if (-not (Test-Path -LiteralPath $pidFile)) {
             continue
