@@ -34,25 +34,25 @@ FULL_SHEETS = {
             "character_id": "c1",
             "display_name": "林昭",
             "role": "主角",
-            "goal": "还原父亲失踪当年被改写的卷宗",
+            "goal": "查清当年那场船难被抹掉的航海日志",
             "ambition": "夺回被污名化的人格尊严",
-            "values": ["没有什么比还原卷宗真相更重要", "没有什么比保全父亲的体面更重要"],
-            "conflict": "恩师程远以养育之恩与馆长职权层层封锁档案",
+            "values": ["没有什么比查清船难真相更重要", "没有什么比守住师父的名声更重要"],
+            "conflict": "师父程远以养育之恩与港务长职权层层封锁日志",
             "epiphany": "体面的隐瞒是对受害者的二次谋杀",
-            "one_sentence_summary": "档案修复师林昭为查清父亲的冤案与恩师决裂。",
-            "one_paragraph_summary": "林昭借调回县档案馆，在纸张纤维层间发现恩师的涂改痕迹……",
+            "one_sentence_summary": "灯塔看守人林昭为查清一场旧船难与师父决裂。",
+            "one_paragraph_summary": "林昭回到雨城港，在旧航海日志的夹页里发现师父的涂改痕迹……",
         },
         {
             "character_id": "",
             "display_name": "程远",
             "role": "对手",
-            "goal": "销毁二十年前失踪案的原始记录",
+            "goal": "销毁二十年前那场船难的原始记录",
             "ambition": "守住地方秩序与自己的道德体面",
             "values": ["没有什么比多数人的安稳更重要"],
-            "conflict": "得意门生带着顶尖修复技术步步紧逼",
+            "conflict": "一手带大的徒弟拿着旧日志步步紧逼",
             # 两个角色每个字段都非空：否则既有的 completeness_repair 会再补一次调用，call 数就不精确了
-            "epiphany": "在药水显影出自己当年的笔迹时明白体面守不住任何人",
-            "one_sentence_summary": "馆长程远为守护体面阻击养子追查旧案，终至身败名裂。",
+            "epiphany": "在日志夹页里认出自己当年的笔迹时明白名声守不住任何人",
+            "one_sentence_summary": "港务长程远为守住名声阻击养子追查旧案，终至身败名裂。",
             "one_paragraph_summary": "程远以长辈姿态迎接林昭归来……",
         },
     ],
@@ -62,7 +62,7 @@ FULL_SHEETS = {
 def _create_project(client, key: str = "sparse-schema-project") -> str:
     response = client.post(
         "/api/v2/projects",
-        json={"title": "雨城旧档", "outline_text": "档案修复师回县城查父亲的旧案。"},
+        json={"title": "雨城灯塔", "outline_text": "灯塔看守人回雨城港查一场旧船难。"},
         headers={"X-Idempotency-Key": key},
     )
     assert response.status_code == 200, response.text
@@ -226,7 +226,7 @@ def test_generate_route_sends_the_enriched_schema_and_records_it_in_the_audit(cl
 
     response = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate",
-        json={"direction_text": "主角林昭是档案修复师，对手是恩师程远。", "require_llm": True, "direction_kind": "candidate"},
+        json={"direction_text": "主角林昭是灯塔看守人，对手是师父程远。", "require_llm": True, "direction_kind": "candidate"},
     )
     assert response.status_code == 200, response.text
     assert len(captured) == 1
@@ -269,7 +269,7 @@ def test_empty_member_objects_trigger_one_reasoned_retry(client, monkeypatch) ->
 
     response = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate",
-        json={"direction_text": "主角林昭是档案修复师，对手是恩师程远。", "require_llm": True},
+        json={"direction_text": "主角林昭是灯塔看守人，对手是师父程远。", "require_llm": True},
     )
     assert response.status_code == 200, response.text
     names = [item["display_name"] for item in response.json()["data"]["step"]["draft"]["characters"]]

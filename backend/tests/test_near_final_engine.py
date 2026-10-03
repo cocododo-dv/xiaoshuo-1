@@ -273,10 +273,10 @@ def test_planning_service_persists_character_pressure_and_chapter_architecture(s
                 "surface_goal": "公开录音证明篡改。",
                 "hidden_fear": "如果延后公开，她会变成帮凶。",
                 "wrong_belief": "真相只要公开就能保护所有人。",
-                "shame_point": "她曾经只修复档案，没有保护档案里的人。",
+                "shame_point": "她曾经只看守灯塔，没有守护船上的人。",
                 "avoidance_strategy": "用冷静术语避开活人的求救。",
                 "relationship_debt": "她必须把一半证据交给许望并承担信任风险。",
-                "current_mask": "档案修复师的冷静。",
+                "current_mask": "灯塔看守人的冷静。",
             },
         ]
     )
