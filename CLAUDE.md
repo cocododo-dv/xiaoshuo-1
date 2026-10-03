@@ -29,7 +29,7 @@ publication arbiter.
   `compact_db`, `sync_prompt_templates`, `raise_llm_output_budget`, `refresh_style_reference_books`,
   `purge_style_reference_books`, `build_voice_baseline`. Database writers dry-run unless `--execute`; those that open
   the app's session also refuse `--execute` (exit 2) when the DB revision differs from the code (`tools/_cli.py`).
-  Every tool refuses to run another checkout's code (exit 2, `tools/_checkout_guard.py`; Alembic's `env.py` too).
+  Every tool refuses to run another checkout's code (exit 2, `tools/_checkout_guard.py`; Alembic's `env.py` raises).
 
 ## Commands
 
@@ -38,8 +38,8 @@ publication arbiter.
   waits for `/ready`, fails fast with the log tail). Per leg, each stopping its previous instance:
   `scripts/start-backend-linux.sh` (prunes old `.codex-run` logs, exports `PYTHONPATH=backend/src`, `alembic upgrade
   head` with `backend/.venv/bin/python`, uvicorn `--reload`) and `scripts/start-frontend-linux.sh` (Node from
-  `NOVEL_SYSTEM_NODE_BIN` → nvm → `~/.local/node/bin` → `PATH`; refuses a missing node / `node_modules` or a Node below
-  the `engines` floor ≥ 18.18 before stopping its old instance — use Node 22).
+  `NOVEL_SYSTEM_NODE_BIN` → nvm → `~/.local/node/bin` → `PATH`). Both it and `start-all-linux.sh` refuse a missing
+  node / `node_modules` or a Node below the `engines` floor ≥ 18.18 before stopping anything — use Node 22.
 - Windows: `.\start-dev.cmd` / `.\stop-dev.cmd` / `.\restart-dev.cmd` (→ `scripts/dev.ps1`: migrate, start both, open
   the browser; a busy port scans upward and the chosen URLs go to `.codex-run/backend.url` / `frontend-react.url`);
   `.\reset-runtime-keep-llm.cmd` resets the runtime DB / artifacts but keeps the LLM config.
@@ -63,7 +63,7 @@ publication arbiter.
   `pyproject.toml`: `uv lock --python 3.12`, then `uv export --locked --extra dev --no-emit-project --format
   requirements-txt --output-file requirements.lock` (dev extra only, never `--all-extras`) and review both files.
   `tests/test_dependency_lock.py` pins this. Only `frontend-react/` has a Node lockfile.
-- Windows lanes: `scripts/verify_windows.ps1` (ruff, pip-audit, 4 pytest shards, vitest, build) and
+- Windows lanes: `scripts/verify_windows.ps1` (ruff, pip-audit, 4 pytest shards, ESLint, vitest, build) and
   `scripts/verify_release.ps1` (that plus the React contract E2E).
 
 ### Frontend (`frontend-react/`, Vite + React 18)
@@ -77,7 +77,7 @@ base `VITE_NOVEL_SYSTEM_API_BASE` (default `http://127.0.0.1:8000`).
 `scripts/verify_react_e2e.ps1`): fresh migrated sqlite under `.codex-run/e2e-linux/`, seeded backend `:8009`, React dev
 server `:5176`, real Chromium, then `frontend-react/scripts/run-smokes.mjs` (acceptance, `smoke-phase2..7`,
 `smoke-ai-settings`, `qa2-ui`; fixtures reseeded before each suite). Ports via `PLAYWRIGHT_BACKEND_PORT` /
-`PLAYWRIGHT_REACT_PORT`; the lane refuses (exit 2) a port that already has a listener. `npx playwright install
+`PLAYWRIGHT_REACT_PORT` (ps1: `-BackendPort` / `-ReactPort`); the lane refuses (exit 2) a port that already has a listener. `npx playwright install
 chromium` once. The smokes share `frontend-react/scripts/lib/harness.mjs` (`openApp`, `waitUntil`, `reseedFixtures`;
 aborts `:8000`) and need `npm run dev`: they reach stores through the DEV-only `window.__wsStores`.
 
@@ -236,6 +236,7 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   `ws-snow-sync.jsx`, `WrDocs` `wr-doc-store.jsx` over `wr-doc-sync.js`, `WsManuStore`, `WsDiagnosis`, `WsAuthorAi`,
   `ws-review-store.js`, `ws-library-store.js`, `ws-styleref-store.js` …): sync caches, optimistic write + rollback /
   refetch, change notifications via `subscribe(fn)`; each module header documents its store's contract.
+  `ws:work-changed` (`lib/events.js`) fires only on a work switch or shelf change; stats go via `WsWorks.subscribe`.
   `ws-test-seam.js` is the only `window` writer (`window.__wsStores.load(...)`, DEV only, for the smokes).
 - Shell: `ws-nav.js` is the pure navigation model (`WS_NAV_GROUPS`, `WS_VIEW_ALIAS`: `deepdesk → writer`,
   `flowmap → home`); `ws-app.jsx` keeps routing, the lazy imports and `<ViewReady>`; cross-view intents go through
@@ -243,7 +244,7 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
 - Shared layer — use it instead of per-view look-alikes: tokens in `styles.css`; `ws-ui.jsx` + `ws-ui.css`
   (`PageHeader`, `Segmented`, `Tabs`, `Tag`, `Notice`, `EmptyState`, `ProgressBar`, `RadioCards`, `Popover` /
   `usePopover`, `MenuButton` …); `ws-dialog.jsx`; `ws-notify.jsx` (`wsToast`, `wsNotify`, `wsConfirm`); `ws-prefs.js`;
-  vocabulary in `labels/*.js` (`ws-labels.js` re-exports); `manuscript-html.js`; `lib/` (`client.js`, `store-kit.js`,
+  vocabulary in `labels/*.js` (`ws-labels.js` re-exports); `manuscript-html.js`; `lib/` (`client.js`, `store-kit.js`, `store-utils.js`,
   `events.js`, `format.js`, `text.js` — `countChars` = backend `count_words` —, `poll.js`, `work-id.js` …).
 - `lib/client.js` owns the envelope, `X-Idempotency-Key`, `X-Operator-Ref`, the access token and the API base; views
   branch on `ApiRequestError.code` / `details`, never on message text. localStorage holds only preferences and read
@@ -302,7 +303,7 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   `renumber_scene_seq` its only writer. Chapters are contiguous slices, enforced server-side (`heal_assignment`).
   `snowflake_chapter_table` is the only writer of chapter-plan rows; the 07 table is a read-only mirror.
 - Catalog chapter ids are pinned serials (`SnowflakeChapterPlan.catalog_chapter_id`, minted only by
-  `SnowflakeChapteringService.catalog_chapter_id`, never reused); a re-proposed chunk keeps a chapter when ≥ half the
+  `snowflake_chapter_table.catalog_chapter_id`, never reused); a re-proposed chunk keeps a chapter when ≥ half the
   scenes are shared. Runtime rows follow a moved scene (`scene_rehome.rehome_scenes`).
 - Catalog scene `slug` = `scene_id`. The catalog payload is the only hand-off to the desks (`design`, `work`,
   `structure`). One focus rule: `WsCatalog.focusScene()` mirrors `catalog_labels.focus_scene_payload`. Reads never

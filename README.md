@@ -55,7 +55,7 @@ cd ..
 - 存活检查：`http://127.0.0.1:8000/live`
 - 就绪检查：`http://127.0.0.1:8000/ready`
 
-Windows 脚本在端口被占用时会往上找可用端口，并把实际地址写入 `.codex-run/backend.url`；停止与重启用 `.\stop-dev.cmd`、`.\restart-dev.cmd`。Linux 的前端启动脚本 `scripts/start-frontend-linux.sh` 在 Node 版本低于 18.18、找不到 node / npm 或缺 `node_modules` 时直接说明该装什么并退出，检查在停掉旧前端之前做。
+Windows 脚本在端口被占用时会往上找可用端口，并把实际地址写入 `.codex-run/backend.url`；停止与重启用 `.\stop-dev.cmd`、`.\restart-dev.cmd`。Linux 的一键启动 `scripts/start-all-linux.sh` 与前端启动脚本 `scripts/start-frontend-linux.sh` 在 Node 版本低于 18.18、找不到 node / npm 或缺 `node_modules` 时直接说明该装什么并退出，检查在停掉任何服务之前做。
 
 需要主动升级 Python 依赖时，修改 `backend/pyproject.toml` 后用同一版 uv 重新生成并审查 `uv.lock` 与带哈希的导出锁文件（只导出 dev 附加依赖）：
 

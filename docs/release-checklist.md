@@ -23,7 +23,7 @@ GitHub Actions 在每次推送（以及 PR）上跑同一套检查。
   - 前端：`cd frontend-react && npm run lint && npm test && npm run build`。
   - 契约 E2E：`NOVEL_SYSTEM_PYTHON=$PWD/backend/.venv/bin/python bash scripts/verify_react_e2e.sh`（默认后端 `:8009`、React
     `:5176`，端口已被占用时直接拒绝；从不碰开发用的 `:8000` / `:5174`）。
-- Windows：`powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`（ruff、pip-audit、四片后端、vitest、构建；
+- Windows：`powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`（ruff、pip-audit、四片后端、ESLint、vitest、构建；
   分片 JUnit 写在 `backend/.test-results/`），`scripts/verify_react_e2e.ps1`，或一次跑完两者的 `scripts/verify_release.ps1`。
 - 只改了一个领域时，至少跑该领域的测试文件与漂移守卫（`tests/test_service_architecture.py`、`tests/test_metadata_isolation.py`、
   `tests/test_schema_contract_revision.py`、`tests/test_docs_links.py`、`tests/test_prompt_template_contracts.py` 等，清单见
@@ -48,7 +48,7 @@ GitHub Actions 在每次推送（以及 PR）上跑同一套检查。
 3. 代码快进到新版本；`alembic upgrade head`。
 4. 按需：`compact_db <库> --execute`（重构上线那一次必须做，见[数据库迁移](migrations.md) §4）、`sync_prompt_templates --execute`、
    「一键补齐」。
-5. 启动（`scripts/start-all-linux.sh` / `start-dev.cmd`），确认 `/ready` 是 `ready`；浏览器里开着的工作台页面全部刷新。
+5. 启动（`scripts/start-all-linux.sh` / `start-dev.cmd`），确认 `/ready` 是 `ready`；每台设备上开着的工作台页面，在新界面里改任何东西之前全部刷新。
 
 ## 5. 不由这里证明的东西
 

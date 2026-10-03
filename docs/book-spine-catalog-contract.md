@@ -239,6 +239,7 @@
 | 作品不存在（`reject_trashed` 时也包括在回收站） | `PROJECT_NOT_FOUND` | 404 | `require_project` |
 | 运行本章、通读确认、定稿流程里的章不存在或不属于这部作品（不看回收站） | `PROJECT_CHAPTER_NOT_FOUND` | 404 | `chapter_final_flow` |
 
-只查存在、不看回收站的变体是 `get_scene_or_404` / `get_chapter_or_404`。这张表里的码前端都不按码分支（目录与成稿这一块，
-前端按码分支的是设计 / 结构归属的 409 `CATALOG_*_OWNED_BY_PLAN`、`AUTHOR_DRAFT_CONFLICT` 与 `SOURCE_SAFETY_BLOCKED`）；
+只查存在、不看回收站的变体是 `get_scene_or_404` / `get_chapter_or_404`。这张表里，前端只有对照检查（`ws-fidelity-model.js`
+的 `fidErrorInfo`）按 `SCENE_NOT_FOUND` 换说法，所以码的名字不能改；目录与成稿这一块，前端按码分支的是 `AUTHOR_DRAFT_CONFLICT` 与
+`SOURCE_SAFETY_BLOCKED`（设计 / 结构归属的 409 `CATALOG_*_OWNED_BY_PLAN` 由界面先挡住——只读行、不可拖——不按码分支）；
 给作者看的说明按 `backend/src/novel_system/api/error_catalog.py` 换成中文。
