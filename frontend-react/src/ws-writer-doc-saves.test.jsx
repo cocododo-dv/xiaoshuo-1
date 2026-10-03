@@ -1870,9 +1870,7 @@ describe("复核三 · 断网写了几分钟、回包丢了的那一稿其实存
     let text = "起点正文，";
     for (const line of lines) {
       text += line;
-      // eslint-disable-next-line no-await-in-loop
       await r.type(`<p>${text}</p>`);
-      // eslint-disable-next-line no-await-in-loop
       await wait(1100);
     }
     expect(srv.drafts.s1.content).toBe("<p>起点正文，第一句。</p>");

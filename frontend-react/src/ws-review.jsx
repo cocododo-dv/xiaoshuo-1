@@ -129,7 +129,7 @@ function WsReview({ go }) {
   // 筛选或列表变化后，选中项不在可见列表里就清掉
   React.useEffect(() => {
     if (selId && !visible.some(x => x.id === selId)) setSelId(null);
-  }, [filter, items]); // eslint-disable-line
+  }, [filter, items]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useRvKeyboard({ rootRef, visible, selId, setSelId, setKbd, setOpenId, undoRef, undo, resolve, snooze });
 

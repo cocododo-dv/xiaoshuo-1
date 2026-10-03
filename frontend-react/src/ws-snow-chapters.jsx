@@ -137,7 +137,7 @@ export function WsChapterPlanPanel({ onClose, onDone, onGoToStep, onGoToScene, f
     const want = focusReturnRef.current;
     focusReturnRef.current = null;
     restoreFocus(want);
-  }, [busy]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [busy]);
 
   /* 换方案会丢掉面板里还没确认的手动调整——先问一句（应用内的确认框 wsConfirm，与别处一样；批准 #18c）。
      确认框叠在面板上面，作者回答之前面板原样不动；答「换分法」才拉新预览。 */

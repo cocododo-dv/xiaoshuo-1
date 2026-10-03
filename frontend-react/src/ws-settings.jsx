@@ -66,7 +66,7 @@ function WsSettings({ go, t, setTweak }) {
       setViewIntentTargetReady("settings", false);
       window.removeEventListener("ws:settings-tab", onTab);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const current = S_TABS.find(x => x.id === tab) || S_TABS[0];
 
@@ -138,7 +138,7 @@ function ProjectField({ label, hint, value, onSave, type = "text", step, stacked
       return;
     }
     if (!editingRef.current) setDraft(stored);
-  }, [stored]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stored]);
 
   const commit = () => {
     editingRef.current = false;

@@ -92,7 +92,6 @@ function HmBeat({ k, tone, v }) {
     if (!el || open) return;
     setClamped(el.scrollHeight - el.clientHeight > 2);
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   React.useLayoutEffect(measure, [v, open]);
   useWindowEvents({ resize: measure });
   return (

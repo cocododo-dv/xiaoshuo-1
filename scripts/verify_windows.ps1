@@ -64,7 +64,9 @@ if (-not $FrontendOnly) {
 
 if (-not $BackendOnly) {
 
-    # React mainline (frontend-react) is the default frontend gate: vitest unit tests + build.
+    # React mainline (frontend-react) is the default frontend gate, the same npm scripts in the same order as
+    # CI's Frontend job: hooks lint (rules-of-hooks errors fail it, exhaustive-deps only warns) + vitest unit tests + build.
+    Invoke-NativeStep -Label "React hooks lint (ESLint)" -WorkingDirectory $reactDir -FilePath "npm.cmd" -ArgumentList @("run", "lint")
     Invoke-NativeStep -Label "React frontend tests" -WorkingDirectory $reactDir -FilePath "npm.cmd" -ArgumentList @("test")
     Invoke-NativeStep -Label "React frontend build" -WorkingDirectory $reactDir -FilePath "npm.cmd" -ArgumentList @("run", "build")
 }

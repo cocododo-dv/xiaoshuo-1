@@ -33,7 +33,7 @@ function WsQuality({ go }) {
   const [draft, setDraft] = React.useState("");
 
   // 初次进入巡检一轮（按当前作品作用域，作者只看自己作品）
-  React.useEffect(() => { qLoadOverview(qScopeFilters(filters)); /* eslint-disable-next-line */ }, []);
+  React.useEffect(() => { qLoadOverview(qScopeFilters(filters)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="ws-page ws-view q-quality" data-screen-label="quality">

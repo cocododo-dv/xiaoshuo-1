@@ -1,4 +1,4 @@
-// QA2 批次2 — Playwright 非破坏 UI 深度交互 + P1/P2 回归 + Q2/Q3 的 UI 体现。
+// QA2 批次2 — Playwright 非破坏 UI 深度交互 + P1 回归 + Q2/Q3 的 UI 体现。
 // 运行：node frontend-react/scripts/qa2-ui.mjs [BASE] [API]（底座见 scripts/lib/harness.mjs；结果写到仓库的 .codex-run/qa2/ui/）
 import path from "node:path";
 import fs from "node:fs";
@@ -43,9 +43,9 @@ async function go(work, view) {
   await page.evaluate((w) => localStorage.setItem("ws_active_work_v1", w), work);
   await page.evaluate((v) => { location.hash = "#" + v; }, view);
   await page.reload();
-  // 只等应用装好，不要求当前作品就是 work：书架（/api/v2/projects）只列雪花作品，不在上面的（AUTHOR-04 从 v1 列表
-  // 发现的单章夹具项目）照旧退回书架上的第一部
-  await waitForApp();
+  // 等到当前作品真的是 work：书架（/api/v2/projects）上没有它时应用会退回第一部作品，不等这一步，检查就可能
+  // 悄悄跑在别的作品上（work-a / work-b 都是雪花作品，都在书架上）
+  await waitForApp({ work });
   await viewMounted();
 }
 async function shot(n) { try { await page.screenshot({ path: path.join(OUT, "shots", n + ".png") }); } catch {} }
@@ -99,47 +99,6 @@ await becomes(() => /整理章节结构|章节结构|物化|场景/.test(documen
 const bodyTxt = await contentText();
 chk("tide 构思页渲染(含物化/章节字样)", /整理章节结构|章节结构|物化|场景/.test(bodyTxt), bodyTxt.slice(0, 80));
 await shot("q3-tide-construct");
-
-// ---- AUTHOR-04 (P2 回归)：单章项目故事弧线无 SVG 报错 ----
-// 从当前后端发现单章项目；隔离门禁夹具中的 PRJ_DEMO_CH001 满足该契约。
-// 项目不在则诚实跳过——绝不在错误项目上凑一个空过的"通过"。
-ctx = "AUTHOR-04";
-let arcProject = "";
-try {
-  const resp = await page.request.get(`${API}/api/v1/projects`);
-  if (resp.ok()) {
-    const body = await resp.json();
-    let items = [];
-    if (body && body.data && Array.isArray(body.data.items)) items = body.data.items;
-    else if (body && Array.isArray(body.items)) items = body.items;
-    else if (body && Array.isArray(body.data)) items = body.data;
-    for (const project of items) {
-      const projectId = project.project_id || project.id;
-      if (!projectId) continue;
-      const catalogResp = await page.request.get(`${API}/api/v2/projects/${encodeURIComponent(projectId)}/catalog`);
-      if (!catalogResp.ok()) continue;
-      const catalogBody = await catalogResp.json();
-      const catalog = catalogBody?.data || catalogBody;
-      if (Array.isArray(catalog?.chapters) && catalog.chapters.length === 1) {
-        arcProject = projectId;
-        break;
-      }
-    }
-  }
-} catch (e) { /* 探测失败按不存在处理 → 跳过，不误判通过 */ }
-if (!arcProject) {
-  skip("单章项目故事弧线无 SVG path 报错(P2 回归)", "当前后端不存在单章项目");
-} else {
-  consoleErrs.length = 0;
-  await go(arcProject, "author");
-  // 点故事弧线 tab
-  const arcTab = page.locator("text=故事弧线").first();
-  if (await arcTab.count()) { await arcTab.click().catch(() => {}); }
-  await observe(1000); // 观察窗口：弧线画完之后没有 SVG path 报错
-  const svgErr = consoleErrs.filter(e => /moveto|path command|Expected.*path|<path>/i.test(e.t));
-  chk("单章项目故事弧线无 SVG path 报错(P2 回归)", svgErr.length === 0, JSON.stringify(svgErr.slice(0, 2)));
-  await shot("author04-real-arc");
-}
 
 // ---- REVIEW-01：待办加载 + 筛选 chip ----
 ctx = "REVIEW-01";
@@ -220,9 +179,10 @@ chk("风格页没有 4xx / 5xx 请求", style4xx.length === 0, JSON.stringify(st
 await shot("styleref-tide");
 
 // ---- 全局 console 错误汇总（巡检全部视图）----
+// 章节编排（author）只有这里看 console error（以前的 AUTHOR-04 只认 SVG path 报错，已删）
 ctx = "console-sweep";
 consoleErrs.length = 0;
-for (const v of ["home", "writer", "library", "manuscripts", "settings", "trash"]) {
+for (const v of ["home", "author", "writer", "library", "manuscripts", "settings", "trash"]) {
   await go("work-a", v);
   await observe(700); // 观察窗口：页面挂上、读完数据之后没有 console error
 }

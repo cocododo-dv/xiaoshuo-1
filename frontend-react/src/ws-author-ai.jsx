@@ -106,7 +106,6 @@ function ArrAiBlueprint({ ch, locked, active, draft, setDraft }) {
       WsAuthorAi.loadArchitecture(chapterId).catch(() => {});
     }
     // status 变化不重新触发：失败后等作者再次打开页签，不在后台反复重试
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapterId, active]);
 
   if (!chapterId) return null;

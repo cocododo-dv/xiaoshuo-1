@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -66,11 +68,136 @@ describe("React 工具链独立性", () => {
     }
   });
 
-  it("QA2 uses the live project-list contract to discover its single-chapter fixture", () => {
+  it("QA2 runs every check on the fixture work it names: go() waits until that work is the current one", () => {
+    // 书架（/api/v2/projects）只列雪花作品，不在上面的作品打开时应用退回第一部。以前为了一条从 v1 列表找单章项目的
+    // 检查（AUTHOR-04，它找到的项目书架从来打不开，等于空过；已删），go() 只等应用装好、不认当前作品，
+    // 别的检查也就可能悄悄跑在别的作品上
     const source = fs.readFileSync(path.join(scriptsDir, "qa2-ui.mjs"), "utf8");
-    expect(source).toContain("${API}/api/v1/projects");
-    expect(source).not.toContain("${API}/api/v2/projects`");
-    expect(source).toContain("catalog.chapters.length === 1");
+    const go = source.match(/^async function go\(work, view\) \{[\s\S]*?^\}/m)?.[0] || "";
+    expect(go).toContain("await waitForApp({ work });");
+    expect(source).not.toContain("${API}/api/v1/projects");
+    // 全视图 console 巡检也走章节编排：AUTHOR-04 删掉以后，这一页有没有 console error 只剩巡检在看
+    const sweep = source.match(/ctx = "console-sweep";[\s\S]*?for \(const v of (\[[^\]]*\])\)/)?.[1] || "[]";
+    expect(JSON.parse(sweep)).toContain("author");
+  });
+
+  it("前端启动脚本先查 Node（下限与 package.json engines 一致）再停旧实例，也不改写操作者的 NODE_OPTIONS", () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(frontendRoot, "package.json"), "utf8"));
+    const lifecycle = fs.readFileSync(path.join(repoRoot, "scripts", "lib", "dev-lifecycle.sh"), "utf8");
+    const floor = ["MAJOR", "MINOR"].map((part) => (lifecycle.match(new RegExp(`^DEV_NODE_FLOOR_${part}=(\\d+)$`, "m")) || [])[1]);
+    expect(pkg.engines && pkg.engines.node).toBe(`>=${floor.join(".")}`);
+    // 换错 Node 重启时要先报错退出：要是检查排在停旧实例之后，正在跑的前端会先被停掉、再拒绝启动。
+    // 一键启动（start-all-linux.sh，作者平时用的就是它）在起前端这条腿之前自己先停前后端，所以它也要先查
+    for (const script of ["start-frontend-linux.sh", "start-all-linux.sh"]) {
+      const code = fs.readFileSync(path.join(repoRoot, "scripts", script), "utf8")
+        .split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+      const check = code.indexOf("dev_check_frontend_toolchain");
+      expect(check, script).toBeGreaterThan(-1);
+      // 查的是起前端时会用的那个 Node：先按同样的顺序找 Node，再查
+      const useNode = code.indexOf("dev_use_frontend_node");
+      expect(useNode, script).toBeGreaterThan(-1);
+      expect(useNode, script).toBeLessThan(check);
+      for (const stop of ["dev_stop_pidfile", "dev_stop_port"]) {
+        expect(code.indexOf(stop), `${script}: ${stop}`).toBeGreaterThan(check);
+      }
+      // 操作者自己设的 NODE_OPTIONS 原样传给 Vite（以前为 Node 16 预加载 crypto-polyfill.cjs，把它整个盖掉）
+      expect(code, script).not.toMatch(/NODE_OPTIONS=/);
+    }
+  });
+
+  // 启动脚本的 Node 查找与检查（scripts/lib/dev-lifecycle.sh）照真的跑一遍：假 HOME、只会报版本号的假 node / npm，
+  // PATH 里只有这些假目录（外加 cat），与这台机器上装了哪个 Node 无关。启动脚本只在 Linux 上用，Windows 上跳过
+  const bash = process.platform === "win32" ? "" : ["/bin/bash", "/usr/bin/bash"].find((file) => fs.existsSync(file)) || "";
+  it.skipIf(!bash)("Node 按文档的先后找（nvm 没给出自己的 node 就退到 ~/.local/node），太旧时只提真会生效的办法", () => {
+    const lifecycle = path.join(repoRoot, "scripts", "lib", "dev-lifecycle.sh");
+    const [major, minor] = ["MAJOR", "MINOR"].map((part) => Number(fs.readFileSync(lifecycle, "utf8").match(new RegExp(`^DEV_NODE_FLOOR_${part}=(\\d+)$`, "m"))[1]));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "dev-node-"));
+    try {
+      const fakeNode = (dir, version) => {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, "node"), `#!/bin/sh\necho ${version}\n`, { mode: 0o755 });
+        fs.writeFileSync(path.join(dir, "npm"), "#!/bin/sh\necho 10.0.0\n", { mode: 0o755 });
+      };
+      // 假 nvm 只做真 nvm 被 source 时做的那件事：有默认别名，才把它自己的那个 node 放到 PATH 最前
+      const fakeNvm = (home, defaultVersion) => {
+        fs.mkdirSync(path.join(home, ".nvm", "alias"), { recursive: true });
+        fs.writeFileSync(path.join(home, ".nvm", "nvm.sh"),
+          'if [ -f "$NVM_DIR/alias/default" ]; then read -r v < "$NVM_DIR/alias/default"; PATH="$NVM_DIR/versions/node/$v/bin:$PATH"; fi\n');
+        if (!defaultVersion) return;
+        fs.writeFileSync(path.join(home, ".nvm", "alias", "default"), `${defaultVersion}\n`);
+        fakeNode(path.join(home, ".nvm", "versions", "node", defaultVersion, "bin"), defaultVersion);
+      };
+      const frontend = path.join(root, "frontend-react");
+      fs.mkdirSync(path.join(frontend, "node_modules"), { recursive: true });
+      const tools = path.join(root, "tools");
+      fs.mkdirSync(tools);
+      const cat = ["/bin/cat", "/usr/bin/cat"].find((file) => fs.existsSync(file));
+      if (cat) fs.symlinkSync(cat, path.join(tools, "cat"));
+      const run = (home, env = {}) => {
+        const result = spawnSync(bash, ["-c",
+          'set -euo pipefail; source "$1"; dev_use_frontend_node; dev_check_frontend_toolchain "$2"; command -v node',
+          "dev-node-probe", lifecycle, frontend], { env: { HOME: home, PATH: tools, ...env }, encoding: "utf8" });
+        return { status: result.status, node: result.stdout.trim(), hint: result.stderr };
+      };
+
+      // 装了 nvm 但没有默认别名：nvm 不给 node，退到 ~/.local/node，照常启动
+      const nvmNoDefault = path.join(root, "nvm-no-default");
+      fakeNvm(nvmNoDefault);
+      fakeNode(path.join(nvmNoDefault, ".local", "node", "bin"), "v22.23.2");
+      expect(run(nvmNoDefault)).toMatchObject({ status: 0, node: path.join(nvmNoDefault, ".local", "node", "bin", "node") });
+
+      // nvm 的默认别名是 16：它赢过 ~/.local/node，所以提示让改 nvm 的默认别名，不叫人解压到 ~/.local/node
+      const nvmDefault16 = path.join(root, "nvm-default-16");
+      fakeNvm(nvmDefault16, "v16.20.2");
+      fakeNode(path.join(nvmDefault16, ".local", "node", "bin"), "v22.23.2");
+      const nvmOld = run(nvmDefault16);
+      expect(nvmOld.status).toBe(1);
+      expect(nvmOld.hint).toContain("'v16.20.2'");
+      expect(nvmOld.hint).toContain("nvm alias default 22");
+      expect(nvmOld.hint).not.toMatch(/unpack/);
+
+      // NOVEL_SYSTEM_NODE_BIN 盖过别的一切：提示只说改它或去掉它
+      const node16 = path.join(root, "node16", "bin");
+      fakeNode(node16, "v16.20.2");
+      const override = run(nvmNoDefault, { NOVEL_SYSTEM_NODE_BIN: node16 });
+      expect(override.status).toBe(1);
+      expect(override.hint).toContain("NOVEL_SYSTEM_NODE_BIN");
+      expect(override.hint).not.toMatch(/unpack|nvm alias/);
+
+      // 下限就是 package.json engines 那个版本：低一点拒，正好放行
+      const bare = path.join(root, "bare-home");
+      fs.mkdirSync(bare);
+      const below = minor > 0 ? `v${major}.${minor - 1}.9` : `v${major - 1}.99.0`;
+      for (const [version, status] of [[below, 1], [`v${major}.${minor}.0`, 0]]) {
+        const bin = path.join(root, version, "bin");
+        fakeNode(bin, version);
+        expect(run(bare, { NOVEL_SYSTEM_NODE_BIN: bin }).status, version).toBe(status);
+      }
+
+      // 哪儿都没有 node：说清楚缺什么，给的办法是解压到 ~/.local/node 或 NOVEL_SYSTEM_NODE_BIN
+      const nothing = run(bare);
+      expect(nothing.status).toBe(1);
+      expect(nothing.hint).toContain("node/npm not found");
+      expect(nothing.hint).toContain("unpack it at ~/.local/node");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("本地 Windows 闸（verify_windows.ps1，verify_release 也跑它）与 CI 前端任务按同样的顺序跑同样的 npm 脚本", () => {
+    // CI 加了 lint 而本地闸没加时，hooks 规则的错误在本地发布闸里放过、到 GitHub 才红
+    // 只比 package.json 里的脚本（npm ci / npm audit 这类装依赖、查漏洞的命令两边各管各的）
+    const pkg = JSON.parse(fs.readFileSync(path.join(frontendRoot, "package.json"), "utf8"));
+    const scriptsOnly = (names) => names.filter((name) => Object.hasOwn(pkg.scripts, name));
+    const ci = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
+    const job = ci.split(/^(?= {2}[\w-]+:)/m).find((chunk) => chunk.startsWith("  frontend-react:")) || "";
+    const ciGates = scriptsOnly([...job.matchAll(/^\s+run: npm (?:run )?([\w:-]+)\s*$/gm)].map((match) => match[1]));
+    expect(ciGates).toContain("lint");
+    const lane = fs.readFileSync(path.join(repoRoot, "scripts", "verify_windows.ps1"), "utf8");
+    const laneGates = scriptsOnly([...lane.matchAll(/-FilePath "npm\.cmd" -ArgumentList @\(([^)]*)\)/g)]
+      .map((match) => [...match[1].matchAll(/"([^"]+)"/g)].map((arg) => arg[1]))
+      .map((args) => (args[0] === "run" ? args[1] : args[0])));
+    expect(laneGates).toEqual(ciGates);
   });
 
   it("静态 ESM 依赖图没有循环", () => {

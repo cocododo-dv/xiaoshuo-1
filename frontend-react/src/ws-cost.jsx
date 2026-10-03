@@ -41,7 +41,6 @@ function WsCost() {
     if (!activeId) return;
     const cur = csSnapshot();
     if (cur.projectId !== activeId || (!cur.dashboard && !cur.loading)) costLoad(activeId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   /* 只摆当前作品的账（复核 Q5-R2）：store 在模块里，视图重挂后它还留着上一部作品的看板——新建的作品在等正式 id 时
