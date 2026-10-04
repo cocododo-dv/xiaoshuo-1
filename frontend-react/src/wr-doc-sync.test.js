@@ -235,7 +235,7 @@ describe("冲突（409）：本机稿先进同步与恢复，读到服务端版�
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, conflictPending: false, lastSaveError: null, revision: 3 });
     expect(client.apiPatch).toHaveBeenCalledTimes(1);
 
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    await mod.WrDocs.promote("ch01s1");
     expect(client.apiPost).toHaveBeenCalledWith("/api/v1/author-drafts/d1/promote-canonical", expect.objectContaining({ base_revision_no: 3 }));
   });
 
@@ -898,7 +898,7 @@ describe("复核一 · 提升在路上时又存了一稿（W1-R1B-5）", () => {
     const promoting = deferred();
     const base = client.apiPost.getMockImplementation();
     client.apiPost.mockImplementation((url, body) => (/promote-canonical$/.test(url) ? promoting.promise : base(url, body)));
-    const promote = mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    const promote = mod.WrDocs.promote("ch01s1");
     await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(true), T);
     await mod.WrDocs.save("ch01s1", "<p>一二</p>");    // rev 3：提升还在服务端重建场景记忆
     promoting.resolve({ final_scene_row_id: "f1", draft_revision_no: 2, canonical_dirty: false });
@@ -1197,7 +1197,7 @@ describe("复核二 · 两个标签页共用读缓存（W1-R2B-1 · W1-R2B-3）"
     expect(tabA.mod.WrDocs.cachedHTML("ch01s1")).toBe("<p>起点</p>");
     await tick(80);
     expect(tabA.mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, revision: 1 });
-    await tabA.mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    await tabA.mod.WrDocs.promote("ch01s1");
     expect(shared.promoted).toEqual([{ revision: 1, content: "<p>起点</p>" }]);
     // B 页没同步上的字没丢：还在共用读缓存里、带着未同步标记（B 页下一次保存照常再发），或已经进了同步与恢复
     const inSlot = window.localStorage.getItem(cacheKey()) === "<p>起点，B 页没存上的一段</p>"
@@ -1443,10 +1443,10 @@ describe("复核二 · 提升只提升作者眼前的那一稿（W1-R2A-4）", (
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>这台电脑上的旧稿</p>");
     await tick();
     expect(mod.WrDocs.state("ch01s1").revision).toBe(0);                  // 水合没成
-    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await expect(mod.WrDocs.promote("ch01s1")).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
     expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(false);
     expect(events.filter((event) => event.kind === "loaded").map((event) => event.html)).toEqual(["<p>另一台设备上改过的一版</p>"]);
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    await mod.WrDocs.promote("ch01s1");
     expect(client.apiPost).toHaveBeenCalledWith("/api/v1/author-drafts/d1/promote-canonical", expect.objectContaining({ base_revision_no: 4 }));
   });
 
@@ -1460,13 +1460,13 @@ describe("复核二 · 提升只提升作者眼前的那一稿（W1-R2A-4）", (
       dirty: true, lastSaveError: expect.objectContaining({ code: "AUTHOR_DRAFT_NOT_SYNCED" }),
     }), T);
     expect(client.apiPatch).not.toHaveBeenCalled();                 // 水合本身不发请求
-    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_NOT_SYNCED" });
+    await expect(mod.WrDocs.promote("ch01s1")).rejects.toMatchObject({ code: "AUTHOR_DRAFT_NOT_SYNCED" });
     expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(false);
     // 写作台提升之前先冲刷：工作稿传上去，提升的就是它
     await expect(mod.WrDocs.flush("ch01s1")).resolves.toBe("saved");
     expect(patches(client)).toEqual([{ content: "<p>这台电脑上没同步上的一段</p>", base_revision_no: 1 }]);
     expect(window.localStorage.getItem(pendingKey())).toBeNull();
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    await mod.WrDocs.promote("ch01s1");
     expect(client.apiPost).toHaveBeenCalledWith("/api/v1/author-drafts/d1/promote-canonical", expect.objectContaining({ base_revision_no: 2 }));
     expect(mod.WrRecovery.list()).toEqual([]);
   });
@@ -1856,10 +1856,10 @@ describe("复核三 · 提升只提升作者确认的那一稿（W1-R3A-1 · W1-
     shared.content = "<p>起点正文。另一台设备：他其实没有回来。</p>";
     mod.WrDocs.load("ch01s1");
     await vi.waitFor(() => expect(events.some((event) => event.kind === "loaded" && event.html === shared.content)).toBe(true), T);
-    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: asked })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await expect(mod.WrDocs.promote("ch01s1", { expectedText: asked })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
     expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(false);
     expect(shared.promoted).toEqual([]);
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: shared.content });
+    await mod.WrDocs.promote("ch01s1", { expectedText: shared.content });
     expect(shared.promoted).toEqual([{ revision: 2, content: "<p>起点正文。另一台设备：他其实没有回来。</p>" }]);
   });
 
@@ -1874,7 +1874,7 @@ describe("复核三 · 提升只提升作者确认的那一稿（W1-R3A-1 · W1-
     shared.hooks.ensure = null;
     gate.resolve();
     await vi.waitFor(() => expect(events.some((event) => event.kind === "loaded" && event.html === "<p>另一台设备上改过的一版</p>")).toBe(true), T);
-    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: asked })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
+    await expect(mod.WrDocs.promote("ch01s1", { expectedText: asked })).rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
     expect(shared.promoted).toEqual([]);
   });
 
@@ -1886,7 +1886,7 @@ describe("复核三 · 提升只提升作者确认的那一稿（W1-R3A-1 · W1-
     await mod.WrDocs.save("ch01s1", "<p>起点正文，一</p>");                 // rev 2
     const gate = deferred();
     shared.hooks.promote = (promote) => gate.promise.then(promote);
-    const promoting = mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" }).then(() => "promoted", (e) => e && e.code);
+    const promoting = mod.WrDocs.promote("ch01s1").then(() => "promoted", (e) => e && e.code);
     await tick(20);
     await mod.WrDocs.save("ch01s1", "<p>起点正文，一，二</p>");             // rev 3 先到了服务端
     expect(shared.revision).toBe(3);
@@ -1894,7 +1894,7 @@ describe("复核三 · 提升只提升作者确认的那一稿（W1-R3A-1 · W1-
     gate.resolve();
     expect(await promoting).toBe("AUTHOR_DRAFT_MOVED_BY_SELF");
     expect(shared.promoted).toEqual([]);
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" });
+    await mod.WrDocs.promote("ch01s1");
     expect(shared.promoted).toEqual([{ revision: 3, content: "<p>起点正文，一，二</p>" }]);
   });
 
@@ -1906,7 +1906,7 @@ describe("复核三 · 提升只提升作者确认的那一稿（W1-R3A-1 · W1-
     await mod.WrDocs.save("ch01s1", "<p>起点正文，一</p>");
     const gate = deferred();
     shared.hooks.promote = (promote) => gate.promise.then(promote);
-    const promoting = mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" }).then(() => "promoted", (e) => e && e.code);
+    const promoting = mod.WrDocs.promote("ch01s1").then(() => "promoted", (e) => e && e.code);
     await tick(20);
     shared.revision = 3;
     shared.content = SERVER;
@@ -2362,7 +2362,7 @@ describe("复核四 · 同一个修订号上换了一版（库从备份恢复、
     await vi.waitFor(() => expect(events.slice(before).filter((event) => event.kind === "loaded")
       .map((event) => [event.reason, event.html])).toEqual([["server", OTHER]]), T);
     expect(mod.WrDocs.cachedHTML("ch01s1")).toBe(OTHER);
-    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: "<p>起点，A 一，A 二</p>" }))
+    await expect(mod.WrDocs.promote("ch01s1", { expectedText: "<p>起点，A 一，A 二</p>" }))
       .rejects.toMatchObject({ code: "AUTHOR_DRAFT_CONFLICT" });
     expect(shared.promoted).toEqual([]);
     await mod.WrDocs.save("ch01s1", "<p>起点，B 一，B 二：他其实没有回来。A 三</p>");
@@ -2431,7 +2431,7 @@ describe("复核四 · 提升途中自己的自动保存先到了服务端、回
     await mod.WrDocs.save("ch01s1", "<p>起点，一</p>");                     // rev 2
     const gate = deferred();
     shared.hooks.promote = (promote) => gate.promise.then(promote);
-    const promoting = mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: "<p>起点，一</p>" })
+    const promoting = mod.WrDocs.promote("ch01s1", { expectedText: "<p>起点，一</p>" })
       .then(() => "promoted", (e) => e && e.code);
     await tick(30);
     shared.hooks.patch = (body, api) => {
@@ -2451,7 +2451,7 @@ describe("复核四 · 提升途中自己的自动保存先到了服务端、回
     expect(await promoteRacingLostSave(shared, mod)).toBe("AUTHOR_DRAFT_MOVED_BY_SELF");
     expect(shared.promoted).toEqual([]);
     expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, revision: 3, lastSaveError: null });
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: "<p>起点，一，二</p>" });
+    await mod.WrDocs.promote("ch01s1", { expectedText: "<p>起点，一，二</p>" });
     expect(shared.promoted).toEqual([{ revision: 3, content: "<p>起点，一，二</p>" }]);
   });
 
@@ -2799,11 +2799,11 @@ describe("复核五 · 采纳在路上时章锁定、又重新打开，作者这
     const LATEST = "<p>起点，锁定那一刻写的一句</p>";
     await expect(mod.WrDocs.save("ch01s1", LATEST)).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
     // 章还锁着时 WrDocs 也不替它提升
-    await expect(mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: LATEST })).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
+    await expect(mod.WrDocs.promote("ch01s1", { expectedText: LATEST })).rejects.toMatchObject({ code: "CHAPTER_APPROVED_LOCKED" });
     chap.state = "writing";                                                  // 采纳还没结果，本章又重新打开了
     await WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
-    const refused = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: LATEST }).catch((e) => e);
+    const refused = await mod.WrDocs.promote("ch01s1", { expectedText: LATEST }).catch((e) => e);
     expect(refused).toMatchObject({ code: "AUTHOR_DRAFT_LOCK_PENDING" });
     expect(refused.message).not.toMatch(/别处/);
     expect(shared.promoted).toEqual([]);
@@ -2811,7 +2811,7 @@ describe("复核五 · 采纳在路上时章锁定、又重新打开，作者这
     expect(await adopting).toMatchObject({ ok: false });
     await vi.waitFor(() => expect(shared).toMatchObject({ revision: 2, content: LATEST }), T);   // 锁定那一刻写的几句接着存上
     await vi.waitFor(() => expect(mod.WrDocs.state("ch01s1")).toMatchObject({ dirty: false, lastSaveError: null }), T);
-    await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: LATEST });
+    await mod.WrDocs.promote("ch01s1", { expectedText: LATEST });
     expect(shared.promoted).toEqual([{ revision: 2, content: LATEST }]);
   });
 });
@@ -3097,7 +3097,7 @@ describe("复核六 · 提升在路上时作者接着写：第一句先存上（
     await mod.WrDocs.hydrate("ch01s1");
     const promoteGate = deferred();
     shared.hooks.promote = (run) => promoteGate.promise.then(run);
-    const promoting = mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" })
+    const promoting = mod.WrDocs.promote("ch01s1")
       .then(() => ({ ok: true }), (e) => ({ ok: false, code: e && e.code, message: e && e.message }));
     await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(true), T);
     await mod.WrDocs.save("ch01s1", "<p>起点正文，一</p>");               // 第一句：存上了（rev 2），这一页自己的
@@ -3147,7 +3147,7 @@ describe("复核六 · 两个标签页：章锁定时 A 页的保存在路上、
     expect(draftPatches(tabA.client).slice(atReopen).map((body) => [body.base_revision_no, body.content])).toEqual([[1, LATEST]]);
     expect(shared).toMatchObject({ revision: 2, content: LATEST });
     expect(A.WrDocs.cachedHTML("ch01s1")).toBe(LATEST);
-    await A.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: LATEST });
+    await A.WrDocs.promote("ch01s1", { expectedText: LATEST });
     expect(shared.promoted).toEqual([{ revision: 2, content: LATEST }]);
   });
 });
@@ -3444,7 +3444,7 @@ describe("复核七 · 自己那一稿存上了、回包丢了，之后才知道
     await WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
     const shown = mod.WrDocs.cachedHTML("ch01s1");
-    const promoted = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: shown })
+    const promoted = await mod.WrDocs.promote("ch01s1", { expectedText: shown })
       .then(() => "promoted", (e) => e && e.code);
     expect(promoted).toBe("AUTHOR_DRAFT_UNCONFIRMED");
     expect(shared.promoted).toEqual([]);
@@ -3462,7 +3462,7 @@ describe("复核七 · 自己那一稿存上了、回包丢了，之后才知道
     chap.state = "writing";
     await WsCatalog.refresh();
     await vi.waitFor(() => expect(mod.WrDocs.locked("ch01s1")).toBe(false), T);
-    const promoted = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: asked })
+    const promoted = await mod.WrDocs.promote("ch01s1", { expectedText: asked })
       .then(() => "promoted", (e) => e && e.code);
     expect(promoted).toBe("AUTHOR_DRAFT_REPLACED");
     expect(shared.promoted).toEqual([]);
@@ -3766,7 +3766,7 @@ describe("复核七 · 提升与作者自己在起草台的采纳赛跑（W1-R7B
 
   it("提升带的修订号被采纳赶在了前面（409）：等采纳有了结果，照实说换稿的是那次采纳（AUTHOR_DRAFT_ADOPTED），不是「在别处更新」；什么也没提升", async () => {
     const { mod, client, shared, answer, adopting } = await adoptionOnTheWire();
-    const promoting = mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged" }).then(() => "promoted", (e) => e && e.code);
+    const promoting = mod.WrDocs.promote("ch01s1").then(() => "promoted", (e) => e && e.code);
     await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(true), T);
     await tick(50);
     expect(await Promise.race([promoting, tick(0).then(() => "WAITING")])).toBe("WAITING"); // 先等采纳有结果
@@ -3794,7 +3794,7 @@ describe("复核七 · 提升与作者自己在起草台的采纳赛跑（W1-R7B
     const asked = mod.WrDocs.cachedHTML("ch01s1");                           // 确认框打开时编辑器里的那一稿
     answer.resolve();
     expect(await adopting).toMatchObject({ ok: true, archived: true });
-    const promoted = await mod.WrDocs.promote("ch01s1", { narrativeEffect: "facts_unchanged", expectedText: asked })
+    const promoted = await mod.WrDocs.promote("ch01s1", { expectedText: asked })
       .then(() => "promoted", (e) => e && e.code);
     expect(promoted).toBe("AUTHOR_DRAFT_ADOPTED");
   });

@@ -1682,8 +1682,10 @@ function casServer3(client) {
 const toastTexts = () => Array.from(document.querySelectorAll('[data-testid="ws-toast-stack"]')).map((node) => node.textContent).join(" | ");
 const noticeTexts = () => [...alertTexts(), toastTexts()].join(" | ");
 
-describe("复核三 · 提升的确认框开着时，服务端的另一版落在它后面（P-5a · P-5b · NV3-1 · NV3-1b · W1-R3A-1 · W1-R3B-5）", () => {
-  it("P-5a 打开时第一次水合很慢、编辑器是这台电脑的旧稿 X：确认框问的是 X，水合在确认框后面把编辑器换成了别处的版本——作者确认之后不提升那一版，照实提示", async () => {
+/* 以前提升前先弹「这次只改了文字表达吗？」，服务端的另一版落在确认框后面；2026-10 起不再问，
+   但提升本身仍要先等这一场的水合 / 复核落定——落定时编辑器被换成了别处的版本，同样不提升（作者点的是换之前的那一稿）。 */
+describe("复核三 · 点了提升之后，服务端的另一版才落地（P-5a · P-5b · NV3-1 · NV3-1b · W1-R3A-1 · W1-R3B-5）", () => {
+  it("P-5a 打开时第一次水合很慢、编辑器是这台电脑的旧稿 X：作者点提升时看的是 X，水合随后把编辑器换成了别处的版本——不提升那一版，照实提示", async () => {
     const ctx = await loadWriter();
     const { client, WriterRoom } = ctx;
     const { WsToastHost } = await import("./ws-notify.jsx");
@@ -1698,20 +1700,19 @@ describe("复核三 · 提升的确认框开着时，服务端的另一版落在
     await vi.waitFor(() => expect(editor().textContent).toContain("这台电脑上的旧稿 X"), T);
     await wait(200);
     await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
-    await vi.waitFor(() => expect(document.querySelector('[data-testid="ws-confirm"]')).not.toBeNull(), T);
+    expect(document.querySelector('[data-testid="ws-confirm"]')).toBeNull();     // 不再先问「只改了文字吗」
     expect(editor().textContent).toContain("这台电脑上的旧稿 X");
     srv.hooks.ensure = null;
     await act(async () => { gate.resolve(); });
     await wait(300);
-    expect(editor().textContent).toContain("码头换了名字");                     // 确认框后面换了稿
-    await act(async () => { document.querySelector('[data-testid="ws-confirm-ok"]').click(); });
+    expect(editor().textContent).toContain("码头换了名字");                     // 提升等着落定时换了稿
     await wait(500);
     expect(srv.promoted).toEqual([]);
     expect(noticeTexts()).toContain("已在别处更新");
     expect(noticeTexts()).not.toContain("草稿已提升为权威正文");
   }, LONG);
 
-  it("P-5b 回到一场时后台复核很慢，确认框问的是这一页的那一版，复核在确认框后面读到另一台设备改过的一版：作者确认之后不提升它", async () => {
+  it("P-5b 回到一场时后台复核很慢，作者点提升时看的是这一页的那一版，复核随后读到另一台设备改过的一版：不提升它", async () => {
     const ctx = await loadWriter({ catalog: [twoScenes()] });
     const { client, WriterRoom } = ctx;
     const { WsToastHost } = await import("./ws-notify.jsx");
@@ -1730,13 +1731,11 @@ describe("复核三 · 提升的确认框开着时，服务端的另一版落在
     await vi.waitFor(() => expect(editor().textContent).toContain("起点正文"), T);
     await wait(100);
     await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
-    await vi.waitFor(() => expect(document.querySelector('[data-testid="ws-confirm"]')).not.toBeNull(), T);
+    expect(document.querySelector('[data-testid="ws-confirm"]')).toBeNull();     // 不再先问「只改了文字吗」
     expect(editor().textContent).not.toContain("他其实没有回来");
     srv.hooks.ensure = null;
     await act(async () => { slow.resolve(); });
-    await wait(300);
-    await act(async () => { document.querySelector('[data-testid="ws-confirm-ok"]').click(); });
-    await wait(500);
+    await wait(800);
     expect(srv.promoted).toEqual([]);
     expect(noticeTexts()).not.toContain("草稿已提升为权威正文");
   }, LONG);
@@ -1767,6 +1766,9 @@ describe("复核三 · 提升途中作者接着写、自己的自动保存先到
     expect(srv.drafts.s1.content).toBe("<p>起点正文，一，二</p>");
     await act(async () => { host.querySelector(".wr-canonical-promote").click(); });
     await vi.waitFor(() => expect(srv.promoted.map((entry) => entry.revision)).toEqual([3]), T);
+    // 不再先问「这次只改了文字表达吗？」：一律按「事实待核对」提升（2026-10，与 AI 起草台「采纳并归档」同一条路）
+    expect(srv.promoted.map((entry) => entry.effect)).toEqual(["requires_reconcile"]);
+    expect(window.confirm).not.toHaveBeenCalled();
   }, LONG);
 });
 
@@ -2392,7 +2394,7 @@ describe("复核六 · 提升在路上时作者接着写：第一句的自动保
     srv.hooks.promote = (run) => promoteGate.promise.then(run);
     const button = host.querySelector(".wr-canonical-promote");
     expect(button && !button.disabled).toBe(true);
-    await act(async () => { button.click(); });                            // 「提升为权威正文」→ 确认（window.confirm 替身答是）
+    await act(async () => { button.click(); });                            // 「提升为权威正文」（不再先问只改了文字没有）
     await vi.waitFor(() => expect(ctx.client.apiPost.mock.calls.some(([url]) => /promote-canonical$/.test(url))).toBe(true), T);
     await r.append("，一");                                                 // 提升在路上：作者接着写
     await wait(1100);                                                        // 自动保存：rev 2（这一页自己的）

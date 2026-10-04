@@ -2504,9 +2504,11 @@ const WrDocs = {
     else recoveryNotice(m, LOCAL_COPY_NOTICE[reason] || NOTICE.replaced);
     return entry;
   },
-  /* 把已成功保存的场景草稿显式提升为权威正文。v1 仅支持“事实未变”。
-     只提升作者眼前的那一稿：options.expectedText = 作者确认「只改了文字」时编辑器里的那一稿（确认框开着的时候，水合 /
-     后台复核可能落地、在确认框后面把编辑器换成了另一台设备的版本；复核三 W1-R3A-1 · W1-R3B-5），没给就是这一页眼下这一份。
+  /* 把已成功保存的场景草稿显式提升为权威正文。一律按 requires_reconcile 提升（2026-10 起，与 AI 起草台「采纳并归档」一样）：
+     这一场的正史随之待核对，核对过的旧事实由服务端留作「上次确认」；以前写作台先问「这次只改了文字表达吗？」、按「事实未变」
+     提升，没核对过正史的场一律被服务端 409（CANON_CARRY_SOURCE_*），重试也不会成。
+     只提升作者眼前的那一稿：options.expectedText = 作者点「提升」时编辑器里的那一稿（下面先等这一场的保存 / 水合落定，
+     这期间水合 / 后台复核可能落地、把编辑器换成另一台设备的版本；复核三 W1-R3A-1 · W1-R3B-5），没给就是这一页眼下这一份。
      打开时水合没成的先水合（读不到服务器时抛错）；作者确认的那一稿、这一页这一份、服务端存下的那一版文字不是同一段就拒绝
      （AUTHOR_DRAFT_CONFLICT：作者没看过它，复核二 W1-R2A-4 · W1-R2B-1）。
      服务端按修订号拒绝、这期间草稿往前走的几版全是这一页自己存上的（作者在提升途中接着写、自动保存先到）：
@@ -2556,7 +2558,7 @@ const WrDocs = {
       data = await apiPost(`/api/v1/author-drafts/${m.draftId}/promote-canonical`, {
         base_revision_no: base,
         expected_current_final_scene_row_id: expectedFinal == null ? null : expectedFinal,
-        narrative_effect: options.narrativeEffect || "requires_reconcile",
+        narrative_effect: "requires_reconcile",
         accepted_warning_codes: options.acceptedWarningCodes || [],
       });
     } catch (e) {

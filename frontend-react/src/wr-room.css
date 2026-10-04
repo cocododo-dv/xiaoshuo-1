@@ -716,7 +716,7 @@
 .wr-canonical-dot { display: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
 .wr-canonical-state.is-current { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 35%, var(--line-1)); }
 .wr-canonical-state.is-dirty, .wr-canonical-state.is-promoting, .wr-canonical-state.is-review { color: var(--warn-ink); }
-.wr-canonical-state.is-error, .wr-canonical-state.is-reconcile { color: var(--danger-ink); }
+.wr-canonical-state.is-error { color: var(--danger-ink); }
 /* 窄顶栏（容器 ≤900px）：权威正文状态只剩一个有颜色的点，文字只给读屏（作者 2026-10-03 决定恢复原设计）。
    必须排在上面的胶囊基础规则之后——容器查询不加优先级，排在前面就被盖掉：拆成两份样式表那几个月正是这样，
    胶囊一直带着边框与底色、只是被挤窄 */
