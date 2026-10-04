@@ -25,6 +25,7 @@ from novel_system.services.llm_task_runner import (
     end_llm_execution,
 )
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from tests.support.accounting import arm_scene_budget
 from tests.support.qc import (
     FakeQcClient,
     FakeSoftQcClient,
@@ -735,7 +736,7 @@ def test_hard_qc_engine_degrades_runtime_failure_to_continue_with_warning(sessio
     state = session.get(SceneRunState, "CH100_SC01")
     state.active_execution_id = "exec-hard-qc-runtime-failure"
     state.run_execution_status = "active"
-    state.scene_token_budget = 100_000
+    arm_scene_budget(state, 100_000)
     session.commit()
 
     engine = HardQcEngine(session, llm_client=FakeAccountedQcRuntimeFailureClient())
