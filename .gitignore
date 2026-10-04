@@ -12,6 +12,8 @@ __pycache__/
 *.db.bak-*
 # 迁移 0098 删声线卡 / 关系卡两张表前把残留行导出到库文件旁边(<库文件>.0098-voice-relation-cards.json),同样可能含真实人物与文字
 *.0098-voice-relation-cards.json
+# 迁移 0099 删三张旧表(旧版雪花规划器、修订链、偏好档案)前把残留行逐表导出到库文件旁边(<库文件>.0099-<表名>.json),可能含作者的构思与偏好文字
+*.0099-*.json
 *.egg-info/
 .pytest_cache/
 .venv/

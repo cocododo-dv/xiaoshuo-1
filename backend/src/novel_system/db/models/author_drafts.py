@@ -1,4 +1,4 @@
-"""作者稿：稿、续写候选、事件、修订快照，以及旧的作者偏好画像表。"""
+"""作者稿：稿、续写候选、事件、修订快照。"""
 
 from __future__ import annotations
 
@@ -17,35 +17,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from novel_system.db.base import Base
 from novel_system.db.models._common import utcnow
-
-
-class AuthorPreferenceProfile(Base):
-    __tablename__ = "author_preference_profiles"
-    __table_args__ = (
-        CheckConstraint(
-            "scope_type IN ('global','genre','project','chapter')",
-            name="ck_author_preference_profiles_scope_type",
-        ),
-        CheckConstraint(
-            "status IN ('draft','approved','rejected','superseded')",
-            name="ck_author_preference_profiles_status",
-        ),
-        CheckConstraint(
-            "runtime_eligible IN (0,1)",
-            name="ck_author_preference_profiles_runtime_eligible",
-        ),
-    )
-
-    profile_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scope_type: Mapped[str] = mapped_column(String, default="global")
-    scope_ref_id: Mapped[str] = mapped_column(String, default="global")
-    status: Mapped[str] = mapped_column(String, default="draft")
-    runtime_eligible: Mapped[int] = mapped_column(Integer, default=0)
-    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    source_patch_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
-    created_by: Mapped[str] = mapped_column(String, default="writer_deep_review")
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class AuthorDraft(Base):
@@ -160,5 +131,4 @@ __all__ = [
     "AuthorDraftEvent",
     "AuthorDraftProposal",
     "AuthorDraftRevision",
-    "AuthorPreferenceProfile",
 ]

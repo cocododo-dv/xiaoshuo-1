@@ -1,9 +1,9 @@
 """Shared snowflake version / latest-row lookups (a leaf: models + SQLAlchemy only).
 
 The helpers take the step-run model (``SnowflakeStepRun``) explicitly: the retired v1 planner's
-``SnowflakeArtifact`` table shared the same version rule until 2026-09-30 (R9); its table is kept
-for a later migration, but nothing reads or writes it any more. Story order and triage verdicts have
-their own leaves: ``snowflake_scene_order`` and ``snowflake_triage``.
+``snowflake_artifacts`` table shared the same version rule until 2026-09-30 (R9); migration 0099
+dropped it. Story order and triage verdicts have their own leaves: ``snowflake_scene_order`` and
+``snowflake_triage``.
 """
 
 from __future__ import annotations

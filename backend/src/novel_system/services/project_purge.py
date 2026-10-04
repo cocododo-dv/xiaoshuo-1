@@ -7,7 +7,7 @@
    新表只要带着其中一列就自动在清单里；过去的手工清单漏了 ``style_reference_scene_windows``（每场冻结的
    选窗，没有外键），永久清除之后留下了孤儿行；
 2. 没有这些列、靠别的引用认出来的行（``INDIRECTLY_PURGED_TABLES``）：这部作品的 LLM 调用的逐次尝试
-   （``llm_call_id``）、``scope_ref_id`` 指向作品 / 章 / 场景 / 人物的风格绑定与作者偏好档案。
+   （``llm_call_id``）、``scope_ref_id`` 指向作品 / 章 / 场景 / 人物的风格绑定。
 
 ``tests/test_trash_purge_completeness.py`` 的守卫要求：一张表只要带着指向作品对象的列（``*project_id`` /
 ``*chapter_id`` / ``*scene_id`` / ``*draft_id`` / ``*character_id`` / ``scope_ref_id``）却不在上面两种里，
@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AuthorDraft,
-    AuthorPreferenceProfile,
     ChapterGoal,
     LlmCall,
     LlmCallAttempt,
@@ -42,7 +41,6 @@ PURGE_KEY_COLUMNS = ("project_id", "chapter_id", "scene_id", "draft_id", "charac
 INDIRECTLY_PURGED_TABLES = {
     "llm_call_attempts": "llm_call_id 属于这部作品的 LLM 调用（作品 / 章 / 场景名下的 llm_calls）",
     "style_reference_injection_bindings": "scope_ref_id = 作品 / 章 / 场景 / 人物 id（绑定的画像是共享资产，不删）",
-    "author_preference_profiles": "scope_ref_id = 作品 / 章 / 场景 / 人物 id",
 }
 
 #: 带着指向作品对象的列、却刻意不随作品永久清除的表，以及为什么
@@ -137,10 +135,6 @@ def purge_project_rows(session: Session, plan: ProjectPurgePlan) -> dict[str, in
     execute(
         delete(StyleReferenceInjectionBinding).where(StyleReferenceInjectionBinding.scope_ref_id.in_(refs)),
         "style_reference_injection_bindings",
-    )
-    execute(
-        delete(AuthorPreferenceProfile).where(AuthorPreferenceProfile.scope_ref_id.in_(refs)),
-        "author_preference_profiles",
     )
     for table in purged_tables_child_first():
         conditions = [

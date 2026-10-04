@@ -1,6 +1,6 @@
 """依赖 / diff 感知的雪花失效判定（P0-3 · 收口-3）。
 
-历史上 v1 planner（``SnowflakeArtifact``，2026-09-30 退役）与 workspace（``SnowflakeStepRun``）各有一份
+历史上 v1 planner（``snowflake_artifacts`` 表，2026-09-30 退役、迁移 0099 删表）与 workspace（``SnowflakeStepRun``）各有一份
 ``_mark_downstream_stale``，把下标更大的步骤**无差别**全标 stale——改一次第 3 步，
 第 4–9 步连同场景计划集体亮红，与「鼓励回修」直接对立。
 

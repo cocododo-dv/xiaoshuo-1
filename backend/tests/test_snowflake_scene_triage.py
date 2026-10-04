@@ -11,7 +11,6 @@ from novel_system.db.models import (
     LlmCall,
     OutlinePlan,
     SceneCard,
-    SnowflakeArtifact,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
     SnowflakeStepRun,
@@ -44,12 +43,6 @@ def test_workspace_v2_uses_structured_scene_plans_and_persists_triage_repair_pat
     _approve_generated_step(client, project["project_id"], "scene_details")
 
     session.expire_all()
-    assert (
-        session.query(SnowflakeArtifact)
-        .filter(SnowflakeArtifact.project_id == project["project_id"])
-        .count()
-        == 0
-    )
     assert (
         session.query(SnowflakeStepRun)
         .filter(SnowflakeStepRun.project_id == project["project_id"])

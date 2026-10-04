@@ -123,6 +123,7 @@
  "test_migration_0096_llm_indexes_lean_routes.py": 11.29,
  "test_migration_0097_compact_chapter_display_order.py": 6.44,
  "test_migration_0098_drop_dead_tables_and_columns.py": 12.58,
+ "test_migration_0099_drop_three_dead_tables.py": 23.92,
  "test_migration_foreign_key_check.py": 28.16,
  "test_models_package.py": 0.07,
  "test_narrative_digest_golden.py": 0.64,

@@ -13,7 +13,6 @@ from sqlalchemy import func, or_, select
 from novel_system.db.base import Base
 from novel_system.db.models import (
     AttemptTracker,
-    AuthorPreferenceProfile,
     AuthorDraft,
     AuthorDraftEvent,
     AuthorDraftProposal,
@@ -35,8 +34,8 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    SnowflakeAssistantTurn,
     SnowflakeChapterPlan,
-    SnowflakeRevisionLink,
     SnowflakeScenePlan,
     StoryProject,
     StyleReferenceBook,
@@ -180,18 +179,6 @@ def _seed_full_project(session) -> None:
             ),
         ]
     )
-    session.add(
-        SnowflakeRevisionLink(
-            revision_link_id="snowflake_revision_purge",
-            project_id=PROJECT_ID,
-            source_step_key="book_brief",
-            source_step_run_id=None,
-            affected_kind="future_kind",
-            affected_id="future-id",
-            reason="project purge must remove the audit link",
-            status="open",
-        )
-    )
     session.add(HumanReviewEvent(event_id="hre1", scene_id=SCENE_ID, chapter_id=CHAPTER_ID))
     session.add(NarrativeEvent(
         event_id="ne1", project_id=PROJECT_ID, scene_id=SCENE_ID, chapter_id=CHAPTER_ID,
@@ -203,10 +190,6 @@ def _seed_full_project(session) -> None:
         review_id="ri1", project_id=PROJECT_ID, item_type="fe_card", candidate_text="卡",
     ))
     # —— 无 project_id 的间接所有权行（scope / version / interop）——
-    session.add(AuthorPreferenceProfile(
-        profile_id="ap_purge", scope_type="project", scope_ref_id=PROJECT_ID,
-        summary_json={"voice": "作品私有偏好"},
-    ))
     session.add(StyleReferenceBook(
         book_id="style_book_shared", title="共享参考书", source_kind="paste",
         cloud_policy="local_only", text_checksum="style-book-purge-checksum",
@@ -276,9 +259,6 @@ def test_purge_project_leaves_no_residual_rows(session):
         "llm_call_attempts": session.query(LlmCallAttempt).filter(
             LlmCallAttempt.attempt_id.in_(["llm_attempt_1", "llm_attempt_2"])
         ),
-        "snowflake_revision_links": session.query(SnowflakeRevisionLink).filter_by(
-            project_id=PROJECT_ID
-        ),
         "snowflake_chapter_plans": session.query(SnowflakeChapterPlan).filter_by(
             project_id=PROJECT_ID
         ),
@@ -293,9 +273,6 @@ def test_purge_project_leaves_no_residual_rows(session):
         "author_draft_events": session.query(AuthorDraftEvent).filter_by(draft_id="d1"),
         "author_draft_revisions": session.query(AuthorDraftRevision).filter_by(draft_id="d1"),
         "author_draft_proposals": session.query(AuthorDraftProposal).filter_by(draft_id="d1"),
-        "author_preference_profiles": session.query(AuthorPreferenceProfile).filter_by(
-            scope_ref_id=PROJECT_ID
-        ),
         "style_reference_injection_bindings": session.query(
             StyleReferenceInjectionBinding
         ).filter_by(binding_id="style_binding_purge"),
@@ -345,7 +322,7 @@ def test_every_table_that_can_point_at_a_project_object_has_made_a_purge_choice(
     assert "style_reference_scene_windows" in keyed
 
 
-def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
+def test_demo_cleanup_deletes_snowflake_child_rows_before_demo_projects(session):
     session.add(
         StoryProject(
             project_id="work-a",
@@ -356,20 +333,17 @@ def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
     )
     session.flush()
     session.add(
-        SnowflakeRevisionLink(
-            revision_link_id="demo-revision-link",
+        SnowflakeAssistantTurn(
+            turn_id="demo-assistant-turn",
             project_id="work-a",
-            source_step_key="book_brief",
-            source_step_run_id=None,
-            affected_kind="future_kind",
-            affected_id="future-id",
-            reason="demo reseed",
-            status="open",
+            step_key="book_brief",
+            user_message="林昭该先拆哪封旧信？",
+            reply="先拆雨城那封。",
         )
     )
     session.flush()
 
     cleanup_fixture_works(session)
 
-    assert session.get(SnowflakeRevisionLink, "demo-revision-link") is None
+    assert session.get(SnowflakeAssistantTurn, "demo-assistant-turn") is None
     assert session.get(StoryProject, "work-a") is None

@@ -15,12 +15,10 @@ from novel_system.db.models.project import (
     StoryProject,
 )
 from novel_system.db.models.snowflake import (
-    SnowflakeArtifact,
     SnowflakeAssistantTurn,
     SnowflakeChapterPlan,
     SnowflakeCharacterPlan,
     SnowflakeDirectionBrief,
-    SnowflakeRevisionLink,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
     SnowflakeStepRun,
@@ -65,7 +63,6 @@ from novel_system.db.models.author_drafts import (
     AuthorDraftEvent,
     AuthorDraftProposal,
     AuthorDraftRevision,
-    AuthorPreferenceProfile,
 )
 from novel_system.db.models.canon import (
     CanonCommit,
@@ -109,7 +106,6 @@ __all__ = [
     "AuthorDraftEvent",
     "AuthorDraftProposal",
     "AuthorDraftRevision",
-    "AuthorPreferenceProfile",
     "BackgroundRecoveryLease",
     "Base",
     "CanonCommit",
@@ -144,12 +140,10 @@ __all__ = [
     "SceneExecutionContract",
     "SceneMemory",
     "SceneRunState",
-    "SnowflakeArtifact",
     "SnowflakeAssistantTurn",
     "SnowflakeChapterPlan",
     "SnowflakeCharacterPlan",
     "SnowflakeDirectionBrief",
-    "SnowflakeRevisionLink",
     "SnowflakeScenePlan",
     "SnowflakeSceneTriageItem",
     "SnowflakeStepRun",

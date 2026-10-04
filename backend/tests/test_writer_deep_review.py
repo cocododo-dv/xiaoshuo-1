@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
     AuthorDraft,
-    AuthorPreferenceProfile,
     ChapterGoal,
     FinalScene,
     LlmCall,
@@ -366,8 +365,7 @@ def test_passage_patch_candidate_accepts_without_overwriting_final_and_learns_no
     assert row.selected_option_id == candidate["replacement_options"][1]["option_id"]
     assert row.author_decision_note == "更有刺。"
 
-    # 写作偏好学习已退役（批准 #6）：采纳只记在候选行上，不再重建偏好画像、不往待办里塞「写作偏好」卡
-    assert session.query(AuthorPreferenceProfile).count() == 0
+    # 写作偏好学习已退役（批准 #6；偏好画像表由迁移 0099 删掉）：采纳只记在候选行上，不往待办里塞「写作偏好」卡
     assert session.query(ReviewItem).count() == 0
 
 
@@ -399,7 +397,6 @@ def test_rejecting_passage_patch_updates_only_the_candidate(client: TestClient, 
     assert rejected["author_decision_note"] == "这处重复保留为人物习惯。"
 
     session.expire_all()
-    assert session.query(AuthorPreferenceProfile).count() == 0
     assert session.query(ReviewItem).count() == 0
 
 
@@ -556,33 +553,10 @@ def test_passage_patch_candidate_records_quality_signal_id_for_quality_handoff(s
 
 
 def test_passage_patch_prompt_carries_no_author_preference_section(session) -> None:
-    """写作偏好学习已退役（批准 #6）：库里即使留着一份「已批准」的偏好画像（旧数据），局部改写的提示词里也没有偏好段。"""
+    """写作偏好学习已退役（批准 #6；偏好画像表由迁移 0099 删掉）：局部改写的提示词里没有偏好段。"""
 
     _seed_finished_scene(session)
     draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_draft_ignored",
-            scope_type="global",
-            scope_ref_id="global",
-            status="draft",
-            runtime_eligible=0,
-            summary_json={"preferred_revision_moves": ["草稿偏好不应进入提示词"]},
-            source_patch_ids_json=[],
-        )
-    )
-    session.add(
-        AuthorPreferenceProfile(
-            profile_id="author_pref_approved_runtime",
-            scope_type="global",
-            scope_ref_id="global",
-            status="approved",
-            runtime_eligible=1,
-            summary_json={"preferred_revision_moves": ["更锋利的反问"], "rejected_revision_moves": ["解释性对白"]},
-            source_patch_ids_json=[],
-        )
-    )
-    session.flush()
     llm_client = ScriptedPassagePatchClient()
 
     WriterDeepReviewService(session, llm_client=llm_client).create_patch_candidate(
@@ -601,8 +575,6 @@ def test_passage_patch_prompt_carries_no_author_preference_section(session) -> N
 
     user_prompt = llm_client.requests[0].messages[1]["content"]
     assert "Author Preference" not in user_prompt
-    assert "更锋利的反问" not in user_prompt and "解释性对白" not in user_prompt
-    assert "草稿偏好不应进入提示词" not in user_prompt
 
 
 # ---------------------------------------------------------------------------
