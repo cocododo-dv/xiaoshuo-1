@@ -5,8 +5,10 @@
 # 这份文件只剩设置页不编辑的两段运行参数；库里的 models 快照带了同名键时以快照为准。
 
 retry_budget:
-  # 每场景真实 provider HTTP dispatch 的独立硬上限；内部 retry/degrade
-  # 仍须逐次过闸，不能把理论重试数当作可消费额度。
+  # 每场景真实 provider HTTP dispatch 的独立硬上限，只在场景预算武装时用到
+  # （NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER 设成正数：新初始化的场景把它记进不可变依据）；
+  # 解除武装（默认 0）的场景不读这一项：两道重试额度都是 2^30 次的有限哨兵（token 额度 2^52）。
+  # 武装时内部 retry/degrade 仍须逐次过闸，不能把理论重试数当作可消费额度。
   provider_attempt_budget: 32
 
 job_runtime:
