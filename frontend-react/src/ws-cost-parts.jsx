@@ -344,11 +344,6 @@ export function CalibersDetails({ summary }) {
             <div className="cs-quota-row"><span>降级</span><span className="cs-bar-val">{fmtInt(obs.degrade_attempt_count)} 次</span></div>
             <div className="cs-quota-row"><span>异常</span><span className="cs-bar-val">{fmtInt(obs.exception_count)} 次</span></div>
             <div className="cs-quota-row"><span>用量为估算</span><span className="cs-bar-val">{fmtInt(obs.usage_estimate_count)} 次</span></div>
-            {obs.legacy_parent_without_attempt_count > 0 && (
-              <p className="cs-note is-warn">
-                含 {fmtInt(obs.legacy_parent_without_attempt_count)} 条旧账（{fmtInt(obs.legacy_unreconstructable_tokens)} token 无法重构到单次尝试）。
-              </p>
-            )}
           </div>
         )}
       </div>

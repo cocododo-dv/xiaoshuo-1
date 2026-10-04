@@ -527,6 +527,30 @@ describe("WsCost 视图", () => {
     expect(text).toContain("全局用量");
   });
 
+  it("口径说明里的请求可观测性只报实际发出 / 重试 / 降级 / 异常 / 估算；迁移 0064 之前的「旧账」提示删了", async () => {
+    const { client, mod } = await loadView();
+    // 新后端不再发 legacy_* 两个键；旧后端发来也不再提「旧账」（真实库里一条旧账都没有）
+    client.apiGet.mockResolvedValue({
+      ...UNPRICED_DASH,
+      summary: {
+        ...UNPRICED_DASH.summary,
+        attempt_observability: {
+          attempt_row_count: 60, physical_attempt_count: 59, pre_dispatch_attempt_count: 1, usage_estimate_count: 3,
+          exception_count: 2, retry_attempt_count: 1, transport_retry_attempt_count: 1,
+          response_parse_retry_attempt_count: 0, degrade_attempt_count: 0,
+          legacy_parent_without_attempt_count: 4, legacy_unreconstructable_tokens: 1200,
+        },
+      },
+    });
+    await mountCost(mod);
+
+    const text = host.textContent;
+    expect(text).toContain("实际发出的请求59 次");
+    expect(text).toContain("用量为估算3 次");
+    expect(text).not.toContain("旧账");
+    expect(text).not.toContain("无法重构");
+  });
+
   it("只有一部分模型定了价：合计金额写成「已定价部分」，不当成全部的费用", async () => {
     const { client, mod } = await loadView();
     client.apiGet.mockResolvedValue({

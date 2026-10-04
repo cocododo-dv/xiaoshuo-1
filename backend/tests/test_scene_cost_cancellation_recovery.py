@@ -39,7 +39,10 @@ def test_budget_exhaustion_blocks_new_calls_but_keeps_draft(session):
     assert session.get(SceneDraft, "draft_CX1") is not None
 
 
-def test_legacy_0064_over_budget_cost_remains_readable_without_becoming_normal_semantics(session):
+def test_over_budget_scene_cost_counts_a_parent_without_attempt_rows_through_the_normal_branch(session):
+    """超支的场景账照样读得出来。没有物理尝试行的父调用（例如派发前就被拒的那一笔）走普通分支：
+    估算 / 计费口径取父行自己的账目字段，没有尝试行就没有供应商实际用量。迁移 0064 之前的旧账兼容
+    （按 total_tokens 回填估算口径、``_with_legacy_*`` 来源后缀、两个 legacy 可观测键）已经删了。"""
     _scene_with_valid_draft(session, "CX2", budget=1000, used=1500)
     session.add(
         LlmCall(
@@ -47,25 +50,21 @@ def test_legacy_0064_over_budget_cost_remains_readable_without_becoming_normal_s
             scope_type="scene", scope_id="CX2",
             node_id="style_draft", step="style_draft", scene_id="CX2", chapter_id="CCH",
             project_id="CP", prompt_tokens=800, completion_tokens=400, total_tokens=1200,
+            estimated_tokens=900,
         )
     )
     session.flush()
     summary = ca.scene_cost(session, "CX2")
-    # 仅兼容读取 0064 历史脏数据；新在线调用由预留门禁阻止制造该状态。
     assert summary["budget"]["over_budget"] is True
     assert summary["total_tokens"] == 1_200
     assert summary["phase_breakdown"]["candidate_generation"]["tokens"] == 1_200
-    assert summary["calibers"]["estimate"]["tokens"] == 1_200
-    assert summary["calibers"]["provider_actual"]["tokens"] == 0
-    assert summary["calibers"]["budget_charged"]["tokens"] == 0
-    assert summary["attempt_observability"]["legacy_parent_without_attempt_count"] == 1
-    assert summary["attempt_observability"]["legacy_unreconstructable_tokens"] == 1_200
-    assert summary["calibers"]["estimate"]["source"].endswith(
-        "_with_legacy_total_tokens_fallback"
-    )
-    assert summary["calibers"]["budget_charged"]["source"] == (
-        "llm_calls.budget_charged_tokens"
-    )
+    assert summary["calibers"] == {
+        "estimate": {"tokens": 900, "source": "llm_calls.estimated_tokens"},
+        "provider_actual": {"tokens": 0, "source": "llm_call_attempts.total_tokens_with_provider_usage"},
+        "budget_charged": {"tokens": 0, "source": "llm_calls.budget_charged_tokens"},
+    }
+    assert not any(key.startswith("legacy_") for key in summary["attempt_observability"])
+    assert summary["attempt_observability"]["usage_estimate_count"] == 0
 
 
 def test_failed_call_does_not_roll_back_draft_and_is_attributed(session):
