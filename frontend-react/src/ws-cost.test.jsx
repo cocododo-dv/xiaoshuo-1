@@ -64,7 +64,7 @@ const DASH = {
   top_calls: [{ llm_call_id: "c1", cost: 0.6, total_tokens: 300, phase: "candidate_generation", priced: true, currency: "USD" }],
   quota: {
     period_timezone: "UTC",
-    daily_tokens: { used: 100, limit: null, enforced: false },
+    daily_tokens: { used: 100 },
   },
 };
 
@@ -116,11 +116,11 @@ const UNPRICED_DASH = {
   }],
   quota: {
     period_timezone: "UTC",
-    daily_tokens: { used: 0, limit: null, enforced: false },
-    monthly_tokens: { used: 8563789, limit: null, enforced: false },
-    project_daily_tokens: { project_id: "P1", used: 0, limit: null, enforced: false },
-    daily_requests: { used: 0, limit: null, enforced: false },
-    concurrent_requests: { used: 0, limit: null, enforced: false },
+    daily_tokens: { used: 0 },
+    monthly_tokens: { used: 8563789 },
+    project_daily_tokens: { project_id: "P1", used: 0 },
+    daily_requests: { used: 0 },
+    concurrent_requests: { used: 0 },
   },
 };
 

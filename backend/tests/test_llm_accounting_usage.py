@@ -278,15 +278,15 @@ def test_retired_quota_env_vars_reject_nothing_and_readings_carry_no_limit(sessi
     assert session.query(LlmCall).filter_by(accounting_status="rejected").count() == 0
     readings = usage_readings(session, project_id="project-1")
     assert set(readings) == {"period_timezone", *READING_KEYS}
+    # 每一格只有读数:闸删了之后恒为 None / False 的 limit / enforced 两个键也删了(R3 修订 1:不留僵尸键)
     for key in READING_KEYS:
-        assert readings[key]["limit"] is None, key
-        assert readings[key]["enforced"] is False, key
+        assert set(readings[key]) - {"project_id"} == {"used"}, key
     # 账本照旧:看板仍有真实用量读数,只是没有上限可比
-    assert readings["daily_tokens"]["used"] == 5_000_010
-    assert readings["monthly_tokens"]["used"] == 5_000_010
-    assert readings["project_daily_tokens"] == {"project_id": "project-1", "used": 5_000_010, "limit": None, "enforced": False}
-    assert readings["daily_requests"]["used"] == 3
-    assert readings["concurrent_requests"]["used"] == 0
+    assert readings["daily_tokens"] == {"used": 5_000_010}
+    assert readings["monthly_tokens"] == {"used": 5_000_010}
+    assert readings["project_daily_tokens"] == {"project_id": "project-1", "used": 5_000_010}
+    assert readings["daily_requests"] == {"used": 3}
+    assert readings["concurrent_requests"] == {"used": 0}
 
 
 def test_usage_readings_count_actual_usage_and_show_open_calls_only_as_concurrent(session) -> None:

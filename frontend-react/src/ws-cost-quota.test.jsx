@@ -39,14 +39,15 @@ async function unmountQuota() {
 
 afterEach(unmountQuota);
 
-// 后端 llm_usage_readings 的真实形状：每格 {used, limit: null, enforced: false}
+// 后端 llm_usage_readings 的真实形状：每格只有 {used}（「本项目今日」另带 project_id）；
+// 2026-10-04 以前每格还带恒为 null / false 的 limit / enforced，见下面「旧后端留下的额度字段」一例
 const READINGS = {
   period_timezone: "UTC",
-  daily_tokens: { used: 257203, limit: null, enforced: false },
-  monthly_tokens: { used: 565854, limit: null, enforced: false },
-  project_daily_tokens: { project_id: "P1", used: 243752, limit: null, enforced: false },
-  daily_requests: { used: 73, limit: null, enforced: false },
-  concurrent_requests: { used: 2, limit: null, enforced: false },
+  daily_tokens: { used: 257203 },
+  monthly_tokens: { used: 565854 },
+  project_daily_tokens: { project_id: "P1", used: 243752 },
+  daily_requests: { used: 73 },
+  concurrent_requests: { used: 2 },
 };
 
 describe("成本看板 · 全局用量", () => {
@@ -80,6 +81,7 @@ describe("成本看板 · 全局用量", () => {
       ...READINGS,
       any_enforced: true,
       daily_tokens: { used: 900000, limit: 1000000, enforced: true },
+      monthly_tokens: { used: 565854, limit: null, enforced: false },
       daily_cost_usd: { used: 1.5, limit: 10, enforced: true },
     });
 

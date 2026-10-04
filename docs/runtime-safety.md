@@ -23,7 +23,8 @@
   `…_PROJECT_DAILY_TOKEN_LIMIT`、`…_DAILY_REQUEST_LIMIT`、`…_MAX_CONCURRENT_REQUESTS`、`…_DAILY_COST_LIMIT_USD`、
   `…_INPUT_COST_PER_MILLION_USD`、`…_OUTPUT_COST_PER_MILLION_USD` 还设着也没有效果，后端启动时记一条警告。
 - 成本看板的「全局用量」只是读数：今日 / 本月 / 本作品今日的 token、今日请求数、正在飞的调用数（按已结算的物理尝试的实际
-  `total_tokens` 算，UTC 日 / 月）。看板以 token 为主；金额只算 `config/pricing.yaml` 里写了单价的模型，其余标「未定价」。
+  `total_tokens` 算，UTC 日 / 月）。载荷 `quota` 的五格每格只有 `used`（本作品今日另带 `project_id`）：没有上限可比，也就没有
+  `limit` / `enforced`。看板以 token 为主；金额只算 `config/pricing.yaml` 里写了单价的模型，其余标「未定价」。
 - **唯一还在的闸是场景预算**，默认关（`NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=0`）。设成正数 N 时，新初始化的场景端到端
   上限是 N × 单发基线，派发前按场景做条件预留。
 - 供应商真实用量超出预留（典型来源：思考型中转把 reasoning token 计入 `completion_tokens` 且不受 `max_tokens` 封顶）只在这一场的

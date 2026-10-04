@@ -1,8 +1,9 @@
 """成本看板「全局用量」读数：今日 / 本月 / 本作品今日的 token、今日请求数、正在飞的调用数。
 
-2026-09-30 重评 R3（批准#3a）：以前这里是六道只能靠环境变量打开、默认全关的全局额度闸的读数；闸删了，读数留着。
-载荷键不变（每一格 ``{used, limit, enforced}``，``limit`` 恒为 ``None``、``enforced`` 恒为 ``False``），
-只是去掉了按环境变量单价算的「今日金额」与 ``any_enforced``。
+2026-09-30 重评 R3（批准#3a）：以前这里是六道只能靠环境变量打开、默认全关的全局额度闸的读数；闸删了，读数留着，
+按环境变量单价算的「今日金额」与 ``any_enforced`` 去掉了。载荷（路由里的 ``quota``）还是那五格，每一格只有
+``{used}``（「本作品今日」另带 ``project_id``）；闸删了以后恒为 ``None`` / ``False`` 的 ``limit`` / ``enforced``
+两个键 2026-10-04 也删了（R3 修订 1：不留僵尸键），前端只读 ``used``。
 
 口径：
 - 用量按物理尝试的实际 ``total_tokens`` 算（供应商超出预留时照实报的那部分也算），只数已经结算的尝试——
@@ -26,7 +27,7 @@ PERIOD_TIMEZONE = "UTC"
 
 
 def _reading(used: int | None) -> dict[str, Any]:
-    return {"used": used, "limit": None, "enforced": False}
+    return {"used": used}
 
 
 def usage_readings(
