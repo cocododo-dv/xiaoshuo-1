@@ -22,6 +22,9 @@ import {
   chapterLabel,
   chapterLabelById,
   chapterOwnTitle,
+  chapterProseComplete,
+  chapterStage,
+  chapterStageDerived,
   chapterStateMeta,
   isPlaceholderChapterTitle,
   llmNodeLabel,
@@ -60,6 +63,28 @@ describe("章节状态词表", () => {
     expect(manuscriptStage({ state: "planned", words: { cur: 0 }, scenes: [] })).toBe("planned");
     expect(manuscriptStage({ state: "review" })).toBe("review");
     expect(manuscriptStage({ state: "approved", words: { cur: 0 } })).toBe("approved");
+  });
+
+  it("各场都有终稿、还没批准的章就是「等你批准」（不用先送审，2026-10）；目录上的审阅中 / 草稿照旧读", () => {
+    // 目录场的 work.hasFinal = 后端 catalog_reader 的 has_final（这一场有当前终稿）
+    const book = (state, finals = [true, true]) => ({
+      state, words: { cur: 2400 }, scenes: finals.map((hasFinal, i) => ({ sid: `s${i}`, state: "done", work: { hasFinal } })),
+    });
+    expect(chapterProseComplete(book("planned"))).toBe(true);
+    expect(chapterProseComplete(book("planned", [true, false]))).toBe(false);
+    expect(chapterProseComplete({ state: "planned", scenes: [] })).toBe(false);          // 没有场的章不算写齐
+    expect(chapterProseComplete({ state: "planned", scenes: [{ state: "done" }] })).toBe(false); // 没带工作状态的场不算有终稿
+    expect(chapterStage(book("planned"))).toBe("review");
+    expect(chapterStage(book("writing"))).toBe("review");
+    expect(chapterStage(book("draft"))).toBe("review");             // 重新打开之后各场仍有终稿：直接再批
+    expect(chapterStage(book("approved"))).toBe("approved");
+    expect(chapterStage(book("planned", [true, false]))).toBe("writing");
+    expect(chapterStage(book("draft", [true, false]))).toBe("draft");  // 重新打开、又少了一场终稿：照目录读草稿
+    expect(chapterStage(book("review", [true, false]))).toBe("review"); // 以前送审过的章照旧读
+    expect(chapterStateMeta("review").label).toBe("等你批准");
+    // 悬停说明：按各场读出来的（含写齐了的「等你批准」）vs 流程定下的（已定稿、重新打开后的草稿、以前送审的章）
+    expect([book("planned"), book("writing", [false, false])].map(chapterStageDerived)).toEqual([true, true]);
+    expect([book("approved"), book("draft", [true, false]), book("review", [true, false])].map(chapterStageDerived)).toEqual([false, false, false]);
   });
 
   it("一个状态只有一个叫法：没有第二列「短称」（主页图例以前叫在写 / 定稿，别处叫写作中 / 已定稿）", () => {

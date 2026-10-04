@@ -206,7 +206,7 @@ function hmSnowLoadState(remote) {
 }
 
 /* 全书进度的说法：「动笔 N / M 章」——N 是已经有正文的章，M 是目录里的章数。
-   和进度脊的图例（已定稿 / 审阅中 / 草稿 …）是两种口径，所以不叫「完成」。 */
+   和进度脊的图例（已定稿 / 等你批准 / 草稿 …）是两种口径，所以不叫「完成」。 */
 function hmBookProgress(totals, work) {
   const words = (totals && totals.words) || 0;
   const target = Math.max(1, (work && work.wordsTarget) || 0);

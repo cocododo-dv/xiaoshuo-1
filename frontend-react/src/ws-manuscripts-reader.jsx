@@ -17,7 +17,7 @@ const SCENE_DONE = SCENE_STATE_META.done.label;
    正文的场头与结构页签的场景行都挂「像不像」角标（这一场最新的终稿读数，ws-manuscripts-fidelity.jsx）。
    ========================================================== */
 
-/* 章节阶段标签（已定稿 / 审阅中 / 草稿 / 写作中 …，与主页同一套词） */
+/* 章节阶段标签（已定稿 / 等你批准 / 草稿 / 写作中 …，与主页同一套词） */
 function ManuState({ stage }) {
   const m = chapterStateMeta(stage);
   return <Tag tone={m.tone} dot>{m.label}</Tag>;
@@ -37,10 +37,8 @@ function ManuFootNote({ picked, canonical, canonicalComplete, blockReason }) {
     text = "正在核验服务端正文…";
   } else if (!canonicalComplete) {
     text = blockReason;
-  } else if (picked.stage === "review") {
-    text = `${picked.scenes} 场都${SCENE_DONE}。通读无误后批准为终稿，本章就汇入整书。`;
   } else {
-    text = `${picked.scenes} 场都${SCENE_DONE}，可以送入审阅。`;
+    text = `${picked.scenes} 场都${SCENE_DONE}。通读无误后批准为终稿，本章就汇入整书。`;
   }
   return <div className="ms-foot-note">{text}</div>;
 }

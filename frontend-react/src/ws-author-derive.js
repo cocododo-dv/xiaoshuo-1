@@ -124,7 +124,7 @@ export function arrBookFacts(chapters) {
 }
 
 /* 序列栏顶上的一行数：各阶段几章（章的阶段与主页、成稿中心同一条规则：labels/catalog.js 的 chapterStage）。
-   已定稿 / 写作中 / 规划中总在，审阅中 / 草稿 / 待写有章时才出现——以前审阅中、草稿的章都记在「写作中」名下。 */
+   已定稿 / 写作中 / 规划中总在，等你批准 / 草稿 / 待写有章时才出现——以前审阅中、草稿的章都记在「写作中」名下。 */
 const ARR_RAIL_ALWAYS = ["approved", "writing", "planned"];
 export function arrRailTally(chapters) {
   const counts = {};

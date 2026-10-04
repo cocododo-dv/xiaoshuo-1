@@ -149,24 +149,6 @@ export function manuProgressCells(chapters, planChapters) {
   return cells;
 }
 
-/* 退回小修的待办：理由 + 定位到哪一场 + 直达深改的动作（rvPush 的载荷）。picked 是成稿中心的章行。 */
-export function manuReturnTodo(picked, { reason, sid, sceneTitle } = {}) {
-  const head = chapterLabel(picked, { withTitle: false });
-  return {
-    kind: "qc", priority: 1,
-    // 「退回小修：第 3 章 · 盐场」；章名是占位的「第 3 章」时不写两遍
-    title: `退回小修：${chapterLabel(picked, { maxTitle: Infinity })}`,
-    where: `${head}${sceneTitle ? " · " + sceneTitle : ""}`,
-    source: "成稿中心",
-    detail: reason,
-    actions: [
-      { label: "直达深改 · 定位本场", intent: "primary", op: "nav", to: "writer", scene: sid, posture: "deep" },
-      { label: "查看本章", intent: "ghost", op: "nav", to: "manuscripts" },
-      { label: "标记完成", intent: "quiet", op: "resolve" },
-    ],
-  };
-}
-
 /* 先去写哪一场：服务端说缺的第一场，没有就目录里第一场没写完的。 */
 export function manuFirstMissingScene(chapter, snapshot) {
   const scenes = (chapter && chapter.scenes) || [];

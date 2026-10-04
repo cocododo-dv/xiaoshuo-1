@@ -8,7 +8,7 @@
    键 = 后端 chapter_id（目录卡的 backendId），不是 FE slug。
    ========================================================== */
 
-import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { apiGet, apiPost } from "./lib/client.js";
 import { adoptModuleListeners, retireModuleListeners } from "./lib/events.js";
 import { createSubscribers } from "./lib/store-utils.js";
 import { chapterStarted } from "./labels/catalog.js";
@@ -92,17 +92,8 @@ const WsManuStore = {
     return manuInflight[chapterId];
   },
 
-  /**
-   * 章节流转必须等待服务端确认，不能只改本地目录状态。
-   * review/draft 仍由目录端点维护；approved 只能走项目终稿闸门。
-   */
-  async setReviewState(projectId, chapterId, state) {
-    if (!projectId || !chapterId) throw new Error("缺少作品或章节标识，无法更新审阅状态。");
-    if (!['review', 'draft'].includes(state)) throw new Error("审阅状态无效。");
-    return apiPatch(`/api/v2/projects/${projectId}/catalog/chapters/${chapterId}`, { state });
-  },
-
-  /** 终稿批准是项目级权威操作，不允许由目录 PATCH 冒充。
+  /** 终稿批准是项目级权威操作，不允许由目录 PATCH 冒充（2026-10 起也没有「送审 / 退回」的目录 PATCH 了：
+   *  各场都有终稿的章由各场读成「等你批准」，直接批准；服务端批准时照旧要求各场都有终稿）。
    *  「已通读」与「确认定稿」一次提交（批准 #10）：带上作者读到的那一份正文的哈希（成稿中心读到的章节聚合的
    *  body_hash）；读完之后正文又在别处变了，服务端 409，不会把没读过的那一版定下来。以前先单独 POST read-confirm，
    *  再 approve-final。没读到过这一章的聚合（没有哈希）就不提交。 */

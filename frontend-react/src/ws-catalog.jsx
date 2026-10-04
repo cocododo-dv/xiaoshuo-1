@@ -453,7 +453,7 @@ const WsCatalog = {
   onLoaded(fn) { return catRegister(catLoadedHooks, fn); },
   onPlanTitlesSynced(fn) { return catRegister(catPlanTitleHooks, fn); },
   /* 以服务端为准重读一部作品的目录（省略 = 当前作品）：在飞的那一次作废，结束后恰好再读一次。
-     服务端在别处改了目录（送审 / 批准、回流、章任务跑完、雪花物化）之后调它。 */
+     服务端在别处改了目录（批准 / 重新打开、回流、章任务跑完、雪花物化）之后调它。 */
   refresh(workId) { return catRefetch(workId || catActiveId()); },
   /* 场景 sid → 后端 scene_id（async：乐观新建的场等它建好）；没有后端 id（还没同步到后端、不在目录里）是 undefined。
      写作台、AI 起草台、正文 store 按后端 id 发请求都经它（视图一侧的唯一入口是 ws-scene-id.js 的 sceneApiId） */
