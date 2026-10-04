@@ -56,7 +56,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "CHAPTER_ALREADY_OWNED": "这一章属于另一部作品。",
     "CHAPTER_IDENTITY_IMMUTABLE": "已有的章不能改到另一部作品或另一份大纲下。",
     "CHAPTER_DISPLAY_ORDER_CONFLICT": "另一章已经用了这个章序。",
-    "CHAPTER_PROJECT_REQUIRED": "这一章不属于任何作品，不能发布正史。",
     "SCENE_NOT_FOUND": "找不到这一场。",
     "SCENE_TRASHED": "这一场在回收站里，先恢复它。",
     "SCENE_ALREADY_OWNED": "这一场属于另一部作品。",

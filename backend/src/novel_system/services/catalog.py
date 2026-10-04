@@ -138,6 +138,7 @@ class CatalogService(CatalogReader):
             # project's real final-review submission; outline materialization
             # and re-materialization happen in ``chapter_ready`` before prose
             # exists and must remain valid structural operations.
+            # 送审只看正文写齐没有，正史核对不拦（B2-2，与确认定稿同一条）。
             if (
                 state == "review"
                 and project.status == PROJECT_STATUS_CHAPTER_FINAL_REVIEW
@@ -147,7 +148,7 @@ class CatalogService(CatalogReader):
                     ChapterManuscriptService,
                 )
 
-                ChapterManuscriptService(self.session).require_publishable(chapter_id)
+                ChapterManuscriptService(self.session).require_complete(chapter_id)
             updates["state"] = state
         if "words_target" in body:
             value = body["words_target"]

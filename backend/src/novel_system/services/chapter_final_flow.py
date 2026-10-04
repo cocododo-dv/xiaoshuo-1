@@ -146,7 +146,7 @@ class ProjectChapterFlowService:
                     "read_confirmation.body_hash is required",
                     status_code=400,
                 )
-        ChapterManuscriptService(self.session).require_publishable(chapter_id)
+        ChapterManuscriptService(self.session).require_complete(chapter_id)
         read = ChapterManuscriptService(self.session).assembled_body(chapter_id)
         if read_request is not None:
             # 批准 #10：「已通读」随「确认定稿」一次提交——服务器按各场当前终稿现算一次哈希；读完之后正文又变了
@@ -283,7 +283,7 @@ class ProjectChapterFlowService:
         project = require_project(self.session, project_id)
         self._require_project_chapter(project, chapter_id)
         _require_current_chapter(project, chapter_id, "only the current chapter final can be confirmed")
-        ChapterManuscriptService(self.session).require_publishable(chapter_id)
+        ChapterManuscriptService(self.session).require_complete(chapter_id)
         read = ChapterManuscriptService(self.session).assembled_body(chapter_id)
         return self._record_read_confirmation(
             project,

@@ -92,6 +92,8 @@ class ChapterManuscriptService:
         )
 
     def require_complete(self, chapter_id: str) -> dict[str, Any]:
+        """送审、定稿都只要这一条：每一场都有非空的权威正文。正史核对不拦它们（B2-2）——核对过的事实照旧进提示词与
+        连续性检查，没核对的场只是不进后面的事实记忆；章的正史状态照旧在 ``manuscript_detail`` 的 ``canon_continuity`` 里。"""
         contract = self.completion_contract(chapter_id)
         if (
             contract["completion_status"] != "complete"
@@ -104,24 +106,6 @@ class ChapterManuscriptService:
                 details={"chapter_id": chapter_id, **contract},
             )
         return contract
-
-    def require_publishable(self, chapter_id: str) -> dict[str, Any]:
-        """Require both canonical prose coverage and committed continuity facts."""
-
-        contract = self.require_complete(chapter_id)
-        chapter = self.lifecycle.require_active_chapter(chapter_id)
-        if not chapter.project_id:
-            raise DomainError(
-                "CHAPTER_PROJECT_REQUIRED",
-                "chapter has no project owner and cannot publish continuity canon",
-                status_code=409,
-                details={"chapter_id": chapter_id},
-            )
-        continuity = CanonContinuityService(self.session).require_chapter_complete(
-            chapter.project_id,
-            chapter_id,
-        )
-        return {**contract, "canon_continuity": continuity}
 
     def _chapter_list_item(self, chapter: ChapterGoal) -> dict[str, Any]:
         scenes = self._active_scenes(chapter.chapter_id)
