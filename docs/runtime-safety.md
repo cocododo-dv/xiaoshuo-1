@@ -44,7 +44,7 @@
 
 数据库结构落后于代码时（`--reload` 先于迁移加载了新代码），后端不拿旧结构跑启动恢复与后台清扫，`/api/*` 统一回 503 `SERVICE_NOT_READY`「数据库结构需要升级：请重启后端（启动脚本会自动升级）」；结构跟上之后的第一个 `/api/*` 请求或 `/ready` 探测补跑被推迟的那一段。
 
-启动恢复还会对超过 `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` 的 legacy LLM 预留做保守对账：仅处理没有 `scene_id`、没有 `run_job_id` 且不是 scene scope 的调用；未派发预留会释放，已派发但没有持久化结果的预留会标记失败并按估算用量落账。场景与任务所有权链路由各自的 lease/checkpoint 恢复负责，不进入这项扫描。
+启动恢复还会对超过 `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` 的「没有主人」的 LLM 预留做保守对账（`recover_stale_unowned_reservations`，启动摘要里记作 `llm_unowned_reservations`）：仅处理没有 `scene_id`、没有 `run_job_id` 且不是 scene scope 的调用；未派发预留会释放，已派发但没有持久化结果的预留会标记失败并按估算用量落账。场景与任务所有权链路由各自的 lease/checkpoint 恢复负责，不进入这项扫描。
 
 ### 定期维护
 

@@ -22,7 +22,8 @@ from novel_system.services.background_recovery import (
     run_startup_recovery,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.llm_accounting import recover_stale_legacy_reservations
+from novel_system.services import llm_accounting, llm_accounting_recovery
+from novel_system.services.llm_accounting import recover_stale_unowned_reservations
 from novel_system.services.scene_run_jobs import SceneRunJobService
 from tests.support.api_client import AutoKeyTestClient
 
@@ -210,7 +211,7 @@ def test_fastapi_lifespan_runs_background_recovery(monkeypatch) -> None:
     assert calls == [True]
 
 
-def test_stale_legacy_llm_recovery_releases_or_fails_without_touching_owned_work(
+def test_stale_unowned_llm_recovery_releases_or_fails_without_touching_owned_work(
     session,
 ) -> None:
     now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
@@ -277,7 +278,7 @@ def test_stale_legacy_llm_recovery_releases_or_fails_without_touching_owned_work
     )
     session.commit()
 
-    result = recover_stale_legacy_reservations(
+    result = recover_stale_unowned_reservations(
         session,
         now=now,
         ttl_seconds=3_600,
@@ -301,7 +302,7 @@ def test_stale_legacy_llm_recovery_releases_or_fails_without_touching_owned_work
     assert session.get(LlmCall, "active-scene-owned").accounting_status == "reserved"
     assert session.get(LlmCall, "active-run-job-owned").accounting_status == "reserved"
 
-    assert recover_stale_legacy_reservations(
+    assert recover_stale_unowned_reservations(
         session,
         now=now,
         ttl_seconds=3_600,
@@ -312,7 +313,7 @@ def test_stale_legacy_llm_recovery_releases_or_fails_without_touching_owned_work
     }
 
 
-def test_concurrent_stale_legacy_llm_sweeps_have_exactly_one_recovery_winner(session) -> None:
+def test_concurrent_stale_unowned_llm_sweeps_have_exactly_one_recovery_winner(session) -> None:
     now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
     stale_at = (now - timedelta(hours=2)).isoformat()
     session.add(
@@ -347,7 +348,7 @@ def test_concurrent_stale_legacy_llm_sweeps_have_exactly_one_recovery_winner(ses
     def sweep() -> dict[str, list[str]]:
         with SessionLocal() as worker_session:
             barrier.wait(timeout=5)
-            return recover_stale_legacy_reservations(
+            return recover_stale_unowned_reservations(
                 worker_session,
                 now=now,
                 ttl_seconds=3_600,
@@ -369,7 +370,7 @@ def test_concurrent_stale_legacy_llm_sweeps_have_exactly_one_recovery_winner(ses
     )
 
 
-def test_startup_recovery_uses_configured_ttl_for_legacy_llm_reservations(
+def test_startup_recovery_uses_configured_ttl_for_unowned_llm_reservations(
     session,
     monkeypatch,
 ) -> None:
@@ -405,7 +406,9 @@ def test_startup_recovery_uses_configured_ttl_for_legacy_llm_reservations(
 
     summary = run_startup_recovery()
 
-    assert summary["llm_legacy_reservations"]["released_call_ids"] == [
+    # 启动摘要按它真正收回的东西命名：没有场景 / 任务主人的非场景预留（不只是旧版遗留的）
+    assert "llm_legacy_reservations" not in summary
+    assert summary["llm_unowned_reservations"]["released_call_ids"] == [
         "legacy-startup-recovery"
     ]
     session.expire_all()
@@ -584,3 +587,12 @@ def test_lifespan_runs_the_run_job_sweeper_only_while_the_app_is_up() -> None:
         assert client.get("/live").status_code == 200
         assert len(sweepers()) == 1
     assert _wait_until(lambda: not sweepers(), timeout=10)
+
+
+def test_unowned_reservation_recovery_has_one_name() -> None:
+    """``recover_stale_legacy_reservations`` 是 ``recover_stale_unowned_reservations`` 的旧名（2026-10-04 删了）：
+    收回的是没有主人的非场景预留，不只是旧版遗留的。"""
+    assert not hasattr(llm_accounting_recovery, "recover_stale_legacy_reservations")
+    assert not hasattr(llm_accounting, "recover_stale_legacy_reservations")
+    assert "recover_stale_legacy_reservations" not in llm_accounting.__all__
+    assert llm_accounting.recover_stale_unowned_reservations is llm_accounting_recovery.recover_stale_unowned_reservations
