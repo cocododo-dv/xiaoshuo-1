@@ -2,8 +2,8 @@
 // 快照全部由测试直接给出——这些函数不读 store，所以不需要 mock 任何模块。
 import { describe, expect, it } from "vitest";
 import {
-  manuBuildBody, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
-  manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScenesArchived, manuScopeProblem,
+  manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
+  manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScopeProblem,
 } from "./ws-manuscripts-compile.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -40,26 +40,30 @@ function chapter(extra = {}) {
 }
 
 describe("权威稿判定", () => {
-  it("只有聚合完整、没有缺场、正史核验完成才算可流转", () => {
+  it("正文齐了（聚合完整、没有缺场）就可以批准；正史核没核完不算在里面", () => {
     expect(manuCanonicalComplete(COMPLETE)).toBe(true);
     expect(manuCanonicalComplete({ ...COMPLETE, status: "loading" })).toBe(false);
     expect(manuCanonicalComplete(ready({ ...COMPLETE.body, missingSceneIds: ["s2"] }))).toBe(false);
-    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false } }))).toBe(false);
+    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, completion: "partial" }))).toBe(false);
+    // 正史没核对、还有候选待裁决，甚至服务端没给正史状态：照样可以批准（2026-10 起正史不拦定稿与导出）
+    const unverified = { ...CANON_DONE, complete: false, pending_scene_ids: ["s1"], pending_candidate_count: 2 };
+    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, canonContinuity: unverified }))).toBe(true);
+    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, canonContinuity: null }))).toBe(true);
   });
 
-  it("卡住的原因按「加载 → 缺场 → 正史」的顺序说一句", () => {
+  it("卡住的原因按「加载 → 缺场」说一句，不再提正史", () => {
     expect(manuCanonicalBlockReason(null)).toBe("正在等待服务端正文核验。");
     expect(manuCanonicalBlockReason({ status: "error", error: { message: "服务暂时不可用" } })).toBe("服务暂时不可用");
     expect(manuCanonicalBlockReason(ready({ ...COMPLETE.body, missingSceneIds: ["s2"] }))).toBe("服务端仍缺 1 场归档正文。");
-    expect(manuCanonicalBlockReason(ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_candidate_count: 2 } })))
-      .toBe("仍有 2 条事实候选待裁决。");
+    expect(manuCanonicalBlockReason(ready({ ...COMPLETE.body, completion: "empty", canonContinuity: { ...CANON_DONE, complete: false, pending_candidate_count: 2 } })))
+      .toBe("服务端尚未将本章标记为可流转稿。");
   });
 
-  it("各场都已归档但正史没核完：scenesArchived 为真、complete 为假", () => {
-    const snap = ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_scene_ids: ["s1"] } });
-    expect(manuScenesArchived(snap)).toBe(true);
-    expect(manuCanonicalComplete(snap)).toBe(false);
-    expect(manuScenesArchived(ready({ ...COMPLETE.body, completion: "partial", missingSceneIds: ["s2"] }))).toBe(false);
+  it("正史未核对的场数 = 有终稿、还没核对的场（服务端的 pending_scene_ids）；没给正史状态、还没读到都是 0", () => {
+    expect(manuCanonPendingCount(ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_scene_ids: ["s1", "s2"] } }))).toBe(2);
+    expect(manuCanonPendingCount(COMPLETE)).toBe(0);
+    expect(manuCanonPendingCount(ready({ ...COMPLETE.body, canonContinuity: null }))).toBe(0);
+    expect(manuCanonPendingCount({ status: "loading", body: null, error: null })).toBe(0);
   });
 });
 

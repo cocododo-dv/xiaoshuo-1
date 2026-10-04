@@ -405,6 +405,7 @@
 .ms-dialog-check { display: flex; align-items: flex-start; gap: 8px; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-2); cursor: pointer; }
 .ms-dialog-check input { accent-color: var(--accent); margin-top: 3px; }
 .ms-dialog-check.is-strong { padding: 11px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-2); color: var(--ink-1); }
+.ms-dialog-note { margin: 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
 
 /* ---- 诊断页签（2026-09-22 场景诊断统一）：章级通读 + 各场计数 ---- */
 .ms-diag .card-title { display: inline-flex; align-items: center; gap: 6px; }

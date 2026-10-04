@@ -25,7 +25,7 @@ function ManuState({ stage }) {
 
 /* 页脚左边一句话：这一章现在卡在哪、下一步是什么（按钮在右边，每个阶段只有一个主动作）。
    缺场的提示只在这里说一次——正文里的缺场位置由各场占位标出。 */
-function ManuFootNote({ picked, canonical, canonicalComplete, blockReason, scenesArchived }) {
+function ManuFootNote({ picked, canonical, canonicalComplete, blockReason }) {
   let text;
   if (picked.stage === "approved") {
     text = canonicalComplete
@@ -36,7 +36,7 @@ function ManuFootNote({ picked, canonical, canonicalComplete, blockReason, scene
   } else if (!canonical || canonical.status === "idle" || canonical.status === "loading") {
     text = "正在核验服务端正文…";
   } else if (!canonicalComplete) {
-    text = scenesArchived ? `各场都${SCENE_DONE}。${blockReason}` : blockReason;
+    text = blockReason;
   } else if (picked.stage === "review") {
     text = `${picked.scenes} 场都${SCENE_DONE}。通读无误后批准为终稿，本章就汇入整书。`;
   } else {

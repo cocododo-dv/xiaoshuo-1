@@ -4,7 +4,7 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
 /* ==========================================================
    ws-manuscripts-compile — 成稿中心的纯函数
    ----------------------------------------------------------
-   · 服务端权威稿的判定（能不能送审 / 批准 / 导出，卡在哪一步）；
+   · 服务端权威稿的判定（正文齐没齐、能不能批准，卡在哪一步）；正史核对不在其中（可选，不拦批准与导出）；
    · 目录章 + 服务端聚合快照 → 阅读器用的逐场正文；
    · 目录 → 左栏的章行、分组与整书进度格；
    · 导出：把一个范围内的章编译成 Markdown / 纯文本 / Word 兼容 HTML。
@@ -15,7 +15,8 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
 /* 没有后端 id / 还没拉过的章：没有正文可言（工作流与导出都用这一份） */
 export const MANU_IDLE_SNAPSHOT = Object.freeze({ status: "idle", body: null, error: null });
 
-/* 服务端说这一章可以流转：聚合完整、没有缺场、正史核验完成。 */
+/* 服务端说这一章的正文齐了、可以批准：聚合完整、没有缺场。
+   正史核对不在其中（2026-10 起）：没核对的场照样能批准、导出，只是不进入后续章节的事实记忆。 */
 export function manuCanonicalComplete(snapshot) {
   const body = snapshot && snapshot.body;
   return !!(
@@ -23,31 +24,23 @@ export function manuCanonicalComplete(snapshot) {
     && body.completion === "complete"
     && Array.isArray(body.missingSceneIds)
     && body.missingSceneIds.length === 0
-    && body.canonContinuity
-    && body.canonContinuity.complete === true
   );
 }
 
-/* 还不能流转时，一句话说清卡在哪。 */
+/* 还不能批准时，一句话说清卡在哪。 */
 export function manuCanonicalBlockReason(snapshot) {
   if (!snapshot || snapshot.status === "idle") return "正在等待服务端正文核验。";
   if (snapshot.status === "loading") return "正在从服务端加载权威正文。";
   if (snapshot.status === "error") return (snapshot.error && snapshot.error.message) || "服务端正文加载失败，请重试。";
   const missing = (snapshot.body && snapshot.body.missingSceneIds) || [];
   if (missing.length) return `服务端仍缺 ${missing.length} 场归档正文。`;
-  const canon = snapshot.body && snapshot.body.canonContinuity;
-  if (!canon) return "服务端尚未返回本章正史核验状态。";
-  if ((canon.missing_final_scene_ids || []).length) return `仍有 ${canon.missing_final_scene_ids.length} 场缺少终稿，无法核验正史。`;
-  if ((canon.pending_scene_ids || []).length) return `仍有 ${canon.pending_scene_ids.length} 场正史待核对。`;
-  if (Number(canon.pending_candidate_count || 0) > 0) return `仍有 ${canon.pending_candidate_count} 条事实候选待裁决。`;
   return "服务端尚未将本章标记为可流转稿。";
 }
 
-/* 各场都已归档（缺的只是正史核对）——页脚据此把下一步指向「去核对正史」而不是写作台。 */
-export function manuScenesArchived(snapshot) {
-  const body = snapshot && snapshot.body;
-  return !!(snapshot && snapshot.status === "ready" && body
-    && (body.missingSceneIds || []).length === 0 && body.completion === "complete");
+/* 有终稿、正史还没核对的场数——批准对话框里一句不拦的提示（服务端没给正史状态就是 0）。 */
+export function manuCanonPendingCount(snapshot) {
+  const canon = snapshot && snapshot.status === "ready" && snapshot.body && snapshot.body.canonContinuity;
+  return canon && Array.isArray(canon.pending_scene_ids) ? canon.pending_scene_ids.length : 0;
 }
 
 /* 成稿中心看的戏剧卡四格（键与叫法同 labels/catalog.js 的 DRAMA_FIELDS：结构页签的概要卡、导出的附录都按这个顺序） */

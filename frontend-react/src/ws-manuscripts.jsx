@@ -6,8 +6,8 @@ import { manuscriptChapterEligible } from "./ws-manuscripts-store.jsx";
 import { EmptyState, Notice, Segmented, Spinner } from "./ws-ui.jsx";
 import { SCENE_STATE_META, chapterHeading, chapterLabel, chapterOwnTitle } from "./labels/catalog.js";
 import {
-  manuBuildBody, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuDefaultPick,
-  manuFirstMissingScene, manuListGroups, manuProgressCells, manuScenesArchived,
+  manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuDefaultPick,
+  manuFirstMissingScene, manuListGroups, manuProgressCells,
 } from "./ws-manuscripts-compile.js";
 import { useManuCanonical, useManuWorkflow } from "./ws-manuscripts-workflow.js";
 import { ManuHero } from "./ws-manuscripts-hero.jsx";
@@ -145,10 +145,10 @@ function WsManuscripts({ go }) {
 
           <footer className="ms-reader-foot">
             <ManuFootNote picked={picked} canonical={canonical} canonicalComplete={canonicalComplete}
-              blockReason={canonicalBlockReason} scenesArchived={manuScenesArchived(canonical)} />
+              blockReason={canonicalBlockReason} />
             <div className="ms-foot-actions">
               <ManuNextStep picked={picked} chapter={catPicked} canonical={canonical} canonicalComplete={canonicalComplete}
-                blockReason={canonicalBlockReason} flow={flow} go={go} onShowCanon={() => setView("canon")} />
+                blockReason={canonicalBlockReason} flow={flow} go={go} />
             </div>
           </footer>
         </section>
@@ -156,7 +156,7 @@ function WsManuscripts({ go }) {
 
       {/* 三个对话框常驻、只切 open（见 ws-manuscripts-dialogs.jsx 开头：开发模式下焦点才进得去） */}
       <ManuReturnDialog open={flow.dialog === "return"} picked={picked} chapter={catPicked} busy={busy.workflow} error={flow.workflowError} onClose={flow.closeDialog} onConfirm={flow.returnToDraft} />
-      <ManuApprovalDialog open={flow.dialog === "approve"} picked={picked} busy={busy.workflow} error={flow.workflowError} onClose={flow.closeDialog} onConfirm={flow.approveFinal} />
+      <ManuApprovalDialog open={flow.dialog === "approve"} picked={picked} canonPending={manuCanonPendingCount(canonical)} busy={busy.workflow} error={flow.workflowError} onClose={flow.closeDialog} onConfirm={flow.approveFinal} />
       <ManuReopenDialog open={flow.dialog === "reopen"} picked={picked} busy={busy.workflow} error={flow.workflowError} onClose={flow.closeDialog} onConfirm={flow.reopenFinal} />
     </div>
   );
@@ -235,8 +235,8 @@ function ManuChapterList({ groups, activeId, onPick, diag }) {
 
 /* 页脚右边：每个阶段只有一个主动作。
    审阅中 → 退回小修 / 批准为终稿；已定稿 → 导出本章 / 重新打开；
-   其余 → 齐了就送入审阅，各场归档了但正史没核 → 去核对正史，缺场 → 去写作台写缺的那一场。 */
-function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReason, flow, go, onShowCanon }) {
+   其余 → 齐了就送入审阅，缺场 → 去写作台写缺的那一场。正史核对不拦这里任何一步（在「正史」页签里随时可做）。 */
+function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReason, flow, go }) {
   const busy = flow.status.busy;
   const blockedTitle = !canonicalComplete ? blockReason : undefined;
   if (picked.stage === "review") {
@@ -259,9 +259,6 @@ function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReas
   }
   if (canonicalComplete) {
     return <button type="button" className="btn btn-accent" disabled={busy.workflow} onClick={flow.submitToReview}><I.Check size={14} /> 送入审阅</button>;
-  }
-  if (manuScenesArchived(canonical)) {
-    return <button type="button" className="btn btn-accent" onClick={onShowCanon}><I.ShieldCheck size={14} /> 去核对正史</button>;
   }
   if (canonical.status !== "ready") return null;
   const firstMissing = manuFirstMissingScene(chapter, canonical);

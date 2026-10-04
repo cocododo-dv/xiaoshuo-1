@@ -177,6 +177,8 @@ describe("成稿中心权威章节流", () => {
 
     await click(check);
     expect(confirm.disabled).toBe(false);
+    // 正史都核对过：对话框里没有「正史未核对」那一句
+    expect(document.querySelector('[data-testid="approve-canon-pending"]')).toBeNull();
     await click(confirm);
 
     expect(flow.approveFinal).toHaveBeenCalledTimes(1);
@@ -278,7 +280,12 @@ describe("成稿中心权威章节流", () => {
 
     await click(host.querySelector('[data-testid="manuscript-canon-tab"]'));
     expect(host.textContent).toContain("他的右臂已经折断");
-    expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(true);
+    // 正史核对可选（2026-10 起不拦定稿）：还有候选没裁决，批准照样能点；页签里说清没核对的场不进后续的事实记忆
+    expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(false);
+    const panel = host.querySelector('[data-testid="manuscript-canon-panel"]');
+    expect(panel.textContent).toContain("本章还有场的事实没核对（可选）");
+    expect(panel.textContent).toContain("未核对的场不进入后续章节的事实记忆");
+    expect(panel.textContent).not.toContain("落槌");
 
     await click(host.querySelector('[data-testid="canon-candidate-accept"]'));
     expect(flow.decideCanonCandidate).toHaveBeenCalledWith("p1", "c1", "fc1", {
@@ -286,6 +293,40 @@ describe("成稿中心权威章节流", () => {
       selected_entity_id: null,
       expected_final_scene_row_id: "final_s1_v1",
     });
+  });
+
+  it("正史还没核对的章：页脚不指去「核对正史」，批准照样能点；批准对话框只提一句未核对的场数，不拦", async () => {
+    const pending = {
+      ...COMPLETE_BODY,
+      canonContinuity: {
+        ...COMPLETE_BODY.canonContinuity,
+        complete: false, synced_scene_count: 0, pending_scene_ids: ["s1"],
+        scenes: [{ ...COMPLETE_BODY.canonContinuity.scenes[0], status: "pending_extraction", complete: false }],
+      },
+    };
+    flow.snapshot.mockReturnValue(readySnapshot(pending));
+    const host = await renderPage("review");
+    const foot = host.querySelector(".ms-reader-foot");
+    expect(foot.textContent).not.toContain("正史");
+    const open = host.querySelector('[data-testid="approve-final-open"]');
+    expect(open.disabled).toBe(false);
+    expect(open.getAttribute("title")).toBeNull();
+
+    await click(open);
+    expect(document.querySelector('[data-testid="approve-canon-pending"]').textContent)
+      .toBe("1 场正史未核对，不影响定稿（未核对的场不进入后续章节的事实记忆）。");
+    await click(document.querySelector('[data-testid="approve-read-confirm"]'));
+    await click(document.querySelector('[data-testid="approve-final-confirm"]'));
+    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", { readNote: "", revisionNotes: "" });
+  });
+
+  it("已定稿、正史没核对的章：导出本章照样能点，页脚说的是终稿锁定，不是正史", async () => {
+    const pending = { ...COMPLETE_BODY, canonContinuity: { ...COMPLETE_BODY.canonContinuity, complete: false, pending_scene_ids: ["s1"] } };
+    flow.snapshot.mockReturnValue(readySnapshot(pending));
+    const host = await renderPage("approved");
+    expect(host.querySelector('[data-testid="chapter-export"]').disabled).toBe(false);
+    expect(host.querySelector(".ms-foot-note").textContent).toContain("终稿已锁定");
+    expect(host.querySelector(".ms-reader-foot").textContent).not.toContain("正史");
   });
 
   it("本章导出会二次核验，服务端失败后显示失败且不下载", async () => {

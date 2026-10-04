@@ -110,7 +110,7 @@ function ManuReturnForm({ titleId, descId, focusRef, picked, chapter, busy, erro
   );
 }
 
-/* 批准终稿：通读确认绑定当前服务端正文哈希 */
+/* 批准终稿：通读确认绑定当前服务端正文哈希。canonPending：有终稿、正史还没核对的场数——只提一句，不拦批准 */
 function ManuApprovalDialog({ open = true, ...props }) {
   const focusRef = useRef(null);
   return (
@@ -120,7 +120,7 @@ function ManuApprovalDialog({ open = true, ...props }) {
   );
 }
 
-function ManuApprovalForm({ titleId, descId, focusRef, picked, busy, error, onClose, onConfirm }) {
+function ManuApprovalForm({ titleId, descId, focusRef, picked, canonPending = 0, busy, error, onClose, onConfirm }) {
   const [read, setRead] = useState(false);
   const [readNote, setReadNote] = useState("");
   const [revisionNotes, setRevisionNotes] = useState("");
@@ -138,6 +138,9 @@ function ManuApprovalForm({ titleId, descId, focusRef, picked, busy, error, onCl
         <input ref={focusRef} data-testid="approve-read-confirm" type="checkbox" checked={read} disabled={busy} onChange={(e) => setRead(e.target.checked)} />
         我已从头到尾通读当前正文，并确认它可以成为终稿
       </label>
+      {canonPending > 0 && (
+        <p className="ms-dialog-note" data-testid="approve-canon-pending">{canonPending} 场正史未核对，不影响定稿（未核对的场不进入后续章节的事实记忆）。</p>
+      )}
 
       <label className="ms-dialog-field">
         <span className="ms-dialog-k">通读备注 <small>可选</small></span>
