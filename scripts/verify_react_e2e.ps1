@@ -136,7 +136,7 @@ if (-not (Test-Path -LiteralPath $backendPython -PathType Leaf)) {
     throw "Locked backend Python is missing: $backendPython. Run: cd backend; uv sync --locked --extra dev"
 }
 
-# --- Isolated runtime: dedicated e2e sqlite + in-memory vector backend ---
+# --- Isolated runtime: dedicated e2e sqlite ---
 $dbPath = Join-Path $runDir "e2e.db"
 Remove-Item $dbPath -ErrorAction SilentlyContinue   # fresh DB every run
 $dbUrl = "sqlite:///" + ($dbPath -replace "\\", "/")

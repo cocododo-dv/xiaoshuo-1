@@ -4,9 +4,11 @@
 参见《风格参考模块重构执行手册 v1.1》§9.2。
 
 这些黄金用例验证摄取、统计、分类、抄袭检测和确定性回归，不单独证明“同一情节
-能否复现不同作者风格”。RAG v2 已取消“原段前缀召回原段”的词面指标，改用冻结
-的“异题材同风格 vs 同题材异风格”合成 A/B 验证检索机制；它仍只是诊断证据，
-真正的风格贴合度结论必须来自隐藏语料与真人跨内容盲测基准。
+能否复现不同作者风格”。语料同时是测量核的基线：`corpus/` 下全部公版文本经
+`python -m novel_system.tools.build_voice_baseline build-baseline` 算出
+`config/style_reference/voice_baseline.yaml`，跨内容基准那份朱自清散文还喂给像不像的读数
+（`test_style_reference_fidelity.py`）与声纹（`test_style_reference_voice_signature.py`）
+用例。这些仍只是诊断证据，真正的风格贴合度结论必须来自隐藏语料与真人跨内容盲测基准。
 
 ## 目录结构
 

@@ -37,7 +37,7 @@ Assert-True -Condition (Test-Path $devScript) -Message "Missing dev lifecycle sc
 Assert-True -Condition (Test-Path $resetWrapper) -Message "Missing one-click reset wrapper."
 
 $devSource = Get-Content -LiteralPath $devScript -Raw
-# 演示数据已退役：生产启动器不再种任何演示作品，也不再需要 skip 标记/开关。
+# Demo data is retired: the production launchers seed no demo works and need no skip marker / switch.
 Assert-True -Condition (-not $devSource.Contains("seed_demo")) -Message "dev.ps1 must not seed retired demo data."
 Assert-True -Condition (-not $devSource.Contains("skip-demo-seed")) -Message "dev.ps1 must not reference the retired seed-skip marker."
 
@@ -80,7 +80,6 @@ conn.executescript(
     create table scene_cards (scene_id text primary key, chapter_id text);
     create table review_items (review_id text primary key, status text);
     create table banned_rule_clusters (banned_rule_cluster_id text primary key, status text);
-    create table vector_alias_registry (alias_key text primary key, status text);
     create table reference_books (book_id text primary key, title text);
     create table reference_findings (finding_id text primary key, status text);
     create table llm_calls (llm_call_id text primary key, provider text);
@@ -112,7 +111,6 @@ conn.executescript(
     insert into scene_cards values ('SC_KEEP_OUT', 'CH_KEEP_OUT');
     insert into review_items values ('review_keep_out', 'pending');
     insert into banned_rule_clusters values ('BAN_KEEP_OUT', 'active');
-    insert into vector_alias_registry values ('alias_keep_out', 'ok');
     insert into reference_books values ('refbook_generated', 'generated reference');
     insert into reference_findings values ('finding_keep_out', 'pending');
     insert into llm_calls values ('llm_generated', 'local');
@@ -149,7 +147,6 @@ payload = {
     "scene_count": scalar("select count(*) from scene_cards"),
     "review_count": scalar("select count(*) from review_items"),
     "banned_count": scalar("select count(*) from banned_rule_clusters"),
-    "alias_count": scalar("select count(*) from vector_alias_registry"),
     "reference_count": scalar("select count(*) from reference_books"),
     "reference_finding_count": scalar("select count(*) from reference_findings"),
     "llm_call_count": scalar("select count(*) from llm_calls"),
@@ -169,7 +166,6 @@ print(json.dumps(payload, ensure_ascii=False))
     Assert-True -Condition ($state.scene_count -eq 0) -Message "Scene rows were not cleared."
     Assert-True -Condition ($state.review_count -eq 0) -Message "Review rows were not cleared."
     Assert-True -Condition ($state.banned_count -eq 0) -Message "Knowledge rows were not cleared."
-    Assert-True -Condition ($state.alias_count -eq 0) -Message "Vector alias rows were not cleared."
     Assert-True -Condition ($state.reference_count -eq 0) -Message "Reference rows were not cleared."
     Assert-True -Condition ($state.reference_finding_count -eq 0) -Message "Reference finding rows were not cleared."
     Assert-True -Condition ($state.llm_call_count -eq 0) -Message "LLM call evidence rows were not cleared."
@@ -179,7 +175,7 @@ print(json.dumps(payload, ensure_ascii=False))
     Assert-True -Condition (-not (@($state.secret_ids) -contains "smtp_password")) -Message "Non-LLM secret was not cleared."
     Assert-True -Condition ($state.alembic_count -eq 1) -Message "Alembic version row should be preserved."
 
-    # 演示 seed 已退役：reset 不再写 skip 标记（生产启动器本就不种演示数据）。
+    # Demo seed is retired: reset no longer writes the skip marker (the production launchers never seed demo data).
     Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $tempRoot ".codex-run\skip-demo-seed"))) -Message "Retired seed-skip marker must no longer be created."
     foreach ($relativePath in @(".playwright-cli", ".codex-run\backend.pid", ".codex-run\backend.err.log", "backend\.pytest_cache", "backend\.vector_store", "frontend\dist", "frontend\test-results", "docs\reference-learning-qa-2026-04-20.md", "backend\src\novel_system\__pycache__")) {
         $absolutePath = Join-Path $tempRoot $relativePath
