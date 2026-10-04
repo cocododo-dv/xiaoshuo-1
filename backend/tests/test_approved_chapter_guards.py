@@ -311,11 +311,11 @@ def test_chapter_order_requires_strict_complete_project_set_and_keeps_approved_p
     assert empty.status_code == 422
 
 
-def test_review_read_confirmation_and_approval_require_complete_canonical_manuscript(
+def test_review_and_approval_require_complete_canonical_manuscript(
     client,
     session,
 ) -> None:
-    """送审 / 通读 / 定稿只看正文写齐没有；正史核对不再拦（B2-2）——没核对完照样能送审、能定稿，正史状态照旧报告。"""
+    """送审 / 定稿只看正文写齐没有；正史核对不再拦（B2-2）——没核对完照样能送审、能定稿，正史状态照旧报告。"""
     project_id = _create_project(client, title="Completion guard")
     chapter = _create_chapter(client, project_id, "Complete me", current=True)
     chapter_id = chapter["chapter_id"]
@@ -363,16 +363,9 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
         scene.scene_id for scene in scenes
     ]
 
-    read_incomplete = client.post(
-        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm",
-        json={"note": "I should not be able to confirm this."},
-    )
-    assert read_incomplete.status_code == 409
-    assert read_incomplete.json()["error"]["code"] == "CHAPTER_CANONICAL_MANUSCRIPT_INCOMPLETE"
-
     approve_incomplete = client.post(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
-        json={},
+        json={"read_confirmation": {"body_hash": "0" * 64, "note": "I should not be able to approve this."}},
         headers={"X-Idempotency-Key": "approve-incomplete-canonical"},
     )
     assert approve_incomplete.status_code == 409
@@ -400,15 +393,13 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["data"]["changed"] is True
 
-    read = client.post(
-        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm",
-        json={"note": "Read the complete canonical chapter."},
-    )
-    assert read.status_code == 200, read.text
-
+    body_hash = client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["body_hash"]
     approved = client.post(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
-        json={"revision_notes": "Complete."},
+        json={
+            "revision_notes": "Complete.",
+            "read_confirmation": {"body_hash": body_hash, "note": "Read the complete canonical chapter."},
+        },
         headers={"X-Idempotency-Key": "approve-complete-canonical"},
     )
     assert approved.status_code == 200, approved.text

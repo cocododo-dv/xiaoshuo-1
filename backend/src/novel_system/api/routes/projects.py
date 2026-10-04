@@ -10,7 +10,6 @@ from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import mutate
 from novel_system.api.requests.projects import (
     ProjectChapterApproveFinalRequest,
-    ProjectChapterReadConfirmRequest,
     ProjectChapterReopenFinalRequest,
     ProjectChapterRunJobRequest,
     ProjectCreateRequest,
@@ -115,11 +114,11 @@ def run_project_chapter_job(
 def approve_project_chapter_final(
     project_id: str,
     chapter_id: str,
+    payload: ProjectChapterApproveFinalRequest,
     request: Request,
-    payload: ProjectChapterApproveFinalRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
+    body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = actor_ref_of(request)
     return mutate(
         request,
@@ -150,25 +149,3 @@ def reopen_project_chapter_final(
             actor_ref=actor_ref,
         ),
     )
-
-
-@router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm")
-def confirm_project_chapter_read(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: ProjectChapterReadConfirmRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    actor_ref = actor_ref_of(request)
-    return mutate(
-        request,
-        session,
-        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
-        action=lambda: ProjectChapterFlowService(session).confirm_read(
-            project_id, chapter_id, body, actor_ref=actor_ref
-        ),
-    )
-
-

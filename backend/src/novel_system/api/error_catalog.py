@@ -143,7 +143,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "CHAPTER_CANONICAL_MANUSCRIPT_INCOMPLETE": "这一章还有场没有正文，不能审阅或定稿。",
     "CHAPTER_APPROVAL_NOTES_TOO_LONG": "定稿备注不能超过 2000 字。",
     "CHAPTER_FINAL_NOT_APPROVED": "只有已经定稿的章才能重开。",
-    "CHAPTER_FINAL_READ_CONFIRM_REQUIRED": "请先通读并确认这一章当前的正文，再定稿。",
     "CHAPTER_FINAL_READ_CONFIRM_UNAVAILABLE": "这一章现在还没有可以通读的正文。",
     "CHAPTER_READ_CONFIRM_INVALID": "「已通读」需要带上读到的那一份正文的指纹，请刷新后再确认。",
     "CHAPTER_READ_CONFIRM_NOTE_TOO_LONG": "通读备注不能超过 1000 字。",

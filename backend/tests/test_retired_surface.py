@@ -73,6 +73,8 @@ RETIRED_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/v2/style-reference/reports/{report_id}", "迁移 0091"),
     # 一次性的参考书演示（整段前缀同样钉在下面）
     ("GET", "/api/v1/demo/{slug}/status", "一次性的参考书演示"),
+    # 终稿：「已通读」并进「确认定稿」一次提交（批准 #10），旧的两步路删掉（B2-1）
+    ("POST", "/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm", "B2-1"),
 )
 
 #: 路径本身还在、只是为别的方法服务的退役行：请求它们答 405。其余退役路径整条都不在了，任何方法都只得 404。

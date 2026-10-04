@@ -1,5 +1,5 @@
 """作品域的回包形状与写入时的字段归一——v1 作品 / 大纲计划 / 章 / 场景的序列化，
-终审包里的质检摘要，以及建作品、改档案、物化时共用的几个取值小工具。
+以及建作品、改档案、物化时共用的几个取值小工具。
 
 从 ``projects.py`` 拆出（B08-09）；``projects`` 照旧再导出这些名字。
 """
@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, OutlinePlan, QcReport, SceneCard, StoryProject
+from novel_system.db.models import ChapterGoal, OutlinePlan, SceneCard, StoryProject
 from novel_system.services.story_slots import planned_beats, planned_chapter_goal, planned_text
 
 
@@ -107,51 +107,6 @@ def scene_payload(scene: SceneCard, chapter: ChapterGoal | None = None) -> dict[
         "scene_type": scene.scene_type,
         "is_chapter_last": scene.is_chapter_last,
     }
-
-
-def qc_issue_summaries(
-    report: QcReport | None, *, limit: int = 3
-) -> list[dict[str, str]]:
-    if report is None:
-        return []
-    items: list[dict[str, str]] = []
-    for issue in list(report.issues_json or [])[:limit]:
-        if not isinstance(issue, dict):
-            continue
-        evidence = ""
-        spans = (
-            issue.get("evidence_spans")
-            if isinstance(issue.get("evidence_spans"), list)
-            else []
-        )
-        if spans:
-            first = spans[0]
-            if isinstance(first, dict):
-                evidence = str(
-                    first.get("text")
-                    or first.get("excerpt")
-                    or first.get("snippet")
-                    or ""
-                ).strip()
-        items.append(
-            {
-                "issue": str(
-                    issue.get("message")
-                    or issue.get("issue")
-                    or issue.get("dimension")
-                    or "质检提示"
-                ).strip(),
-                "evidence": evidence[:180],
-                "suggested_action": str(
-                    issue.get("recommendation")
-                    or issue.get("next_action")
-                    or report.next_action
-                    or "先回到场景工作台处理。"
-                ).strip(),
-                "qc_report_id": report.qc_report_id,
-            }
-        )
-    return items
 
 
 def optional_text(value: Any) -> str | None:

@@ -1,5 +1,6 @@
 """终稿定稿：作者亲手写 / 逐场采纳的章也能定稿（B08-01），定稿绑定的是当前各场终稿现拼的正文（R13），
-「已通读」可以随「确认定稿」一次提交并绑定读到的正文哈希（B08-20，批准 #10）。
+「已通读」随「确认定稿」一次提交并绑定读到的正文哈希（B08-20，批准 #10）——确认定稿是唯一的「读过并定稿」调用，
+不带读到的哈希就不能定稿（B2-1：以前那条先单独 POST read-confirm、再空着手定稿的两步路已删）。
 
 过去通读包只在项目停在「本章终审」（只有「运行本章」会置这个状态）时才给：作者在写作台写完、逐场晋升的章，
 点「批准为终稿」永远 409 CHAPTER_FINAL_READ_CONFIRM_UNAVAILABLE；旧测试是手工把项目状态改成终审才走通的。
@@ -22,7 +23,6 @@ from novel_system.db.models import (
 )
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
-from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.chapter_final_flow import ProjectChapterFlowService
 from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 from novel_system.services.errors import DomainError
@@ -40,7 +40,8 @@ def _post(client, path: str, payload: dict | None = None, *, expect: int = 200):
 
 
 def _author_written_chapter(client, session, *, scene_texts: list[str]) -> dict:
-    """作者路径：建作品 → 目录建章建场 → 写作台保存正文 → 晋升为权威正文 → 核对正史。项目状态始终不是「本章终审」。"""
+    """作者路径：建作品 → 目录建章建场 → 写作台保存正文 → 晋升为权威正文。项目状态始终不是「本章终审」；
+    正史不核对（它不拦定稿，B2-2）。"""
     project_id = _post(
         client, "/api/v2/projects", {"title": "雨城旧信", "outline_text": "林昭回到雨城，翻开一卷旧案。"}
     ).json()["data"]["project"]["project_id"]
@@ -73,9 +74,6 @@ def _author_written_chapter(client, session, *, scene_texts: list[str]) -> dict:
             },
         )
         assert promoted.json()["data"]["final_scene_row_id"]
-    canon = CanonContinuityService(session)
-    for scene_id in scene_ids:
-        canon.verify_scene_complete(project_id, scene_id, actor_ref="author", note="作者核对过本场正史。")
     session.commit()
     project = session.get(StoryProject, project_id)
     assert project is not None and project.status != "chapter_final_review"
@@ -87,16 +85,19 @@ def _assembled_hash(session, chapter_id: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def test_author_written_chapter_can_be_read_confirmed_and_approved_without_a_chapter_run(client, session) -> None:
+def test_author_written_chapter_can_be_read_and_approved_without_a_chapter_run(client, session) -> None:
     seeded = _author_written_chapter(client, session, scene_texts=["林昭在雨里拆开旧信。", "案卷的最后一页被人撕走了。"])
     base = f"/api/v1/projects/{seeded['project_id']}/chapters/{seeded['chapter_id']}"
+    body_hash = client.get(f"/api/v1/chapter-manuscripts/{seeded['chapter_id']}").json()["data"]["body_hash"]
+    assert body_hash == _assembled_hash(session, seeded["chapter_id"])
 
-    confirmed = _post(client, f"{base}/read-confirm", {"note": "通读过整章。"}).json()["data"]
-    assert confirmed["body_hash"] == _assembled_hash(session, seeded["chapter_id"])
-
-    approved = _post(client, f"{base}/approve-final", {"revision_notes": "定稿。"}).json()["data"]
+    approved = _post(
+        client,
+        f"{base}/approve-final",
+        {"revision_notes": "定稿。", "read_confirmation": {"body_hash": body_hash, "note": "通读过整章。"}},
+    ).json()["data"]
     assert approved["approved_chapter_id"] == seeded["chapter_id"]
-    assert approved["approval_note"]["body_hash"] == confirmed["body_hash"]
+    assert approved["approval_note"]["body_hash"] == body_hash
     session.expire_all()
     assert session.get(ChapterGoal, seeded["chapter_id"]).state == "approved"
     assert session.get(StoryProject, seeded["project_id"]).status == "completed"
@@ -118,9 +119,9 @@ def test_approval_keeps_the_linear_rule_for_author_written_chapters(client, sess
     assert response.json()["error"]["code"] == "PROJECT_CHAPTER_NOT_CURRENT"
 
 
-def test_read_confirmation_binds_the_assembled_finals_not_a_stale_aggregate(client, session) -> None:
+def test_approval_binds_the_assembled_finals_not_a_stale_aggregate(client, session) -> None:
     """R13 探针 c：流水线只在章末一场归档时重建章汇总。最后一场先归档、前面一场后归档，汇总就漏了前面那场；
-    定稿绑定的必须是成稿中心读到的逐场终稿，而不是这份过期汇总。"""
+    定稿绑定的必须是成稿中心读到的逐场终稿，而不是这份过期汇总——带着汇总的哈希来定稿是 409。"""
     project_id, chapter_id = "PRJ_FINAL_R13", "PRJ_FINAL_R13_CH01"
     session.add(
         StoryProject(
@@ -168,7 +169,6 @@ def test_read_confirmation_binds_the_assembled_finals_not_a_stale_aggregate(clie
         Archiver(session).archive_final_scene(scene_id, final_id, carry_notes_json=[])
         if session.get(SceneCard, scene_id).is_chapter_last == 1:
             Aggregator(session).run_final_aggregate(chapter_id)
-        CanonContinuityService(session).verify_scene_complete(project_id, scene_id, actor_ref="author", note="核对过。")
         session.commit()
 
     pipeline_archive(2, "第二场（本章最后一场）先起草、先归档。")
@@ -176,13 +176,23 @@ def test_read_confirmation_binds_the_assembled_finals_not_a_stale_aggregate(clie
     detail = ChapterManuscriptService(session).manuscript_detail(chapter_id)
     assert detail["comparison_status"] == "aggregate_differs_current"
     assert "第一场" in detail["assembled"]["content"]
+    assert "第一场" not in detail["aggregate"]["content"]
+    assert detail["body_hash"] == _assembled_hash(session, chapter_id)
+    base = f"/api/v1/projects/{project_id}/chapters/{chapter_id}"
 
-    confirmed = _post(client, f"/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm").json()["data"]
-    assert confirmed["body_hash"] == _assembled_hash(session, chapter_id)
-    assert confirmed["body_source"] == "assembled"
-    assert detail["body_hash"] == confirmed["body_hash"]
-    packet = client.get(f"/api/v1/projects/{project_id}/dashboard").json()["data"]["review_packet"]
-    assert "第一场" in packet["body"]
+    aggregate_hash = hashlib.sha256(detail["aggregate"]["content"].encode("utf-8")).hexdigest()
+    stale = _post(client, f"{base}/approve-final", {"read_confirmation": {"body_hash": aggregate_hash}}, expect=409)
+    assert stale.json()["error"]["code"] == "CHAPTER_FINAL_BODY_CHANGED"
+
+    approved = _post(client, f"{base}/approve-final", {"read_confirmation": {"body_hash": detail["body_hash"]}}).json()["data"]
+    assert approved["approval_note"]["body_hash"] == detail["body_hash"]
+    read_log = session.execute(
+        select(OperationLog.payload_json).where(
+            OperationLog.event_type == "chapter_final_read_confirmed", OperationLog.object_ref == chapter_id
+        )
+    ).scalar_one()
+    assert read_log["body_source"] == "assembled"
+    assert read_log["char_count"] == len(detail["assembled"]["content"])
 
 
 def test_approve_final_folds_the_read_confirmation_and_binds_the_body_hash(client, session) -> None:
@@ -230,18 +240,23 @@ def test_approve_final_refuses_a_folded_read_confirmation_without_the_read_body_
     """
     seeded = _author_written_chapter(client, session, scene_texts=["林昭把旧信压回案卷最底下。"])
     project_id, chapter_id = seeded["project_id"], seeded["chapter_id"]
-    http = client.post(
-        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
-        json={"read_confirmation": {}},
-        headers={"X-Idempotency-Key": "final-approval-folded-without-hash"},
-    )
-    assert http.status_code == 422, http.text
+    for index, body in enumerate(({"read_confirmation": {}}, {}, {"revision_notes": "定稿。"}, None)):
+        kwargs = {"headers": {"X-Idempotency-Key": f"final-approval-folded-without-hash-{index}"}}
+        if body is not None:
+            kwargs["json"] = body
+        http = client.post(f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final", **kwargs)
+        assert http.status_code == 422, (body, http.text)
 
     service = ProjectChapterFlowService(session)
     for folded in ({}, {"note": "读过了。"}, {"body_hash": "   ", "note": "读过了。"}, {"body_hash": None}):
         with pytest.raises(DomainError) as refused:
             service.approve_final(project_id, chapter_id, {"read_confirmation": folded})
         assert (refused.value.code, refused.value.status_code) == ("CHAPTER_READ_CONFIRM_INVALID", 400), folded
+    # 不带「已通读」直接调服务：以前走两步路去找先前单独记下的通读确认；那条路删了，没带就是没读过
+    for payload in (None, {}, {"revision_notes": "定稿。"}, {"read_confirmation": None}, {"read_confirmation": "abc"}):
+        with pytest.raises(DomainError) as refused:
+            service.approve_final(project_id, chapter_id, payload)
+        assert (refused.value.code, refused.value.status_code) == ("CHAPTER_READ_CONFIRM_INVALID", 400), payload
     session.flush()
     session.expire_all()
     assert session.get(ChapterGoal, chapter_id).state != "approved"
