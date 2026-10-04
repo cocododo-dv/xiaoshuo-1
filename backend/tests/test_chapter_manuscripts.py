@@ -241,7 +241,8 @@ def test_chapter_manuscript_scan_reads_the_manuscript_not_a_stale_aggregate(clie
     assert scan["hit_count"] == 0 and scan["hits"] == []
 
 
-def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(client, session) -> None:
+def test_chapter_manuscript_detail_reports_statuses_and_excludes_trashed_records(client, session) -> None:
+    """成稿中心逐章读详情：回收站里的场不算进这一章，进了回收站的章读不到（以前由全库清单那条路由验，R15a(g) 删了它）。"""
     _create_chapter("CHM300", goal="Visible chapter")
     _create_scene("CHM300_SC01", chapter_id="CHM300", scene_seq=1)
     _create_scene("CHM300_SC02", chapter_id="CHM300", scene_seq=2, is_chapter_last=1)
@@ -264,16 +265,21 @@ def test_chapter_manuscript_list_reports_statuses_and_excludes_trashed_records(c
     )
     assert trash_scene.status_code == 200
 
-    response = client.get("/api/v1/chapter-manuscripts")
+    response = client.get("/api/v1/chapter-manuscripts/CHM300")
 
     assert response.status_code == 200
-    items = response.json()["data"]["items"]
-    assert [item["chapter_id"] for item in items] == ["CHM300"]
-    assert items[0]["scene_count"] == 2
-    assert items[0]["generated_scene_count"] == 1
-    assert items[0]["missing_scene_ids"] == ["CHM300_SC02"]
-    assert items[0]["completion_status"] == "partial"
-    assert items[0]["comparison_status"] == "aggregate_missing"
+    data = response.json()["data"]
+    assert data["chapter"]["chapter_id"] == "CHM300"
+    assert data["assembled"]["scene_count"] == 2
+    assert data["assembled"]["generated_scene_count"] == 1
+    assert [scene["scene_id"] for scene in data["scenes"]] == ["CHM300_SC01", "CHM300_SC02"]
+    assert data["missing_scene_ids"] == ["CHM300_SC02"]
+    assert data["completion_status"] == "partial"
+    assert data["comparison_status"] == "aggregate_missing"
+
+    trashed = client.get("/api/v1/chapter-manuscripts/CHM301")
+    assert trashed.status_code == 409
+    assert trashed.json()["error"]["code"] == "CHAPTER_TRASHED"
 
 
 def test_chapter_manuscript_empty_chapter_and_active_aggregate_fallback(client, session) -> None:
