@@ -122,6 +122,10 @@ class CanonicalSceneService:
     publishes the exact author revision but leaves its continuity ledger pending;
     ``facts_unchanged`` may carry a previously committed ledger forward. Silently
     retaining unreviewed narrative events is forbidden.
+
+    「事实不变」只在来源那一版终稿的正史确实核对过时才沿用（:meth:`_carries_facts`）；没有可沿用的（第一次晋升、
+    上一版从没核对过）就和「需要重新核对」一样发布，正史待核对——以前这里 409，写作台的「提升为权威正文」在没核对过
+    正史的场上永远失败（B2-2）。
     """
 
     def __init__(self, session: Session) -> None:
@@ -270,7 +274,9 @@ class CanonicalSceneService:
         if base.project_id:
             canon_service = CanonContinuityService(self.session)
             canon_continuity = canon_service.scene_status(base.project_id, base.scene.scene_id)
-            if request.narrative_effect == "facts_unchanged" and not canon_continuity["complete"]:
+            if not canon_continuity["complete"] and self._carries_facts(
+                request, base, source_final_scene_row_id=current_final.parent_final_scene_row_id
+            ):
                 canon_continuity = canon_service.carry_forward_facts_unchanged(
                     current_final.row_id,
                     source_final_scene_row_id=current_final.parent_final_scene_row_id,
@@ -362,6 +368,12 @@ class CanonicalSceneService:
         FinalTextGateService.raise_if_not_archivable(final_text_gate, scene_id=scene.scene_id)
         content_hash = gate_content_hash
         safety_scan = final_text_gate.get("source_safety") or {"safe": True}
+        # 实际按哪一种发布：作者说「事实不变」、可来源那一版的正史没核对过（或根本没有上一版），就按「需要重新核对」
+        narrative_effect = (
+            "facts_unchanged"
+            if self._carries_facts(request, base, source_final_scene_row_id=current_final_id)
+            else "requires_reconcile"
+        )
 
         final = self._write_final(
             draft,
@@ -372,6 +384,7 @@ class CanonicalSceneService:
             same_author_revision=same_author_revision,
             source_bundle=source_bundle,
             actor_ref=actor_ref,
+            narrative_effect=narrative_effect,
         )
 
         carry_notes = [
@@ -380,7 +393,7 @@ class CanonicalSceneService:
                 "actor_ref": actor_ref or "operator",
                 "draft_id": draft.draft_id,
                 "draft_revision_no": request.base_revision_no,
-                "narrative_effect": request.narrative_effect,
+                "narrative_effect": narrative_effect,
             }
         ]
         if same_author_revision:
@@ -409,7 +422,7 @@ class CanonicalSceneService:
         canon_continuity = dict(archive_result.get("canon_continuity") or {})
         if (
             base.project_id
-            and request.narrative_effect == "facts_unchanged"
+            and narrative_effect == "facts_unchanged"
             and not canon_continuity.get("complete")
         ):
             canon_continuity = CanonContinuityService(
@@ -453,8 +466,9 @@ class CanonicalSceneService:
                     "final_scene_row_id": final.row_id,
                     "content_hash": content_hash,
                     "already_current": same_author_revision,
-                    "narrative_effect": request.narrative_effect,
-                    "narrative_events_preserved": request.narrative_effect == "facts_unchanged",
+                    "narrative_effect": narrative_effect,
+                    "requested_narrative_effect": request.narrative_effect,
+                    "narrative_events_preserved": narrative_effect == "facts_unchanged",
                     "narrative_sync_status": state.narrative_sync_status,
                     "accepted_warning_codes": request.accepted_warning_codes,
                     "source_safety_scan": safety_scan,
@@ -504,8 +518,11 @@ class CanonicalSceneService:
         same_author_revision: bool,
         source_bundle: SceneBundle | None,
         actor_ref: str,
+        narrative_effect: str,
     ) -> FinalScene:
-        """发布：草稿修订 CAS（顺带记下晋升证据）→ 新一版 FinalScene → 运行状态指针 CAS → 旧一版标为被取代。"""
+        """发布：草稿修订 CAS（顺带记下晋升证据）→ 新一版 FinalScene → 运行状态指针 CAS → 旧一版标为被取代。
+
+        ``narrative_effect`` 是实际按哪一种发布（:meth:`_publish` 定的），不一定是请求里的那一种。"""
         scene, state, current_final = base.scene, base.state, base.current_final
         if base.state_is_new:
             # Creating missing runtime state is authoritative; keep it behind the
@@ -575,7 +592,7 @@ class CanonicalSceneService:
             self.session.flush()
 
         target_sync_status = (
-            "synced" if request.narrative_effect == "facts_unchanged" else "pending_extraction"
+            "synced" if narrative_effect == "facts_unchanged" else "pending_extraction"
         )
         state_condition = SceneRunState.current_final_scene_row_id.is_(None)
         if request.expected_final_id is not None:
@@ -608,6 +625,25 @@ class CanonicalSceneService:
             current_final.superseded_by_final_scene_row_id = new_final_id
         assert final is not None
         return final
+
+    def _carries_facts(
+        self,
+        request: "_PromotionRequest",
+        base: "_PromotionBase",
+        *,
+        source_final_scene_row_id: str | None,
+    ) -> bool:
+        """这次晋升沿不沿用来源那一版的事实：作者说了「事实不变」，且来源那一版的正史核对过、现在仍有效。
+
+        没有作品归属的旧行不进正史（归档给的是 unavailable），它们的「事实不变」照旧只决定运行状态写成 synced。
+        """
+        if request.narrative_effect != "facts_unchanged":
+            return False
+        if not base.project_id:
+            return True
+        return CanonContinuityService(self.session).facts_committed(
+            source_final_scene_row_id, scene=base.scene, project_id=base.project_id
+        )
 
     def _complete_derivation(
         self,
