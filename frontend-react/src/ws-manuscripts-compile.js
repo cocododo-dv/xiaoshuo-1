@@ -7,7 +7,7 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
    · 服务端权威稿的判定（正文齐没齐、能不能批准，卡在哪一步）；正史核对不在其中（可选，不拦批准与导出）；
    · 目录章 + 服务端聚合快照 → 阅读器用的逐场正文；
    · 目录 → 左栏的章行、分组与整书进度格；
-   · 导出：把一个范围内的章编译成 Markdown / 纯文本 / Word 兼容 HTML。
+   · 导出：把一个范围内的章编译成 Markdown / 纯文本 / Word 兼容 HTML（没写齐的章照样导出，缺的场留一行占位）。
    快照一律由调用方传入（通常是 WsManuStore.snapshot 的结果），这里不读 store、
    不碰 DOM、不写 window——所以能直接单测。
    ========================================================== */
@@ -178,7 +178,12 @@ export function manuFirstMissingScene(chapter, snapshot) {
 
 /* ---------- 导出 ---------- */
 
-/* 一个范围能不能导出；能就返回空串。snapshotOf(chapter) 给出该章的服务端快照。 */
+/* 导出文件里缺终稿的那一场留的一行：缺口写在明处，没写齐的章不会被当成写齐的一章 */
+export const MANU_MISSING_SCENE_LINE = "（本场还没有终稿）";
+
+/* 一个范围能不能导出；能就返回空串。snapshotOf(chapter) 给出该章的服务端快照。
+   没同步、读失败、还在读的章拦下（编译只认刚从服务端读到的终稿）；读到了就能导出，写没写齐、正史核没核都不管——
+   只有整个范围一个字的终稿都没有才拒绝。缺几场由 manuScopeNote 另说一句（2026-10：以前要每章写齐、正史核完才肯导出）。 */
 export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   const selected = (chapters || []).filter((c) => scopeIds.includes(c.id));
   if (!selected.length) return "该范围内没有章节。";
@@ -189,9 +194,21 @@ export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   if (failed) return (failed.error && failed.error.message) || "服务端正文加载失败。";
   const pending = snapshots.filter((snapshot) => snapshot.status === "idle" || snapshot.status === "loading");
   if (pending.length) return `正在核验 ${pending.length} 章服务端正文…`;
-  const incomplete = snapshots.filter((snapshot) => !manuCanonicalComplete(snapshot));
-  if (incomplete.length) return `有 ${incomplete.length} 章仍缺场景正文，暂不能导出。`;
+  const anyText = selected.some((c, i) => { const body = manuBuildBody(c, snapshots[i]); return !!(body && body.live); });
+  if (!anyText) return "该范围内还没有终稿正文。";
   return "";
+}
+
+/* 能导出、但范围里有没写齐的章时的一句说明（不是错误）；都写齐了就是空串。 */
+export function manuScopeNote(chapters, scopeIds, snapshotOf) {
+  let short = 0;
+  let missing = 0;
+  (chapters || []).filter((c) => scopeIds.includes(c.id)).forEach((c) => {
+    const body = manuBuildBody(c, snapshotOf ? snapshotOf(c) : null);
+    const gaps = body ? body.scenes.filter((s) => s.missing).length : 0;
+    if (gaps) { short += 1; missing += gaps; }
+  });
+  return short ? `其中 ${short} 章还不完整（缺 ${missing} 场），文件里每个缺的场留一行「${MANU_MISSING_SCENE_LINE}」。` : "";
 }
 
 /* 导出里的章标题用完整章名（不截断）；和 labels 里的同名 chapterHeading（章号 / 章名两段）不是一回事，所以另起名字 */
@@ -225,7 +242,8 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
       if (body) {
         body.scenes.forEach((s) => {
           chunks.push(`### ${s.idx} · ${s.title}\n`);
-          s.paras.forEach((p) => chunks.push(p + "\n"));
+          if (s.missing) chunks.push(MANU_MISSING_SCENE_LINE + "\n");
+          else s.paras.forEach((p) => chunks.push(p + "\n"));
         });
       } else {
         chunks.push("（本章尚无正文）\n");
@@ -242,8 +260,16 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
     const chunks = [title + "\n"];
     bodies.forEach(({ c, body }) => {
       chunks.push(`\n\n${fullChapterTitle(c)}\n`);
-      if (body) body.scenes.forEach((s) => { chunks.push(""); s.paras.forEach((p) => chunks.push("    " + p)); });
-      else chunks.push("（本章尚无正文）");
+      // 段首缩进两个全角空格（中文排版的习惯；以前是四个半角空格）
+      if (body) {
+        body.scenes.forEach((s) => {
+          chunks.push("");
+          if (s.missing) chunks.push(MANU_MISSING_SCENE_LINE);
+          else s.paras.forEach((p) => chunks.push("\u3000\u3000" + p));
+        });
+      } else {
+        chunks.push("（本章尚无正文）");
+      }
     });
     return { name: `${title}.txt`, content: chunks.join("\n"), mime: "text/plain;charset=utf-8" };
   }
@@ -257,7 +283,8 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
     html += `<h2>${esc(fullChapterTitle(c))}</h2>`;
     if (body) {
       body.scenes.forEach((s) => {
-        html += `<h3>${esc(s.idx)} · ${esc(s.title)}</h3>` + s.paras.map((p) => `<p>${esc(p)}</p>`).join("");
+        html += `<h3>${esc(s.idx)} · ${esc(s.title)}</h3>`
+          + (s.missing ? `<p>${esc(MANU_MISSING_SCENE_LINE)}</p>` : s.paras.map((p) => `<p>${esc(p)}</p>`).join(""));
       });
     } else {
       html += "<p>（本章尚无正文）</p>";

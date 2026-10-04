@@ -76,6 +76,7 @@
 .ms-export-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-1); }
 .ms-export-status { min-width: 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
 .ms-export-status.is-error { color: var(--danger-ink); }
+.ms-export-note { margin: 0 0 10px; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--warn-ink); }
 
 /* ---------- List ---------- */
 .ms-list {

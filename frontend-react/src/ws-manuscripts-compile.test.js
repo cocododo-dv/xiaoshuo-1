@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
-  manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScopeProblem,
+  manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScopeNote, manuScopeProblem,
 } from "./ws-manuscripts-compile.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -120,12 +120,48 @@ describe("左栏与进度格", () => {
 describe("导出", () => {
   const snapshotOf = (c) => (c.backendId === "c1" ? COMPLETE : { status: "idle", body: null, error: null });
 
-  it("范围问题：没章 / 没同步 / 还在核验 / 缺正文，都说清楚；全齐了返回空串", () => {
+  const PARTIAL = ready({ ...COMPLETE.body, completion: "partial", missingSceneIds: ["s2"], scenes: [COMPLETE.body.scenes[0]] });
+  const EMPTY = ready({ completion: "empty", missingSceneIds: ["s1", "s2"], canonContinuity: null, scenes: [] });
+
+  it("范围问题：没章 / 没同步 / 加载失败 / 还在核验都说清楚；全齐了返回空串", () => {
     const chapters = [chapter(), chapter({ id: "ch02", backendId: "" })];
     expect(manuScopeProblem(chapters, [], snapshotOf)).toBe("该范围内没有章节。");
     expect(manuScopeProblem(chapters, ["ch02"], snapshotOf)).toBe("有 1 章尚未同步到服务端。");
     expect(manuScopeProblem([chapter({ backendId: "c9" })], ["ch01"], snapshotOf)).toBe("正在核验 1 章服务端正文…");
+    expect(manuScopeProblem([chapter()], ["ch01"], () => ({ status: "error", body: null, error: { message: "服务暂时不可用" } }))).toBe("服务暂时不可用");
     expect(manuScopeProblem(chapters, ["ch01"], snapshotOf)).toBe("");
+  });
+
+  it("没写齐的章照样能导出（正史也不看）；整个范围一个字的终稿都没有才拒绝", () => {
+    const two = [chapter(), chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" })];
+    const partialOf = (c) => (c.backendId === "c1" ? PARTIAL : EMPTY);
+    expect(manuScopeProblem(two, ["ch01"], partialOf)).toBe("");
+    expect(manuScopeProblem(two, ["ch01", "ch02"], partialOf)).toBe("");
+    const unverified = ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_scene_ids: ["s1"] } });
+    expect(manuScopeProblem(two, ["ch01"], () => unverified)).toBe("");
+    expect(manuScopeProblem(two, ["ch02"], partialOf)).toBe("该范围内还没有终稿正文。");
+  });
+
+  it("范围说明：有没写齐的章时说一句几章缺几场（不是错误）；全齐了、还没核验完都是空串", () => {
+    const two = [chapter(), chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" })];
+    const partialOf = (c) => (c.backendId === "c1" ? PARTIAL : EMPTY);
+    expect(manuScopeNote(two, ["ch01"], partialOf)).toBe("其中 1 章还不完整（缺 1 场），文件里每个缺的场留一行「（本场还没有终稿）」。");
+    expect(manuScopeNote(two, ["ch01", "ch02"], partialOf)).toBe("其中 2 章还不完整（缺 3 场），文件里每个缺的场留一行「（本场还没有终稿）」。");
+    expect(manuScopeNote(two, ["ch01"], snapshotOf)).toBe("");
+    expect(manuScopeNote(two, ["ch02"], snapshotOf)).toBe("");
+  });
+
+  it("缺终稿的场在三种格式里都留一行「（本场还没有终稿）」，不会被当成写齐的一章", () => {
+    const partialOf = () => PARTIAL;
+    const md = manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "md", { snapshotOf: partialOf }).content;
+    expect(md).toContain("### 01 · 交班\n\n潮水退去。");
+    expect(md).toContain("### 02 · 夜渡\n\n（本场还没有终稿）");
+    const txt = manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "txt", { snapshotOf: partialOf }).content;
+    expect(txt).toContain("　　闸门上有字。\n\n（本场还没有终稿）");
+    const doc = manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "doc", { snapshotOf: partialOf }).content;
+    expect(doc).toContain("<h3>02 · 夜渡</h3><p>（本场还没有终稿）</p>");
+    // 写齐的章里没有占位
+    expect(manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "md", { snapshotOf }).content).not.toContain("本场还没有终稿");
   });
 
   it("Markdown：书名、目录、「第 N 章 · 章名」、逐场段落、戏剧卡附录", () => {
@@ -141,9 +177,10 @@ describe("导出", () => {
     expect(out.content).toContain("> 戏剧卡 — 核心承诺：闸门背后是谁；主线推进：—；人物变化：—；结尾余味：灯");
   });
 
-  it("纯文本：段首缩进四格；没有快照的章写「本章尚无正文」", () => {
+  it("纯文本：段首缩进两个全角空格（中文排版的习惯）；没有快照的章写「本章尚无正文」", () => {
     const out = manuCompile({ title: "测试长篇" }, [chapter(), chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" })], ["ch01", "ch02"], "txt", { snapshotOf });
-    expect(out.content).toContain("    潮水退去。");
+    expect(out.content).toContain("\n　　潮水退去。\n　　闸门上有字。");
+    expect(out.content).not.toContain("    潮水退去。");
     expect(out.content).toContain("第 2 章 · 雾里的灯\n");
     expect(out.content).toContain("（本章尚无正文）");
   });

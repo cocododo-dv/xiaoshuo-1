@@ -572,6 +572,56 @@ describe("成稿中心 · 阶段、下一步与空态", () => {
     expect(pop.textContent).not.toContain("该范围内没有章节");
   });
 
+  it("统一导出：没写齐的章也能导出——范围说明讲几章缺几场（不是错误），文件里缺的场留一行占位", async () => {
+    flow.snapshot.mockReturnValue(readySnapshot(PARTIAL));
+    const blobs = [];
+    const hadCreate = URL.createObjectURL;
+    const hadRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((blob) => { blobs.push(blob); return "blob:manuscript"; });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      const host = await renderPage([planned()]);
+      await click(host.querySelector(".ms-export-btn"));
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      const pop = host.querySelector(".ms-export-pop");
+      const run = pop.querySelector('[data-testid="manuscript-export-run"]');
+      expect(run.disabled).toBe(false);
+      expect(pop.querySelector(".ms-export-status").classList.contains("is-error")).toBe(false);
+      expect(pop.querySelector('[role="alert"]')).toBeNull();
+      expect(pop.querySelector('[data-testid="manuscript-export-note"]').textContent)
+        .toBe("其中 1 章还不完整（缺 1 场），文件里每个缺的场留一行「（本场还没有终稿）」。");
+
+      await click(run);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(blobs).toHaveLength(1);
+      // jsdom 的 Blob 没有 text()：用 FileReader 读回导出的 Markdown
+      const md = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsText(blobs[0]);
+      });
+      expect(md).toContain("### 01 · 交班\n\n第一场的正文。");
+      expect(md).toContain("### 02 · 夜渡\n\n（本场还没有终稿）");
+    } finally {
+      URL.createObjectURL = hadCreate;
+      URL.revokeObjectURL = hadRevoke;
+    }
+  });
+
+  it("统一导出：范围里一个字的终稿都没有才拒绝，说的是没有终稿正文，不是「缺场景正文」", async () => {
+    const empty = { completion: "empty", missingSceneIds: ["s1", "s2"], canonContinuity: null, scenes: [] };
+    flow.snapshot.mockReturnValue(readySnapshot(empty));
+    const host = await renderPage([planned()]);
+    await click(host.querySelector(".ms-export-btn"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const pop = host.querySelector(".ms-export-pop");
+    expect(pop.querySelector('[data-testid="manuscript-export-run"]').disabled).toBe(true);
+    expect(pop.querySelector(".ms-export-status").textContent).toBe("该范围内还没有终稿正文。");
+    expect(pop.querySelector('[data-testid="manuscript-export-note"]')).toBeNull();
+  });
+
   it("统一导出：打开时焦点进面板（读屏报出对话框名）；焦点离开这一块就收起，只是掉到空处不收", async () => {
     const host = await renderPage("review");
     const btn = host.querySelector(".ms-export-btn");
