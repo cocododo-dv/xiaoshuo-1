@@ -53,8 +53,10 @@
 现在 `slug = scene_id`。前端（`ws-catalog.jsx`）：
 
 - `sid` = 后端给的 slug（= `scene_id`）。
-- `WsCatalog.sceneById(x)`：直接命中 → 会话内别名（乐观创建时的临时 sid `tmp_…`，建好之后经 `catTrackAliases` 仍解析到同一场）。别的都不认：位置式的 `ch08s3` 解析不到任何一场，这样的旧深链打开的是默认那一场。
-- 2026-09-19 换身份时有过一次本机旧键迁移（标记 `ws_sid_migrated_v1::<work>`，把按位置式 sid 落地的 `wr-doc:` / `wr-doc-pending:` / `wr-notes:` / `wr-notes-pending:` / `scn-run:` 键与 `scn-queue:v1` / `scn-queue-dismissed:v1` 名单挪到新 sid）和与之配套的 `legacy_slug` / `legacySid` 兜底；按约定再留了一轮，2026-10-03 重构上线后删除（R16）。浏览器里没迁过的旧键原样留着、不再读；其中没同步的正文由写作台的孤儿标记清扫收进「同步与恢复」。
+- `WsCatalog.sceneById(x)`：直接命中 → 会话内别名（乐观创建时的临时 sid `tmp_…`，建好之后经 `catTrackAliases` 仍解析到同一场）。别的都不认：位置式的 `ch08s3` 不再解析到任何一场（返回 `null`）。
+- 2026-09-19 换身份时有过一次本机旧键迁移（标记 `ws_sid_migrated_v1::<work>`，把按位置式 sid 落地的 `wr-doc:` / `wr-doc-pending:` / `wr-notes:` / `wr-notes-pending:` / `scn-run:` 键与 `scn-queue:v1` / `scn-queue-dismissed:v1` 名单挪到新 sid）和与之配套的 `legacy_slug` / `legacySid` 兜底；按约定再留了一轮，2026-10-03 重构上线后删除（R16），本机不做任何清扫。没迁过的旧键从此：
+  - 正文：标着未同步的（`wr-doc-pending:<旧 sid>`）照旧由写作台的孤儿标记清扫（`wr-doc-sync.js` 的 `sweepOrphanMarkers`）处理——旧 sid 在目录里查不到，这一场本机那一稿（`wr-doc:<旧 sid>`）复制进「同步与恢复」并提示作者，然后这两个键删掉（没有作者文字的直接删）。没有未同步标记的 `wr-doc:` 只是服务端已有那一稿的读缓存，原样留着、不再读。
+  - 其余（`wr-notes:` / `wr-notes-pending:` / `scn-run:` 与两份名单）原样留着、不再读。只在 09-14 到 09-19 之间打开过这部作品、之后再没打开过的浏览器里，按位置式键存着的未同步场景笔记会留在 localStorage 里，但不再显示（接受的残余）。
 - 概览接口的 `resume.scene_slug` 同样是稳定 id；章内第几场另给 `resume.scene_no`。
 
 章 slug 仍是位置式的 `chNN`：它只当显示序号和界面键用，章上的写操作都在调用当刻解析后端 id。后端的章 id 自阶段 Y 起钉在章计划上、不再有位置含义（§9）。

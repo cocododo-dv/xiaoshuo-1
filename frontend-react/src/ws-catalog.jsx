@@ -149,7 +149,7 @@ function catNotify() {
 
 /* sid 解析：直接命中 → 会话内别名（乐观创建的临时 sid，建好之后后端给的是稳定 id）。别的都不认：
    2026-09-19 之前的位置式 sid（ch08s3）的兜底与本机旧键的一次性迁移已在重构上线后删除（R16），
-   那样的深链打开的是默认那一场。 */
+   这样的 sid 不再解析到任何一场（返回 null）。 */
 function catResolveScene(workId, sid) {
   if (!sid) return null;
   const chapters = catLoad(workId);
