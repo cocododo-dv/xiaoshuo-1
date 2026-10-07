@@ -163,7 +163,7 @@ function ManuExport({ ctx }) {
 
   return (
     <div className="ms-export">
-      {/* 整书导出是次要动作：这一页唯一的实心主按钮留给阅读器页脚里这一章的下一步（续写 / 送审 / 批准） */}
+      {/* 整书导出是次要动作：这一页唯一的实心主按钮留给阅读器页脚里这一章的下一步（续写 / 批准） */}
       <button ref={btnRef} type="button" className={`btn btn-ghost ms-export-btn ${open ? "is-open" : ""}`} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((o) => !o)}>
         <I.UploadCloud size={15} /> 统一导出
       </button>
