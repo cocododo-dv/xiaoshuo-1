@@ -263,15 +263,6 @@ def test_drafting_prompts_print_no_canned_goal_line(session) -> None:
         assert CANNED_MARK not in json.dumps(item["inline_digests"], ensure_ascii=False)
     assert "## Chapter Goal" not in PromptBuilder().build(blueprint, "scene_blueprint")["user_prompt"]
 
-    # 编辑批评（可选的自动批评）提示里的「Scene goal」
-    from novel_system.services.scene_run.critique import AutoCritiqueCheckpointMixin
-
-    class _Dispatch(AutoCritiqueCheckpointMixin):
-        def __init__(self, db) -> None:
-            self.session = db
-
-    assert _Dispatch(session)._scene_critique_context(blank, None).scene_goal == ""
-
     # 作者写的章目标照旧印
     chapter.chapter_goal = AUTHORED_GOAL
     session.commit()

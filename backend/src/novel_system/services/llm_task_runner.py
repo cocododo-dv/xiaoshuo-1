@@ -213,7 +213,6 @@ LLM_PROVIDER_DISABLED_MESSAGE = "Live LLM execution is disabled in this runtime.
 # guard (which would reject a routeless pseudo-node with a missing provider_id). The
 # borrowed node sits in the same provider/model tier as the conceptual task.
 _AD_HOC_ROUTE_ALIASES: dict[str, str] = {
-    "auto_critique_llm": "soft_qc",          # §8 independent LLM editor critic
     "narrative_event_extract": "extraction",  # §2 prose event extraction
 }
 

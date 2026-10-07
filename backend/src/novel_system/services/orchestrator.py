@@ -1,7 +1,7 @@
 """场景运行编排器的门面：``Orchestrator`` 的构造函数，以及测试与旧调用方从这里取的名字。
 
 一场的实现分在 :mod:`novel_system.services.scene_run` 的各个 mixin 里（管线、生命周期、准终稿、软 QC、风格稿候选、
-bundle / 首稿 / 硬 QC 的读回、规划、自动批评、归档尾段、检查点内核），``Orchestrator`` 直接继承它们；mixin 之间只经
+bundle / 首稿 / 硬 QC 的读回、规划、归档尾段、检查点内核），``Orchestrator`` 直接继承它们；mixin 之间只经
 ``self`` 互调。
 
 测试依赖、要保持稳定的接缝：
@@ -13,10 +13,10 @@ bundle / 首稿 / 硬 QC 的读回、规划、自动批评、归档尾段、检�
 - 每次运行的四个字段 ``_execution_id`` / ``_run_job_id`` / ``_checkpoint_service`` / ``_lease_renewer``（测试直接设）；
 - 在类上打桩或在实例上覆盖的方法（``_run_scene_pipeline``、``_best_of_n_count``、``_reconcile_execution_step``、
   ``_run_archive_*``、``_archive_product``、``_archive_manifest``、``_record_*_events``、``_capture_failure_audits`` /
-  ``_restore_failure_audits``、``_near_final_warning_findings``、``_resolve_auto_critique_runner``、
+  ``_restore_failure_audits``、``_near_final_warning_findings``、
   ``_style_patch_keep_decision``、``_near_final_rewrite_drift``、``_resume_after_selection_pipeline`` …）——
   名字都留在 ``Orchestrator`` 上（继承来的），类上的打桩按 MRO 先于 mixin；
-- 在来源模块打桩、经模块属性调用的：``auto_critique.llm_auto_critique``、``scene_budget.can_spend``、
+- 在来源模块打桩、经模块属性调用的：``scene_budget.can_spend``、
   ``idempotency.owner_lease_ttl_seconds``、``scene_run.near_final_stage.assess_rewrite_regressions``。
 """
 
@@ -45,7 +45,6 @@ from novel_system.services.scene_run.constants import (
     STYLE_PATCH_REVERTED_SKIP_REASON,
     STYLE_PATCH_REVERTED_STOP_REASON,
 )
-from novel_system.services.scene_run.critique import AutoCritiqueCheckpointMixin
 from novel_system.services.scene_run.drafts import DraftCheckpointMixin
 from novel_system.services.scene_run.kernel import RunCheckpointKernelMixin
 from novel_system.services.scene_run.lifecycle import RunLifecycleMixin
@@ -84,7 +83,6 @@ class Orchestrator(
     StyleCandidatesMixin,
     DraftCheckpointMixin,
     PlanningCheckpointMixin,
-    AutoCritiqueCheckpointMixin,
     ArchiveCheckpointMixin,
     RunCheckpointKernelMixin,
 ):

@@ -90,7 +90,6 @@ class PipelineMixin:
             state=ctx.state,
             contract=ctx.contract,
             bundle=ctx.bundle,
-            criticality=ctx.criticality,
             planning=ctx.planning,
             hard_qc_payload=qc_decision_payload(ctx.hard_qc),
             style_generation=ctx.style_generation,
@@ -618,7 +617,7 @@ class PipelineMixin:
     def _phase_selection_gate(self, ctx: SceneRunContext) -> dict[str, Any] | None:
         """关键场景在候选之后暂停，等作者匿名终选（``selection_wait``）；暂停就返回运行结果，否则 None。"""
         # Wave 3（§5.5）：关键场景在候选生成后暂停编排——确定性坏稿淘汰 →
-        # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
+        # 匿名终选 gate；作者选择后经 resume-after-selection 从软 QC 继续。
         # 「§6.3 终选决定质量上界，归人」从推荐信号升级为强制暂停。
         # 风格参考 v3（L2）：按正文去重之后才数候选——作者手笔直起时没过门的修改槽位保留首稿原文，几个槽位可能
         # 是同一段字；只剩一份不同的正文就没有可选的，不能让作者对着一份稿子「终选」，管线照常往下走
@@ -669,17 +668,16 @@ class PipelineMixin:
         state: SceneRunState,
         contract,
         bundle: dict[str, Any],
-        criticality,
         planning,
         hard_qc_payload: dict[str, Any],
         style_generation,
         candidate_summaries: list[dict[str, Any]] | None,
         run_policy: str,
     ) -> dict:
-        """§5.5 顺序的后半段：批判修订 → 软 QC → near-final → 严格停点 → 归档。
+        """§5.5 顺序的后半段：软 QC → near-final → 严格停点 → 归档（软 QC 之前的自动批评已删，G4 B3-1b.1）。
 
-        run_scene 与 resume_after_selection 共用。可选支出（LLM 批判、补丁、
-        near-final 重写）过预算闸（§5.8 预算耗尽停止新调用、交付最佳稿）。
+        run_scene 与 resume_after_selection 共用。可选支出（软补丁、near-final 重写）过预算闸
+        （§5.8 预算耗尽停止新调用、交付最佳稿）。
         """
         scene_id = scene.scene_id
         strict_mode = run_policy == "strict"
@@ -699,15 +697,10 @@ class PipelineMixin:
                 run_policy=run_policy,
             )
 
-        # §8 reflexion-style auto-critique pass (after best-of-N selection, before soft QC).
-        # Default: rule-based pass only. Opt-in (NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED +
-        # llm_enabled) layers the independent LLM editor critic on top — degrades to
-        # rule-only on any runner error, never blocks (blueprint §8 + §15 honest-bounds).
         soft_qc, final_generation = self._ensure_soft_qc_subcheckpoints(
             scene=scene,
             contract=contract,
             bundle=bundle,
-            criticality=criticality,
             selected_style_generation=style_generation,
             optional_spend_allowed=_optional_spend_allowed,
         )
@@ -781,7 +774,7 @@ class PipelineMixin:
                 return result
 
         # Wave 3：旧的 near-final 后置 critical_scene_human_gate 被前移的候选终选
-        # gate 取代（§5.5 顺序——终选在批判修订/硬检查之前，此处不再二次人工门）。
+        # gate 取代（§5.5 顺序——终选在软 QC 之前，此处不再二次人工门）。
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
         soft_risk_event_id = soft_risk_acceptance_event_id(soft_qc)
@@ -995,12 +988,12 @@ class PipelineMixin:
         return warnings
 
     def _resume_after_selection_pipeline(self, scene_id: str) -> dict:
-        """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。
+        """Wave 3（§5.5/§6.3）：作者终选后从软 QC 续跑到归档。
 
         前置：终选 gate 已 selected，且持久化 checkpoint 已进入终选或
         终选后的软 QC / near-final 阶段。作者可见 scene_status 可能已提前
         发布为可恢复的 patch/revision 状态，不能把它当作 checkpoint 真值。
-        选中稿即后续批判/软 QC/near-final 的输入（§4.4 上限归人）。
+        选中稿即后续软 QC / near-final 的输入（§4.4 上限归人）。
         """
         scene = get_scene_or_404(self.session, scene_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -1026,7 +1019,7 @@ class PipelineMixin:
                 },
             )
         # Selection handoff bypasses the ordinary run prefix, so validate the
-        # durable lifecycle budget before any optional critique/QC provider work.
+        # durable lifecycle budget before any optional QC / patch provider work.
         self._validate_budget_checkpoint(state)
         selection_event_id = self._checkpoint_artifact(
             "selection_event_id",
@@ -1193,8 +1186,6 @@ class PipelineMixin:
         contract = self.execution_contract_service.get_or_create(
             scene_id, actor_ref="orchestrator"
         )
-        # 与首跑主管线同一入口：续跑同样喂入 §6.4 连续过渡计数，判定不降级。
-        criticality = classify_scene_with_context(self.session, scene)
         # 与首跑交给 _finalize_after_style 的是同一种值（B01-18：以前是只带五个字段的 SimpleNamespace）
         style_generation = StyleGenerationResult(
             row_id=draft.row_id,
@@ -1211,7 +1202,6 @@ class PipelineMixin:
             state=state,
             contract=contract,
             bundle=bundle,
-            criticality=criticality,
             planning=planning,
             hard_qc_payload=hard_qc_payload,
             style_generation=style_generation,

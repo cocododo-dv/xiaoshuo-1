@@ -9,6 +9,8 @@ from novel_system.db.models import (
     AttemptTracker,
     LlmCall,
     QcReport,
+    SceneCard,
+    SceneDraft,
     SceneRunState,
 )
 from novel_system.services.errors import DomainError
@@ -18,6 +20,7 @@ from novel_system.services.scene_generation import SceneGenerationService
 
 from tests.support.checkpoint_fakes import (
     _CountingGenerationClient,
+    _FailAfterStyle,
     _HardPassClient,
     _PassSoftQc,
     _SequencedSoftQc,
@@ -354,4 +357,66 @@ def test_complete_soft_prefix_tampered_qc0_blocks_without_provider_replay(sessio
 
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
     assert soft_qc.calls == calls
+    assert len(generation_client.requests) == provider_calls
+
+
+def test_soft_qc_input_is_the_selected_style_draft_with_no_critique_patch_before_it(session) -> None:
+    """自动批评删了（G4 B3-1b.1）：没有绑定参考书的作品，风格稿进软 QC 之前不再先过一遍规则 / LLM 批评、发一次
+    风格补丁——软 QC 是唯一提出改稿的地方。软 QC 第 0 步只记 soft_input（就是选定的风格稿本身）。"""
+    _seed_resume_scene(session)
+    # 章末场是「标准」关键度：以前这一级不跳批评，规则批评一命中就先发一次风格补丁
+    scene = session.get(SceneCard, "CH_RESUME_SC01")
+    scene.is_chapter_last = 1
+    session.commit()
+    generation_client = _CountingGenerationClient()
+    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
+        Orchestrator(
+            session,
+            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+            soft_qc_engine=_FailAfterStyle(),
+        ).run_scene("CH_RESUME_SC01", execution_id="idempotency:soft-input-no-critique")
+
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    refs = state.run_checkpoint_json["artifact_refs"]
+    assert state.run_checkpoint == "soft_qc_ready"
+    assert state.run_checkpoint_json["sub_index"] == 0
+    assert refs["soft_input_draft_row_id"] == refs["soft_input_source_draft_row_id"]
+    assert session.get(SceneDraft, refs["soft_input_draft_row_id"]).stage != "style_patch"
+    assert not [key for key in refs if "critique" in key]
+    assert not [key for key in state.run_checkpoint_json["artifact_hashes"] if "critique" in key]
+    assert len(generation_client.requests) == 2
+    assert session.scalar(
+        select(LlmCall.llm_call_id).where(LlmCall.execution_step_key.like("%critique%"))
+    ) is None
+
+
+def test_soft_input_pointing_at_another_draft_blocks_resume_without_replay(session) -> None:
+    _seed_resume_scene(session)
+    generation_client = _CountingGenerationClient()
+
+    def orchestrator(soft_qc_engine) -> Orchestrator:
+        return Orchestrator(
+            session,
+            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+            soft_qc_engine=soft_qc_engine,
+        )
+
+    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
+        orchestrator(_FailAfterStyle()).run_scene("CH_RESUME_SC01", execution_id="idempotency:soft-input-tamper")
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    payload = dict(state.run_checkpoint_json)
+    refs = dict(payload["artifact_refs"])
+    refs["soft_input_draft_row_id"] = state.current_neutral_draft_row_id
+    payload["artifact_refs"] = refs
+    state.run_checkpoint_json = payload
+    session.commit()
+    provider_calls = len(generation_client.requests)
+    soft_qc = _PassSoftQc(session)
+
+    with pytest.raises(DomainError) as corrupt:
+        orchestrator(soft_qc).run_scene("CH_RESUME_SC01", execution_id="idempotency:soft-input-tamper")
+    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
+    assert soft_qc.calls == 0
     assert len(generation_client.requests) == provider_calls

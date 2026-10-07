@@ -184,16 +184,17 @@ Frontend (fail `npm test`): `tooling-independence.test.js` (Playwright pinned, n
 | `NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET` / `…_SCENE_INPUT_TOKEN_BUDGET` | `0` | `0` = template budget (scene family: max with `RUNTIME_MIN_INPUT_BUDGETS`); positive = override for small-context models |
 | `NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF` / `…_SCENE_DESIGN_CONTEXT` | `true` | rollback switches only |
 | `NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED` | `false` | style-first bindings only (first draft + targeted revisions ranked by fidelity, critical scenes pause at the blinded author selection); every other work drafts one candidate |
-| `NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED` / `…_LLM_EVENT_EXTRACTION_ENABLED` | `false` | opt-in editor critic / archive-time prose event extraction |
+| `NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED` | `false` | opt-in archive-time prose event extraction |
 | `NOVEL_SYSTEM_CONTENT_SAFETY_MODE` | `review` | or `audit` |
 | `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS` | — | server-path book import disabled until set |
 | `NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON` | — | extra protected terms for the copy gate (warn only) |
 
 Retired and ignored except for one startup warning: the six `NOVEL_SYSTEM_LLM_*_LIMIT` / `…_MAX_CONCURRENT_REQUESTS`
-quota vars and `NOVEL_SYSTEM_LLM_{INPUT,OUTPUT}_COST_PER_MILLION_USD` (`env_config.RETIRED_ENV_VARS`). Launcher / lane /
-test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_NODE_BIN`, `…_ARTIFACT_RETENTION_DAYS`
-(14), `NOVEL_SYSTEM_PYTHON`, `PLAYWRIGHT_*_PORT`, `STYLE_REFERENCE_REPO_ROOT` (migration 0036 test override),
-`NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS`, `VITE_NOVEL_SYSTEM_API_BASE`, `VITE_NOVEL_SYSTEM_ACCESS_TOKEN`.
+quota vars, `NOVEL_SYSTEM_LLM_{INPUT,OUTPUT}_COST_PER_MILLION_USD` and `…_LLM_AUTO_CRITIQUE_ENABLED` (auto-critique deleted;
+`env_config.RETIRED_ENV_VARS`). Launcher / lane / test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT`
+(5174), `…_NODE_BIN`, `…_ARTIFACT_RETENTION_DAYS` (14), `NOVEL_SYSTEM_PYTHON`, `PLAYWRIGHT_*_PORT`,
+`STYLE_REFERENCE_REPO_ROOT` (migration 0036 test override), `NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS`,
+`VITE_NOVEL_SYSTEM_API_BASE`, `VITE_NOVEL_SYSTEM_ACCESS_TOKEN`.
 
 ## Architecture
 

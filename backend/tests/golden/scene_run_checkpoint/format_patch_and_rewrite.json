@@ -43,22 +43,20 @@
    "planning_scene_blueprint_provenance": "<hex#36>",
    "scene_blueprint": "<hex#35>",
    "selected_draft": "<hex#37>",
-   "soft_auto_critique_decision": "<hex#38>",
-   "soft_completion": "<hex#39>",
-   "soft_final_draft": "<hex#40>",
+   "soft_completion": "<hex#38>",
+   "soft_final_draft": "<hex#39>",
    "soft_input_draft": "<hex#37>",
-   "soft_input_provider_execution_mode": "<hex#41>",
-   "soft_patch_draft": "<hex#40>",
-   "soft_qc0_control": "<hex#42>",
-   "soft_qc0_decision": "<hex#43>",
-   "soft_qc0_report": "<hex#44>",
-   "soft_qc1_decision": "<hex#45>",
-   "soft_qc1_report": "<hex#46>",
-   "soft_qc_decision": "<hex#47>",
-   "soft_qc_report": "<hex#46>",
-   "style_candidate_rankings": "<hex#48>",
+   "soft_patch_draft": "<hex#39>",
+   "soft_qc0_control": "<hex#40>",
+   "soft_qc0_decision": "<hex#41>",
+   "soft_qc0_report": "<hex#42>",
+   "soft_qc1_decision": "<hex#43>",
+   "soft_qc1_report": "<hex#44>",
+   "soft_qc_decision": "<hex#45>",
+   "soft_qc_report": "<hex#44>",
+   "style_candidate_rankings": "<hex#46>",
    "style_ready_candidate_0": "<hex#37>",
-   "style_work_items": "<hex#49>"
+   "style_work_items": "<hex#47>"
   },
   "artifact_refs": {
    "archive_chapter_evaluation_product": {
@@ -240,17 +238,17 @@
    "execution_step_key": "hard_qc:0",
    "final_generation_artifact_execution_id": "idempotency:checkpoint-format",
    "final_generation_execution_step_key": "near_final_rewrite:0",
-   "final_generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+   "final_generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#48>",
    "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
    "hard_qc_artifact_execution_id": "idempotency:checkpoint-format",
    "hard_qc_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "hard_qc_execution_step_key": "hard_qc:0",
-   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
    "hard_qc_source_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
    "human_review_event_id": null,
-   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
+   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
    "llm_call_ids": [
-    "llm_call_CH_RESUME_SC01_<hex#52>"
+    "llm_call_CH_RESUME_SC01_<hex#50>"
    ],
    "near_completion": {
     "branch": "near_final_ready",
@@ -349,20 +347,20 @@
    "near_rewrite_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "near_rewrite_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1",
    "near_rewrite_execution_step_key": "near_final_rewrite:0",
-   "near_rewrite_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+   "near_rewrite_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#48>",
    "near_rewrite_source_draft_row_id": "draft_style_patch_CH_RESUME_SC01_v1",
    "near_rewrite_source_evaluation_id": "near_final_eval_CH_RESUME_SC01_near_final_acceptance_0",
    "neutral_artifact_execution_id": "idempotency:checkpoint-format",
    "neutral_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
    "neutral_execution_step_key": "neutral_draft",
-   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#53>",
+   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#51>",
    "next_action": "pass",
    "planning": {
     "chapter_architecture": {
      "artifact_type": "chapter_story_architecture",
      "chapter_id": "CH_RESUME",
      "created_at": "<ts#1>",
-     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#54>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
      "object_id": "CH_RESUME",
      "object_type": "chapter",
      "payload": {
@@ -379,9 +377,9 @@
        "the governing constraint is exposed"
       ]
      },
-     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#55>",
+     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#53>",
      "scene_id": null,
-     "source_bundle_hash": "<hex#56>",
+     "source_bundle_hash": "<hex#54>",
      "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
      "status": "active"
     },
@@ -389,7 +387,7 @@
      "artifact_type": "character_pressure_blueprint",
      "chapter_id": "CH_RESUME",
      "created_at": "<ts#2>",
-     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
      "object_id": "CH_RESUME_SC01",
      "object_type": "scene",
      "payload": {
@@ -401,9 +399,9 @@
       "surface_goal": "finish the immediate task",
       "wrong_belief": "control can prevent every loss"
      },
-     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#58>",
+     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#56>",
      "scene_id": "CH_RESUME_SC01",
-     "source_bundle_hash": "<hex#59>",
+     "source_bundle_hash": "<hex#57>",
      "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
      "status": "active"
     }
@@ -412,7 +410,7 @@
     "artifact_type": "chapter_story_architecture",
     "chapter_id": "CH_RESUME",
     "created_at": "<ts#1>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#54>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
     "object_id": "CH_RESUME",
     "object_type": "chapter",
     "payload": {
@@ -429,22 +427,22 @@
       "the governing constraint is exposed"
      ]
     },
-    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#55>",
+    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#53>",
     "scene_id": null,
-    "source_bundle_hash": "<hex#56>",
+    "source_bundle_hash": "<hex#54>",
     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
     "status": "active"
    },
    "planning_chapter_architecture_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_chapter_architecture_execution_step_key": "planning:chapter_architecture",
-   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#54>",
+   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
    "planning_chapter_architecture_reused": false,
-   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#55>",
+   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#53>",
    "planning_character_pressure": {
     "artifact_type": "character_pressure_blueprint",
     "chapter_id": "CH_RESUME",
     "created_at": "<ts#2>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
     "object_id": "CH_RESUME_SC01",
     "object_type": "scene",
     "payload": {
@@ -456,23 +454,23 @@
      "surface_goal": "finish the immediate task",
      "wrong_belief": "control can prevent every loss"
     },
-    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#58>",
+    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#56>",
     "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#59>",
+    "source_bundle_hash": "<hex#57>",
     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
     "status": "active"
    },
    "planning_character_pressure_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_character_pressure_execution_step_key": "planning:character_pressure",
-   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
+   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
    "planning_character_pressure_reused": false,
-   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#58>",
+   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#56>",
    "planning_scene_blueprint_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_scene_blueprint_execution_step_key": "scene_blueprint",
-   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#60>",
+   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
    "planning_scene_blueprint_reused": false,
-   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#61>",
-   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#62>",
+   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#59>",
+   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#60>",
    "resolution_code": "hard_pass",
    "scene_blueprint": {
     "blueprint_json": {
@@ -488,37 +486,16 @@
     },
     "chapter_id": "CH_RESUME",
     "created_at": "<ts#4>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#60>",
-    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#61>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
+    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#59>",
     "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#63>",
+    "source_bundle_hash": "<hex#61>",
     "source_bundle_id": null,
     "status": "accepted"
    },
    "scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
    "scene_token_budget": 38450,
    "should_continue": true,
-   "soft_auto_critique_decision": {
-    "dimension_scores": {},
-    "directives": [],
-    "error_code": null,
-    "execution_id": "idempotency:checkpoint-format",
-    "execution_step_key": "soft_qc:auto_critique:0",
-    "flagged_dimensions": [],
-    "llm_call_id": null,
-    "llm_contribution": null,
-    "outcome": "not_invoked",
-    "reason": "skip_critique",
-    "rule_dimension_scores": {},
-    "rule_directives": [],
-    "rule_flagged_dimensions": [],
-    "rule_should_rewrite": false,
-    "run_job_id": null,
-    "schema_version": 1,
-    "should_rewrite": false
-   },
-   "soft_auto_critique_outcome": "unchanged",
-   "soft_auto_critique_skip_reason": null,
    "soft_completion": {
     "branch": "continue",
     "draft_row_id": "draft_style_patch_CH_RESUME_SC01_v1",
@@ -530,22 +507,21 @@
    "soft_final_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_final_draft_row_id": "draft_style_patch_CH_RESUME_SC01_v1",
    "soft_final_execution_step_key": "soft_patch:soft_qc:0",
-   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#64>",
+   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#62>",
    "soft_final_qc_round": 1,
    "soft_input_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_input_bundle_hash": "<hex#16>",
    "soft_input_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "soft_input_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_input_execution_step_key": "style_draft:0",
-   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
-   "soft_input_provider_execution_mode": "online",
+   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
    "soft_input_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_patch_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_patch_bundle_hash": "<hex#16>",
    "soft_patch_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "soft_patch_draft_row_id": "draft_style_patch_CH_RESUME_SC01_v1",
    "soft_patch_execution_step_key": "soft_patch:soft_qc:0",
-   "soft_patch_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#64>",
+   "soft_patch_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#62>",
    "soft_patch_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_patch_source_qc_report_id": "qc_CH_RESUME_SC01_soft_qc_0",
    "soft_qc0_artifact_execution_id": "idempotency:checkpoint-format",
@@ -608,7 +584,7 @@
     "idempotency:checkpoint-format"
    ],
    "style_candidate_llm_call_ids": [
-    "llm_call_CH_RESUME_SC01_<hex#52>"
+    "llm_call_CH_RESUME_SC01_<hex#50>"
    ],
    "style_candidate_rankings": [
     null
@@ -625,7 +601,7 @@
     "style_draft:0"
    ],
    "style_initial_candidate_count": 1,
-   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
+   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
    "style_work_items": [
     {
      "base": {
@@ -634,7 +610,7 @@
       "bundle_id": "bundle_CH_RESUME_SC01_v1",
       "content_hash": "<hex#37>",
       "execution_step_key": "style_draft:0",
-      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
       "phase": "base",
       "row_id": "draft_style_CH_RESUME_SC01_v1",
       "source_base_row_id": null,
@@ -650,7 +626,7 @@
       "bundle_id": "bundle_CH_RESUME_SC01_v1",
       "content_hash": "<hex#37>",
       "execution_step_key": "style_draft:0",
-      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#52>",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
       "phase": "final",
       "row_id": "draft_style_CH_RESUME_SC01_v1",
       "source_base_row_id": "draft_style_CH_RESUME_SC01_v1",
@@ -896,24 +872,18 @@
    "sub_index": null
   },
   {
-   "branch": "unchanged",
+   "branch": null,
    "hashes": [
-    "soft_auto_critique_decision",
-    "soft_input_draft",
-    "soft_input_provider_execution_mode"
+    "soft_input_draft"
    ],
    "node_key": "soft_qc_ready",
    "refs": [
-    "soft_auto_critique_decision",
-    "soft_auto_critique_outcome",
-    "soft_auto_critique_skip_reason",
     "soft_input_artifact_execution_id",
     "soft_input_bundle_hash",
     "soft_input_bundle_id",
     "soft_input_draft_row_id",
     "soft_input_execution_step_key",
     "soft_input_llm_call_id",
-    "soft_input_provider_execution_mode",
     "soft_input_source_draft_row_id"
    ],
    "strategy": null,

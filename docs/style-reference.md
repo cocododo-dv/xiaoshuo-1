@@ -224,7 +224,7 @@
    （skip_reason `rewrite_rejected_base_safety` / `rewrite_rejected_moved_away`，前者 Q2、后者 Q3 提示）。
 7. 归档：唯一抄袭门 + 终稿读数。
 
-房风规则只在 `policy.defers_house_taste()` 时让位（反模板门只提示、自动批评不出补丁、成稿门的文学阈值按绑定书校准、新鲜度只留逐字
+房风规则只在 `policy.defers_house_taste()` 时让位（反模板门只提示、成稿门的文学阈值按绑定书校准、新鲜度只留逐字
 n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这些硬门从不让位。`neutral_first` 是对照组：中性首稿再由 `style_draft` 改成作者手笔，
 有绑定时改完读一次读数，不比中性稿更像就交付中性稿（与直起同一条「永不越改越远」规则）；旧的 21 指标包络（段密度合并、形态修复、
 改写不退步）已删除，改写不退步只看读数（`patch_max_distance_increase`）。

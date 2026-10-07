@@ -26,7 +26,6 @@ def _criticality(level: str, *, initial: int, human_gate: bool) -> SceneCritical
     return SceneCriticality(
         level=level,
         reasons=[level],
-        skip_critique=False,
         human_gate=human_gate,
         initial_best_of_n=initial,
     )

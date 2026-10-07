@@ -1,4 +1,4 @@
-"""软 QC（``soft_qc_ready`` 子游标 0..3：自动批评 → 第一轮 → 修补 → 第二轮）的驱动、修补留用 / 回退、检查点存取。
+"""软 QC（``soft_qc_ready`` 子游标 0..3：软 QC 的输入 → 第一轮 → 修补 → 第二轮）的驱动、修补留用 / 回退、检查点存取。
 
 ``Orchestrator`` 直接继承 ``SoftQcCheckpointMixin``；``_style_patch_keep_decision`` 测试在类上打桩。
 """
@@ -11,20 +11,13 @@ from typing import Any
 
 from novel_system.db.models import (
     AttemptTracker,
-    ChapterGoal,
     HumanReviewEvent,
     QcReport,
     SceneCard,
     SceneDraft,
     SceneRunState,
 )
-from novel_system.services import auto_critique as _auto_critique
-from novel_system.services.llm_accounting import (
-    LLMAccountingError,
-    LLMCallContext,
-    is_llm_control_plane_failure,
-    stamp_product_hash,
-)
+from novel_system.services.llm_accounting import LLMAccountingError
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.pov_knowledge_projection import PovKnowledgeProjection
 from novel_system.services.qc_engine import SoftQcDecision
@@ -56,6 +49,9 @@ from novel_system.services.style_reference.style_step import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# 软 QC 输入（= 选定的风格稿）可能的稿子阶段：风格稿，或去模板改写后的风格稿
+SOFT_INPUT_STAGES = frozenset({"style_draft", "de_template"})
+
 
 class SoftQcCheckpointMixin:
     def _soft_checkpoint_progress(self) -> int:
@@ -71,7 +67,6 @@ class SoftQcCheckpointMixin:
         scene: SceneCard,
         contract: Any,
         bundle: dict[str, Any],
-        criticality: Any,
         selected_style_generation: StyleGenerationResult,
         optional_spend_allowed,
     ) -> tuple[SoftQcDecision, StyleGenerationResult]:
@@ -85,204 +80,20 @@ class SoftQcCheckpointMixin:
         scene_id = scene.scene_id
         style_generation = selected_style_generation
         if progress < 0:
-            critique_outcome = "unchanged"
-            critique_skip_reason: str | None = None
-            patch_failure_product: dict[str, Any] | None = None
-            critique_spend_allowed = optional_spend_allowed()
-            critique_runner = (
-                self._resolve_auto_critique_runner() if critique_spend_allowed else None
-            )
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            critique_step_key = "soft_qc:auto_critique:0"
-            critique_context = LLMCallContext(
-                scope_type="scene",
-                scope_id=scene.scene_id,
-                project_id=scene.project_id
-                or (chapter.project_id if chapter is not None else None),
-                chapter_id=scene.chapter_id,
-                scene_id=scene.scene_id,
-                node_id="soft_qc",
-                step=critique_step_key,
-                execution_id=self._execution_id,
-                execution_step_key=(
-                    critique_step_key if self._execution_id is not None else None
-                ),
-                run_job_id=self._run_job_id,
-            )
-            self._reconcile_execution_step(critique_step_key)
-            skip_critique = bool(getattr(criticality, "skip_critique", False))
-            # 2026-09-12 风格直起:style_first 下规则版自动批评让位——它的指令(删感知词、
-            # 句式要多样、意象要有意义)是房风,不再据此发风格补丁;参考是唯一的风格权威。
-            if style_policy_for_bundle(bundle).defers_house_taste():
-                skip_critique = True
-            critique = self._recover_auto_critique_rejected_product(
-                critique_context,
-                _auto_critique.auto_critique(
-                    style_generation.content,
-                    # A durable rejected parent proves this pass reached its call path;
-                    # its recovered deterministic product therefore is not a skip result.
-                    skip_critique=False,
-                ),
-                allow_retry=critique_runner is not None and not skip_critique,
-            )
-            if critique is None:
-                critique = _auto_critique.llm_auto_critique(
-                    style_generation.content,
-                    scene_context=self._scene_critique_context(scene, contract),
-                    session=self.session,
-                    llm_runner=critique_runner,
-                    llm_context=critique_context,
-                    skip_critique=skip_critique,
-                    not_invoked_reason=(
-                        "budget_or_candidate_cap"
-                        if not critique_spend_allowed
-                        else "feature_disabled"
-                    ),
-                )
-            critique_summary = critique.product_snapshot()
-
-            self._reconcile_execution_step(StepKeys.soft_patch("auto_critique"))
-            patch_spend_allowed = bool(
-                critique.should_rewrite and optional_spend_allowed()
-            )
-            recovered_patch_failure = (
-                self._recover_auto_critique_patch_rejected_product(
-                    scene_id,
-                    allow_retry=patch_spend_allowed,
-                )
-            )
-            if recovered_patch_failure is not None:
-                if not critique.should_rewrite:
-                    raise LLMAccountingError(
-                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                        "auto-critique patch rejection conflicts with a non-rewrite decision",
-                    )
-                patch_failure_product = recovered_patch_failure
-                critique_outcome = "patch_failed"
-                critique_skip_reason = "patch_failed:rejected_before_dispatch"
-            elif critique.should_rewrite:
-                if not patch_spend_allowed:
-                    critique_outcome = "patch_skipped"
-                    critique_skip_reason = "budget_or_candidate_cap"
-                    _LOGGER.warning(
-                        "critique patch skipped for scene %s (budget/candidate cap)",
-                        scene_id,
-                    )
-                else:
-                    try:
-                        critique_brief = self._pov_desensitize_brief(
-                            scene,
-                            contract,
-                            _auto_critique.format_critique_brief(critique),
-                        )
-                        style_generation = (
-                            self.scene_generation_service.generate_style_patch(
-                                scene_id,
-                                bundle,
-                                source_style_draft_row_id=style_generation.row_id,
-                                source_style_content=style_generation.content,
-                                rewrite_brief=critique_brief,
-                                source_qc_report_id=f"auto_critique_{scene_id}",
-                                execution_step_key=StepKeys.soft_patch("auto_critique"),
-                            )
-                        )
-                        critique_outcome = "patched"
-                    except Exception as exc:
-                        if is_llm_control_plane_failure(exc):
-                            raise
-                        patch_failure_product = (
-                            self._build_auto_critique_patch_failure_product(
-                                scene_id,
-                                exc,
-                            )
-                        )
-                        critique_outcome = "patch_failed"
-                        critique_skip_reason = f"patch_failed:{exc.__class__.__name__}"
-                        _LOGGER.warning(
-                            "auto-critique patch failed for scene %s; keeping unpatched style draft",
-                            scene_id,
-                            exc_info=True,
-                        )
-
-            generation_parent = self._validate_generation_before_checkpoint(
-                scene_id, style_generation
-            )
-            generation_provider_execution_mode = self._parent_execution_mode(
-                generation_parent
-            )
-            self._validate_auto_critique_product_semantics(
-                critique_summary,
-                source_content=selected_style_generation.content,
-                patch_outcome=critique_outcome,
-            )
-            critique_product_hash = self._json_hash(critique_summary)
-            if critique.llm_call_id is not None and not stamp_product_hash(
-                self.session, critique.llm_call_id, "auto_critique_product_hash", critique_product_hash
-            ):
-                raise LLMAccountingError(
-                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                    "auto-critique product parent disappeared before checkpoint commit",
-                )
-            # 该摘要只绑定本次事务所见的产品与父账本；不宣称抵抗可同步改写
-            # checkpoint、parent summary 与 ledger 的全库特权篡改。
-            self._validate_auto_critique_checkpoint(
-                scene_id,
-                critique_summary,
-                source_content=selected_style_generation.content,
-            )
-            patch_failure_hash = (
-                self._json_hash(patch_failure_product)
-                if patch_failure_product is not None
-                else None
-            )
-            if patch_failure_product is not None:
-                if not stamp_product_hash(
-                    self.session,
-                    patch_failure_product["llm_call_id"],
-                    "auto_critique_patch_failure_hash",
-                    patch_failure_hash,
-                ):
-                    raise LLMAccountingError(
-                        "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                        "auto-critique patch failure parent disappeared before checkpoint commit",
-                    )
-                self._validate_auto_critique_patch_failure_checkpoint(
-                    scene_id,
-                    patch_failure_product,
-                    validate_checkpoint_hash=False,
-                )
-            checkpoint_refs = {
-                **self._soft_draft_refs(
+            # 软 QC 的输入就是选定的风格稿（自动批评删了，G4 B3-1b.1）：第 0 步记下它与它的来源，续跑时核对是同一行
+            self._validate_generation_before_checkpoint(scene_id, style_generation)
+            self._save_run_checkpoint(
+                "soft_qc_ready",
+                sub_index=0,
+                artifact_refs=self._soft_draft_refs(
                     prefix="soft_input",
                     generation=style_generation,
                     source_draft_row_id=selected_style_generation.row_id,
                     bundle=bundle,
-                    provider_execution_mode=generation_provider_execution_mode,
                 ),
-                "soft_auto_critique_decision": critique_summary,
-                "soft_auto_critique_outcome": critique_outcome,
-                "soft_auto_critique_skip_reason": critique_skip_reason,
-            }
-            checkpoint_hashes = {
-                "soft_input_draft": self._text_hash(style_generation.content),
-                "soft_input_provider_execution_mode": self._text_hash(
-                    generation_provider_execution_mode
-                ),
-                "soft_auto_critique_decision": critique_product_hash,
-            }
-            if patch_failure_product is not None:
-                checkpoint_refs["soft_auto_critique_patch_failure"] = (
-                    patch_failure_product
-                )
-                checkpoint_hashes["soft_auto_critique_patch_failure"] = (
-                    patch_failure_hash
-                )
-            self._save_run_checkpoint(
-                "soft_qc_ready",
-                sub_index=0,
-                artifact_refs=checkpoint_refs,
-                artifact_hashes=checkpoint_hashes,
-                branch=critique_outcome,
+                artifact_hashes={
+                    "soft_input_draft": self._text_hash(style_generation.content)
+                },
             )
             progress = 0
         else:
@@ -290,7 +101,7 @@ class SoftQcCheckpointMixin:
                 scene_id,
                 prefix="soft_input",
                 expected_source_draft_row_id=selected_style_generation.row_id,
-                expected_stages={"style_draft", "de_template", "style_patch"},
+                expected_stages=SOFT_INPUT_STAGES,
             )
 
         if progress < 1:
@@ -597,7 +408,6 @@ class SoftQcCheckpointMixin:
         source_draft_row_id: str,
         bundle: dict[str, Any],
         source_qc_report_id: str | None = None,
-        provider_execution_mode: str | None = None,
     ) -> dict[str, Any]:
         refs = {
             f"{prefix}_draft_row_id": generation.row_id,
@@ -611,8 +421,6 @@ class SoftQcCheckpointMixin:
         }
         if source_qc_report_id is not None:
             refs[f"{prefix}_source_qc_report_id"] = source_qc_report_id
-        if provider_execution_mode is not None:
-            refs[f"{prefix}_provider_execution_mode"] = provider_execution_mode
         return refs
 
     def _load_soft_draft_checkpoint(
@@ -629,7 +437,7 @@ class SoftQcCheckpointMixin:
         row_id = refs.get(f"{prefix}_draft_row_id")
         draft = self._require_checkpoint_row(SceneDraft, row_id)
         source_row_id = refs.get(f"{prefix}_source_draft_row_id")
-        source = self._require_checkpoint_row(SceneDraft, source_row_id)
+        self._require_checkpoint_row(SceneDraft, source_row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_id = refs.get(f"{prefix}_llm_call_id")
         execution_step_key = refs.get(f"{prefix}_execution_step_key")
@@ -642,13 +450,6 @@ class SoftQcCheckpointMixin:
             execution_step_key=execution_step_key,
             execution_id=artifact_execution_id,
         )
-        historical_execution_mode = refs.get(f"{prefix}_provider_execution_mode")
-        if prefix == "soft_input" and (
-            historical_execution_mode != "online"
-            or self._text_hash(historical_execution_mode)
-            != self._checkpoint_hash(f"{prefix}_provider_execution_mode")
-        ):
-            raise checkpoint_corrupt(f"{prefix} checkpoint provider execution mode snapshot is invalid")
         if (
             draft.scene_id != scene_id
             or draft.stage not in expected_stages
@@ -662,6 +463,9 @@ class SoftQcCheckpointMixin:
             != self._checkpoint_hash(f"{prefix}_draft")
         ):
             raise checkpoint_corrupt(f"{prefix} checkpoint draft identity/source/hash mismatch")
+        if prefix == "soft_input" and draft.row_id != source_row_id:
+            # 软 QC 的输入就是选定的风格稿本身（没有自动批评的补丁夹在中间了）
+            raise checkpoint_corrupt("soft input is not the selected style draft")
         if expected_source_qc_report_id is not None and (
             refs.get(f"{prefix}_source_qc_report_id") != expected_source_qc_report_id
         ):
@@ -681,46 +485,6 @@ class SoftQcCheckpointMixin:
                 f"{prefix} generation parent/physical-attempt ledger is invalid",
                 details={"llm_call_id": llm_call_id, "error_code": exc.code},
             ) from exc
-        if prefix == "soft_input":
-            critique = refs.get("soft_auto_critique_decision")
-            outcome = refs.get("soft_auto_critique_outcome")
-            skip_reason = refs.get("soft_auto_critique_skip_reason")
-            if (
-                not isinstance(critique, dict)
-                or self._json_hash(critique)
-                != self._checkpoint_hash("soft_auto_critique_decision")
-                or outcome
-                not in {"unchanged", "patched", "patch_skipped", "patch_failed"}
-                or (outcome in {"unchanged", "patched"} and skip_reason is not None)
-                or (
-                    outcome in {"patch_skipped", "patch_failed"}
-                    and not isinstance(skip_reason, str)
-                )
-                or (
-                    outcome == "patched"
-                    and (draft.stage != "style_patch" or draft.row_id == source_row_id)
-                )
-                or (outcome != "patched" and draft.row_id != source_row_id)
-            ):
-                raise checkpoint_corrupt("soft input auto-critique decision is inconsistent")
-            self._validate_auto_critique_product_semantics(
-                critique,
-                source_content=source.content,
-                patch_outcome=outcome,
-            )
-            self._validate_auto_critique_checkpoint(
-                scene_id,
-                critique,
-                source_content=source.content,
-            )
-            patch_failure_product = refs.get("soft_auto_critique_patch_failure")
-            if outcome == "patch_failed":
-                self._validate_auto_critique_patch_failure_checkpoint(
-                    scene_id,
-                    patch_failure_product,
-                )
-            elif patch_failure_product is not None:
-                raise checkpoint_corrupt("non-failed auto-critique patch has a failure product")
         return StyleGenerationResult(
             row_id=draft.row_id,
             content=draft.content,
@@ -1057,7 +821,7 @@ class SoftQcCheckpointMixin:
             scene_id,
             prefix="soft_input",
             expected_source_draft_row_id=selected_style_generation.row_id,
-            expected_stages={"style_draft", "de_template", "style_patch"},
+            expected_stages=SOFT_INPUT_STAGES,
         )
         qc0 = self._load_soft_qc_round_checkpoint(
             scene_id,

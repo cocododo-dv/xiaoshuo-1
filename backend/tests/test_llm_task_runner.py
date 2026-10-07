@@ -681,8 +681,8 @@ def test_all_production_run_task_calls_pass_explicit_context() -> None:
             if not any(keyword.arg == "context" for keyword in node.keywords):
                 offenders.append(location)
 
-    # prose_event_extractor + auto_critique（check_consistency_llm 已随死代码删除）
-    assert len(calls) == 2
+    # 只剩 prose_event_extractor（check_consistency_llm 随死代码删除，auto_critique 随自动批评删除）
+    assert len(calls) == 1
     assert offenders == []
 
 
@@ -823,20 +823,6 @@ def test_online_run_task_uses_parent_and_physical_attempt_ledger(session) -> Non
     ("kind", "node_id", "payload"),
     [
         (
-            "critique",
-            "soft_qc",
-            {
-                "should_rewrite": True,
-                "issues": [
-                    {
-                        "dimension": "pacing",
-                        "directive": "tighten the turn",
-                        "evidence": "the turn arrives late",
-                    }
-                ],
-            },
-        ),
-        (
             "prose",
             "extraction",
             {
@@ -884,26 +870,15 @@ def test_advisory_helper_real_online_boundary_persists_strict_product_ledger(
         step=f"advisory:{kind}",
     )
 
-    if kind == "critique":
-        from novel_system.services.auto_critique import llm_auto_critique
+    from novel_system.services.prose_event_extractor import extract_events_from_prose
 
-        product = llm_auto_critique(
-            "clean prose",
-            session=session,
-            llm_runner=runner,
-            llm_context=context,
-        )
-        assert product.outcome == "completed"
-    else:
-        from novel_system.services.prose_event_extractor import extract_events_from_prose
-
-        product = extract_events_from_prose(
-            "林远的右臂被斩断。",
-            session=session,
-            llm_runner=runner,
-            llm_context=context,
-        )
-        assert product.outcome == "completed_events"
+    product = extract_events_from_prose(
+        "林远的右臂被斩断。",
+        session=session,
+        llm_runner=runner,
+        llm_context=context,
+    )
+    assert product.outcome == "completed_events"
 
     parent = session.get(LlmCall, product.llm_call_id)
     attempts = session.execute(
@@ -915,52 +890,6 @@ def test_advisory_helper_real_online_boundary_persists_strict_product_ledger(
     assert parent.request_payload_summary["_accounting_provider_execution_mode"] == "online"
     assert len(attempts) == 1
     assert attempts[0].accounting_status == "settled"
-    assert state.scene_tokens_reserved == 0
-
-
-def test_auto_critique_real_transport_failure_returns_durable_failed_product(session) -> None:
-    from novel_system.services.auto_critique import llm_auto_critique
-
-    _seed_durable_runner_scene(session)
-    task_config = _routing_config().node_routing["neutral_draft"]
-    runner = LLMNodeRunner(
-        session,
-        llm_client=FailingClient(),
-        routing_config=ModelRoutingConfig(
-            node_routing={"soft_qc": task_config},
-            task_routing={"soft_qc": task_config},
-            retry_budget={},
-            job_runtime={},
-        ),
-        settings=_live_settings(),
-    )
-    context = LLMCallContext(
-        scope_type="scene",
-        scope_id="CH_RUNNER_SC01",
-        project_id="PROJECT_RUNNER",
-        chapter_id="CH_RUNNER",
-        scene_id="CH_RUNNER_SC01",
-        node_id="soft_qc",
-        step="advisory:critique-failure",
-    )
-
-    product = llm_auto_critique(
-        "prose",
-        session=session,
-        llm_runner=runner,
-        llm_context=context,
-    )
-
-    parent = session.get(LlmCall, product.llm_call_id)
-    attempt = session.execute(
-        select(LlmCallAttempt).where(LlmCallAttempt.llm_call_id == product.llm_call_id)
-    ).scalar_one()
-    state = session.get(SceneRunState, "CH_RUNNER_SC01")
-    assert product.outcome == "provider_failed"
-    assert product.error_code == "LLM_HTTP_REQUEST_FAILED"
-    assert parent.accounting_status == "failed"
-    assert attempt.accounting_status == "failed"
-    assert attempt.request_dispatched_at is not None
     assert state.scene_tokens_reserved == 0
 
 

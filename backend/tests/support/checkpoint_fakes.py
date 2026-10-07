@@ -158,31 +158,6 @@ class _SettledButUnparseableGenerationClient(_CountingGenerationClient):
         return _response({"unexpected": "provider succeeded without scene_text"}, "generation-unparseable")
 
 
-class _FailAutoCritiquePatchClient(_CountingGenerationClient):
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        self.requests.append(request)
-        if request.node_id == "style_patch":
-            raise ValueError("auto-critique patch provider failed")
-        return _response(
-            {"scene_text": _durable_scene_text(len(self.requests))},
-            f"generation-{len(self.requests)}",
-        )
-
-
-class _UnparseableAutoCritiquePatchClient(_CountingGenerationClient):
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        self.requests.append(request)
-        if request.node_id == "style_patch":
-            return _response(
-                {"unexpected": "provider succeeded without scene_text"},
-                "auto-patch-unparseable",
-            )
-        return _response(
-            {"scene_text": _durable_scene_text(len(self.requests))},
-            f"generation-{len(self.requests)}",
-        )
-
-
 class _HardPassClient(_AccountedTestClient):
     def generate(self, request: LLMRequest) -> LLMResponse:
         return _response(
