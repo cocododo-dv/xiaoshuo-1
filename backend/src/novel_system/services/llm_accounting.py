@@ -39,7 +39,6 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterRunJob, LlmCall, LlmCallAttempt, SceneRunState, utcnow
 from novel_system.services.llm_accounting_recovery import (
     recover_incomplete_call,
-    recover_stale_legacy_reservations,
     recover_stale_unowned_reservations,
 )
 from novel_system.services.llm_accounting_types import (
@@ -123,7 +122,6 @@ __all__ = [
     "normalize_response_usage",
     "record_rejected_call",
     "recover_incomplete_call",
-    "recover_stale_legacy_reservations",
     "recover_stale_unowned_reservations",
     "stamp_product_hash",
     "validate_product_call",

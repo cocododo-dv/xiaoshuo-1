@@ -148,16 +148,16 @@ def run_startup_recovery() -> dict[str, Any]:
     summary: dict[str, Any] = {}
     try:
         from novel_system.services.llm_accounting import (
-            recover_stale_legacy_reservations,
+            recover_stale_unowned_reservations,
         )
 
         with SessionLocal() as session:
-            summary["llm_legacy_reservations"] = recover_stale_legacy_reservations(
+            summary["llm_unowned_reservations"] = recover_stale_unowned_reservations(
                 session
             )
     except Exception:  # pragma: no cover - startup boundary
-        logger.exception("startup recovery failed while reconciling legacy LLM reservations")
-        summary["llm_legacy_reservations"] = {"error": "scan_failed"}
+        logger.exception("startup recovery failed while reconciling unowned LLM reservations")
+        summary["llm_unowned_reservations"] = {"error": "scan_failed"}
 
     try:
         with SessionLocal() as session:

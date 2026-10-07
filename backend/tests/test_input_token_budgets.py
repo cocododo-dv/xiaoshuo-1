@@ -55,6 +55,7 @@ from novel_system.services.prompt_builder import (
 )
 from novel_system.services.scene_generation import SceneGenerationService
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.support.accounting import armed_scene_budget
 
 REPO_PROMPTS = Path(__file__).resolve().parents[2] / "config" / "prompts.yaml"
 
@@ -386,8 +387,7 @@ def _seed_runner_scene(session) -> None:
         SceneRunState(
             scene_id="CH001_SC02",
             scene_status="ready",
-            scene_token_budget=200_000,
-            provider_attempt_budget=8,
+            **armed_scene_budget(200_000, provider_attempt_budget=8),
         )
     )
     session.commit()

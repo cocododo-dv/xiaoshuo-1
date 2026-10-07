@@ -42,6 +42,7 @@ from novel_system.services.scene_generation import (
     latest_style_notices,
 )
 from tests.real_llm_fakes import ScenePipelineOnlineFake
+from tests.support.accounting import arm_scene_budget
 from tests.support.style_gate import COPIED_SENTENCE, REFERENCE_PARAGRAPH, seed_style_binding as _seed_style_binding
 
 
@@ -392,9 +393,7 @@ def test_orchestrator_runs_one_full_literary_rewrite_when_near_final_review_fail
     # CJK-aware conservative estimator tests the workflow rather than the
     # separate budget-exhaustion branch.
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 250_000
-    state.attempt_budget = 20
-    state.provider_attempt_budget = 20
+    arm_scene_budget(state, 250_000, attempt_budget=20, provider_attempt_budget=20)
     session.commit()
     planning_client = ScenePipelineOnlineFake()
     scene_client = SequencedClient(
@@ -459,9 +458,7 @@ def test_orchestrator_never_archives_a_near_final_rewrite_that_copies_the_refere
     _seed_scene(session)
     _seed_style_binding(project_id=PROJECT_ID, seed="nf_plag", paragraphs=[REFERENCE_PARAGRAPH])
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 250_000
-    state.attempt_budget = 20
-    state.provider_attempt_budget = 20
+    arm_scene_budget(state, 250_000, attempt_budget=20, provider_attempt_budget=20)
     session.commit()
     planning_client = ScenePipelineOnlineFake()
     clean_style = "林岑来到船坞，说明证据很重要。林岑把录音带分成两份。"
@@ -556,9 +553,7 @@ def test_strict_policy_stops_on_a_gate_rejected_near_final_rewrite_instead_of_ar
     _seed_scene(session)
     _seed_style_binding(project_id=PROJECT_ID, seed="nf_plag_strict", paragraphs=[REFERENCE_PARAGRAPH])
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 250_000
-    state.attempt_budget = 20
-    state.provider_attempt_budget = 20
+    arm_scene_budget(state, 250_000, attempt_budget=20, provider_attempt_budget=20)
     session.commit()
     # 风格参考 v3（P5b）：首稿太短、读数不可信 → 首稿即风格稿（不调模型），重写的来源就是它
     first_draft = "林岑来到船坞,说明证据很重要。林岑把录音带分成两份。"
@@ -771,9 +766,7 @@ def test_a_near_final_rewrite_that_collapses_the_paragraphs_is_never_archived(se
     不再对重写稿做 eval1。"""
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 250_000
-    state.attempt_budget = 20
-    state.provider_attempt_budget = 20
+    arm_scene_budget(state, 250_000, attempt_budget=20, provider_attempt_budget=20)
     # 这一场写一千来字（塌成一段的检查只看八百字以上的正文）：长度带放宽，免得先触发长度补丁
     session.get(SceneCard, SCENE_ID).target_length_band = "800-1800"
     session.commit()

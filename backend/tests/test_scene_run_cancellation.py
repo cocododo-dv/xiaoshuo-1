@@ -24,6 +24,7 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
+from tests.support.accounting import armed_scene_budget
 from tests.support.catalog import job_chapter_and_scene as _create_chapter_and_scene
 
 
@@ -424,12 +425,10 @@ def test_cancel_before_next_reservation_makes_zero_provider_calls(session) -> No
         [
             SceneRunState(
                 scene_id="SC01",
-                scene_token_budget=10000,
+                **armed_scene_budget(10000, attempt_budget=10, provider_attempt_budget=10),
                 scene_tokens_used=0,
                 scene_tokens_reserved=0,
-                provider_attempt_budget=10,
                 provider_attempts_used=0,
-                attempt_budget=10,
                 total_attempt_count=0,
                 active_run_job_id="job-cancel-before-claim",
             ),
@@ -509,12 +508,10 @@ def test_running_cancel_settles_current_call_preserves_product_and_blocks_next(s
         [
             SceneRunState(
                 scene_id="SC01",
-                scene_token_budget=10000,
+                **armed_scene_budget(10000, attempt_budget=10, provider_attempt_budget=10),
                 scene_tokens_used=0,
                 scene_tokens_reserved=0,
-                provider_attempt_budget=10,
                 provider_attempts_used=0,
-                attempt_budget=10,
                 total_attempt_count=0,
                 active_run_job_id=job.job_id,
             ),
@@ -658,12 +655,10 @@ def test_reservation_claim_and_cancel_start_on_barrier_have_one_linearized_outco
         [
             SceneRunState(
                 scene_id="SC01",
-                scene_token_budget=10000,
+                **armed_scene_budget(10000, attempt_budget=10, provider_attempt_budget=10),
                 scene_tokens_used=0,
                 scene_tokens_reserved=0,
-                provider_attempt_budget=10,
                 provider_attempts_used=0,
-                attempt_budget=10,
                 total_attempt_count=0,
                 active_run_job_id=job_id,
             ),
@@ -867,12 +862,10 @@ def test_expired_cancellation_reconciles_reservation_from_dispatch_truth(
             SceneRunState(
                 scene_id="SC01",
                 active_run_job_id="job-reconcile-cancel",
-                scene_token_budget=1000,
+                **armed_scene_budget(1000, attempt_budget=10, provider_attempt_budget=10),
                 scene_tokens_used=0,
                 scene_tokens_reserved=50,
-                provider_attempt_budget=10,
                 provider_attempts_used=1 if dispatched else 0,
-                attempt_budget=10,
                 total_attempt_count=0,
             ),
             ChapterRunJob(

@@ -15,6 +15,9 @@
 
 性能（审计 B09-15）：调用与物理尝试各一次查询、只取要用的列；每条调用只折算一次价格；
 归档场景 / 章节各一次聚合查询（不再逐章查）。
+
+迁移 0064 之前没有物理尝试行的旧账兼容（按 ``total_tokens`` 回填估算口径、``_with_legacy_*`` 来源后缀、
+两个 ``legacy_*`` 可观测键、为认旧账单独读请求摘要）2026-10-04 删了：真实库里这种调用一行都没有。
 """
 
 from __future__ import annotations
@@ -115,10 +118,8 @@ _ATTEMPT_COLUMNS = (
     LlmCallAttempt.error_code,
     LlmCallAttempt.request_dispatched_at,
 )
-_LEGACY_ID_CHUNK = 500
 _FAILED_ATTEMPT_STATUSES = frozenset({"failed", "usage_exceeds_reservation"})
 _DEGRADE_DISPATCH_KINDS = frozenset({"api_mode_degrade", "structured_output_degrade", "missing_text_degrade"})
-_ACCOUNTING_MARKER = "_accounting_provider_execution_mode"
 
 
 @dataclass(slots=True)
@@ -128,22 +129,7 @@ class _Ledger:
     calls: list[Row]
     attempts: dict[str, list[Row]]
     costs: dict[str, dict[str, Any]]
-    legacy_ids: frozenset[str]
     book: pricing.PriceBook
-
-
-def _legacy_parent_ids(session: Session, call_ids: list[str]) -> frozenset[str]:
-    """没有物理尝试行、请求摘要里也没有记账标记的父调用：迁移 0064 之前的老记录。只对这几行读摘要列。"""
-    legacy: set[str] = set()
-    for start in range(0, len(call_ids), _LEGACY_ID_CHUNK):
-        chunk = call_ids[start : start + _LEGACY_ID_CHUNK]
-        rows = session.execute(
-            select(LlmCall.llm_call_id, LlmCall.request_payload_summary).where(LlmCall.llm_call_id.in_(chunk))
-        )
-        for call_id, summary in rows:
-            if not isinstance(summary, dict) or _ACCOUNTING_MARKER not in summary:
-                legacy.add(call_id)
-    return frozenset(legacy)
 
 
 def _load_ledger(session: Session, condition: ColumnElement[bool]) -> _Ledger:
@@ -164,8 +150,7 @@ def _load_ledger(session: Session, condition: ColumnElement[bool]) -> _Ledger:
         )
         for call in calls
     }
-    without_attempts = [call.llm_call_id for call in calls if call.llm_call_id not in attempts]
-    return _Ledger(calls, attempts, costs, _legacy_parent_ids(session, without_attempts), book)
+    return _Ledger(calls, attempts, costs, book)
 
 
 # ---- token 桶：token / 调用数为主，金额只累计已定价的部分 ------------------------------------------
@@ -215,8 +200,6 @@ def _summarize(ledger: _Ledger) -> dict[str, Any]:
     transport_retry_attempt_count = 0
     response_parse_retry_attempt_count = 0
     degrade_attempt_count = 0
-    legacy_parent_without_attempt_count = 0
-    legacy_unreconstructable_tokens = 0
     for call in ledger.calls:
         cost = ledger.costs[call.llm_call_id]
         tokens = int(call.total_tokens or 0)
@@ -228,50 +211,32 @@ def _summarize(ledger: _Ledger) -> dict[str, Any]:
             key = (provider, call.model or "unknown")
             _add(unpriced_models.setdefault(key, _bucket(provider=key[0], model=key[1])), tokens, cost)
         is_estimate = is_estimate or bool(call.usage_is_estimate)
-
+        # 父调用是唯一逻辑 / 报表层：它的账目字段已是物理尝试之和；没有尝试行的（派发前就被拒的）是它自己记的值。
+        estimated_tokens += int(call.estimated_tokens or 0)
+        budget_charged_tokens += int(call.budget_charged_tokens or 0)
         call_attempts = ledger.attempts.get(call.llm_call_id, [])
-        if call_attempts:
-            # 父调用是唯一逻辑/报表层；它的账目字段已是物理尝试之和。
-            estimated_tokens += int(call.estimated_tokens or 0)
-            budget_charged_tokens += int(call.budget_charged_tokens or 0)
-            attempt_row_count += len(call_attempts)
-            for attempt in call_attempts:
-                dispatched = attempt.request_dispatched_at is not None
-                if dispatched:
-                    physical_attempt_count += 1
-                else:
-                    pre_dispatch_attempt_count += 1
-                if dispatched and bool(attempt.usage_is_estimate):
-                    usage_estimate_count += 1
-                elif dispatched:
-                    provider_actual_tokens += int(attempt.total_tokens or 0)
-                if attempt.error_code:
-                    exception_count += 1
-                if dispatched and int(attempt.provider_attempt_no or 0) > 0:
-                    retry_attempt_count += 1
-                if dispatched and attempt.dispatch_kind == "transport_retry":
-                    # transport_retry 同时承载普通重试和连接能力降级，不能猜测拆分。
-                    transport_retry_attempt_count += 1
-                if dispatched and attempt.dispatch_kind == "response_parse_retry":
-                    response_parse_retry_attempt_count += 1
-                if dispatched and attempt.dispatch_kind in _DEGRADE_DISPATCH_KINDS:
-                    degrade_attempt_count += 1
-            continue
-
-        if call.llm_call_id in ledger.legacy_ids:
-            # 0064 前的父调用没有物理尝试行和新账目字段；显式兼容读取。
-            legacy_parent_without_attempt_count += 1
-            legacy_unreconstructable_tokens += tokens
-            estimated_tokens += int(call.estimated_tokens or tokens)
-            if call.usage_is_estimate is False:
-                provider_actual_tokens += tokens
-            # 0065 将 legacy charge 明确回填为 0；零值不能回退成 total。
-            budget_charged_tokens += int(call.budget_charged_tokens or 0)
-            usage_estimate_count += int(bool(call.usage_is_estimate))
-            exception_count += int(bool(call.error_code))
-        else:
-            estimated_tokens += int(call.estimated_tokens or 0)
-            budget_charged_tokens += int(call.budget_charged_tokens or 0)
+        attempt_row_count += len(call_attempts)
+        for attempt in call_attempts:
+            dispatched = attempt.request_dispatched_at is not None
+            if dispatched:
+                physical_attempt_count += 1
+            else:
+                pre_dispatch_attempt_count += 1
+            if dispatched and bool(attempt.usage_is_estimate):
+                usage_estimate_count += 1
+            elif dispatched:
+                provider_actual_tokens += int(attempt.total_tokens or 0)
+            if attempt.error_code:
+                exception_count += 1
+            if dispatched and int(attempt.provider_attempt_no or 0) > 0:
+                retry_attempt_count += 1
+            if dispatched and attempt.dispatch_kind == "transport_retry":
+                # transport_retry 同时承载普通重试和连接能力降级，不能猜测拆分。
+                transport_retry_attempt_count += 1
+            if dispatched and attempt.dispatch_kind == "response_parse_retry":
+                response_parse_retry_attempt_count += 1
+            if dispatched and attempt.dispatch_kind in _DEGRADE_DISPATCH_KINDS:
+                degrade_attempt_count += 1
 
     total_tokens = total["tokens"]
     priced_call_count = total["_priced"]
@@ -289,16 +254,6 @@ def _summarize(ledger: _Ledger) -> dict[str, Any]:
         key=lambda item: (-item["tokens"], item["provider"], item["model"]),
     )
     unpriced_tokens = sum(item["tokens"] for item in unpriced)
-    estimate_legacy_suffix = (
-        "_with_legacy_total_tokens_fallback"
-        if legacy_parent_without_attempt_count
-        else ""
-    )
-    actual_legacy_suffix = (
-        "_with_legacy_parent_usage_fallback"
-        if legacy_parent_without_attempt_count
-        else ""
-    )
     return {
         "total_tokens": total_tokens,
         "call_count": total["call_count"],
@@ -320,14 +275,11 @@ def _summarize(ledger: _Ledger) -> dict[str, Any]:
         "calibers": {
             "estimate": {
                 "tokens": estimated_tokens,
-                "source": f"llm_calls.estimated_tokens{estimate_legacy_suffix}",
+                "source": "llm_calls.estimated_tokens",
             },
             "provider_actual": {
                 "tokens": provider_actual_tokens,
-                "source": (
-                    "llm_call_attempts.total_tokens_with_provider_usage"
-                    f"{actual_legacy_suffix}"
-                ),
+                "source": "llm_call_attempts.total_tokens_with_provider_usage",
             },
             "budget_charged": {
                 "tokens": budget_charged_tokens,
@@ -344,8 +296,6 @@ def _summarize(ledger: _Ledger) -> dict[str, Any]:
             "transport_retry_attempt_count": transport_retry_attempt_count,
             "response_parse_retry_attempt_count": response_parse_retry_attempt_count,
             "degrade_attempt_count": degrade_attempt_count,
-            "legacy_parent_without_attempt_count": legacy_parent_without_attempt_count,
-            "legacy_unreconstructable_tokens": legacy_unreconstructable_tokens,
         },
     }
 
@@ -395,7 +345,7 @@ def _budget_view(state: SceneRunState | None) -> dict[str, Any]:
 
 
 def _extra_cost(ledger: _Ledger, total_tokens: int) -> dict[str, Any]:
-    """白花的 token：发出去却失败了的物理尝试（报错 / 用量超出预留）；老记录没有尝试行时看父调用的 ``error_code``。
+    """白花的 token：发出去却失败了的物理尝试（报错 / 用量超出预留）；没有尝试行的父调用看它自己的 ``error_code``。
 
     重评 R2 第 5 项（批准#2 / #4）：以前还有「重复质检」（质检阶段第 2 次起的调用）与「补候选」（超出按关键度
     给的初始候选数的生成类调用）两项。可一轮普通起草本来就依次跑硬质检 / 软质检 / 准定稿评审三道不同的质检，

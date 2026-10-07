@@ -131,6 +131,7 @@ def _call(
             prompt_tokens=int(tokens * 2 // 3),
             completion_tokens=int(tokens // 3),
             total_tokens=tokens,
+            estimated_tokens=tokens,
             error_code=error_code,
             created_at=created_at or f"2026-07-12T00:00:{idx:02d}Z",
         )
@@ -398,8 +399,6 @@ def test_scene_cost_uses_parent_once_and_attempts_only_for_calibers_and_observab
         "transport_retry_attempt_count": 0,
         "response_parse_retry_attempt_count": 0,
         "degrade_attempt_count": 1,
-        "legacy_parent_without_attempt_count": 0,
-        "legacy_unreconstructable_tokens": 0,
     }
     # 失败重试 = 发出去却失败的那次物理尝试（40 token），不是整个父调用
     assert result["extra_cost"] == {
@@ -407,6 +406,72 @@ def test_scene_cost_uses_parent_once_and_attempts_only_for_calibers_and_observab
         "failed_attempt_count": 1,
         "failed_cost": None,
         "failed_share": 0.4,
+    }
+
+
+def test_attempt_backed_scene_summary_is_the_whole_payload_without_legacy_compat_keys(session):
+    """整份场景汇总（有物理尝试行的账本）逐键锁定：迁移 0064 之前的旧账兼容删了之后，只少了
+    ``legacy_parent_without_attempt_count`` / ``legacy_unreconstructable_tokens`` 两个可观测键，
+    口径来源也不再有 ``_with_legacy_*`` 后缀；其余一个字都不变。"""
+    _scene(session, "S4-golden")
+    _runstate(session, "S4-golden", budget=1_000, used=100)
+    _accounted_retry_call(session, "S4-golden")
+
+    idle_phase = {"call_count": 0, "cost": None, "share": 0.0, "tokens": 0}
+    assert ca.scene_cost(session, "S4-golden") == {
+        "scene_id": "S4-golden",
+        "total_tokens": 100,
+        "call_count": 1,
+        "total_cost": None,
+        "currency": None,
+        "is_estimate": True,
+        "pricing": {
+            "priced_call_count": 0,
+            "unpriced_call_count": 1,
+            "priced_tokens": 0,
+            "unpriced_tokens": 100,
+            "complete": False,
+            "unpriced_models": [
+                {"provider": "openai_compatible", "model": "gpt-5", "tokens": 100, "call_count": 1}
+            ],
+        },
+        "cross_provider": False,
+        "tokens_by_provider": {"openai_compatible": 100},
+        "cost_by_provider": {"openai_compatible": None},
+        "phase_breakdown": {
+            "candidate_generation": {"call_count": 1, "cost": None, "share": 1.0, "tokens": 100},
+            "quality_check": idle_phase,
+            "revision": idle_phase,
+            "review": idle_phase,
+            "other": idle_phase,
+        },
+        "calibers": {
+            "estimate": {"tokens": 120, "source": "llm_calls.estimated_tokens"},
+            "provider_actual": {"tokens": 60, "source": "llm_call_attempts.total_tokens_with_provider_usage"},
+            "budget_charged": {"tokens": 100, "source": "llm_calls.budget_charged_tokens"},
+        },
+        "attempt_observability": {
+            "attempt_row_count": 2,
+            "physical_attempt_count": 2,
+            "pre_dispatch_attempt_count": 0,
+            "usage_estimate_count": 1,
+            "exception_count": 1,
+            "retry_attempt_count": 1,
+            "transport_retry_attempt_count": 0,
+            "response_parse_retry_attempt_count": 0,
+            "degrade_attempt_count": 1,
+        },
+        "budget": {
+            "budget": 1_000,
+            "used": 100,
+            "remaining": 900,
+            "over_budget": False,
+            "usage_ratio": 0.1,
+            "baseline": 200,
+            "multiplier_used": 0.5,
+            "run_policy": None,
+        },
+        "extra_cost": {"failed_tokens": 40, "failed_attempt_count": 1, "failed_cost": None, "failed_share": 0.4},
     }
 
 
@@ -587,10 +652,11 @@ def test_project_cost_counts_archived_chapters_in_one_query_each(session, priced
     assert result["archived_chapter_count"] == 2
     assert result["cost_per_archived_chapter"] == pytest.approx(round(3 * _gpt5_cost(300) / 2, 6))
     assert sum("final_scenes" in statement for statement in statements) == 2
-    # 调用与物理尝试各查一次，只取要用的列（请求摘要只对没有尝试行的老记录单独读一次）
+    # 调用与物理尝试各查一次，只取要用的列；请求摘要一次也不读（迁移 0064 之前的旧账兼容删了，
+    # 以前没有尝试行的调用还要单独读一次摘要找记账标记）
     call_queries = [s for s in statements if "llm_calls.total_tokens" in s]
     assert len(call_queries) == 1
-    assert "request_payload_summary" not in call_queries[0]
+    assert not any("request_payload_summary" in statement for statement in statements)
     assert sum("llm_call_attempts.total_tokens" in s for s in statements) == 1
 
 

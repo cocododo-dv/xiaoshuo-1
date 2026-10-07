@@ -43,7 +43,6 @@ BUDGET_MULTIPLIER = 5
 FALLBACK_INPUT_TOKENS = 4000
 FALLBACK_OUTPUT_TOKENS = 2400
 BASELINE_WRITER_NODE = "style_draft"
-LEGACY_INITIAL_ATTEMPT_BUDGET = 4
 
 # 场景生命周期预算「解除武装」哨兵（单作者默认，见 settings.scene_token_budget_multiplier）。
 # 三道额度（token / 业务重试 / provider 重试）全部落到远超任何真实场景的**有限**值——
@@ -144,82 +143,56 @@ def ensure_scene_budget_initialized(
         return state
 
     if state.scene_token_budget is not None:
-        _validate_scene_budget_state(session, state)
-        existing_budget = int(state.scene_token_budget)
-        existing_provider_budget = int(state.provider_attempt_budget)
-        basis = {
-            "basis_type": "legacy_existing_scene_token_budget",
-            "scene_token_budget": existing_budget,
-            "topup_audit_cutoff_operation_id": _current_operation_id(session),
-            "token_budget_basis": {
-                "reconstructable": False,
-                "reason": "legacy_scene_token_budget_without_basis",
-            },
-            "provider_attempt_budget": {
-                "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
-                "value": existing_provider_budget,
-            },
-            "attempt_budget": {
-                "source": "scene_run_states.initial",
-                "value": int(state.attempt_budget),
-            },
-        }
-        session.execute(
-            update(SceneRunState)
-            .where(
-                SceneRunState.scene_id == scene_id,
-                SceneRunState.scene_budget_basis_json.is_(None),
-            )
-            .values(scene_budget_basis_json=basis)
-        )
+        # 有预算、没有不可变依据：只有依据出现之前的旧场景是这个形状（真实库里 0 行）。以前就地补写一份
+        # 「legacy」依据，2026-10-04 删了——按坏状态 fail-closed：这一场的运行被拦下，检查点与正文都不动。
+        raise _corrupt_budget_state("scene_token_budget is set but its immutable basis is missing")
+    _validate_uninitialized_scene_budget_state(state)
+    multiplier = _armed_scene_budget_multiplier()
+    effective_baseline: int | None = None
+    if multiplier > 0:
+        effective_baseline, armed_provider_budget = _canonical_budget_candidate(session)
+        scene_budget = multiplier * effective_baseline
+        effective_provider_budget = armed_provider_budget
+        effective_attempt_budget = int(state.attempt_budget)
     else:
-        _validate_uninitialized_scene_budget_state(state)
-        multiplier = _armed_scene_budget_multiplier()
-        effective_baseline: int | None = None
-        if multiplier > 0:
-            effective_baseline, armed_provider_budget = _canonical_budget_candidate(session)
-            scene_budget = multiplier * effective_baseline
-            effective_provider_budget = armed_provider_budget
-            effective_attempt_budget = int(state.attempt_budget)
-        else:
-            # 解除武装（单作者默认）：三道额度落到有限哨兵，预留闸门恒不触发；记账照旧。哨兵预算用不上基线，
-            # 于是不估（估算要渲染一遍 style_draft 模板、查一遍路由），依据里记 None。
-            scene_budget = UNARMED_SCENE_TOKEN_BUDGET
-            effective_provider_budget = UNARMED_ATTEMPT_BUDGET
-            effective_attempt_budget = UNARMED_ATTEMPT_BUDGET
-        basis = {
-            "baseline_tokens": effective_baseline,
-            "budget_multiplier": multiplier,
-            "scene_token_budget": scene_budget,
-            "scene_budget_armed": multiplier > 0,
-            "topup_audit_cutoff_operation_id": _current_operation_id(session),
-            "provider_attempt_budget": {
-                "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
-                "value": effective_provider_budget,
-            },
-            "attempt_budget": {
-                "source": "scene_run_states.initial" if multiplier > 0 else "scene_lifecycle_disarmed",
-                "value": effective_attempt_budget,
-            },
-        }
-        session.execute(
-            update(SceneRunState)
-            .where(
-                SceneRunState.scene_id == scene_id,
-                SceneRunState.scene_budget_basis_json.is_(None),
-                SceneRunState.scene_token_budget.is_(None),
-                SceneRunState.scene_tokens_used == 0,
-                SceneRunState.scene_tokens_reserved == 0,
-                SceneRunState.provider_attempts_used == 0,
-                SceneRunState.total_attempt_count == 0,
-            )
-            .values(
-                scene_token_budget=scene_budget,
-                scene_budget_basis_json=basis,
-                provider_attempt_budget=effective_provider_budget,
-                attempt_budget=effective_attempt_budget,
-            )
+        # 解除武装（单作者默认）：三道额度落到有限哨兵，预留闸门恒不触发；记账照旧。哨兵预算用不上基线，
+        # 于是不估（估算要渲染一遍 style_draft 模板、查一遍路由），依据里记 None。
+        scene_budget = UNARMED_SCENE_TOKEN_BUDGET
+        effective_provider_budget = UNARMED_ATTEMPT_BUDGET
+        effective_attempt_budget = UNARMED_ATTEMPT_BUDGET
+    basis = {
+        "baseline_tokens": effective_baseline,
+        "budget_multiplier": multiplier,
+        "scene_token_budget": scene_budget,
+        "scene_budget_armed": multiplier > 0,
+        "topup_audit_cutoff_operation_id": _current_operation_id(session),
+        "provider_attempt_budget": {
+            "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
+            "value": effective_provider_budget,
+        },
+        "attempt_budget": {
+            "source": "scene_run_states.initial" if multiplier > 0 else "scene_lifecycle_disarmed",
+            "value": effective_attempt_budget,
+        },
+    }
+    session.execute(
+        update(SceneRunState)
+        .where(
+            SceneRunState.scene_id == scene_id,
+            SceneRunState.scene_budget_basis_json.is_(None),
+            SceneRunState.scene_token_budget.is_(None),
+            SceneRunState.scene_tokens_used == 0,
+            SceneRunState.scene_tokens_reserved == 0,
+            SceneRunState.provider_attempts_used == 0,
+            SceneRunState.total_attempt_count == 0,
         )
+        .values(
+            scene_token_budget=scene_budget,
+            scene_budget_basis_json=basis,
+            provider_attempt_budget=effective_provider_budget,
+            attempt_budget=effective_attempt_budget,
+        )
+    )
     session.commit()
     session.expire_all()
     state = session.get(SceneRunState, scene_id)
@@ -359,8 +332,10 @@ def _audited_scene_budget_snapshots(
     """Replay token, business-attempt and provider-attempt budgets together.
 
     Old topup rows only carried ``extra_tokens``.  They remain readable with
-    zero increments for the two attempt dimensions.  New initial bases record
-    all three starting values so later topups are fully reconstructable.
+    zero increments for the two attempt dimensions.  The initial basis records
+    all three starting values; a basis without the business-attempt dimension
+    is corrupt (its reconstruction from the topup suffix was removed on
+    2026-10-04: no such basis exists on a real install).
     """
 
     basis = state.scene_budget_basis_json
@@ -395,17 +370,6 @@ def _audited_scene_budget_snapshots(
         normalized_topups.append((topup, payload, extras[0], extras[1], extras[2]))
 
     initial_attempt_budget = _basis_attempt_budget(basis)
-    if initial_attempt_budget is None:
-        # Compatibility for immutable bases written before the business-attempt
-        # dimension was captured.  The current value and the durable suffix are
-        # sufficient to recover the historical prefix without changing it.
-        initial_attempt_budget = int(state.attempt_budget) - sum(
-            row[3] for row in normalized_topups
-        )
-        if initial_attempt_budget != LEGACY_INITIAL_ATTEMPT_BUDGET:
-            raise _corrupt_budget_state(
-                "legacy initial attempt_budget differs from the canonical pre-topup value"
-            )
     initial_provider_budget = _basis_provider_attempt_budget(basis)
     snapshots = [(basis_budget, initial_attempt_budget, initial_provider_budget)]
     for _topup, payload, extra_tokens, extra_attempts, extra_provider_attempts in normalized_topups:
@@ -485,12 +449,12 @@ def _basis_provider_attempt_budget(basis: object) -> int:
     return value
 
 
-def _basis_attempt_budget(basis: object) -> int | None:
+def _basis_attempt_budget(basis: object) -> int:
     if not isinstance(basis, dict):
         raise _corrupt_budget_state("scene_budget_basis_json must be an object")
     attempt_basis = basis.get("attempt_budget")
     if attempt_basis is None:
-        return None
+        raise _corrupt_budget_state("basis attempt_budget is missing")
     if not isinstance(attempt_basis, dict):
         raise _corrupt_budget_state("basis attempt_budget must be an object")
     value = attempt_basis.get("value")

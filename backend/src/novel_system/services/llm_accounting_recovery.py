@@ -44,7 +44,7 @@ def recover_stale_unowned_reservations(
 
     Scene/chapter execution has its own durable job lease and checkpoint
     recovery, so this sweep deliberately excludes every scene-scoped or
-    run-job-owned call.  The remaining legacy calls have no heartbeat; a
+    run-job-owned call.  The remaining unowned calls have no heartbeat; a
     conservative configurable age is therefore the only safe crash signal.
 
     Each candidate parent is locked after discovery.  SQLite uses the same
@@ -262,7 +262,3 @@ def recover_incomplete_call(session: Session, llm_call_id: str) -> AccountingRec
         error_code="RUN_CHECKPOINT_OUTPUT_MISSING",
         may_retry=False,
     )
-
-
-# 旧名（启动恢复与测试还在用）：收回的是「没有主人」的非场景预留，不只是旧版遗留的
-recover_stale_legacy_reservations = recover_stale_unowned_reservations

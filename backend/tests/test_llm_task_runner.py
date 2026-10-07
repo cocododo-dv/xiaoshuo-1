@@ -39,6 +39,7 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.settings import Settings
+from tests.support.accounting import armed_scene_budget
 
 
 def _prompt(target_input_tokens: int = 400) -> dict:
@@ -255,8 +256,7 @@ def _seed_durable_runner_scene(session) -> None:
             scene_status="ready",
             active_execution_id="exec-runner",
             run_execution_status="active",
-            scene_token_budget=10_000,
-            provider_attempt_budget=5,
+            **armed_scene_budget(10_000, provider_attempt_budget=5),
         )
     )
     session.commit()
@@ -286,8 +286,7 @@ def _seed_legacy_runner_scene(session) -> None:
         SceneRunState(
             scene_id="CH100_SC01",
             scene_status="ready",
-            scene_token_budget=50_000,
-            provider_attempt_budget=8,
+            **armed_scene_budget(50_000, provider_attempt_budget=8),
         )
     )
     session.commit()
@@ -1431,8 +1430,7 @@ def test_durable_online_intent_rejects_incomplete_accounting_context_before_prov
                 scene_status="ready",
                 active_execution_id="exec-context",
                 run_execution_status="active",
-                scene_token_budget=10_000,
-                provider_attempt_budget=5,
+                **armed_scene_budget(10_000, provider_attempt_budget=5),
             )
         )
         session.commit()

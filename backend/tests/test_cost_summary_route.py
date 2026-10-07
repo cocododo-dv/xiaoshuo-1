@@ -97,8 +97,15 @@ def test_cost_dashboard_route(client, session):
     assert "top" in data["by_node"]
     assert isinstance(data["by_chapter"], list)
     assert isinstance(data["top_calls"], list)
-    # 额度快照与 cost-summary 同源
-    assert "daily_tokens" in data["quota"]
+    # 全局用量读数与 cost-summary 同源：载荷键仍叫 quota，五格各只有 used（本作品今日那格另带 project_id）
+    assert data["quota"]["period_timezone"] == "UTC"
+    assert {key: set(cell) for key, cell in data["quota"].items() if key != "period_timezone"} == {
+        "daily_tokens": {"used"},
+        "monthly_tokens": {"used"},
+        "project_daily_tokens": {"project_id", "used"},
+        "daily_requests": {"used"},
+        "concurrent_requests": {"used"},
+    }
 
 
 def test_cost_dashboard_empty_project_does_not_500(client):

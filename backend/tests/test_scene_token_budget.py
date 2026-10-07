@@ -44,6 +44,7 @@ from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 
 
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.support.accounting import arm_scene_budget
 from tests.support.api_client import AutoKeyTestClient
 
 pytestmark = pytest.mark.usefixtures("online_pipeline")
@@ -233,34 +234,32 @@ def test_prepare_state_for_rerun_preserves_all_lifecycle_accounting_counters(ses
         assert f"state.{field} =" not in source
 
 
-def test_existing_budget_is_not_overwritten(session) -> None:
+def test_budget_without_its_immutable_basis_fails_closed_and_is_never_rewritten(session) -> None:
+    """有预算、没有不可变依据：只有依据出现之前的旧场景是这个形状（真实库里 0 行）。以前就地补写一份 legacy 依据，
+    2026-10-04 起按坏状态 fail-closed：这一场一个请求都不发，预算与额度一个都不改。"""
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
     state.scene_token_budget = 99999
+    state.provider_attempt_budget = 7
     session.commit()
+    scene_client = CountingSceneClient()
 
-    _make_orchestrator(session).run_scene(SCENE_ID)
-    session.commit()
-    session.refresh(state)
-    assert state.scene_token_budget == 99999
-    assert state.provider_attempt_budget == 32
-    assert state.scene_budget_basis_json == {
-        "basis_type": "legacy_existing_scene_token_budget",
-        "scene_token_budget": 99999,
-        "topup_audit_cutoff_operation_id": 0,
-        "token_budget_basis": {
-            "reconstructable": False,
-            "reason": "legacy_scene_token_budget_without_basis",
-        },
-            "provider_attempt_budget": {
-                "config_key": "retry_budget.provider_attempt_budget",
-                "value": 32,
-            },
-            "attempt_budget": {
-                "source": "scene_run_states.initial",
-                "value": 4,
-            },
-        }
+    missing_basis = "scene budget state is corrupt: scene_token_budget is set but its immutable basis is missing"
+    with pytest.raises(ValueError, match=missing_basis):
+        _make_orchestrator(session, scene_client=scene_client).run_scene(SCENE_ID)
+    session.rollback()
+    with pytest.raises(ValueError, match=missing_basis):
+        ensure_scene_budget_initialized(session, SCENE_ID)
+
+    assert scene_client.requests == []
+    session.expire_all()
+    state = session.get(SceneRunState, SCENE_ID)
+    assert (
+        state.scene_token_budget,
+        state.scene_budget_basis_json,
+        state.provider_attempt_budget,
+        state.attempt_budget,
+    ) == (99999, None, 7, 4)
 
 
 # ---------- can_spend 纯函数 ----------
@@ -441,6 +440,7 @@ def test_public_scene_budget_initialization_recovers_basis_only_without_reestima
             "config_key": "retry_budget.provider_attempt_budget",
             "value": 7,
         },
+        "attempt_budget": {"source": "scene_run_states.initial", "value": 4},
     }
     state.scene_token_budget = None
     state.scene_budget_basis_json = basis
@@ -460,23 +460,6 @@ def test_public_scene_budget_initialization_recovers_basis_only_without_reestima
     assert returned.provider_attempts_used == 2
 
 
-def test_public_scene_budget_initialization_preserves_legacy_provider_attempt_limit(
-    session,
-) -> None:
-    _seed_scene(session)
-    state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 12_345
-    state.scene_budget_basis_json = None
-    state.provider_attempt_budget = 7
-    session.commit()
-
-    returned = ensure_scene_budget_initialized(session, SCENE_ID)
-
-    assert returned.scene_token_budget == 12_345
-    assert returned.provider_attempt_budget == 7
-    assert returned.scene_budget_basis_json["provider_attempt_budget"]["value"] == 7
-
-
 @pytest.mark.parametrize(
     ("case", "mutate"),
     [
@@ -486,7 +469,7 @@ def test_public_scene_budget_initialization_preserves_legacy_provider_attempt_li
             lambda state: setattr(
                 state,
                 "scene_budget_basis_json",
-                {"scene_token_budget": 9_999},
+                {**state.scene_budget_basis_json, "scene_token_budget": 9_999},
             ),
         ),
         ("negative_used", lambda state: setattr(state, "scene_tokens_used", -1)),
@@ -507,7 +490,7 @@ def test_public_scene_budget_initialization_preserves_legacy_provider_attempt_li
                 state,
                 "scene_budget_basis_json",
                 {
-                    "scene_token_budget": 10_000,
+                    **state.scene_budget_basis_json,
                     "provider_attempt_budget": {
                         "config_key": "retry_budget.provider_attempt_budget",
                         "value": 8,
@@ -517,7 +500,16 @@ def test_public_scene_budget_initialization_preserves_legacy_provider_attempt_li
         ),
         ("negative_total_attempt_count", lambda state: setattr(state, "total_attempt_count", -1)),
         ("nonpositive_attempt_budget", lambda state: setattr(state, "attempt_budget", 0)),
-        ("legacy_attempt_basis_drift", lambda state: setattr(state, "attempt_budget", 999)),
+        ("attempt_basis_drift", lambda state: setattr(state, "attempt_budget", 999)),
+        (
+            # 依据里没记业务重试这一维（以前按「当前额度 − 追加之和 == 4」还原，2026-10-04 起是坏状态）
+            "basis_without_attempt_dimension",
+            lambda state: setattr(
+                state,
+                "scene_budget_basis_json",
+                {key: value for key, value in state.scene_budget_basis_json.items() if key != "attempt_budget"},
+            ),
+        ),
         (
             "business_attempts_over_limit",
             lambda state: (
@@ -541,6 +533,7 @@ def test_public_scene_budget_initialization_fails_closed_on_corrupt_complete_sta
             "config_key": "retry_budget.provider_attempt_budget",
             "value": 7,
         },
+        "attempt_budget": {"source": "scene_run_states.initial", "value": 4},
     }
     state.provider_attempt_budget = 7
     state.scene_tokens_used = 100
@@ -605,6 +598,7 @@ def test_public_scene_budget_initialization_validates_negative_reserved_legacy_c
             "config_key": "retry_budget.provider_attempt_budget",
             "value": 7,
         },
+        "attempt_budget": {"source": "scene_run_states.initial", "value": 4},
     }
     state.provider_attempt_budget = 7
     session.commit()
@@ -628,7 +622,7 @@ def test_exhausted_budget_blocks_new_provider_dispatch_without_leaking_reservati
     """严格 token 门禁对所有新 provider dispatch 生效，且拒绝后不泄漏预留。"""
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1  # 立即耗尽
+    arm_scene_budget(state, 1)  # 立即耗尽
     session.commit()
 
     scene_client = CountingSceneClient()
@@ -796,7 +790,7 @@ def test_disarmed_scene_budget_view_reports_unlimited(monkeypatch, session) -> N
 def test_author_topup_expands_budget_with_audit(client, session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1000
+    arm_scene_budget(state, 1000)
     state.scene_tokens_used = 900
     session.commit()
 
@@ -939,13 +933,18 @@ def test_single_call_baseline_survives_an_author_topup(client, session) -> None:
     assert lifecycle["recommended_topup_tokens"] == baseline
 
 
-def test_legacy_budget_without_a_recorded_baseline_divides_its_initial_budget(client, session) -> None:
-    """依据里没记基线的旧预算：基线按初始预算 ÷ 历史倍率 5 还原；追加过之后也不变（以前拿当前预算去除）。"""
+def test_budget_basis_without_a_recorded_baseline_divides_its_initial_budget(client, session) -> None:
+    """依据里没记基线（也没记倍率）的预算：基线按初始预算 ÷ 历史倍率 5 还原；追加过之后也不变（以前拿当前预算去除）。"""
     from novel_system.services.scene_budget import budget_unit
 
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1000
+    arm_scene_budget(state, 1000)
+    state.scene_budget_basis_json = {
+        key: value
+        for key, value in state.scene_budget_basis_json.items()
+        if key not in {"baseline_tokens", "budget_multiplier"}
+    }
     session.commit()
     response = client.post(
         f"/api/v1/scenes/{SCENE_ID}/budget/topup",
@@ -955,7 +954,7 @@ def test_legacy_budget_without_a_recorded_baseline_divides_its_initial_budget(cl
     assert response.status_code == 200
     session.refresh(state)
     assert state.scene_token_budget == 1500
-    assert state.scene_budget_basis_json["basis_type"] == "legacy_existing_scene_token_budget"
+    assert "baseline_tokens" not in state.scene_budget_basis_json
 
     assert budget_unit(state) == 200
     lifecycle = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]["scene_run_state"]["lifecycle_budget"]
@@ -978,7 +977,7 @@ def test_author_topup_expands_any_lifecycle_budget_combination_without_resetting
 ) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1_000
+    arm_scene_budget(state, 1_000)
     state.scene_tokens_used = 321
     state.scene_tokens_reserved = 7
     state.total_attempt_count = 3
@@ -1062,7 +1061,7 @@ def test_author_topup_is_idempotent_across_all_three_budget_dimensions(client, s
 def test_author_topup_allows_the_next_online_scene_llm_call(client, session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1000
+    arm_scene_budget(state, 1000)
     session.commit()
     response = client.post(
         f"/api/v1/scenes/{SCENE_ID}/budget/topup",
@@ -1081,7 +1080,7 @@ def test_author_topup_allows_the_next_online_scene_llm_call(client, session) -> 
 def test_topup_audit_replay_rejects_a_forged_non_monotonic_prefix(client, session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1000
+    arm_scene_budget(state, 1000)
     session.commit()
 
     response = client.post(
@@ -1103,7 +1102,7 @@ def test_topup_audit_replay_rejects_a_forged_non_monotonic_prefix(client, sessio
 def test_basis_only_recovery_restores_full_audited_topup_budget(client, session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1000
+    arm_scene_budget(state, 1000)
     session.commit()
     response = client.post(
         f"/api/v1/scenes/{SCENE_ID}/budget/topup",
@@ -1126,7 +1125,7 @@ def test_basis_only_recovery_restores_full_audited_topup_budget(client, session)
 def test_budget_checkpoint_accepts_a_valid_topup_prefix_and_later_full_replay(client, session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1000
+    arm_scene_budget(state, 1000)
     session.commit()
     first = client.post(
         f"/api/v1/scenes/{SCENE_ID}/budget/topup",
@@ -1231,7 +1230,7 @@ def test_topup_accepts_the_exact_signed_int64_budget_boundary(client, session) -
     _seed_scene(session)
     int64_max = (1 << 63) - 1
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = int64_max - 1
+    arm_scene_budget(state, int64_max - 1)
     session.commit()
 
     response = client.post(
@@ -1254,7 +1253,7 @@ def test_topup_rejects_signed_int64_overflow_without_mutation_or_audit(client, s
     _seed_scene(session)
     int64_max = (1 << 63) - 1
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = int64_max
+    arm_scene_budget(state, int64_max)
     session.commit()
 
     response = client.post(
@@ -1298,8 +1297,7 @@ def test_three_dimensional_topup_overflow_is_atomic(
     _seed_scene(session)
     int64_max = (1 << 63) - 1
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1_000
-    setattr(state, overflow_field, int64_max)
+    arm_scene_budget(state, 1_000, **{overflow_field: int64_max})
     session.commit()
     before = (
         state.scene_token_budget,
@@ -1329,7 +1327,7 @@ def test_three_dimensional_topup_overflow_is_atomic(
 def test_concurrent_three_dimensional_topups_are_atomic_and_each_audited_once(session) -> None:
     _seed_scene(session)
     state = session.get(SceneRunState, SCENE_ID)
-    state.scene_token_budget = 1_000
+    arm_scene_budget(state, 1_000)
     session.commit()
     barrier = Barrier(2)
 
