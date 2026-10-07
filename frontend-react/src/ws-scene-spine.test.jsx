@@ -20,7 +20,7 @@ const mounted = [];
 const QUEUE_KEY = "scn-queue:v1::prj-main";
 
 const scene = (id, title, extra = {}) => ({
-  slug: id, legacy_slug: "", scene_id: id, title, summary: `${title}——整句摘要`, kind: "proactive", state: "todo", words: 0,
+  slug: id, scene_id: id, title, summary: `${title}——整句摘要`, kind: "proactive", state: "todo", words: 0,
   brief: { goal: "目标", conflict: "冲突", setback: "挫折" }, pov_character_name: "林昭",
   design: { origin: "snowflake", crucible: "非面对不可", location: "雨城", cast: [], followup: {} },
   ...extra,

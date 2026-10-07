@@ -149,6 +149,21 @@ def test_seeded_review_effects_target_the_editable_current_chapter(client, sessi
     assert any(scene["title"] == "样例反应场" for scene in chapter["scenes"])
 
 
+def test_seeded_nav_cards_point_at_stable_scene_ids(client, session):
+    """夹具卡的 nav_scene 是目录里真有的场景 sid（= scene_id）：位置式的 ch08s3 自 R16 起不再解析到任何一场。"""
+    seed_fixture_works(session)
+    session.commit()
+
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
+    chapters = client.get("/api/v2/projects/work-a/catalog").json()["data"]["chapters"]
+    slugs = {scene["slug"] for chapter in chapters for scene in chapter["scenes"]}
+    nav_scenes = [a["nav_scene"] for item in items for a in item["actions"] if a.get("nav_scene")]
+    assert nav_scenes
+    assert all(sid in slugs for sid in nav_scenes)
+    note = next(item for item in items if item["title"] == "批注 · 核心意象是否前后呼应")
+    assert note["actions"][0]["nav_scene"] == chapters[7]["scenes"][2]["slug"]
+
+
 def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, session):
     seed_fixture_works(session)
     session.commit()

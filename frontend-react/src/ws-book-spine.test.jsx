@@ -1,7 +1,7 @@
 // 阶段 X「一条书脊」——雪花整理出来的章与场，在目录 store、共用设计卡、同步状态这三处的契约。
 // 作者的原话：「雪花生成的章节感觉是孤立的，没有同步到 AI 起草台和写作台」。这里守的是：
 //   · 目录把整张设计卡带给台子（不只是三拍），幕永远是 act1/2/3（否则章节编排上看不见这一章）；
-//   · 场景的身份 = 后端 scene_id，不跟着位置走；位置式旧 sid / 乐观创建的临时 sid 仍解析得到同一场；
+//   · 场景的身份 = 后端 scene_id，不跟着位置走；乐观创建的临时 sid 仍解析得到同一场，位置式旧 sid（ch01s2）不再解析；
 //   · 「现在该写哪一场」只有一条规则；
 //   · 设计卡按形态给三拍命名、后续三拍、待同步提示与「在构思里改」；
 //   · 同步状态只认已确认的规划，非雪花作品不再追问。
@@ -16,8 +16,9 @@ vi.mock("./lib/client.js", () => ({
 const T = { timeout: 5000, interval: 25 };
 const mounted = [];
 
-const scene = (id, legacy, extra = {}) => ({
-  slug: id, legacy_slug: legacy, scene_id: id, title: `场 ${legacy}`, summary: `${legacy} 的整句摘要`, kind: "proactive",
+/* label 只给标题 / 摘要起个好认的名字（第几章第几场），不是身份 */
+const scene = (id, label, extra = {}) => ({
+  slug: id, scene_id: id, title: `场 ${label}`, summary: `${label} 的整句摘要`, kind: "proactive",
   state: "todo", words: 0, brief: { goal: "目标", conflict: "冲突", setback: "挫折" },
   pov_character_id: "c1", pov_character_name: "林昭", exit_change: "", hook: "",
   ...extra,
@@ -104,14 +105,32 @@ describe("目录 store：设计卡、幕、场景身份、落点", () => {
     expect(first.scenes[0].work).toEqual({ runStatus: "", hasFinal: false, hasWords: false });
   });
 
-  it("场景 sid = 后端 scene_id；位置式旧 sid 仍解析到「现在排在那个位置上的场」", async () => {
+  it("场景 sid = 后端 scene_id；位置式旧 sid（ch01s2）不再解析到任何一场", async () => {
     const { WsCatalog } = await loadCatalog();
     expect(WsCatalog.get()[0].scenes.map(s => s.sid)).toEqual(["P_SC_a", "P_SC_b"]);
     expect(WsCatalog.sceneById("P_SC_b").scene.title).toBe("场 ch01s2");
-    expect(WsCatalog.sceneById("ch02s1").scene.sid).toBe("P_SC_c");
-    expect(WsCatalog.sceneById("ch09s9")).toBeNull();
     expect(WsCatalog.sidForBackendId("P_SC_c")).toBe("P_SC_c");
-    await expect(WsCatalog.backendSceneId("ch01s2")).resolves.toBe("P_SC_b");
+    await expect(WsCatalog.backendSceneId("P_SC_b")).resolves.toBe("P_SC_b");
+    // 2026-09-19 的位置式兜底已删（R16）：「现在排在第 1 章第 2 场的那一场」不再是 ch01s2 的意思
+    expect(WsCatalog.sceneById("ch01s2")).toBeNull();
+    expect(WsCatalog.sceneById("ch02s1")).toBeNull();
+    await expect(WsCatalog.backendSceneId("ch01s2")).resolves.toBeFalsy();
+  });
+
+  it("旧后端还带着 legacy_slug：目录不收这个字段，位置式旧 sid 照样不解析，本机旧键原样不动", async () => {
+    window.localStorage.setItem("wr-doc:ch01s2::prj-main", "<p>旧缓存</p>");
+    window.localStorage.setItem("scn-queue:v1::prj-main", JSON.stringify(["ch02s1", "ch01s2"]));
+    const legacy = SNOW_CATALOG.map((c, ci) => ({
+      ...c, scenes: c.scenes.map((s, si) => ({ ...s, legacy_slug: `ch0${ci + 1}s${si + 1}` })),
+    }));
+    const { WsCatalog } = await loadCatalog({ catalog: legacy });
+    expect(WsCatalog.get().flatMap(c => c.scenes).some(s => "legacySid" in s)).toBe(false);
+    expect(WsCatalog.sceneById("ch01s2")).toBeNull();
+    expect(WsCatalog.sceneById("ch02s1")).toBeNull();
+    expect(window.localStorage.getItem("wr-doc:ch01s2::prj-main")).toBe("<p>旧缓存</p>");
+    expect(window.localStorage.getItem("wr-doc:P_SC_b::prj-main")).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem("scn-queue:v1::prj-main"))).toEqual(["ch02s1", "ch01s2"]);
+    expect(window.localStorage.getItem("ws_sid_migrated_v1::prj-main")).toBeNull();
   });
 
   it("现在该写哪一场：当前章里在写的 → 第一场没写完的 → 末场；写作台与主页共用", async () => {
@@ -137,21 +156,9 @@ describe("目录 store：设计卡、幕、场景身份、落点", () => {
     ));
     WsCatalog.addScene("ch02", "新场景");
     const temp = WsCatalog.get()[1].scenes[1].sid;
-    expect(temp.startsWith("tmp_ch02_")).toBe(true); // 临时 sid 不长成位置式旧 slug 的样子
+    expect(temp.startsWith("tmp_ch02_")).toBe(true); // 正文 store 靠 tmp_ 前缀认出还没落库的场
     await vi.waitFor(() => expect(WsCatalog.get()[1].scenes[1].sid).toBe("P_SC_new"), T);
     expect(WsCatalog.sceneById(temp).scene.sid).toBe("P_SC_new");
-  });
-
-  it("一次性迁移：按位置式旧 sid 落地的本机键挪到稳定 sid 上（每部作品一次）", async () => {
-    window.localStorage.setItem("wr-doc:ch01s2::prj-main", "<p>旧缓存</p>");
-    window.localStorage.setItem("scn-run:ch02s1::prj-main", JSON.stringify({ state: "ready" }));
-    window.localStorage.setItem("scn-queue:v1::prj-main", JSON.stringify(["ch02s1", "ch01s2"]));
-    await loadCatalog();
-    expect(window.localStorage.getItem("wr-doc:P_SC_b::prj-main")).toBe("<p>旧缓存</p>");
-    expect(window.localStorage.getItem("wr-doc:ch01s2::prj-main")).toBeNull();
-    expect(JSON.parse(window.localStorage.getItem("scn-run:P_SC_c::prj-main"))).toEqual({ state: "ready" });
-    expect(JSON.parse(window.localStorage.getItem("scn-queue:v1::prj-main"))).toEqual(["P_SC_c", "P_SC_b"]);
-    expect(window.localStorage.getItem("ws_sid_migrated_v1::prj-main")).toBeTruthy();
   });
 });
 

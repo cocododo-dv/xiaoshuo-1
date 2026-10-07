@@ -61,10 +61,8 @@ export function catFromApiScene(s) {
   const b = s.brief || {};
   const work = s.work || {};
   return {
-    /* 场景 sid = 后端给的 slug。阶段 X 起它就是稳定的 scene_id（身份跟着行走，不跟着位置走）；
-       位置式旧 slug（ch08s3）只留作 legacySid，给旧深链兜底、给本机旧键做一次性迁移。 */
+    /* 场景 sid = 后端给的 slug。阶段 X 起它就是稳定的 scene_id（身份跟着行走，不跟着位置走） */
     sid: s.slug,
-    legacySid: s.legacy_slug || "",
     backendId: s.scene_id,
     title: s.title,
     summary: s.summary || "",

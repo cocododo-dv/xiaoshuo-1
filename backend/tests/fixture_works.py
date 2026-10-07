@@ -444,6 +444,17 @@ def _seed_work_a_review_cards(session: Session) -> None:
         .order_by(ChapterGoal.display_order.asc())
     ).scalars().all()
     by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
+    # 「回到该段」指向第 8 章第 3 场：场景 sid = 稳定的 scene_id（位置式的 ch08s3 自 R16 起不再解析）
+    ch08_scene_ids = (
+        session.execute(
+            select(SceneCard.scene_id)
+            .where(SceneCard.chapter_id == by_no[8].chapter_id, SceneCard.trashed_flag == 0)
+            .order_by(SceneCard.scene_seq.asc())
+        ).scalars().all()
+        if 8 in by_no
+        else []
+    )
+    note_nav = {"nav_scene": ch08_scene_ids[2]} if len(ch08_scene_ids) >= 3 else {}
     cards = ReviewCardService(session)
     # import_catalog 会把显式 current 章之前的历史前缀规范化为 approved；
     # 可执行的夹具 effect 必须指向 current 章，不能再改已锁定的第 6/7 章。
@@ -519,7 +530,7 @@ def _seed_work_a_review_cards(session: Session) -> None:
             "detail": "样例批注：开篇的核心意象在结尾是否应再次响起，形成回环？",
             "dedupe_key": "fixture:work-a:note-motif",
             "actions": [
-                {"label": "回到该段", "intent": "primary", "op": "nav", "nav_to": "writer", "nav_scene": "ch08s3"},
+                {"label": "回到该段", "intent": "primary", "op": "nav", "nav_to": "writer", **note_nav},
                 {"label": "标记已读", "intent": "quiet", "op": "resolve"},
             ],
         },

@@ -18,15 +18,19 @@ await check("目录来自后端（tide 10 章，含戏剧卡）", async () => {
     const first = ch1 && ch1.scenes[0];
     return {
       n: chs.length, title: ch1 && ch1.title, spine: ch1 && ch1.drama && ch1.drama.spine,
-      sid: first && first.sid, backendId: first && first.backendId, legacySid: first && first.legacySid,
+      sid: first && first.sid, backendId: first && first.backendId,
+      positional: !!WsCatalog.sceneById("ch01s1"),
     };
   });
   if (res.n !== 10) throw new Error(`chapters: ${res.n}`);
   if (res.title !== "样章01") throw new Error(`title: ${res.title}`);
   if (!res.spine) throw new Error("drama.spine missing");
-  // 阶段 X：场景 sid = 稳定的 scene_id（身份跟着行走）；位置式旧 slug 只留作 legacySid
+  // 阶段 X：场景 sid = 稳定的 scene_id（身份跟着行走）；2026-09-19 的位置式旧 slug 兜底已删（R16）：
+  // 后端不再给 legacy_slug，ch01s1 也不再解析到第 1 章第 1 场
   if (!res.sid || res.sid !== res.backendId) throw new Error(`sid: ${res.sid} / ${res.backendId}`);
-  if (res.legacySid !== "ch01s1") throw new Error(`legacySid: ${res.legacySid}`);
+  if (res.positional) throw new Error("positional sid ch01s1 still resolves");
+  const firstScene = (await catalog()).chapters[0].scenes[0];
+  if ("legacy_slug" in firstScene) throw new Error(`legacy_slug still served: ${firstScene.legacy_slug}`);
 });
 
 await check("主页（dashboard 兜底 + 目录同源）渲染", async () => {
