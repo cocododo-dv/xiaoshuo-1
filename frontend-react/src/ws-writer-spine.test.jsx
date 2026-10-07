@@ -16,7 +16,7 @@ const mounted = [];
 const innerTextDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "innerText");
 
 const scene = (id, title, extra = {}) => ({
-  slug: id, legacy_slug: "", scene_id: id, title, summary: `${title}——整句摘要`, kind: "proactive", state: "todo", words: 0,
+  slug: id, scene_id: id, title, summary: `${title}——整句摘要`, kind: "proactive", state: "todo", words: 0,
   brief: { goal: "目标", conflict: "冲突", setback: "挫折" }, pov_character_name: "",
   ...extra,
 });

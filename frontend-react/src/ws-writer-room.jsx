@@ -72,7 +72,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
   /* ---- 目录：大纲形状 + 当前这一场的页头 ----
      FE-ALIGN P3：目录是后端异步装载的；冷启动直达写作台时 activeScene 可能是 null，目录就绪后选中在写场景。
      切换作品 / 目录重载时，旧作品的场景 id 绝不能继续留在编辑器里；命中就换成目录里现在的 sid
-     （乐观创建时的临时 sid、旧深链里的位置式 sid 都经别名解析到同一场）。 */
+     （乐观创建时的临时 sid 经别名解析到同一场）。 */
   const refocusTarget = (prev) => {
     const kept = prev ? WsCatalog.sceneById(prev) : null;
     if (kept) return kept.scene.sid;

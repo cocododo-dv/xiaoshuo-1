@@ -39,7 +39,7 @@
 
 **场**（新增键）：
 
-- `slug` = `scene_id`（稳定身份）；`legacy_slug` = 位置式旧 slug，只供前端迁移本机旧键、给旧深链兜底。
+- `slug` = `scene_id`（稳定身份）。
 - `title` = 构思里起过的短题名；没起过就从摘要取一个短题（第一个分句，≤ 18 字）。`summary` = 09 的整句摘要。
 - `design`：`origin`、`crucible`、`location`、`story_time`、`cast[]`、`reader_emotion`、`must_include`、`must_withhold`、`cost`、`length_band`、`rendering_mode`、`followup`（一场接着的另一组三拍）、`exception_reason`、`protagonist`、`is_chapter_last`、`owner`（`plan` | `desk`：这张卡的设计在哪里改，见 §10）。
 - `work`：`run_status`（管线状态）、`has_final`、`has_words`——目录的 `state` 只是作者手打的标签，这才是事实。
@@ -52,9 +52,9 @@
 
 现在 `slug = scene_id`。前端（`ws-catalog.jsx`）：
 
-- `sid` = 后端给的 slug；`legacySid` = 位置式旧 slug。
-- `WsCatalog.sceneById(x)`：直接命中 → 会话内别名（乐观创建时的临时 sid `tmp_…`，建好之后经 `catTrackAliases` 仍解析到同一场）→ `legacySid`（待办卡 / 旧深链里存下来的 `ch08s3`，语义与从前一样：「现在排在那个位置上的场」）。
-- 一次性迁移（每部作品一次，标记 `ws_sid_migrated_v1::<work>`）：`wr-doc:` / `wr-doc-pending:` / `wr-notes:` / `wr-notes-pending:` / `scn-run:` 键与 `scn-queue:v1` / `scn-queue-dismissed:v1` 名单从旧 sid 挪到新 sid。映射取当刻的目录位置，与升级前「下次打开会读到的那一场」完全一致。
+- `sid` = 后端给的 slug（= `scene_id`）。
+- `WsCatalog.sceneById(x)`：直接命中 → 会话内别名（乐观创建时的临时 sid `tmp_…`，建好之后经 `catTrackAliases` 仍解析到同一场）。别的都不认：位置式的 `ch08s3` 解析不到任何一场，这样的旧深链打开的是默认那一场。
+- 2026-09-19 换身份时有过一次本机旧键迁移（标记 `ws_sid_migrated_v1::<work>`，把按位置式 sid 落地的 `wr-doc:` / `wr-doc-pending:` / `wr-notes:` / `wr-notes-pending:` / `scn-run:` 键与 `scn-queue:v1` / `scn-queue-dismissed:v1` 名单挪到新 sid）和与之配套的 `legacy_slug` / `legacySid` 兜底；按约定再留了一轮，2026-10-03 重构上线后删除（R16）。浏览器里没迁过的旧键原样留着、不再读；其中没同步的正文由写作台的孤儿标记清扫收进「同步与恢复」。
 - 概览接口的 `resume.scene_slug` 同样是稳定 id；章内第几场另给 `resume.scene_no`。
 
 章 slug 仍是位置式的 `chNN`：它只当显示序号和界面键用，章上的写操作都在调用当刻解析后端 id。后端的章 id 自阶段 Y 起钉在章计划上、不再有位置含义（§9）。

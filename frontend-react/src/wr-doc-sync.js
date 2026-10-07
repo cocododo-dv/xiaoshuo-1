@@ -161,8 +161,7 @@ function metaKeyOf(workId, sid) {
 }
 
 /* 目录眼下管这一场叫什么：乐观新建的场（「创建第一章」「加一场」）先用临时 sid（tmp_…），后端建好、目录重拉之后换成稳定的
-   scene_id，临时 sid 经目录的别名仍解析到它；旧深链的位置式 sid 同样经目录解析。只认当前作品（目录只装着它）；目录里查不到
-   就还是它自己 */
+   scene_id，临时 sid 经目录的别名仍解析到它。只认当前作品（目录只装着它）；目录里查不到就还是它自己 */
 function catalogSid(workId, sid) {
   if (!sid || workId !== activeWorkId()) return sid;
   let hit = null;
@@ -2597,7 +2596,7 @@ const WrDocs = {
     const workId = activeWorkId();
     return readCache(workId, catalogSid(workId, sid));
   },
-  /* 目录眼下管这一场叫什么（乐观新建时的临时 sid 换成了稳定的 scene_id、旧深链的位置式 sid……；查不到就是它自己） */
+  /* 目录眼下管这一场叫什么（乐观新建时的临时 sid 换成了稳定的 scene_id；查不到就是它自己） */
   sceneSid(sid) {
     return catalogSid(activeWorkId(), sid);
   },

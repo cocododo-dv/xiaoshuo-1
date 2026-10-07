@@ -27,7 +27,7 @@ const catActiveId = () => readyWorkId(WsWorks);
 
 /* ---- 给乐观创建、还没有后端 id 的场补一个**临时** sid ----
    后端建好之后目录重拉，这一场拿到稳定的 scene_id；临时 sid 经 catTrackAliases 仍解析到同一场。
-   临时 sid 刻意不长成位置式旧 slug（ch02s1）的样子：那个形状留给旧深链的兜底解析，两者不能撞名。 */
+   形状 tmp_<章>_… 别改：写作台正文 store 靠这个前缀认出还没落库的场（wr-doc-sync.js TMP_SID）。 */
 let catTempSeq = 0;
 function catStamp(list) {
   return (list || []).map((c) => ({
@@ -125,10 +125,6 @@ const catErrorMap = {};    // workId → 最近一次装载错误；区分“真
 const catSubs = createSubscribers();
 
 const catAliasMap = {};       // workId → { 旧 sid（乐观创建时的临时 sid）: 现在的 sid }
-const CAT_SID_MIGRATED_LS = "ws_sid_migrated_v1";
-/* 按场景落地的本机键前缀（写作台读缓存 / 未同步标记 / 场景笔记，AI 起草台运行记录）与两份 sid 名单 */
-const CAT_SID_KEY_PREFIXES = ["wr-doc:", "wr-doc-pending:", "wr-notes:", "wr-notes-pending:", "scn-run:"];
-const CAT_SID_LIST_KEYS = ["scn-queue:v1", "scn-queue-dismissed:v1"];
 
 /* 反向依赖的登记口（审计 F01-02）：写作台正文 store 与雪花同步层都 import 目录，目录不能反过来 import 它们
    （会闭成环），过去就去读 window.WrDocs / window.SnowSync。现在由它们在加载时来这里登记：
@@ -151,8 +147,9 @@ function catNotify() {
   emit("ws:catalog-changed");
 }
 
-/* sid 解析：直接命中 → 会话内别名（乐观创建的临时 sid，建好之后后端给的是稳定 id）→ 位置式旧 slug
-   （待办卡 / 旧深链里存下来的 ch08s3；语义与从前一样——「现在排在那个位置上的场」）。 */
+/* sid 解析：直接命中 → 会话内别名（乐观创建的临时 sid，建好之后后端给的是稳定 id）。别的都不认：
+   2026-09-19 之前的位置式 sid（ch08s3）的兜底与本机旧键的一次性迁移已在重构上线后删除（R16），
+   那样的深链打开的是默认那一场。 */
 function catResolveScene(workId, sid) {
   if (!sid) return null;
   const chapters = catLoad(workId);
@@ -166,8 +163,7 @@ function catResolveScene(workId, sid) {
   const direct = find(x => x.sid === sid);
   if (direct) return direct;
   const alias = (catAliasMap[workId] || {})[sid];
-  if (alias) { const hit = find(x => x.sid === alias); if (hit) return hit; }
-  return find(x => x.legacySid && x.legacySid === sid);
+  return alias ? find(x => x.sid === alias) : null;
 }
 
 /* 目录重拉后：上一份缓存里同一个后端场景换了 sid（只会是乐观创建的临时 sid）→ 记别名，
@@ -182,39 +178,6 @@ function catTrackAliases(workId, prev, next) {
   }));
 }
 
-/* 一次性迁移（每部作品一次）：场景 sid 从位置式（ch08s3）换成稳定的 scene_id 之后，把按旧 sid 落地的
-   本机键挪到新 sid 上——映射取此刻的目录位置，与升级前「下次打开时会读到的那一场」完全一致，不引入新错位。 */
-function catMigrateSidKeys(workId, chapters) {
-  try {
-    const marker = CAT_SID_MIGRATED_LS + "::" + workId;
-    if (localStorage.getItem(marker)) return;
-    const map = {};
-    chapters.forEach(c => (c.scenes || []).forEach(s => { if (s.legacySid && s.legacySid !== s.sid) map[s.legacySid] = s.sid; }));
-    if (!Object.keys(map).length) return; // 旧后端（slug 仍是位置式）：没有可迁的，也不打标记
-    Object.keys(map).forEach((legacy) => {
-      CAT_SID_KEY_PREFIXES.forEach((prefix) => {
-        const from = `${prefix}${legacy}::${workId}`;
-        const to = `${prefix}${map[legacy]}::${workId}`;
-        const value = localStorage.getItem(from);
-        if (value == null) return;
-        if (localStorage.getItem(to) == null) localStorage.setItem(to, value);
-        localStorage.removeItem(from);
-      });
-    });
-    CAT_SID_LIST_KEYS.forEach((base) => {
-      const key = `${base}::${workId}`;
-      const raw = localStorage.getItem(key);
-      if (!raw) return;
-      try {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) localStorage.setItem(key, JSON.stringify([...new Set(list.map(x => map[x] || x))]));
-      } catch (e) {}
-    });
-    localStorage.setItem(marker, new Date().toISOString());
-  } catch (e) {
-    console.warn("[WsCatalog] 本机场景键迁移失败（下次再试）:", e);
-  }
-}
 const catApiBase = (id) => `/api/v2/projects/${id}/catalog`;
 
 /* React 订阅者会把返回值放进 effect 依赖。未装载时若每次都创建新 []，
@@ -232,8 +195,6 @@ const catLoader = createKeyedLoader({
     return { readNo, chapters: ((data && data.chapters) || []).map(catFromApiChapter) };
   },
   apply(workId, { readNo, chapters: mapped }) {
-    // 2026-09-19 的场景编号迁移（位置式 sid → 稳定的 scene_id）照计划再留一轮（重评 R16）
-    catMigrateSidKeys(workId, mapped);
     catTrackAliases(workId, catCache[workId], mapped);
     // 新建一场的回包丢了（建好了、回包没回来）：这一次重读里认出它，临时 sid 记成它的别名（复核 W1-R7B-1）；
     // 这一页已经认得的场（缓存里这一份有后端 id 的）不是它（复核 Q1c-R1）
