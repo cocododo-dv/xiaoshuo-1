@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 
 
 def _near_final_rejection_skip_reason(gate: Any) -> str:
-    """被拒的重写稿 → skip_reason（旧检查点里的抄袭拒绝没有 ``rejected_reason``，按抄袭读）。"""
+    """被拒的重写稿 → skip_reason。styled-draft 门的抄袭拒绝（:func:`_near_final_rewrite_gate_summary`）不带
+    ``rejected_reason``，按抄袭读；准终稿自己的两道门（基础安全、离作者更远）带着原因。"""
     reason = str((gate or {}).get("rejected_reason") or "style_plagiarism") if isinstance(gate, dict) else "style_plagiarism"
     return NEAR_FINAL_REJECTION_SKIP_REASONS.get(reason, NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON)
 

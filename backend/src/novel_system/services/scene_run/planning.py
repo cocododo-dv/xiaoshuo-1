@@ -23,8 +23,6 @@ class PlanningCheckpointMixin:
         return self._sub_checkpoint_progress(
             "planning_ready",
             last_sub_index=3,
-            legacy_complete=lambda refs: isinstance(refs.get("planning"), dict),
-            legacy_sub_index=3,
             invalid_message="planning checkpoint sub-index is invalid",
         )
 
@@ -263,17 +261,7 @@ class PlanningCheckpointMixin:
         return row
 
     def _load_planning_checkpoint(self, scene_id: str) -> dict[str, Any]:
-        state_payload = self._active_checkpoint_state().run_checkpoint_json or {}
-        state_refs = (
-            state_payload.get("artifact_refs")
-            if isinstance(state_payload, dict)
-            else None
-        )
-        if (
-            isinstance(state_refs, dict)
-            and "planning_scene_blueprint_row_id" in state_refs
-        ):
-            self._validate_planning_prefix(scene_id, through=2)
+        self._validate_planning_prefix(scene_id, through=2)
         planning = self._checkpoint_artifact(
             "planning", expected_node_at_least="planning_ready"
         )

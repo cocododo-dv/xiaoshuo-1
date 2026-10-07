@@ -59,12 +59,9 @@ _LOGGER = logging.getLogger(__name__)
 
 class SoftQcCheckpointMixin:
     def _soft_checkpoint_progress(self) -> int:
-        # 没有 sub_index 的完整检查点：兼容子游标上线前已经完整提交的 soft checkpoint。
         return self._sub_checkpoint_progress(
             "soft_qc_ready",
             last_sub_index=3,
-            legacy_complete=lambda refs: bool(refs.get("soft_qc_report_id")),
-            legacy_sub_index=3,
             invalid_message="soft QC checkpoint sub-index is invalid",
         )
 
@@ -788,7 +785,7 @@ class SoftQcCheckpointMixin:
                 final_report = self.session.get(QcReport, completion_decision.qc_report_id)
                 if final_report is None:
                     self._raise_checkpoint_output_missing(row_id=completion_decision.qc_report_id)
-            legacy_decision = soft_decision_snapshot(
+            final_decision_snapshot = soft_decision_snapshot(
                 final_decision, include_should_continue=False
             )
             completion = {
@@ -827,7 +824,7 @@ class SoftQcCheckpointMixin:
             hashes.update(
                 {
                     "soft_final_draft": self._text_hash(final_generation.content),
-                    "soft_qc_decision": self._json_hash(legacy_decision),
+                    "soft_qc_decision": self._json_hash(final_decision_snapshot),
                     "soft_qc_report": self._json_hash(qc_report_snapshot(final_report)),
                     "soft_completion": self._json_hash(completion),
                 }
@@ -1051,79 +1048,79 @@ class SoftQcCheckpointMixin:
             execution_step_key=final_execution_step_key,
             artifact_execution_id=final_artifact_execution_id,
         )
-        if refs.get("soft_completion") is not None:
-            if selected_style_generation is None:
-                raise checkpoint_corrupt(
-                    "soft checkpoint prefix validation requires the selected style source",
-                )
-            soft_input = self._load_soft_draft_checkpoint(
-                scene_id,
-                prefix="soft_input",
-                expected_source_draft_row_id=selected_style_generation.row_id,
-                expected_stages={"style_draft", "de_template", "style_patch"},
+        # 收尾必有前缀链：第 0 轮（与它的分支控制）、需要时补丁与第 1 轮，逐项复验
+        if selected_style_generation is None:
+            raise checkpoint_corrupt(
+                "soft checkpoint prefix validation requires the selected style source",
             )
-            qc0 = self._load_soft_qc_round_checkpoint(
-                scene_id,
-                round_index=0,
-                source_generation=soft_input,
-            )
-            patch_allowed, skip_reason = self._load_soft_qc0_branch_control(qc0)
-            final_qc_round = refs.get("soft_final_qc_round")
-            expected_skip_reason = skip_reason if final_qc_round == 0 else None
-            if final_qc_round == 1:
-                if (
-                    qc0.branch != "patch"
-                    or not patch_allowed
-                    or skip_reason is not None
-                ):
-                    raise checkpoint_corrupt("soft QC1 completion is not reachable from its QC0 branch")
-                patch_generation = self._load_soft_draft_checkpoint(
-                    scene_id,
-                    prefix="soft_patch",
-                    expected_source_draft_row_id=soft_input.row_id,
-                    expected_stages={"style_patch"},
-                    expected_source_qc_report_id=qc0.qc_report_id,
-                )
-                checkpoint_decision = self._load_soft_qc_round_checkpoint(
-                    scene_id,
-                    round_index=1,
-                    source_generation=patch_generation,
-                )
-                expected_generation = patch_generation
-                if refs.get("soft_completion_skip_reason") == STYLE_PATCH_REVERTED_SKIP_REASON:
-                    # 风格参考 v3（P5b）：补丁被退回——补丁与补丁后那一轮评审照常校验，收尾是补丁前的稿子与
-                    # 由补丁前那一轮评审派生的决定。
-                    checkpoint_decision = self._reverted_patch_decision(qc0)
-                    expected_generation = soft_input
-                    expected_skip_reason = STYLE_PATCH_REVERTED_SKIP_REASON
-            elif final_qc_round == 0:
-                if qc0.branch == "patch" and patch_allowed:
-                    raise checkpoint_corrupt("soft QC0 completion skipped an allowed patch")
-                checkpoint_decision = qc0
-                expected_generation = soft_input
-            else:
-                raise checkpoint_corrupt("soft final QC round is invalid")
-            completion = refs.get("soft_completion")
-            expected_completion = {
-                "final_qc_round": final_qc_round,
-                "skip_reason": refs.get("soft_completion_skip_reason"),
-                "branch": decision.branch,
-                "qc_report_id": decision.qc_report_id,
-                "draft_row_id": generation.row_id,
-            }
+        soft_input = self._load_soft_draft_checkpoint(
+            scene_id,
+            prefix="soft_input",
+            expected_source_draft_row_id=selected_style_generation.row_id,
+            expected_stages={"style_draft", "de_template", "style_patch"},
+        )
+        qc0 = self._load_soft_qc_round_checkpoint(
+            scene_id,
+            round_index=0,
+            source_generation=soft_input,
+        )
+        patch_allowed, skip_reason = self._load_soft_qc0_branch_control(qc0)
+        final_qc_round = refs.get("soft_final_qc_round")
+        expected_skip_reason = skip_reason if final_qc_round == 0 else None
+        if final_qc_round == 1:
             if (
-                completion != expected_completion
-                or self._json_hash(completion)
-                != self._checkpoint_hash("soft_completion")
-                or refs.get("soft_completion_skip_reason") != expected_skip_reason
-                or soft_decision_snapshot(
-                    checkpoint_decision, include_should_continue=False
-                )
-                != soft_decision_snapshot(decision, include_should_continue=False)
-                or expected_generation.row_id != generation.row_id
-                or expected_generation.llm_call_id != generation.llm_call_id
+                qc0.branch != "patch"
+                or not patch_allowed
+                or skip_reason is not None
             ):
-                raise checkpoint_corrupt("soft completion prefix/branch/hash mismatch")
+                raise checkpoint_corrupt("soft QC1 completion is not reachable from its QC0 branch")
+            patch_generation = self._load_soft_draft_checkpoint(
+                scene_id,
+                prefix="soft_patch",
+                expected_source_draft_row_id=soft_input.row_id,
+                expected_stages={"style_patch"},
+                expected_source_qc_report_id=qc0.qc_report_id,
+            )
+            checkpoint_decision = self._load_soft_qc_round_checkpoint(
+                scene_id,
+                round_index=1,
+                source_generation=patch_generation,
+            )
+            expected_generation = patch_generation
+            if refs.get("soft_completion_skip_reason") == STYLE_PATCH_REVERTED_SKIP_REASON:
+                # 风格参考 v3（P5b）：补丁被退回——补丁与补丁后那一轮评审照常校验，收尾是补丁前的稿子与
+                # 由补丁前那一轮评审派生的决定。
+                checkpoint_decision = self._reverted_patch_decision(qc0)
+                expected_generation = soft_input
+                expected_skip_reason = STYLE_PATCH_REVERTED_SKIP_REASON
+        elif final_qc_round == 0:
+            if qc0.branch == "patch" and patch_allowed:
+                raise checkpoint_corrupt("soft QC0 completion skipped an allowed patch")
+            checkpoint_decision = qc0
+            expected_generation = soft_input
+        else:
+            raise checkpoint_corrupt("soft final QC round is invalid")
+        completion = refs.get("soft_completion")
+        expected_completion = {
+            "final_qc_round": final_qc_round,
+            "skip_reason": refs.get("soft_completion_skip_reason"),
+            "branch": decision.branch,
+            "qc_report_id": decision.qc_report_id,
+            "draft_row_id": generation.row_id,
+        }
+        if (
+            completion != expected_completion
+            or self._json_hash(completion)
+            != self._checkpoint_hash("soft_completion")
+            or refs.get("soft_completion_skip_reason") != expected_skip_reason
+            or soft_decision_snapshot(
+                checkpoint_decision, include_should_continue=False
+            )
+            != soft_decision_snapshot(decision, include_should_continue=False)
+            or expected_generation.row_id != generation.row_id
+            or expected_generation.llm_call_id != generation.llm_call_id
+        ):
+            raise checkpoint_corrupt("soft completion prefix/branch/hash mismatch")
         return decision, generation
 
     def _pov_desensitize_brief(

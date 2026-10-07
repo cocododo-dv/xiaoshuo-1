@@ -3,11 +3,9 @@
 ``Orchestrator`` 直接继承 ``ArchiveCheckpointMixin``：驱动（``_archive_near_final_checkpoint``）、各步的产品、
 续跑时的逐步复验与恢复、归档清单。检查点节点键、步骤键、子游标与 ``RUN_CHECKPOINT_CORRUPT`` 的校验语义没变。
 
-持久化格式是检查点格式 v2（B01-12 / B01-14 / B03-07）：第 4 步产品 ``archive_core`` 的 ``schema_version`` 是 2，
-四份行快照只记哈希（产品里的 ``*_snapshot_hash``，``artifact_hashes`` 里各自的 ``archive_*_snapshot`` 键），
-``artifact_refs`` 里不再有 ``archive_*_snapshot`` 快照本身。读端两种格式都认：v1 的产品按
-``_ARCHIVE_CORE_PRODUCT_KEYS[1]`` 逐字段核对（格式 v2 上线前写下的检查点照样续跑）；反过来，P01c 之前的代码读不了
-v2 的检查点（回退部署时正停在归档尾段的运行会判损坏）。
+第 4 步产品 ``archive_core`` 的 ``schema_version`` 是 2（检查点格式 v2，B01-12 / B01-14 / B03-07）：四份行快照只记
+哈希（产品里的 ``*_snapshot_hash``，``artifact_hashes`` 里各自的 ``archive_*_snapshot`` 键），快照本身不进检查点。
+只认这一种格式：v1 的读取器按约定只留了一版，已删。
 
 方法之间一律 ``self.X`` 互调：测试在编排器实例上覆盖某一步（``_run_archive_chapter_evaluation``、
 ``_archive_product``、``_archive_manifest`` …）或类上打桩，驱动与复验照样看得到。
@@ -72,16 +70,16 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-# 第 4 步产品（终稿归档）的格式：v2 只记四份行快照的哈希（检查点格式 v2，B01-12 / B01-14 / B03-07）
+# 第 4 步产品（终稿归档）的格式：只记四份行快照的哈希（检查点格式 v2，B01-12 / B01-14 / B03-07）
 ARCHIVE_CORE_SCHEMA_VERSION = 2
-# 产品里的快照字段 → 检查点 artifact_hashes 里它的哈希键（v1 时 artifact_refs 里还有同名的一份快照本身）
+# 产品里的快照字段 → 检查点 artifact_hashes 里它的哈希键
 ARCHIVE_CORE_SNAPSHOT_KEYS = {
     "final_scene_snapshot": "archive_final_scene_snapshot",
     "scene_memory_snapshot": "archive_scene_memory_snapshot",
     "rolling_note_snapshot": "archive_rolling_note_snapshot",
     "archive_attempt_snapshot": "archive_attempt_snapshot",
 }
-_ARCHIVE_CORE_BASE_KEYS = frozenset(
+_ARCHIVE_CORE_PRODUCT_KEYS = frozenset(
     {
         "schema_version",
         "kind",
@@ -95,12 +93,9 @@ _ARCHIVE_CORE_BASE_KEYS = frozenset(
         "scene_memory_row_id",
         "chapter_rolling_note_row_id",
         "archive_attempt_id",
+        *(f"{name}_hash" for name in ARCHIVE_CORE_SNAPSHOT_KEYS),
     }
 )
-_ARCHIVE_CORE_PRODUCT_KEYS = {
-    1: _ARCHIVE_CORE_BASE_KEYS | set(ARCHIVE_CORE_SNAPSHOT_KEYS),
-    2: _ARCHIVE_CORE_BASE_KEYS | {f"{name}_hash" for name in ARCHIVE_CORE_SNAPSHOT_KEYS},
-}
 
 
 @dataclass(frozen=True)
@@ -342,7 +337,7 @@ class ArchiveCheckpointMixin:
             ),
         }
         snapshot_hashes = {name: self._json_hash(snapshot) for name, snapshot in snapshots.items()}
-        # 检查点格式 v2：四份行快照（其中三份带整场正文）只记哈希，不再把快照本身存进产品、再单独存一遍
+        # 四份行快照（其中三份带整场正文）只记哈希，快照本身不进产品也不进检查点
         archive_core_product = self._archive_product(
             scene=scene,
             kind="core_archive",
@@ -561,8 +556,6 @@ class ArchiveCheckpointMixin:
         return self._sub_checkpoint_progress(
             "near_final_ready",
             last_sub_index=11,
-            legacy_complete=lambda refs: bool(refs.get("final_scene_row_id")),
-            legacy_sub_index=3,
             invalid_message="near-final checkpoint sub-index is invalid",
         )
 
@@ -602,14 +595,10 @@ class ArchiveCheckpointMixin:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         product = product or refs.get("archive_core")
-        # 两种格式都认：v2 只记四份行快照的哈希；v1（格式 v2 上线前写下的检查点）连快照本身一起存，另外每份还
-        # 单独存一遍（部署时正停在半路的运行照样续跑）
-        version = product.get("schema_version") if isinstance(product, dict) else None
         if (
             not isinstance(product, dict)
-            or not isinstance(version, int)
-            or version not in _ARCHIVE_CORE_PRODUCT_KEYS
-            or set(product) != _ARCHIVE_CORE_PRODUCT_KEYS[version]
+            or set(product) != _ARCHIVE_CORE_PRODUCT_KEYS
+            or product.get("schema_version") != ARCHIVE_CORE_SCHEMA_VERSION
             or product.get("kind") != "core_archive"
             or product.get("outcome") != "completed"
             or product.get("execution_id") != self._execution_id
@@ -632,12 +621,7 @@ class ArchiveCheckpointMixin:
         attempt = self.session.get(AttemptTracker, product["archive_attempt_id"])
         state = self._active_checkpoint_state()
         if require_checkpoint_hash and any(
-            (
-                refs.get(key) != product.get(name)
-                or self._json_hash(refs.get(key)) != self._checkpoint_hash(key)
-            )
-            if version == 1
-            else product.get(f"{name}_hash") != self._checkpoint_hash(key)
+            product.get(f"{name}_hash") != self._checkpoint_hash(key)
             for name, key in ARCHIVE_CORE_SNAPSHOT_KEYS.items()
         ):
             raise checkpoint_corrupt("archive core independent snapshot hashes are invalid")
@@ -661,11 +645,7 @@ class ArchiveCheckpointMixin:
         }
         if (
             any(
-                (
-                    product.get(name) != snapshot
-                    if version == 1
-                    else product.get(f"{name}_hash") != self._json_hash(snapshot)
-                )
+                product.get(f"{name}_hash") != self._json_hash(snapshot)
                 for name, snapshot in live_snapshots.items()
             )
             or final_scene.status != "archived"
@@ -1075,66 +1055,20 @@ class ArchiveCheckpointMixin:
         *,
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
+        """第 7 步只有 ``retired`` 一种产品（向量索引退役之前写下的产品随旧格式读取器一起删了）。"""
         product = product or self._archive_checkpoint_ref("archive_vector_product")
         product = self._validate_common_archive_product(
             scene=scene,
             product=product,
             kind="vector_index",
             step_key="archive:vector_index:0",
-            outcomes={"retired", "indexed", "already_present", "non_persistent", "failed"},
+            outcomes={"retired"},
         )
-        if require_checkpoint_hash and self._json_hash(
-            product
-        ) != self._checkpoint_hash("archive_vector_product"):
-            raise checkpoint_corrupt("archive vector product identity/hash is invalid")
-        if product["outcome"] == "retired":
-            if product != self._retired_vector_product(scene, final_scene):
-                raise checkpoint_corrupt("archive vector product identity/hash is invalid")
-            return product
-        # 第 7 步退役之前写下的检查点：只核对产品自身的结构与它记的正文哈希，不再去碰向量库（向量库已删）。
-        if (
-            product.get("input_hash") != self._text_hash(final_scene.content)
-            or product.get("vector_id") != scene.scene_id
-            or product.get("text_hash")
-            != self._text_hash((final_scene.content or "")[:600])
-            or not isinstance(product.get("collection_name"), str)
-            or product.get("backend") not in {"memory", "chroma"}
-            or product.get("validation_scope")
-            != ("process_local" if product.get("backend") == "memory" else "persistent")
-            or product.get("write_status")
-            not in {"indexed", "already_present", "failed"}
-            or (
-                product.get("backend") == "memory"
-                and product.get("outcome") not in {"non_persistent", "failed"}
-            )
-            or (
-                product.get("backend") != "memory"
-                and product.get("outcome") == "non_persistent"
-            )
+        if product != self._retired_vector_product(scene, final_scene) or (
+            require_checkpoint_hash
+            and self._json_hash(product) != self._checkpoint_hash("archive_vector_product")
         ):
             raise checkpoint_corrupt("archive vector product identity/hash is invalid")
-        if product["outcome"] == "non_persistent":
-            if product.get("error_code") is not None or product.get(
-                "write_status"
-            ) not in {
-                "indexed",
-                "already_present",
-            }:
-                raise checkpoint_corrupt("non-persistent vector product has invalid local write evidence")
-            return product
-        if product["outcome"] in {"indexed", "already_present"}:
-            if (
-                product.get("error_code") is not None
-                or product.get("write_status") != product["outcome"]
-            ):
-                raise checkpoint_corrupt(
-                    "persistent vector product outcome does not match its write evidence",
-                )
-        elif (
-            not isinstance(product.get("error_code"), str)
-            or product.get("write_status") != "failed"
-        ):
-            raise checkpoint_corrupt("archive vector failure has no stable error code")
         return product
 
     def _scene_memory_inputs(self, chapter_id: str) -> list[dict[str, str]]:
@@ -1678,19 +1612,13 @@ class ArchiveCheckpointMixin:
             product=product,
             kind="style_drift",
             step_key="archive:style_drift:0",
-            outcomes={
-                "recorded",
-                "not_applicable",
-                "no_op",
-                "observed",
-                "degraded",
-            },
+            outcomes={"recorded", "not_applicable", "degraded"},
         )
         if require_checkpoint_hash and self._json_hash(
             product
         ) != self._checkpoint_hash("archive_drift_product"):
             raise checkpoint_corrupt("style drift product hash mismatch")
-        # 风格参考 v3：这个槽位记归档读数（漂移驾驶已删）；旧检查点里的 observed / no_op 产品照常通过。
+        # 风格参考 v3：这个槽位记归档读数（漂移驾驶已删，它写下的 observed / no_op 产品随旧格式读取器一起删了）
         if product.get("outcome") == "degraded" and not isinstance(
             product.get("error_code"), str
         ):

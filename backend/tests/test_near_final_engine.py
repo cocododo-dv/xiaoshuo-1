@@ -849,7 +849,7 @@ def test_near_final_guard_rejects_a_rewrite_that_moves_away_from_the_author(sess
         scene=SimpleNamespace(scene_id=SCENE_ID), bundle={}, source_generation=source, rewrite_generation=rewrite, gate=styled_gate
     )
     assert gate["rejected"] is False and gate["fidelity"]["moved_away"] is False
-    # 旧检查点里的抄袭拒绝没有 rejected_reason：按抄袭读
+    # styled-draft 门的抄袭拒绝不带 rejected_reason：按抄袭读
     assert orchestrator_module._near_final_rejection_skip_reason({"rejected": True}) == NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON
 
 
