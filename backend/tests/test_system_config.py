@@ -975,7 +975,9 @@ def test_llm_config_rejects_oauth2_credential_mode(client, monkeypatch) -> None:
     assert response.status_code == 422
     payload = response.json()["error"]
     assert payload["code"] == "CONFIG_PROVIDER_INVALID"
-    assert "unsupported credential_mode oauth2" in payload["message"]
+    # 作者只看中文（批准 #27，联审 RV-M）：点名那个凭据方式，不夹英文原句
+    assert "凭据方式「oauth2」不受支持" in payload["message"]
+    assert "unsupported" not in payload["message"]
 
 
 def test_llm_config_supports_cliproxy_openai_compatible_relay_with_api_key(client, session, monkeypatch) -> None:
