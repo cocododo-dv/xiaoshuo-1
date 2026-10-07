@@ -813,7 +813,7 @@ class ChapterRunnerService:
                     evidence_summary=[f"场景：{scene_id}", "错误：CONTINUITY_BUDGET_EXCEEDED"],
                 ),
             }
-        if scene_status in {"hard_qc_partial_rewrite_required", "hard_qc_full_rewrite_required", "near_final_revision_required"}:
+        if scene_status in {"hard_qc_partial_rewrite_required", "hard_qc_full_rewrite_required"}:
             return {
                 "code": "CHAPTER_RUN_SCENE_NEEDS_REWRITE",
                 "message": "当前场景停在硬质检返修，还没有形成可审阅终稿。",
