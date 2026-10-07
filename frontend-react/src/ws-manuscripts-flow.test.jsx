@@ -115,6 +115,9 @@ async function renderPage(state, go = vi.fn(), { strict = false } = {}) {
   return host;
 }
 
+const chapterRowOf = (host, backendId) => [...host.querySelectorAll('[data-testid="manuscript-chapter-item"]')]
+  .find((node) => node.getAttribute("data-chapter-id") === backendId);
+
 async function click(node) {
   await act(async () => node.click());
   await act(async () => Promise.resolve());
@@ -219,7 +222,7 @@ describe("成稿中心权威章节流", () => {
 
   it("目录里各场都有终稿、还没批准的章自己就列在「等你批准」下（目录状态还停在规划中也一样），默认选中它", async () => {
     const written = { ...chapter("planned"), scenes: [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "done", work: { hasFinal: true } }] };
-    const other = { ...chapter("planned"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", words: { cur: 900, target: 4000 },
+    const other = { ...chapter("planned"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false, words: { cur: 900, target: 4000 },
       scenes: [{ sid: "ch02s1", backendId: "s21", title: "雾", state: "writing", work: { hasFinal: false } }] };
     const host = await renderPage([other, written]);
     const groups = [...host.querySelectorAll(".ms-list-group")].map((g) => g.querySelector(".ms-list-grouphd span").textContent);
@@ -308,6 +311,25 @@ describe("成稿中心权威章节流", () => {
       selected_entity_id: null,
       expected_final_scene_row_id: "final_s1_v1",
     });
+  });
+
+  it("按章依次定稿：写齐了但不是当前章的章照样列在「等你批准」，却不默认选中；「批准为终稿」不可点，页脚说先批哪一章", async () => {
+    const current = { ...chapter("planned"), current: true, scenes: [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "writing", work: { hasFinal: false } }] };
+    const later = { ...chapter("planned"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false,
+      scenes: [{ sid: "ch02s1", backendId: "s21", title: "雾", state: "done", work: { hasFinal: true } }] };
+    const host = await renderPage([current, later]);
+    expect(host.querySelector(".ms-reader-title").textContent).toBe("盐场的早班");          // 默认选当前章，不是写齐了的后一章
+
+    await click(chapterRowOf(host, "c2"));
+    expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
+    expect(host.querySelector(".ms-reader-sub").textContent).toContain("等你批准");
+    const open = host.querySelector('[data-testid="approve-final-open"]');
+    expect(open.disabled).toBe(true);
+    expect(open.getAttribute("title")).toBe("按章依次定稿：先批准第 1 章。");
+    expect(host.querySelector(".ms-foot-note").textContent).toContain("按章依次定稿：先批准第 1 章。");
+    await click(open);
+    expect(dialog()).toBeNull();
+    expect(flow.approveFinal).not.toHaveBeenCalled();
   });
 
   it("正史还没核对的章：页脚不指去「核对正史」，批准照样能点；批准对话框只提一句未核对的场数，不拦", async () => {

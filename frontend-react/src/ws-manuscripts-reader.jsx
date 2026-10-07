@@ -25,18 +25,20 @@ function ManuState({ stage }) {
 
 /* 页脚左边一句话：这一章现在卡在哪、下一步是什么（按钮在右边，每个阶段只有一个主动作）。
    缺场的提示只在这里说一次——正文里的缺场位置由各场占位标出。 */
-function ManuFootNote({ picked, canonical, canonicalComplete, blockReason }) {
+function ManuFootNote({ picked, canonical, canonicalComplete, blockReason, turnReason = "" }) {
   let text;
   if (picked.stage === "approved") {
     text = canonicalComplete
       ? <span><I.Lock size={12} className="ms-foot-lock" /> 终稿已锁定，不能直接修改；要改先「重新打开」。</span>
       : blockReason;
   } else if (canonical && canonical.status === "error") {
-    text = "没能核验服务端正文，送审、批准与导出先暂停。";
+    text = "没能核验服务端正文，批准与导出先暂停。";
   } else if (!canonical || canonical.status === "idle" || canonical.status === "loading") {
     text = "正在核验服务端正文…";
   } else if (!canonicalComplete) {
     text = blockReason;
+  } else if (turnReason) {
+    text = `${picked.scenes} 场都${SCENE_DONE}。${turnReason}`;
   } else {
     text = `${picked.scenes} 场都${SCENE_DONE}。通读无误后批准为终稿，本章就汇入整书。`;
   }

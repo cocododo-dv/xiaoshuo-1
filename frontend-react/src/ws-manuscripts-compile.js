@@ -37,6 +37,15 @@ export function manuCanonicalBlockReason(snapshot) {
   return "服务端尚未将本章标记为可流转稿。";
 }
 
+/* 按章依次定稿：只有项目的当前章（目录的 current = 后端 project.current_chapter_id）能批准，别的章服务端一律 409
+   PROJECT_CHAPTER_NOT_CURRENT。轮到这一章就是空串；没轮到就说先批哪一章——写齐了的后一章照样读作「等你批准」，
+   但「批准为终稿」不该邀请一次注定失败的批准。 */
+export function manuApprovalTurnReason(chapter, chapters) {
+  if (!chapter || chapter.current) return "";
+  const current = (chapters || []).find((c) => c && c.current);
+  return current ? `按章依次定稿：先批准${chapterLabel(current, { withTitle: false })}。` : "按章依次定稿：这一章还没轮到。";
+}
+
 /* 有终稿、正史还没核对的场数——批准对话框里一句不拦的提示（服务端没给正史状态就是 0）。 */
 export function manuCanonPendingCount(snapshot) {
   const canon = snapshot && snapshot.status === "ready" && snapshot.body && snapshot.body.canonContinuity;
@@ -112,6 +121,7 @@ export function manuChapterRows(chapters, eligible) {
       n: c.n,
       title: c.title,
       stage: chapterStage(c),
+      current: !!c.current,
       words: (c.words && c.words.cur) || 0,
       scenes: scenes.length,
       sceneDone: scenes.filter((s) => s.state === "done").length,
@@ -134,10 +144,11 @@ export function manuListGroups(rows) {
     .filter((g) => g.items.length > 0);
 }
 
-/* 默认选中：等你批准的 → 写作中的 → 第一章。 */
+/* 默认选中：项目的当前章（按章依次定稿，只有它批得了）→ 等你批准的 → 写作中的 → 第一章。 */
 export function manuDefaultPick(rows) {
   const list = rows || [];
-  return list.find((c) => c.stage === "review") || list.find((c) => c.stage === "writing") || list[0] || null;
+  return list.find((c) => c.current && c.stage !== "approved") || list.find((c) => c.stage === "review")
+    || list.find((c) => c.stage === "writing") || list[0] || null;
 }
 
 /* 整书进度格：按目录全序（含还没进成稿中心的规划章），计划章数比目录多时补占位格。 */

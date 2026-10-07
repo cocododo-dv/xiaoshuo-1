@@ -6,7 +6,7 @@ import { manuscriptChapterEligible } from "./ws-manuscripts-store.jsx";
 import { EmptyState, Notice, Segmented, Spinner } from "./ws-ui.jsx";
 import { SCENE_STATE_META, chapterHeading, chapterLabel, chapterOwnTitle } from "./labels/catalog.js";
 import {
-  manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuDefaultPick,
+  manuApprovalTurnReason, manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuDefaultPick,
   manuFirstMissingScene, manuListGroups, manuProgressCells,
 } from "./ws-manuscripts-compile.js";
 import { useManuCanonical, useManuWorkflow } from "./ws-manuscripts-workflow.js";
@@ -46,7 +46,7 @@ function WsManuscripts({ go }) {
     planChapters: Math.max(work ? (work.chaptersTotal || 0) : 0, catChs.length),
   };
 
-  /* 作者点过的章优先；没点过（或点的章已不在列表里）就落在「等你批准 → 写作中 → 第一章」。
+  /* 作者点过的章优先；没点过（或点的章已不在列表里）就落在「当前章 → 等你批准 → 写作中 → 第一章」。
      冷启动深链时目录还没到，等它到了默认章才落定。 */
   const [pickedId, setPicked] = useState(null);
   const defaultPick = manuDefaultPick(chs);
@@ -82,6 +82,8 @@ function WsManuscripts({ go }) {
   };
   const canonicalComplete = manuCanonicalComplete(canonical);
   const canonicalBlockReason = manuCanonicalBlockReason(canonical);
+  /* 按章依次定稿：不是项目的当前章就批不了（服务端 409），按钮不邀请一次注定失败的批准 */
+  const turnReason = manuApprovalTurnReason(catPicked, catChs);
   /* 有服务端章节时，正文只能来自权威聚合；加载失败也不退回任何示例稿 */
   const body = manuBuildBody(catPicked, canonical);
   const synced = !!(catPicked && catPicked.backendId);
@@ -145,10 +147,10 @@ function WsManuscripts({ go }) {
 
           <footer className="ms-reader-foot">
             <ManuFootNote picked={picked} canonical={canonical} canonicalComplete={canonicalComplete}
-              blockReason={canonicalBlockReason} />
+              blockReason={canonicalBlockReason} turnReason={turnReason} />
             <div className="ms-foot-actions">
               <ManuNextStep picked={picked} chapter={catPicked} canonical={canonical} canonicalComplete={canonicalComplete}
-                blockReason={canonicalBlockReason} flow={flow} go={go} />
+                blockReason={canonicalBlockReason} turnReason={turnReason} flow={flow} go={go} />
             </div>
           </footer>
         </section>
@@ -235,8 +237,9 @@ function ManuChapterList({ groups, activeId, onPick, diag }) {
 /* 页脚右边：每个阶段只有一个主动作。
    已定稿 → 导出本章 / 重新打开；没定稿、各场都有终稿（等你批准）→ 批准为终稿——2026-10 起不再先「送入审阅」，
    也没有「退回小修」（要改就去写作台，改完照样直接批准）；缺场 → 去写作台写缺的那一场。
-   正史核对不拦这里任何一步（在「正史」页签里随时可做）；服务端批准时照旧要求各场都有终稿。 */
-function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReason, flow, go }) {
+   正史核对不拦这里任何一步（在「正史」页签里随时可做）；服务端批准时照旧要求各场都有终稿。
+   按章依次定稿：不是当前章时「批准为终稿」不可点，悬停与页脚都说先批哪一章（turnReason）。 */
+function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReason, turnReason, flow, go }) {
   const busy = flow.status.busy;
   const blockedTitle = !canonicalComplete ? blockReason : undefined;
   if (picked.stage === "approved") {
@@ -250,7 +253,8 @@ function ManuNextStep({ picked, chapter, canonical, canonicalComplete, blockReas
     );
   }
   if (picked.stage === "review" || canonicalComplete) {
-    return <button type="button" className="btn btn-accent" data-testid="approve-final-open" disabled={busy.workflow || !canonicalComplete} title={blockedTitle} onClick={() => flow.openDialog("approve")}><I.Check size={14} /> 批准为终稿</button>;
+    const refusal = blockedTitle || turnReason || undefined;
+    return <button type="button" className="btn btn-accent" data-testid="approve-final-open" disabled={busy.workflow || !!refusal} title={refusal} onClick={() => flow.openDialog("approve")}><I.Check size={14} /> 批准为终稿</button>;
   }
   if (canonical.status !== "ready") return null;
   const firstMissing = manuFirstMissingScene(chapter, canonical);

@@ -2,7 +2,7 @@
 // 快照全部由测试直接给出——这些函数不读 store，所以不需要 mock 任何模块。
 import { describe, expect, it } from "vitest";
 import {
-  manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
+  manuApprovalTurnReason, manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
   manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScopeNote, manuScopeProblem,
 } from "./ws-manuscripts-compile.js";
 import fs from "node:fs";
@@ -101,6 +101,27 @@ describe("左栏与进度格", () => {
     const groups = manuListGroups(rows);
     expect(groups.map((g) => [g.label, g.items.length])).toEqual([["写作中", 1], ["还没动笔", 1], ["已定稿", 1]]);
     expect(manuDefaultPick(rows).id).toBe("ch02");
+  });
+
+  it("按章依次定稿：默认选中项目的当前章（目录的 current），哪怕别的章写齐了在等你批准；章行带着 current", () => {
+    const book = [
+      chapter({ state: "planned", current: false, scenes: [{ sid: "a", backendId: "s1", state: "done", work: { hasFinal: true } }] }),
+      chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", state: "planned", current: true, words: { cur: 300 }, scenes: [] }),
+    ];
+    const rows = manuChapterRows(book);
+    expect(rows.map((r) => [r.id, r.stage, r.current])).toEqual([["ch01", "review", false], ["ch02", "writing", true]]);
+    expect(manuDefaultPick(rows).id).toBe("ch02");
+    // 当前章不在左栏（还没动笔）：照旧「等你批准 → 写作中 → 第一章」
+    expect(manuDefaultPick(rows.filter((r) => r.id !== "ch02")).id).toBe("ch01");
+  });
+
+  it("按章依次定稿的原因：轮到这一章是空串；没轮到就说先批哪一章；目录里没有当前章也照实说没轮到", () => {
+    const first = chapter({ current: true });
+    const second = chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false });
+    expect(manuApprovalTurnReason(first, [first, second])).toBe("");
+    expect(manuApprovalTurnReason(second, [first, second])).toBe("按章依次定稿：先批准第 1 章。");
+    expect(manuApprovalTurnReason(second, [{ ...first, current: false }, second])).toBe("按章依次定稿：这一章还没轮到。");
+    expect(manuApprovalTurnReason(null, [first])).toBe("");
   });
 
   it("进度格按目录全序，计划章数多于目录时补占位格", () => {
