@@ -410,7 +410,8 @@ def test_review_and_approval_require_complete_canonical_manuscript(
 
 def test_canon_of_an_approved_chapter_can_still_be_verified_but_its_text_stays_locked(client, session) -> None:
     """正史不再拦定稿，于是定稿之后才去核对正史成了常事：核对只写正史账本、不碰正文，定稿的章照样能核对；
-    批准锁照旧挡正文——再晋升一版权威正文 409 CHAPTER_APPROVED_LOCKED，终稿与指针都不动。"""
+    批准锁照旧挡正文——定稿前就存好、还没晋升的那一版作者稿，定稿之后再晋升 409 CHAPTER_APPROVED_LOCKED，
+    作者稿再保存也 409；终稿、指针与正文哈希都不动。"""
     project_id = _create_project(client, title="雨城旧信")
     chapter = _create_chapter(client, project_id, "旧信", current=True)
     chapter_id = chapter["chapter_id"]
@@ -427,6 +428,13 @@ def test_canon_of_an_approved_chapter_can_still_be_verified_but_its_text_stays_l
         f"/api/v1/author-drafts/{draft['draft_id']}/promote-canonical",
         {"base_revision_no": revision, "expected_current_final_scene_row_id": None, "narrative_effect": "requires_reconcile"},
     )["final_scene_row_id"]
+    # 定稿前又改了一版、还没晋升：定稿之后想把它提升上去，就是对已批准章的正文写入
+    pending = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "<p>林昭在雨里拆开那封旧信，又合上了。</p>", "base_revision_no": revision},
+    )
+    assert pending.status_code == 200, pending.text
+    revision = pending.json()["data"]["draft"]["revision_no"]
 
     detail = client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]
     assert detail["canon_continuity"]["complete"] is False
@@ -445,13 +453,21 @@ def test_canon_of_an_approved_chapter_can_still_be_verified_but_its_text_stays_l
     assert verified["complete"] is True
     assert client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["canon_continuity"]["complete"] is True
 
+    promoted = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/promote-canonical",
+        json={"base_revision_no": revision, "expected_current_final_scene_row_id": final_id, "narrative_effect": "requires_reconcile"},
+        headers={"X-Idempotency-Key": "approved-guard-promote-after-approval"},
+    )
+    assert promoted.status_code == 409, promoted.text
+    assert promoted.json()["error"]["code"] == "CHAPTER_APPROVED_LOCKED"
     edited = client.patch(
         f"/api/v1/author-drafts/{draft['draft_id']}",
-        json={"content": "<p>林昭在雨里拆开那封旧信，又合上了。</p>", "base_revision_no": revision},
+        json={"content": "<p>林昭把旧信压回案卷底下。</p>", "base_revision_no": revision},
     )
     assert edited.status_code == 409, edited.text
     assert edited.json()["error"]["code"] == "CHAPTER_APPROVED_LOCKED"
     session.expire_all()
+    assert session.query(FinalScene).filter_by(scene_id=scene_id).count() == 1
     assert session.get(SceneRunState, scene_id).current_final_scene_row_id == final_id
     assert session.get(FinalScene, final_id).content == "林昭在雨里拆开那封旧信。"
     assert client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["body_hash"] == detail["body_hash"]
