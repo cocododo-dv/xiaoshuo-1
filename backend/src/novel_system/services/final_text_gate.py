@@ -16,7 +16,12 @@ from novel_system.services.literary_quality import (
 from novel_system.services.literary_quality.calibration_source import rule_calibration_for_policy
 from novel_system.services.literary_quality.scoring import weighted_score
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
-from novel_system.services.qc_constraints import contains_forbidden_term, required_groups_missing
+from novel_system.services.qc_constraints import (
+    CHAPTER_FORBIDDEN_SOURCE,
+    forbidden_authority_ref,
+    literal_forbidden_hits,
+    required_groups_missing,
+)
 from novel_system.services.reference_copy_gate import (
     check_reference_copy,
     copy_block_author_action,
@@ -326,13 +331,20 @@ class FinalTextGateService:
                     "details": {"missing_groups": missing_groups},
                 }
             )
-        if contains_forbidden_term(scene.forbidden_text, content):
+        # 禁用词：场景卡的 forbidden_text 与本章戏剧卡的「禁止包含」，证据指向先命中的那一处
+        forbidden_hits = literal_forbidden_hits(scene, content)
+        if forbidden_hits:
+            source = forbidden_hits[0][0]
             issues.append(
                 {
                     "issue_key": "forbidden_text",
-                    "message": "Final text contains scene-card forbidden text.",
+                    "message": (
+                        "Final text contains forbidden text from the chapter drama card."
+                        if source == CHAPTER_FORBIDDEN_SOURCE
+                        else "Final text contains scene-card forbidden text."
+                    ),
                     "source": "deterministic",
-                    "authority_ref": f"scene_card:{scene.scene_id}.forbidden_text",
+                    "authority_ref": forbidden_authority_ref(scene, source),
                 }
             )
 

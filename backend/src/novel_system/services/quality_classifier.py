@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from novel_system.db.models import SceneCard
-from novel_system.services.qc_constraints import forbidden_hits, required_groups_missing
+from novel_system.services.qc_constraints import forbidden_authority_ref, literal_forbidden_hits, required_groups_missing
 
 Q0 = "Q0"
 Q1 = "Q1"
@@ -104,15 +104,16 @@ def _verify_required_text(scene: SceneCard | None, content: str, issue: dict[str
 
 
 def _verify_forbidden_term(scene: SceneCard | None, content: str, issue: dict[str, Any]) -> dict[str, Any] | None:
-    forbidden = getattr(scene, "forbidden_text", None) if scene is not None else None
-    # 证据是正文里真正出现的写法（``A|B`` 取命中的那一个）
-    matched = forbidden_hits(forbidden, content or "")
+    if scene is None:
+        return None
+    # 证据是正文里真正出现的写法（``A|B`` 取命中的那一个）；禁用词表 = 场景卡 + 本章戏剧卡的「禁止包含」
+    matched = literal_forbidden_hits(scene, content or "")
     if not matched:
         return None
     return {
         "verified_by": "scene_card_forbidden_term",
-        "authority_ref": f"scene_card:{getattr(scene, 'scene_id', '')}.forbidden_text",
-        "evidence_spans": [{"text": term} for term in matched[:5]],
+        "authority_ref": forbidden_authority_ref(scene, matched[0][0]),
+        "evidence_spans": [{"text": term} for _source, term in matched[:5]],
     }
 
 

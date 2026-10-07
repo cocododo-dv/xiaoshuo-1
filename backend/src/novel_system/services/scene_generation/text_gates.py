@@ -21,7 +21,7 @@ from novel_system.services.literary_signals import rule_analysis
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.qc_constraints import (
     contains_forbidden_term,
-    forbidden_terms as card_forbidden_terms,
+    literal_forbidden_terms,
     required_groups,
     required_groups_missing,
 )
@@ -144,8 +144,9 @@ ANTI_TEMPLATE_GATE_DIMENSIONS = {
 
 @dataclass(frozen=True, slots=True)
 class ConstraintSnapshot:
-    """一份文字对一张场景卡硬约束的确定性读数：必写组哪些满足、禁用词哪些出现（只经
-    ``qc_constraints.forbidden_terms`` 读，防抄袭政策句不是禁用词表）、完整性标记、可见字数与长度带。"""
+    """一份文字对一张场景卡硬约束的确定性读数：必写组哪些满足、禁用词哪些出现（场景卡的 ``forbidden_text`` 与本章
+    戏剧卡的「禁止包含」，只经 ``qc_constraints.literal_forbidden_terms`` 读，防抄袭政策句不是禁用词表）、完整性标记、
+    可见字数与长度带。"""
 
     required_terms: tuple[str, ...]
     satisfied: frozenset[str]
@@ -163,7 +164,7 @@ class ConstraintSnapshot:
         ``contains_forbidden_term``，批准#11）：一整段分不出 ≥2 字的组时整段算一组（与质检同口径）。"""
         required = tuple(required_groups(scene.must_include_text))
         missing = set(required_groups_missing(scene.must_include_text, text))
-        forbidden = tuple(card_forbidden_terms(scene.forbidden_text))
+        forbidden = tuple(literal_forbidden_terms(scene))
         return cls(
             required_terms=required,
             satisfied=frozenset(term for term in required if term not in missing),
@@ -181,7 +182,7 @@ class ConstraintSnapshot:
 
     @property
     def forbidden_hits(self) -> list[str]:
-        """出现了的禁用词（按场景卡上的次序）。"""
+        """出现了的禁用词（按场景卡、再本章戏剧卡上的次序）。"""
         return [term for term in self.forbidden_terms if term in self.forbidden_present]
 
     @property

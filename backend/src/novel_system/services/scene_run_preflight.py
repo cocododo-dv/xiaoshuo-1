@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import SceneCard
 from novel_system.services.qc_constraints import (
     constraint_alternatives,
-    forbidden_terms as literal_forbidden_terms,
+    forbidden_terms,
+    literal_forbidden_sources,
     named_scene_card_sources,
 )
 from novel_system.services.scene_design_ownership import design_owned_by_plan
@@ -49,30 +50,29 @@ class SceneRunPreflightService:
         }
 
     def _constraint_conflicts(self, scene: SceneCard) -> list[dict[str, Any]]:
-        forbidden_text = scene.forbidden_text
-        if not isinstance(forbidden_text, str) or not forbidden_text.strip():
-            return []
-        forbidden_terms = literal_forbidden_terms(forbidden_text)
-        if not forbidden_terms:
+        # 禁用词两处来源：场景卡 forbidden_text、本章戏剧卡的「禁止包含」（qc_constraints 一处读）
+        forbidden_sources = literal_forbidden_sources(scene)
+        if not forbidden_sources:
             return []
         positive_sources = self._positive_constraint_sources(scene)
         conflicts: list[dict[str, Any]] = []
-        for term in forbidden_terms:
-            # 与运行期 QC 闸门链同一契约：'A|B' 表示任一备选命中即触禁，
-            # 预检据此判冲突（裸 term 匹配会漏掉带备选写法的约束）。
-            alternatives = constraint_alternatives(term) or [term]
-            for source_name, source_text in positive_sources:
-                if any(alternative in source_text for alternative in alternatives):
-                    conflicts.append(
-                        {
-                            "term": term,
-                            "required_source": source_name,
-                            "forbidden_source": "scene_card.forbidden_text",
-                            "severity": "blocking",
-                            "human_readable_reason": "场景要求使用该词，但禁用规则又禁止该词；请先选择保留或替换。",
-                        }
-                    )
-                    break
+        for forbidden_source, forbidden_text in forbidden_sources:
+            for term in forbidden_terms(forbidden_text):
+                # 与运行期 QC 闸门链同一契约：'A|B' 表示任一备选命中即触禁，
+                # 预检据此判冲突（裸 term 匹配会漏掉带备选写法的约束）。
+                alternatives = constraint_alternatives(term) or [term]
+                for source_name, source_text in positive_sources:
+                    if any(alternative in source_text for alternative in alternatives):
+                        conflicts.append(
+                            {
+                                "term": term,
+                                "required_source": source_name,
+                                "forbidden_source": forbidden_source,
+                                "severity": "blocking",
+                                "human_readable_reason": "场景要求使用该词，但禁用规则又禁止该词；请先选择保留或替换。",
+                            }
+                        )
+                        break
         return conflicts
 
     def _blocking_items(self, scene: SceneCard, execution_contract) -> list[dict[str, Any]]:
