@@ -320,8 +320,9 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   pipelines and 1 chapter at a time. Checkpoints are format v2 (hashes only; v1 products are still read);
   `run_policy="auto"` is rejected (422). Best-of-N runs only under a style-first binding.
 - Chapter-level readers assemble chapter text at read time from the current scene finals; the stored chapter aggregate
-  is a cache. Final approval binds the read-through to the body hash the author read; reopening needs a reason and
-  cascades revocation.
+  is a cache. `approve-final` is the one read-and-approve call (`read_confirmation.body_hash` required, bound to the
+  body the author read); it and 送审 need complete prose only — canon verification is optional and gates nothing.
+  Reopening needs a reason and cascades revocation.
 - One diagnosis record (`scene_diagnosis`, stable `signal_id`); ignore lists hold signal ids and are honoured by 文学质量
   and the final gate; writes that change findings return `diagnosis_rollup`.
 - Style reference: jobs are owner-token fenced and a process exit requeues them; `StylePolicy` is the only binding
