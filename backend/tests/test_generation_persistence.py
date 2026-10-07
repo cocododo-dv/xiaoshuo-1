@@ -109,19 +109,6 @@ EXPECTED_OUTLINE_PLAN_COLUMNS = {
     "approved_at",
 }
 
-EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS = {
-    "artifact_id",
-    "project_id",
-    "step_key",
-    "version",
-    "status",
-    "artifact_json",
-    "input_refs_json",
-    "diagnosis_json",
-    "llm_call_id",
-    "approved_at",
-}
-
 EXPECTED_STORY_CHARACTER_COLUMNS = {
     "character_id",
     "project_id",
@@ -315,7 +302,6 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
         story_project_columns = _pragma_columns_by_name(connection, "story_projects")
         outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
-        snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
         story_character_columns = _pragma_columns_by_name(connection, "story_characters")
         assistant_turn_columns = _pragma_columns_by_name(connection, "snowflake_assistant_turns")
         chapter_goal_columns = _pragma_columns_by_name(connection, "chapter_goals")
@@ -330,7 +316,8 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert "author_draft_proposals" in table_names
     assert "story_projects" in table_names
     assert "outline_plans" in table_names
-    assert "snowflake_artifacts" in table_names
+    # 旧版雪花规划器的表与两张死表由迁移 0099 删掉
+    assert {"snowflake_artifacts", "snowflake_revision_links", "author_preference_profiles"}.isdisjoint(table_names)
     assert "story_characters" in table_names
     assert "snowflake_assistant_turns" in table_names
     assert EXPECTED_LLM_CALL_COLUMNS <= llm_columns.keys()
@@ -356,7 +343,6 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
     assert "reference_profile_ids_json" not in story_project_columns
     assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
-    assert EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS <= snowflake_columns.keys()
     assert EXPECTED_STORY_CHARACTER_COLUMNS <= story_character_columns.keys()
     assert EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS <= assistant_turn_columns.keys()
     if "chapter_goals" in table_names:
@@ -501,7 +487,6 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
         story_project_columns = _pragma_columns_by_name(connection, "story_projects")
         outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
-        snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
         story_character_columns = _pragma_columns_by_name(connection, "story_characters")
         assistant_turn_columns = _pragma_columns_by_name(connection, "snowflake_assistant_turns")
         chapter_goal_columns = _pragma_columns_by_name(connection, "chapter_goals")
@@ -530,13 +515,13 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert "chapter_run_jobs" in table_names
     assert "scene_blueprints" in table_names
     assert "passage_patch_candidates" in table_names
-    assert "author_preference_profiles" in table_names
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
     assert "story_projects" in table_names
     assert "outline_plans" in table_names
-    assert "snowflake_artifacts" in table_names
+    # 旧版雪花规划器的表与两张死表由迁移 0099 删掉
+    assert {"snowflake_artifacts", "snowflake_revision_links", "author_preference_profiles"}.isdisjoint(table_names)
     assert "story_characters" in table_names
     assert "snowflake_assistant_turns" in table_names
     assert "scene_execution_contracts" in table_names
@@ -564,7 +549,6 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
     assert "reference_profile_ids_json" not in story_project_columns
     assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
-    assert EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS <= snowflake_columns.keys()
     assert EXPECTED_STORY_CHARACTER_COLUMNS <= story_character_columns.keys()
     assert EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS <= assistant_turn_columns.keys()
     if "chapter_goals" in table_names:
@@ -642,7 +626,6 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
         story_project_columns = _pragma_columns_by_name(connection, "story_projects")
         outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
-        snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
         story_character_columns = _pragma_columns_by_name(connection, "story_characters")
         assistant_turn_columns = _pragma_columns_by_name(connection, "snowflake_assistant_turns")
         chapter_goal_columns = _pragma_columns_by_name(connection, "chapter_goals")
@@ -671,14 +654,14 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert "chapter_run_jobs" in table_names
     assert "scene_blueprints" in table_names
     assert "passage_patch_candidates" in table_names
-    assert "author_preference_profiles" in table_names
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
     assert "scene_execution_contracts" in table_names
     assert "story_projects" in table_names
     assert "outline_plans" in table_names
-    assert "snowflake_artifacts" in table_names
+    # 旧版雪花规划器的表与两张死表由迁移 0099 删掉
+    assert {"snowflake_artifacts", "snowflake_revision_links", "author_preference_profiles"}.isdisjoint(table_names)
     assert "story_characters" in table_names
     assert "snowflake_assistant_turns" in table_names
     assert "generation_planning_artifacts" in table_names
@@ -699,7 +682,6 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
     assert "reference_profile_ids_json" not in story_project_columns
     assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
-    assert EXPECTED_SNOWFLAKE_ARTIFACT_COLUMNS <= snowflake_columns.keys()
     assert EXPECTED_STORY_CHARACTER_COLUMNS <= story_character_columns.keys()
     assert EXPECTED_SNOWFLAKE_ASSISTANT_TURN_COLUMNS <= assistant_turn_columns.keys()
     assert {"project_id", "outline_plan_id"} <= chapter_goal_columns.keys()

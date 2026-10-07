@@ -1,7 +1,10 @@
 """Wave 7（结果闭环治理 §5.9）：参考文本「非指令数据」边界封装 + 指令模式过滤。
 
-主防线是**数据边界封装**（wrap_untrusted）；指令过滤（neutralize_instructions）是纵深
-防御的次级层，不得以「已过滤」替代封装。覆盖 injection.py 的 few-shot / RAG 派生物。
+主防线是**数据边界封装**（wrap_untrusted / render_untrusted_user_prompt / secure_reference_block）；指令过滤
+（neutralize_instructions）是纵深防御的次级层，不得以「已过滤」替代封装。覆盖送去分析的参考书原文与待查文字
+（分类 / 学习 / 对照检查的提示词），以及规划节点拿到的章首 / 章尾 / 章题样例（structure_render.py 经
+secure_reference_block 封装，planning_context.py 送进规划提示词）；``kind`` 只是区块的标签，用例里的 few_shot / rag
+是随手取的名字（injection.py 与 RAG 已在 v3 重建里删除）。
 """
 from __future__ import annotations
 

@@ -413,7 +413,7 @@ def test_ready_rejects_outdated_database_revision() -> None:
 def test_ready_rejects_head_stamp_with_missing_runtime_table() -> None:
     _stamp_database_revision()
     with engine().begin() as connection:
-        connection.exec_driver_sql("DROP TABLE author_preference_profiles")
+        connection.exec_driver_sql("DROP TABLE author_draft_events")
     with TestClient(create_app()) as client:
         response = client.get("/ready")
 
@@ -428,7 +428,7 @@ def test_ready_rejects_head_stamp_with_missing_required_column() -> None:
     _stamp_database_revision()
     with engine().begin() as connection:
         connection.exec_driver_sql(
-            "ALTER TABLE author_preference_profiles DROP COLUMN created_by"
+            "ALTER TABLE author_draft_events DROP COLUMN created_by"
         )
     with TestClient(create_app()) as client:
         response = client.get("/ready")
@@ -488,7 +488,7 @@ def test_ready_rechecks_the_structure_after_seeing_another_revision() -> None:
     with TestClient(create_app()) as client:
         assert client.get("/ready").status_code == 200
         with engine().begin() as connection:
-            connection.exec_driver_sql("DROP TABLE author_preference_profiles")
+            connection.exec_driver_sql("DROP TABLE author_draft_events")
         # 同一个版本上已经查过：结构检查不重做（手工改库而不动版本不是迁移的做法）
         assert client.get("/ready").status_code == 200
 
@@ -505,13 +505,13 @@ def test_ready_rechecks_the_structure_after_seeing_another_revision() -> None:
 def test_ready_does_not_remember_a_failed_structure_check() -> None:
     _stamp_database_revision()
     with engine().begin() as connection:
-        connection.exec_driver_sql("ALTER TABLE author_preference_profiles DROP COLUMN created_by")
+        connection.exec_driver_sql("ALTER TABLE author_draft_events DROP COLUMN created_by")
     statements = _ReadyStatements()
     with TestClient(create_app()) as client:
         broken = client.get("/ready")
         broken_reads = statements.take()
         with engine().begin() as connection:
-            connection.exec_driver_sql("ALTER TABLE author_preference_profiles ADD COLUMN created_by VARCHAR")
+            connection.exec_driver_sql("ALTER TABLE author_draft_events ADD COLUMN created_by VARCHAR")
         repaired = client.get("/ready")
         repaired_reads = statements.take()
 
@@ -676,7 +676,7 @@ def test_a_database_newer_than_the_code_is_not_told_to_restart(monkeypatch) -> N
 def test_api_schema_gate_reports_missing_structure_at_the_current_revision() -> None:
     _stamp_database_revision()
     with engine().begin() as connection:
-        connection.exec_driver_sql("DROP TABLE author_preference_profiles")
+        connection.exec_driver_sql("DROP TABLE author_draft_events")
     with TestClient(create_app()) as client:
         response = client.post("/api/v2/projects", json={"title": "雨城旧信", "outline_text": "林昭翻开旧案卷。"})
 

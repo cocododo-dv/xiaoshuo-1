@@ -1,4 +1,4 @@
-"""雪花构思：步骤版本（含 v1 规划器留下的旧表）、教练回合、意图要点、人物 / 章 / 场景规划、分诊、修订链。"""
+"""雪花构思：步骤版本、教练回合、意图要点、人物 / 章 / 场景规划、分诊。"""
 
 from __future__ import annotations
 
@@ -18,27 +18,6 @@ from novel_system.db.base import Base
 from novel_system.db.models._common import utcnow
 
 
-class SnowflakeArtifact(Base):
-    __tablename__ = "snowflake_artifacts"
-
-    artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
-    step_key: Mapped[str] = mapped_column(String)
-    version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[str] = mapped_column(String, default="pending_review")
-    artifact_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    input_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    # P0-3: per-upstream content signatures captured at approval ("what I consumed,
-    # at what version"). Powers dependency/diff-aware staleness instead of marking
-    # every downstream step stale on any upstream change.
-    consumed_input_sigs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    diagnosis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
-
-
 class SnowflakeStepRun(Base):
     __tablename__ = "snowflake_step_runs"
 
@@ -50,7 +29,9 @@ class SnowflakeStepRun(Base):
     draft_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     health_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
     input_refs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    # P0-3: per-upstream content signatures captured at approval — see SnowflakeArtifact.
+    # P0-3: per-upstream content signatures captured at approval ("what I consumed,
+    # at what version"). Powers dependency/diff-aware staleness instead of marking
+    # every downstream step stale on any upstream change.
     consumed_input_sigs_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     stale_accepted_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -283,27 +264,11 @@ class SnowflakeSceneTriageItem(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
-class SnowflakeRevisionLink(Base):
-    __tablename__ = "snowflake_revision_links"
-
-    revision_link_id: Mapped[str] = mapped_column(String, primary_key=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
-    source_step_key: Mapped[str] = mapped_column(String)
-    source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    affected_kind: Mapped[str] = mapped_column(String)
-    affected_id: Mapped[str] = mapped_column(String)
-    reason: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String, default="open")
-    created_at: Mapped[str] = mapped_column(String, default=utcnow)
-
-
 __all__ = [
-    "SnowflakeArtifact",
     "SnowflakeAssistantTurn",
     "SnowflakeChapterPlan",
     "SnowflakeCharacterPlan",
     "SnowflakeDirectionBrief",
-    "SnowflakeRevisionLink",
     "SnowflakeScenePlan",
     "SnowflakeSceneTriageItem",
     "SnowflakeStepRun",

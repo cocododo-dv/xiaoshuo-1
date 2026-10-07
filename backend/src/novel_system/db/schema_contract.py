@@ -12,7 +12,7 @@ from novel_system.env_config import BACKEND_ROOT
 # 每个启动脚本（start-dev.cmd / start-all-linux.sh / React 合约 E2E）都在等 /ready。
 # 2026-09-13 阶段 C 加了 0084 却没有推它，于是所有迁移到新 head 的安装都「永远没就绪」，
 # CI 的 E2E 连红两次。tests/test_schema_contract_revision.py 现在把它钉在 Alembic head 上。
-CURRENT_SCHEMA_REVISION = "20260929_0098"
+CURRENT_SCHEMA_REVISION = "20261004_0099"
 
 MIGRATION_VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
 # 每个迁移脚本顶上的 ``revision = "…"``；tests/test_schema_contract_revision.py 拿 Alembic 自己读出来的版本集合对它

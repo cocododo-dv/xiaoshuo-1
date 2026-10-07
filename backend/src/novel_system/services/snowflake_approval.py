@@ -256,7 +256,7 @@ class SnowflakeApprovalMixin:
 
         if affected_step_run_ids or affected_scene_plan_ids:
             # 一次失效级联留一条操作日志（B06-14）：以前每个受影响的步骤 / 场景计划各写一行
-            # snowflake_revision_links（外加一次去重查询），那张表从来没有读者，状态也从不离开 open。
+            # snowflake_revision_links（外加一次去重查询），那张表从来没有读者，状态也从不离开 open（迁移 0099 删表）。
             self.session.add(
                 OperationLog(
                     event_type="snowflake_downstream_marked_stale",

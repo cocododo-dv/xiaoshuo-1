@@ -15,7 +15,6 @@ from novel_system.db.models import (
     LlmCall,
     OperationLog,
     SceneCard,
-    SnowflakeRevisionLink,
     SnowflakeScenePlan,
     SnowflakeStepRun,
 )
@@ -307,7 +306,6 @@ def test_workspace_v2_step_history_and_restore_keep_author_approval_gate(client,
         .all()
     )
     assert [run.status for run in runs] == ["approved", "pending_review", "pending_review"]
-    assert session.query(SnowflakeRevisionLink).filter_by(project_id=project["project_id"]).count() == 0
 
 
 def test_workspace_v2_step_history_restore_rejects_cross_project_runs(client) -> None:
@@ -325,7 +323,7 @@ def test_workspace_v2_step_history_restore_rejects_cross_project_runs(client) ->
 
 
 def test_workspace_v2_logs_one_cascade_event_when_upstream_step_is_reapproved(client, session) -> None:
-    """B06-14：一次失效级联留一条操作日志；snowflake_revision_links 不再写（从来没有读者）。"""
+    """B06-14：一次失效级联留一条操作日志；snowflake_revision_links 不再写（从来没有读者，迁移 0099 删表）。"""
     project = _create_project(client, key="structured-revision-links")
     _approve_generated_step(client, project["project_id"], "book_brief")
     _approve_generated_step(client, project["project_id"], "one_sentence_summary")
@@ -372,7 +370,6 @@ def test_workspace_v2_logs_one_cascade_event_when_upstream_step_is_reapproved(cl
     assert log.payload_json["affected_step_run_ids"] == [stale_run.step_run_id]
     assert log.payload_json["affected_step_keys"] == ["one_sentence_summary"]
     assert log.payload_json["reasons"]["one_sentence_summary"] == stale_run.stale_reason
-    assert session.query(SnowflakeRevisionLink).filter_by(project_id=project["project_id"]).count() == 0
 
 
 def test_workspace_v2_supports_structured_save_assistant_and_step_approval(client, session) -> None:

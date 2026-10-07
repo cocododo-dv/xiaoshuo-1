@@ -220,10 +220,8 @@ def cleanup_fixture_works(session: Session) -> None:
         OutlinePlan,
         SceneBundle,
         SceneRunState,
-        SnowflakeArtifact,
         SnowflakeAssistantTurn,
         SnowflakeCharacterPlan,
-        SnowflakeRevisionLink,
         SnowflakeScenePlan,
         SnowflakeSceneTriageItem,
         StoryCharacter,
@@ -261,12 +259,10 @@ def cleanup_fixture_works(session: Session) -> None:
     session.execute(delete(ChapterGoal).where(ChapterGoal.project_id.in_(FIXTURE_WORK_IDS)))
     for model in (
         SnowflakeSceneTriageItem,
-        SnowflakeRevisionLink,
         SnowflakeScenePlan,
         SnowflakeCharacterPlan,
         SnowflakeAssistantTurn,
         SnowflakeStepRun,
-        SnowflakeArtifact,
         LibraryRelation,
         LibraryEntity,
         TimelineEvent,

@@ -1,74 +1,20 @@
+"""迁移 20260716_0072：给作者偏好档案表加 CHECK 之前先数非法值，有就拒绝升级、不悄悄改标签。
+
+偏好档案表本身随写作偏好学习退役（批准 #6，R5），由迁移 20261004_0099 删掉，ORM 模型也已删除；这里只留历史迁移
+0072 的失败即停行为——每个新装库仍要按顺序跑过它。
+"""
+
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
-from novel_system.db.models import AuthorPreferenceProfile
 from tests.support.migrations import migrate
 
 REVISION_0071 = "20260716_0071"
 REVISION_0072 = "20260716_0072"
-
-
-@pytest.mark.parametrize(
-    ("scope_type", "runtime_eligible"),
-    [
-        ("workspace", 0),
-        ("global", -1),
-        ("project", 2),
-    ],
-)
-def test_author_preference_model_rejects_invalid_scope_and_runtime_flag(
-    session,
-    scope_type: str,
-    runtime_eligible: int,
-) -> None:
-    with pytest.raises(IntegrityError):
-        with session.begin_nested():
-            session.add(
-                AuthorPreferenceProfile(
-                    profile_id=f"invalid_{scope_type}_{runtime_eligible}",
-                    scope_type=scope_type,
-                    scope_ref_id="test",
-                    status="draft",
-                    runtime_eligible=runtime_eligible,
-                    summary_json={},
-                    source_patch_ids_json=[],
-                )
-            )
-            session.flush()
-
-
-def test_author_preference_model_accepts_supported_scopes_and_boolean_flags(session) -> None:
-    profiles = [
-        AuthorPreferenceProfile(
-            profile_id=f"valid_{scope_type}",
-            scope_type=scope_type,
-            scope_ref_id="global" if scope_type == "global" else f"{scope_type}_1",
-            status="approved" if runtime_eligible else "draft",
-            runtime_eligible=runtime_eligible,
-            summary_json={},
-            source_patch_ids_json=[],
-        )
-        for scope_type, runtime_eligible in (
-            ("global", 1),
-            ("genre", 0),
-            ("project", 1),
-            ("chapter", 0),
-        )
-    ]
-    session.add_all(profiles)
-    session.flush()
-
-    assert {profile.scope_type for profile in profiles} == {
-        "global",
-        "genre",
-        "project",
-        "chapter",
-    }
 
 
 def test_0072_migration_fails_closed_instead_of_relabeling_invalid_profiles(

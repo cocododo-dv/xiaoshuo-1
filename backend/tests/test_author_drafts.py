@@ -9,7 +9,6 @@ from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
     AuthorDraftProposal,
-    AuthorPreferenceProfile,
     ChapterGoal,
     ChapterMemory,
     ChapterState,
@@ -458,7 +457,7 @@ def test_only_continuation_variants_are_generated(client, session) -> None:
 
 
 def test_saving_the_author_draft_learns_no_preferences_and_never_diffs(client, session, monkeypatch) -> None:
-    """写作偏好学习已退役（批准 #6）：保存不再把整场新旧正文逐字比一遍，也不再写偏好档案和「写作偏好」待办卡。"""
+    """写作偏好学习已退役（批准 #6；偏好档案表由迁移 0099 删掉）：保存不再把整场新旧正文逐字比一遍，也不再写「写作偏好」待办卡。"""
     import difflib
 
     def no_diff(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -474,7 +473,6 @@ def test_saving_the_author_draft_learns_no_preferences_and_never_diffs(client, s
         assert saved.status_code == 200, saved.text
         revision = saved.json()["data"]["draft"]["revision_no"]
 
-    assert session.query(AuthorPreferenceProfile).count() == 0
     assert session.query(ReviewItem).filter_by(item_type="author_preference_profile").count() == 0
 
 
