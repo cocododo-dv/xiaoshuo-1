@@ -7,6 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import LlmCall, SceneRunState, utcnow
+from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import recover_incomplete_call
 
@@ -25,6 +26,18 @@ RUN_CHECKPOINT_ORDER = (
 )
 
 _TERMINAL_EXECUTION_STATUSES = frozenset({"failed", "completed", "cancelled"})
+
+# 检查点格式（payload 键 ``checkpoint_format``）：``acquire_execution`` 给每次新执行记上，``save_checkpoint`` 每存一次都
+# 记上（写的永远是现在的代码）。bundle_ready 之后哪一步写进检查点的形状变了，就加一：续跑一份停在 bundle_ready 之后、
+# 却不是当前格式写下的检查点 → 409 ``RUN_CHECKPOINT_FORMAT_OUTDATED``（作者重新起草，见 :func:`checkpoint_format_outdated`）。
+# 预算 / 规划 / bundle 三步与格式无关，停在那里的旧运行照常续跑。
+# 1 = 最初；2 = 行快照只记哈希（P01c，没有标记）；3 = 删了自动批评（软 QC 第 0 步只剩 soft_input），从这一版起带标记。
+CHECKPOINT_FORMAT = 3
+_FORMAT_FREE_CHECKPOINTS = frozenset(
+    RUN_CHECKPOINT_ORDER[: RUN_CHECKPOINT_ORDER.index("bundle_ready") + 1]
+)
+# 续跑被拒时还占着这一场的执行状态：就地记为 failed（终态），作者重新起草时新的执行才接得过去
+_FORMAT_REFUSAL_RELEASES = frozenset({"active", "waiting_selection"})
 
 
 def scene_run_outcome(scene_status: str | None) -> Literal["completed", "waiting_selection", "failed"]:
@@ -46,6 +59,43 @@ def scene_run_outcome(scene_status: str | None) -> Literal["completed", "waiting
 def checkpoint_corrupt(message: str, *, details: dict[str, Any] | None = None) -> DomainError:
     """``RUN_CHECKPOINT_CORRUPT``（409）：检查点与库里的产物、账本或执行归属对不上——续跑不再往下走。"""
     return DomainError("RUN_CHECKPOINT_CORRUPT", message, status_code=409, details=details)
+
+
+def checkpoint_format_outdated(state: SceneRunState, payload: dict[str, Any]) -> DomainError | None:
+    """这份检查点能不能按现在的格式续跑：停在 bundle_ready 之后、却没有当前格式标记 → 409 的错误（带作者指引），
+    否则 None。"""
+    checkpoint = state.run_checkpoint
+    found = payload.get("checkpoint_format")
+    if (
+        checkpoint not in RUN_CHECKPOINT_ORDER
+        or checkpoint in _FORMAT_FREE_CHECKPOINTS
+        or found == CHECKPOINT_FORMAT
+    ):
+        return None
+    return DomainError(
+        "RUN_CHECKPOINT_FORMAT_OUTDATED",
+        "scene checkpoint was written in an older checkpoint format and cannot be resumed",
+        status_code=409,
+        details={
+            "scene_id": state.scene_id,
+            "execution_id": state.active_execution_id,
+            "run_checkpoint": checkpoint,
+            "checkpoint_format": found,
+            "expected_checkpoint_format": CHECKPOINT_FORMAT,
+            "author_action": author_action(
+                "上次的运行来自旧版本",
+                "这一场上次的运行是旧版本留下的，请重新起草（会重新调用模型）",
+                target_view="scene",
+                target_ref=f"scene_card:{state.scene_id}",
+                primary_button_label="去 AI 起草台重新起草",
+                evidence_summary=[
+                    f"场景：{state.scene_id}",
+                    f"停在：{checkpoint}",
+                    f"检查点格式：{found if found is not None else '无标记'} → {CHECKPOINT_FORMAT}",
+                ],
+            ),
+        },
+    )
 
 
 def idempotency_execution_id(idempotency_key: str) -> str:
@@ -91,8 +141,6 @@ class SceneRunCheckpointService:
         status = state.run_execution_status
         if current == execution_id:
             self._validate_checkpoint(state, payload)
-            if status == "completed":
-                return self._result(state, resumed=True)
             if status == "waiting_selection":
                 raise DomainError(
                     "RUN_SELECTION_WAIT",
@@ -107,6 +155,9 @@ class SceneRunCheckpointService:
                     status_code=409,
                     details={"execution_id": execution_id},
                 )
+            self._refuse_outdated_format(state, payload)
+            if status == "completed":
+                return self._result(state, resumed=True)
             if status != "active":
                 claimed = self.session.execute(
                     update(SceneRunState)
@@ -137,6 +188,7 @@ class SceneRunCheckpointService:
             new_superseded.append(current)
         new_payload: dict[str, Any] = {
             "execution_id": execution_id,
+            "checkpoint_format": CHECKPOINT_FORMAT,
             "superseded_execution_ids": new_superseded,
         }
         conditions = [SceneRunState.scene_id == scene_id]
@@ -170,6 +222,7 @@ class SceneRunCheckpointService:
         state = self._state(scene_id, refresh=True)
         payload = self._checkpoint_payload(state)
         self._validate_checkpoint(state, payload)
+        self._refuse_outdated_format(state, payload)
         current = state.active_execution_id
         status = state.run_execution_status
 
@@ -277,6 +330,7 @@ class SceneRunCheckpointService:
                     "status": state.run_execution_status,
                 },
             )
+        self._refuse_outdated_format(state, payload)
         superseded = list(payload.get("superseded_execution_ids") or [])
         if current not in superseded:
             superseded.append(current)
@@ -353,6 +407,7 @@ class SceneRunCheckpointService:
         cumulative_hashes.update(artifact_hashes or {})
         payload: dict[str, Any] = {
             "execution_id": execution_id,
+            "checkpoint_format": CHECKPOINT_FORMAT,
             "node_key": node_key,
             "sub_index": sub_index,
             "artifact_refs": cumulative_refs,
@@ -602,6 +657,27 @@ class SceneRunCheckpointService:
         if changed.rowcount != 1:
             raise self._superseded(execution_id, state.active_execution_id)
         self.session.flush()
+
+    def _refuse_outdated_format(self, state: SceneRunState, payload: dict[str, Any]) -> None:
+        """续跑前的格式关（:func:`checkpoint_format_outdated`）。拒绝时还占着这一场的执行（active / waiting_selection）
+        先就地记为 failed 再抛：只刷新不提交，调用方提交这一步（``RunLifecycleMixin`` 的两个入口），否则新的执行接不过去。"""
+        refusal = checkpoint_format_outdated(state, payload)
+        if refusal is None:
+            return
+        status = state.run_execution_status
+        if status in _FORMAT_REFUSAL_RELEASES:
+            self.session.execute(
+                update(SceneRunState)
+                .where(
+                    SceneRunState.scene_id == state.scene_id,
+                    SceneRunState.active_execution_id == state.active_execution_id,
+                    SceneRunState.run_execution_status == status,
+                )
+                .values(run_execution_status="failed")
+                .execution_options(synchronize_session=False)
+            )
+            self.session.flush()
+        raise refusal
 
     def _mark_terminal(self, scene_id: str, execution_id: str, status: str) -> None:
         changed = self.session.execute(

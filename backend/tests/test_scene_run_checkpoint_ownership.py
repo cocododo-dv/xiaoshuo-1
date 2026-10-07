@@ -23,6 +23,7 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.llm_accounting import LLMAccountingError
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.scene_run_checkpoint import (
+    CHECKPOINT_FORMAT,
     RUN_CHECKPOINT_ORDER,
     SceneRunCheckpointService,
     chapter_scene_execution_id,
@@ -504,3 +505,113 @@ def test_undispatched_reservation_is_released_for_checkpoint_retry(session) -> N
     assert attempt.accounting_status == "released"
     assert attempt.settled_at is not None
     assert state.scene_tokens_reserved == 0
+
+
+# ---------------------------------------------------------------------------------------------- 检查点格式标记
+
+
+def _strip_format_marker(session, scene_id: str) -> None:
+    """模拟上一个版本写下的检查点：payload 里没有 ``checkpoint_format``。"""
+    state = session.get(SceneRunState, scene_id)
+    payload = dict(state.run_checkpoint_json or {})
+    payload.pop("checkpoint_format", None)
+    state.run_checkpoint_json = payload
+    session.commit()
+
+
+def _advance(checkpoints, scene_id: str, execution_id: str, through: str) -> None:
+    for node in RUN_CHECKPOINT_ORDER[: RUN_CHECKPOINT_ORDER.index(through) + 1]:
+        checkpoints.save_checkpoint(scene_id=scene_id, execution_id=execution_id, node_key=node)
+
+
+def test_every_checkpoint_payload_carries_the_current_format(session) -> None:
+    state = _state(session, scene_id="SC_FORMAT_MARK")
+    checkpoints = SceneRunCheckpointService(session)
+    claim = checkpoints.acquire_execution(state.scene_id, "exec-format")
+    assert claim.checkpoint_json["checkpoint_format"] == CHECKPOINT_FORMAT
+    _advance(checkpoints, state.scene_id, "exec-format", "neutral_ready")
+    session.commit()
+    assert session.get(SceneRunState, state.scene_id).run_checkpoint_json["checkpoint_format"] == CHECKPOINT_FORMAT
+
+
+def test_unmarked_checkpoint_up_to_bundle_ready_still_resumes_and_is_stamped(session) -> None:
+    """预算 / 规划 / bundle 三步与格式无关：停在那里的旧运行照常续跑，接下来存的检查点记上当前格式。"""
+    state = _state(session, scene_id="SC_FORMAT_PREFIX")
+    checkpoints = SceneRunCheckpointService(session)
+    checkpoints.acquire_execution(state.scene_id, "exec-prefix")
+    _advance(checkpoints, state.scene_id, "exec-prefix", "bundle_ready")
+    checkpoints.mark_failed(state.scene_id, "exec-prefix")
+    session.commit()
+    _strip_format_marker(session, state.scene_id)
+
+    resumed = checkpoints.acquire_execution(state.scene_id, "exec-prefix")
+    assert resumed.resumed is True and resumed.last_node == "bundle_ready"
+    checkpoints.save_checkpoint(scene_id=state.scene_id, execution_id="exec-prefix", node_key="neutral_ready")
+    session.commit()
+    assert session.get(SceneRunState, state.scene_id).run_checkpoint_json["checkpoint_format"] == CHECKPOINT_FORMAT
+
+
+@pytest.mark.parametrize("status", ["active", "failed", "completed"])
+def test_unmarked_checkpoint_past_bundle_ready_refuses_resume_with_an_author_action(session, status) -> None:
+    """旧版本留下、停在 bundle_ready 之后的检查点：续跑回 409 RUN_CHECKPOINT_FORMAT_OUTDATED（带作者指引），
+    还占着这一场的执行就地记为 failed——作者重新起草时，新的执行接得过去。"""
+    scene_id = f"SC_FORMAT_{status.upper()}"
+    _state(session, scene_id=scene_id)
+    checkpoints = SceneRunCheckpointService(session)
+    checkpoints.acquire_execution(scene_id, "exec-old")
+    _advance(checkpoints, scene_id, "exec-old", "soft_qc_ready")
+    if status == "failed":
+        checkpoints.mark_failed(scene_id, "exec-old")
+    elif status == "completed":
+        checkpoints.mark_completed(scene_id, "exec-old")
+    session.commit()
+    _strip_format_marker(session, scene_id)
+
+    with pytest.raises(DomainError) as refused:
+        checkpoints.acquire_execution(scene_id, "exec-old")
+    assert refused.value.code == "RUN_CHECKPOINT_FORMAT_OUTDATED"
+    assert refused.value.status_code == 409
+    details = refused.value.details
+    assert details["run_checkpoint"] == "soft_qc_ready"
+    assert details["checkpoint_format"] is None
+    assert details["expected_checkpoint_format"] == CHECKPOINT_FORMAT
+    assert details["author_action"]["message"] == "这一场上次的运行是旧版本留下的，请重新起草（会重新调用模型）"
+    assert details["author_action"]["target_ref"] == f"scene_card:{scene_id}"
+    session.commit()
+    state = session.get(SceneRunState, scene_id)
+    session.refresh(state)
+    assert state.active_execution_id == "exec-old"
+    assert state.run_checkpoint == "soft_qc_ready"
+    assert state.run_execution_status == ("completed" if status == "completed" else "failed")
+
+    fresh = checkpoints.acquire_execution(scene_id, "exec-new")
+    assert fresh.resumed is False
+    assert fresh.checkpoint_json["checkpoint_format"] == CHECKPOINT_FORMAT
+
+
+def test_unmarked_selection_and_budget_checkpoints_refuse_the_handoff(session) -> None:
+    _seed_resume_scene(session)
+    scene_id = "CH_RESUME_SC01"
+    checkpoints = SceneRunCheckpointService(session)
+    checkpoints.acquire_execution(scene_id, "idempotency:format-origin")
+    _advance(checkpoints, scene_id, "idempotency:format-origin", "selection_wait")
+    checkpoints.mark_waiting_selection(scene_id, "idempotency:format-origin")
+    session.commit()
+    _strip_format_marker(session, scene_id)
+
+    with pytest.raises(DomainError) as selection:
+        checkpoints.acquire_selection_resume(scene_id, "idempotency:format-selection")
+    assert selection.value.code == "RUN_CHECKPOINT_FORMAT_OUTDATED"
+    session.commit()
+    state = session.get(SceneRunState, scene_id)
+    session.refresh(state)
+    assert state.active_execution_id == "idempotency:format-origin"
+    assert state.run_execution_status == "failed"
+
+    with pytest.raises(DomainError) as budget:
+        checkpoints.acquire_budget_resume(
+            scene_id,
+            "scene_run_format_budget",
+            expected_parent_execution_id="idempotency:format-origin",
+        )
+    assert budget.value.code == "RUN_CHECKPOINT_FORMAT_OUTDATED"

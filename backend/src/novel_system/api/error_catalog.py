@@ -156,6 +156,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "RUN_CHECKPOINT_CONTROL_FORBIDDEN": "场景只能从服务器保存的检查点续跑，不能手动指定起点。",
     "RUN_BUDGET_RESUME_UNAVAILABLE": "没有可以追加预算后续跑的检查点。",
     "RUN_CHECKPOINT_CORRUPT": "这一场的续跑检查点已损坏，请重新起草这一场。",
+    "RUN_CHECKPOINT_FORMAT_OUTDATED": "这一场上次的运行是旧版本留下的，请重新起草（会重新调用模型）。",
     "RUN_CHECKPOINT_OUTPUT_MISSING": "检查点记录的产出不见了，请重新起草这一场。",
     "RUN_EXECUTION_CANCELLED": "这次起草已经取消。",
     "RUN_EXECUTION_IN_PROGRESS": "这一场正在另一次起草里运行，请等它结束。",

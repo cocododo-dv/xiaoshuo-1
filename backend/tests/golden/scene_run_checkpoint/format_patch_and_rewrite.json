@@ -689,6 +689,7 @@
   },
   "branch": "near_final_ready",
   "budget_resume_parent_execution_id": null,
+  "checkpoint_format": 3,
   "execution_id": "idempotency:checkpoint-format",
   "node_key": "archived",
   "selection_origin_execution_id": null,

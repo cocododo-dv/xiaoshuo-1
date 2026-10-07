@@ -317,8 +317,9 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
 
 **Scene run, canon, diagnosis, style**
 - Run jobs are leased (`run_job_leases`), recovered at startup and every 60 s, released on shutdown; lanes run 2 scene
-  pipelines and 1 chapter at a time. Checkpoints are format v2 (hashes only; v1 products are still read);
-  `run_policy="auto"` is rejected (422). Best-of-N runs only under a style-first binding.
+  pipelines and 1 chapter at a time. Checkpoints carry `checkpoint_format` (`scene_run_checkpoint.CHECKPOINT_FORMAT`,
+  bump it when a stored product changes): resuming an older one past `bundle_ready` → 409
+  `RUN_CHECKPOINT_FORMAT_OUTDATED` (re-draft); `run_policy="auto"` is rejected (422). Best-of-N runs only under a style-first binding.
 - Chapter-level readers assemble chapter text at read time from the current scene finals; the stored chapter aggregate
   is a cache. Final approval binds the read-through to the body hash the author read; reopening needs a reason and
   cascades revocation.

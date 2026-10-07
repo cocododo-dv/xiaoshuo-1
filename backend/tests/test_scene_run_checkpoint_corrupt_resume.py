@@ -216,3 +216,47 @@ def test_corrupt_soft_qc_decision_hash_blocks_checkpoint_resume(session) -> None
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
     assert soft_qc.calls == 1
     assert len(generation_client.requests) == provider_calls
+
+
+def test_checkpoint_left_by_an_older_format_refuses_resume_and_a_fresh_run_takes_over(session) -> None:
+    """进程在旧版本的一次运行半路上退出（执行还是 active，检查点停在软 QC 之后、没有当前格式标记）：续跑不复验旧产品，
+    回 409 RUN_CHECKPOINT_FORMAT_OUTDATED 与作者指引，这次执行落成 failed；作者重新起草，新的执行从头跑到归档。"""
+    _seed_resume_scene(session)
+    generation_client = _CountingGenerationClient()
+    soft_qc = _PassSoftQc(session)
+
+    def orchestrator(near_final) -> Orchestrator:
+        return Orchestrator(
+            session,
+            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+            soft_qc_engine=soft_qc,
+            near_final_service=near_final,
+        )
+
+    with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
+        orchestrator(_FailNearFinal()).run_scene("CH_RESUME_SC01", execution_id="idempotency:format-old")
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    assert state.run_checkpoint == "soft_qc_ready"
+    payload = dict(state.run_checkpoint_json)
+    payload.pop("checkpoint_format", None)
+    state.run_checkpoint_json = payload
+    state.run_execution_status = "active"
+    session.commit()
+    provider_calls = len(generation_client.requests)
+
+    with pytest.raises(DomainError) as outdated:
+        orchestrator(_PassNearFinal(session)).run_scene("CH_RESUME_SC01", execution_id="idempotency:format-old")
+    assert outdated.value.code == "RUN_CHECKPOINT_FORMAT_OUTDATED"
+    assert outdated.value.details["author_action"]["message"] == "这一场上次的运行是旧版本留下的，请重新起草（会重新调用模型）"
+    assert soft_qc.calls == 1
+    assert len(generation_client.requests) == provider_calls
+    session.rollback()
+    session.expire_all()
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    assert state.active_execution_id == "idempotency:format-old"
+    assert state.run_execution_status == "failed"
+
+    result = orchestrator(_PassNearFinal(session)).run_scene("CH_RESUME_SC01", execution_id="idempotency:format-fresh")
+    assert result["scene_status"] == "archived"
+    assert len(generation_client.requests) > provider_calls

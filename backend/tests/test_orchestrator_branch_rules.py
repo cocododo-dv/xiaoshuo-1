@@ -20,6 +20,7 @@ from novel_system.db.models import SceneBundle, SceneCard, SceneRunState
 from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.scene_generation import StyleGenerationResult
+from novel_system.services.scene_run_checkpoint import CHECKPOINT_FORMAT
 from tests.real_llm_fakes import install_online_pipeline
 from tests.support.checkpoint_fakes import _seed_resume_scene
 from tests.support.style_first_fixtures import install_readings, reading
@@ -185,6 +186,7 @@ def test_strict_stop_after_selection_resume_completes_the_execution(session, mon
     state.active_execution_id = parent
     state.run_checkpoint_json = {
         "execution_id": parent,
+        "checkpoint_format": CHECKPOINT_FORMAT,
         "node_key": "selection_wait",
         "artifact_refs": {},
         "artifact_hashes": {},

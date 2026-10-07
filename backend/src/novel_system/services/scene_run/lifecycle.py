@@ -51,7 +51,11 @@ class RunLifecycleMixin:
 
         effective_execution_id = execution_id or f"direct:{scene_id}:{uuid4().hex}"
         checkpoints = SceneRunCheckpointService(self.session)
-        claim = checkpoints.acquire_execution(scene_id, effective_execution_id)
+        try:
+            claim = checkpoints.acquire_execution(scene_id, effective_execution_id)
+        except DomainError as exc:
+            self._commit_format_refusal(exc)
+            raise
         if claim.last_node == "archived":
             # 已归档的重放：整张清单复验，不调模型
             with self._execution_scope(
@@ -89,6 +93,12 @@ class RunLifecycleMixin:
             return self._run_with_terminal_outcome(
                 scene_id, effective_execution_id, checkpoints, author_note=author_note, run_policy=run_policy
             )
+
+    def _commit_format_refusal(self, exc: DomainError) -> None:
+        """检查点格式关拒绝续跑（``RUN_CHECKPOINT_FORMAT_OUTDATED``）时，还占着这一场的旧执行已记为 failed（只刷新）：
+        提交它，作者重新起草时新的执行才接得过去。别的错误不动会话。"""
+        if exc.code == "RUN_CHECKPOINT_FORMAT_OUTDATED":
+            self.session.commit()
 
     def _ensure_scene_and_state(self, scene_id: str) -> tuple[SceneCard, SceneRunState]:
         """场景（没有 → 404 ``SCENE_NOT_FOUND``）与它的运行状态行：FE 目录直接建的场景没有状态行（scenes POST 才会建），
@@ -588,7 +598,11 @@ class RunLifecycleMixin:
             execution_id or f"direct-selection-resume:{scene_id}:{uuid4().hex}"
         )
         checkpoints = SceneRunCheckpointService(self.session)
-        checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
+        try:
+            checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
+        except DomainError as exc:
+            self._commit_format_refusal(exc)
+            raise
 
         with self._execution_scope(
             effective_execution_id,
