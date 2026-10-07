@@ -52,7 +52,7 @@ REPO = {
         ),
         "snowflake_generate_scene_list": _template(input_token_budget=24000),
         "snowflake_workspace_assistant": _template(input_token_budget=24000),
-        "chapter_plan_review": _template(input_token_budget=3200),
+        "chapter_story_architecture": _template(input_token_budget=3200),
         # v2 之后默认必须覆盖的非雪花模板：风格参考族 + 场景生成链路
         "style_draft": _template(
             version="2026-09-06.v8", input_token_budget=24000,
@@ -93,7 +93,7 @@ def _stale_snapshot() -> dict:
                 system_prompt="旧版 system", task_prompt="旧版 task",
             ),
             "snowflake_generate_scene_list": _template(input_token_budget=3200),
-            "chapter_plan_review": _template(input_token_budget=3200),
+            "chapter_story_architecture": _template(input_token_budget=3200),
             # 落后于仓库的 style_draft；style_ref_synthesize_profile 在快照建立后才出现
             "style_draft": _template(
                 version="2026-09-05.v7", input_token_budget=24000,
@@ -178,17 +178,17 @@ def test_every_template_is_covered_by_default(session, tmp_path, monkeypatch):
     _write_repo(tmp_path, monkeypatch, {
         "templates": {
             **REPO["templates"],
-            "chapter_plan_review": _template(version="9999.v9", input_token_budget=99999,
-                                             system_prompt="仓库新版 chapter_plan_review"),
+            "chapter_story_architecture": _template(version="9999.v9", input_token_budget=99999,
+                                             system_prompt="仓库新版 chapter_story_architecture"),
         }
     })
     _activate(session, _stale_snapshot())
 
     assert tool.main(["--execute"]) == 0
     live = _active(session)
-    synced = live["chapter_plan_review"]
+    synced = live["chapter_story_architecture"]
     assert synced["input_token_budget"] == 99999 and synced["version"] == "9999.v9"
-    assert synced["system_prompt"] == "仓库新版 chapter_plan_review"
+    assert synced["system_prompt"] == "仓库新版 chapter_story_architecture"
     # 风格参考族与场景生成链路同样进了默认集
     assert live["style_draft"]["version"] == "2026-09-06.v8"
     assert live["style_draft"]["system_prompt"] == "仓库新版 style_draft system"
@@ -216,7 +216,7 @@ def test_prefix_restores_the_narrow_snowflake_scope(session, tmp_path, monkeypat
     _write_repo(tmp_path, monkeypatch, {
         "templates": {
             **REPO["templates"],
-            "chapter_plan_review": _template(version="9999.v9", input_token_budget=99999,
+            "chapter_story_architecture": _template(version="9999.v9", input_token_budget=99999,
                                              system_prompt="别动我"),
         }
     })
@@ -226,7 +226,7 @@ def test_prefix_restores_the_narrow_snowflake_scope(session, tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "检查 3 个模板" in out, "前缀筛选后只该剩仓库里 3 个 snowflake_* 模板"
     live = _active(session)
-    kept = live["chapter_plan_review"]
+    kept = live["chapter_story_architecture"]
     assert kept["input_token_budget"] == 3200 and kept["system_prompt"] == "You are an editor."
     assert live["style_draft"]["version"] == "2026-09-05.v7", "前缀之外的 style_draft 被改了"
     assert "style_ref_synthesize_profile" not in live
@@ -261,13 +261,13 @@ def test_all_stays_accepted_and_covers_every_template(session, tmp_path, monkeyp
     _write_repo(tmp_path, monkeypatch, {
         "templates": {
             **REPO["templates"],
-            "chapter_plan_review": _template(version="9999.v9", input_token_budget=99999),
+            "chapter_story_architecture": _template(version="9999.v9", input_token_budget=99999),
         }
     })
     _activate(session, _stale_snapshot())
 
     assert tool.main(["--all", "--execute"]) == 0
-    assert _active(session)["chapter_plan_review"]["input_token_budget"] == 99999
+    assert _active(session)["chapter_story_architecture"]["input_token_budget"] == 99999
 
 
 def test_an_explicit_template_selection_limits_the_blast_radius(session, tmp_path, monkeypatch):

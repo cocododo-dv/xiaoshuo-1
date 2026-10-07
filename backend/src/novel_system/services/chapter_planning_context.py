@@ -1,4 +1,4 @@
-"""章节编排 LLM 的上下文底座（chapter planning context）。
+"""章节编排「AI 生成蓝图」的上下文底座（chapter planning context）。
 
 与 bundle_builder 同族但面向「规划一章」而非「起草一场」：把雪花 canon、章节蓝图、叙事事件账本、
 邻章交接、章结构邻域、人物站位、作者约束等既有资产汇编成一份确定性的 prompt payload，
@@ -9,13 +9,18 @@
 各章场数与灾难位置、前几章各场的视角）。伏笔账本早在 2026-09 减法里删除，伏笔槽随之去掉。
 作者偏好档案那一槽也去掉了（批准 #6，重评 R5：写作偏好学习整条链退役）。
 
-设计文档：docs/chapter-arrangement-llm-design-2026-07-16.md §3（其中的伏笔 / 张力 / 作者偏好输入已退役）。
+2026-10（round 2 · B2-5）：方向 / 补全 / AI 体检三条通道删了，这份上下文只剩「AI 生成蓝图」一个读者；只有补全要的
+「这一场的设计归构思」标记（``design_owner``）随之去掉。场景运行现做的蓝图走 ``near_final_planning`` 的规划快照，
+两边读同一种蓝图行（``chapter_architecture``）。
+
+历史设计文档：docs/history/chapter-arrangement-llm-design-2026-07-16.md §3（其中的伏笔 / 张力 / 作者偏好输入与
+方向 / 补全 / 体检三条通道已退役）。
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
@@ -36,7 +41,7 @@ from novel_system.services.catalog import (
     scene_kind,
     scene_title,
 )
-from novel_system.services.chapter_architecture import (  # noqa: F401 — 旧名：从本模块 import 的调用方
+from novel_system.services.chapter_architecture import (
     CHAPTER_ARCHITECTURE_ARTIFACT,
     latest_chapter_architecture,
 )
@@ -44,7 +49,6 @@ from novel_system.services.errors import DomainError
 from novel_system.services.story_slots import normalize_story_slot, planned_chapter_goal
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.narrative_event_log import NarrativeEventLog
-from novel_system.services.scene_design_ownership import plan_owned_scene_ids
 from novel_system.services.scene_lookup import require_project
 from novel_system.services.snowflake_queries import latest_by_step
 from novel_system.services.snowflake_step_drafts import merge_step_draft
@@ -89,18 +93,10 @@ class ChapterPlanningContext:
     source_version_refs: dict[str, Any]
     degraded_slots: list[str]
     context_fingerprint: str
-    chapter: ChapterGoal = field(repr=False, default=None)  # type: ignore[assignment]
-    scenes: list[SceneCard] = field(repr=False, default_factory=list)
 
 
-
-# 章规划的 style_reference 槽进哪些节点的提示（chapter_plan_llm 的四个节点）
-CHAPTER_PLANNING_REFERENCE_NODE_IDS: tuple[str, ...] = (
-    "chapter_story_architecture",
-    "chapter_scene_plan_candidates",
-    "chapter_scene_plan_fill",
-    "chapter_plan_review",
-)
+# 章规划的 style_reference 槽进哪些节点的提示（只剩「AI 生成蓝图」这一个）
+CHAPTER_PLANNING_REFERENCE_NODE_IDS: tuple[str, ...] = (CHAPTER_ARCHITECTURE_ARTIFACT,)
 
 class ChapterPlanningContextBuilder:
     def __init__(self, session: Session) -> None:
@@ -117,8 +113,6 @@ class ChapterPlanningContextBuilder:
             raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
         chapter = chapters[index]
         scenes = self._catalog.scene_rows(chapter_id)
-        # 阶段 Y：雪花整理出来、构思里那一行还在的场，设计归构思第 10 步所有——告诉模型别往里填
-        self._plan_owned = plan_owned_scene_ids(self.session, project_id, scenes)
 
         refs: dict[str, Any] = {
             "project_id": project_id,
@@ -173,8 +167,6 @@ class ChapterPlanningContextBuilder:
             source_version_refs=refs,
             degraded_slots=list(self._degraded),
             context_fingerprint=fingerprint,
-            chapter=chapter,
-            scenes=scenes,
         )
 
     # ---------- slots ----------
@@ -217,7 +209,6 @@ class ChapterPlanningContextBuilder:
             "exit_change": str(scene.exit_change or ""),
             "hook": str(scene.hook or ""),
             "words_current": int(scene.words_current or 0),
-            "design_owner": "plan" if scene.scene_id in getattr(self, "_plan_owned", set()) else "desk",
         }
 
     def _neighbor_slot(self, chapters: list[ChapterGoal], index: int) -> dict[str, Any]:
@@ -276,7 +267,7 @@ class ChapterPlanningContextBuilder:
         return items
 
     def _style_reference_slot(self, project_id: str, refs: dict[str, Any]) -> dict[str, Any] | None:
-        # 这个槽只进章规划的四个节点的提示：按它们的实际路由判云策略（H1）
+        # 这个槽只进章蓝图节点的提示：按它的实际路由判云策略（H1）
         reference = resolve_project_style_reference(
             self.session, project_id, node_ids=CHAPTER_PLANNING_REFERENCE_NODE_IDS
         )

@@ -453,53 +453,6 @@ def test_the_order_of_snowflake_scenes_is_the_story_order(client, session) -> No
     assert [scene["scene_id"] for scene in _catalog(client, project_id)[0]["scenes"]] == [first, hand_made, second, third]
 
 
-def test_the_chapter_planning_ai_does_not_fill_the_design_of_a_snowflake_scene(client, session) -> None:
-    """章节规划 AI 的补丁是「只填空」——但雪花的场上那个空是构思里的空：在目录里填了，下一次回流就按构思的空值
-    盖回去。所以设计槽一律不填（``design_owned_by_plan``），追加新场、填占位题名照常。"""
-    from novel_system.services.chapter_plan_llm import empty_slot_gaps, sanitize_plan_patch
-
-    project_id = _materialized(client, "spine-owner-ai", scenes_per_chapter=3)
-    _edit_scene_details(client, project_id, {1: {"setback": ""}})
-    _approve_with_sync(client, project_id, "scene_details")
-    chapter = _catalog(client, project_id)[0]
-    scene_id = chapter["scenes"][0]["scene_id"]
-    assert chapter["scenes"][0]["brief"]["setback"] == ""
-
-    body = {"patch": {
-        "scenes": [{"scene_id": scene_id, "set": {"setback": "AI 想替构思补上的挫折", "hook": "AI 想补的钩子"}}],
-        "append_scenes": [{"title": "AI 建议加的一场", "kind": "proactive", "brief": {"goal": "追上去"}}],
-    }}
-    applied = client.post(
-        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter['chapter_id']}/plan/apply", json=body,
-        headers={"X-Idempotency-Key": "owner-ai-apply"},
-    )
-    assert applied.status_code == 200, applied.text
-    data = applied.json()["data"]
-    assert data["applied"] == {"drama": 0, "scenes": 0, "appended": 1}
-    assert {(item["field"], item["reason"]) for item in data["skipped"]} == {
-        ("setback", "design_owned_by_plan"), ("hook", "design_owned_by_plan"),
-    }
-    after = _catalog(client, project_id)[0]["scenes"]
-    assert after[0]["brief"]["setback"] == "" and after[0]["hook"] == chapter["scenes"][0]["hook"]
-    assert after[-1]["title"] == "AI 建议加的一场" and after[-1]["design"]["owner"] == "desk"
-
-    # 离线清单照样列出这个空槽，但说清楚去哪里补
-    cards = list(session.execute(
-        select(SceneCard).where(SceneCard.chapter_id == chapter["chapter_id"], SceneCard.trashed_flag == 0)
-    ).scalars())
-    gaps = empty_slot_gaps(cards, plan_owned_scene_ids={scene_id})
-    assert any(scene_id in line and "在构思第 10 步补" in line for line in gaps)
-    # 结构化的一份（S1 21）说得一样：这一场去构思第 10 步补
-    from novel_system.services.chapter_plan_llm import empty_slot_gap_items
-
-    owned_item = next(item for item in empty_slot_gap_items(cards, plan_owned_scene_ids={scene_id}) if item["scene_id"] == scene_id)
-    assert owned_item["fill_in"] == "snowflake_step_10"
-    assert {"key": "setback", "label": "挫败"} in owned_item["fields"]
-    # 不带归属集合的调用（旧调用方 / 手建作品）行为不变
-    clean, _dropped = sanitize_plan_patch(cards, body["patch"])
-    assert clean["scenes"] == [{"scene_id": scene_id, "set": {"setback": "AI 想替构思补上的挫折", "hook": "AI 想补的钩子"}}]
-
-
 def test_a_written_scene_is_never_auto_trashed(client, session) -> None:
     project_id = _materialized(client, "spine-written", scenes_per_chapter=3)
     scene_id = _scene_ids(client, project_id)[1]

@@ -279,31 +279,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.25,
         max_output_tokens=2200,
     ),
-    # 章节编排 LLM 规划三通道（docs/chapter-arrangement-llm-design-2026-07-16.md §4）
-    LLMNodeSpec(
-        "chapter_scene_plan_candidates",
-        "Chapter scene plan candidates",
-        "project",
-        template_name="chapter_scene_plan_candidates",
-        temperature=0.6,
-        max_output_tokens=3200,
-    ),
-    LLMNodeSpec(
-        "chapter_scene_plan_fill",
-        "Chapter scene plan fill",
-        "project",
-        template_name="chapter_scene_plan_fill",
-        temperature=0.2,
-        max_output_tokens=3200,
-    ),
-    LLMNodeSpec(
-        "chapter_plan_review",
-        "Chapter plan review",
-        "project",
-        template_name="chapter_plan_review",
-        temperature=0.15,
-        max_output_tokens=2600,
-    ),
     LLMNodeSpec(
         "neutral_draft",
         "Neutral draft",

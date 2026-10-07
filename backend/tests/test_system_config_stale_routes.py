@@ -310,7 +310,7 @@ def test_reserved_node_routes_in_live_snapshot_are_stale_and_pruned_by_sync_miss
 
     before = client.get("/api/v1/system-config/llm").json()["data"]
     assert before["stale_routes"] == list(_RESERVED_LEGACY_IDS)
-    assert before["readiness"]["active_route_count"] == 32
+    assert before["readiness"]["active_route_count"] == len(active_llm_node_ids())
     assert before["missing_active_routes"] == []
     for node_id in _RESERVED_LEGACY_IDS:
         assert node_id not in before["node_routes"]
@@ -327,7 +327,43 @@ def test_reserved_node_routes_in_live_snapshot_are_stale_and_pruned_by_sync_miss
     assert not set(_RESERVED_LEGACY_IDS) & set(payload["snapshot"]["parsed"]["node_routing"])
     assert "task_routing" not in payload["snapshot"]["parsed"]
     assert payload["overview"]["stale_routes"] == []
-    assert payload["overview"]["readiness"]["active_route_count"] == 32
+    assert payload["overview"]["readiness"]["active_route_count"] == len(active_llm_node_ids())
+
+
+# round 2 · B2-5：章节编排「AI 编排」的方向 / 补全 / 体检三个节点删了。真实安装的活动快照里，一键补齐当年给它们
+# 存过瘦路由（从没调用过）：现在是退役路由——设置页列为 stale_routes、不计入就绪统计，下一次一键补齐剪掉，别的不动。
+_RETIRED_DESK_PLAN_IDS = ("chapter_plan_review", "chapter_scene_plan_candidates", "chapter_scene_plan_fill")
+
+
+def test_routes_of_the_retired_desk_planning_nodes_are_stale_and_pruned_by_sync_missing(client, session, monkeypatch) -> None:
+    _enable_admin(monkeypatch)
+    parsed = _ui_configured_install(client)
+    lean = dict(parsed["node_routing"]["chapter_story_architecture"])
+    for node_id in _RETIRED_DESK_PLAN_IDS:
+        assert node_id not in llm_node_catalog()
+    _replace_active_snapshot(
+        session,
+        category="models",
+        parsed={"node_routing": {**parsed["node_routing"], **{node_id: dict(lean) for node_id in _RETIRED_DESK_PLAN_IDS}}},
+    )
+
+    overview = client.get("/api/v1/system-config/llm").json()["data"]
+    assert overview["stale_routes"] == list(_RETIRED_DESK_PLAN_IDS)
+    assert overview["missing_active_routes"] == []
+    assert overview["readiness"]["ready"] is True
+    assert not set(_RETIRED_DESK_PLAN_IDS) & set(overview["node_routes"])
+
+    response = client.post(
+        "/api/v1/system-config/llm/node-routes/sync-missing",
+        headers=ADMIN_HEADERS,
+        json={"activate": True},
+    )
+    assert response.status_code == 200, response.json()
+    payload = response.json()["data"]
+    assert payload["synced_node_ids"] == []
+    assert payload["pruned_stale_routes"] == list(_RETIRED_DESK_PLAN_IDS)
+    assert payload["snapshot"]["parsed"] == parsed
+    assert payload["overview"]["stale_routes"] == []
 
 
 def test_role_routes_save_activates_with_reserved_nodes_left_in_legacy_task_routing(client, session, monkeypatch) -> None:
@@ -348,7 +384,7 @@ def test_role_routes_save_activates_with_reserved_nodes_left_in_legacy_task_rout
     assert payload["snapshot"]["active"] is True
     assert payload["pruned_stale_routes"] == list(_RESERVED_LEGACY_IDS)
     assert payload["overview"]["stale_routes"] == []
-    assert payload["overview"]["readiness"]["active_route_count"] == 32
+    assert payload["overview"]["readiness"]["active_route_count"] == len(active_llm_node_ids())
 
 
 def test_role_routes_save_prunes_stale_routes_and_reports_them(client, session, monkeypatch) -> None:
