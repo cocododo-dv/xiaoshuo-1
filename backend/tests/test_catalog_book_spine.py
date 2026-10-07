@@ -197,16 +197,24 @@ def test_rematerializing_keeps_the_authors_bookmark(client, session) -> None:
 
 def test_scene_slugs_follow_the_row_not_the_position(client, session) -> None:
     project_id = _materialized(client, "spine-slug", scenes_per_chapter=3)
-    before = {scene["scene_id"]: scene for chapter in _catalog(client, project_id) for scene in chapter["scenes"]}
-    assert all(scene["slug"] == scene_id for scene_id, scene in before.items())
-    assert before[_scene_ids(client, project_id)[0]]["legacy_slug"] == "ch01s1"
+    def positions(chapters):  # （章 slug, 章内场次）——位置式旧 slug ch01s1 就是拿它拼的
+        return {scene["scene_id"]: (chapter["slug"], scene["seq"]) for chapter in chapters for scene in chapter["scenes"]}
 
-    # 重新分章：场景卡跨章搬动，位置式旧 slug 全变了，身份一个字都不变
+    tree = _catalog(client, project_id)
+    before = {scene["scene_id"]: scene for chapter in tree for scene in chapter["scenes"]}
+    before_positions = positions(tree)
+    assert all(scene["slug"] == scene_id for scene_id, scene in before.items())
+    # 给前端迁本机旧键的位置式 legacy_slug 已删（R16）
+    assert not any("legacy_slug" in scene for scene in before.values())
+
+    # 重新分章：场景卡跨章搬动，位置全变了，身份一个字都不变
     _confirm(client, project_id, _preview(client, project_id, scenes_per_chapter=5), "spine-slug-2")
-    after = {scene["scene_id"]: scene for chapter in _catalog(client, project_id) for scene in chapter["scenes"]}
+    tree = _catalog(client, project_id)
+    after = {scene["scene_id"]: scene for chapter in tree for scene in chapter["scenes"]}
     assert set(after) == set(before)
     assert all(after[scene_id]["slug"] == scene_id for scene_id in before)
-    assert any(after[scene_id]["legacy_slug"] != before[scene_id]["legacy_slug"] for scene_id in before)
+    after_positions = positions(tree)
+    assert any(after_positions[scene_id] != before_positions[scene_id] for scene_id in before)
 
 
 # ------------------------------------------------------------------ 4. 设计卡随目录到达台子

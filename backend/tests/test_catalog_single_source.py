@@ -65,7 +65,7 @@ def test_materialized_structure_readable_via_catalog_api(client):
             )
             assert expected_keys <= set(scene["brief"].keys())
             assert scene["slug"] == scene["scene_id"]
-            assert scene["legacy_slug"].startswith(chapter["slug"] + "s")
+            assert "legacy_slug" not in scene
 
     # 物化把首章立为当前章
     assert tree["chapters"][0]["current"] is True

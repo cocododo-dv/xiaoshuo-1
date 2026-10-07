@@ -162,7 +162,6 @@ class CatalogReader:
             "scenes": [
                 self.scene_payload(
                     scene,
-                    chapter_slug=slug,
                     story_check=story_checks.get(scene.scene_id),
                     context=context,
                     chapter=chapter,
@@ -234,7 +233,6 @@ class CatalogReader:
         self,
         scene: SceneCard,
         *,
-        chapter_slug: str,
         story_check: dict[str, Any] | None = None,
         context: dict[str, Any] | None = None,
         chapter: ChapterGoal | None = None,
@@ -249,9 +247,8 @@ class CatalogReader:
         return {
             "scene_id": scene.scene_id,
             "chapter_id": scene.chapter_id,
-            # 场景 slug = scene_id（稳定身份，见模块说明）；位置式旧 slug 只供前端迁移本机旧键
+            # 场景 slug = scene_id（稳定身份，见模块说明）
             "slug": scene.scene_id,
-            "legacy_slug": f"{chapter_slug}s{scene.scene_seq}",
             "seq": scene.scene_seq,
             "title": scene_display_title(scene, goal=goal),
             "summary": goal.strip(),
@@ -348,14 +345,10 @@ class CatalogReader:
             "chapter_words": chapter_words,
         }
 
-    def _scene_payload_with_slug(self, scene: SceneCard) -> dict[str, Any]:
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        require_project(self.session, chapter.project_id)
-        chapters = self.chapter_rows(chapter.project_id)
-        index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
+    def _scene_payload_for_write(self, scene: SceneCard, chapter: ChapterGoal) -> dict[str, Any]:
+        """建场 / 改场的回包：单场载荷，不必扫整本章序（场景 slug = scene_id，不再按章位置拼）。"""
         return self.scene_payload(
             scene,
-            chapter_slug=f"ch{index + 1:02d}",
             story_check=self.story_checks([scene.scene_id]).get(scene.scene_id),
             chapter=chapter,
         )

@@ -14,7 +14,7 @@
   （写作台的草稿绑定与读缓存、AI 起草台的运行记录与队列、场景笔记）都拿它当身份：目录里任何一次
   结构变动——雪花重新分章 / 回流搬场、手动增删章、场景重排——都会让同一个 slug 指向另一场，
   于是正文存进别的场的草稿、A 场的 AI 稿被采用到 B 场。场景的身份必须跟着行走，不跟着位置走。
-  旧的位置式 slug 仍以 ``legacy_slug`` 给出，只供前端把旧键一次性迁到新键。
+  （当时给前端迁本机旧键用的 ``legacy_slug`` 已在 2026-10-03 重构上线后删除，R16。）
 - C4 裁决：scene brief 按 kind 返回 GCS（proactive）或 RDD（reactive），
   前端 store 适配层负责映射到视图槽位。
 - 阶段 X「一条书脊」：目录是构思（雪花）与三张台子（章节编排 / 写作台 / AI 起草台）之间唯一的交接面，
@@ -344,7 +344,7 @@ class CatalogService(CatalogReader):
                 setattr(scene, key, value)
             self.session.flush()
         return {
-            "scene": self._scene_payload_with_slug(scene),
+            "scene": self._scene_payload_for_write(scene, chapter),
             "changed": changed,
         }
 
@@ -433,7 +433,7 @@ class CatalogService(CatalogReader):
                 self._find_or_create_character(project_id, character_name).character_id if character_name else pov_id
             )
         self.session.flush()
-        return {"scene": self._scene_payload_with_slug(scene), "changed": True}
+        return {"scene": self._scene_payload_for_write(scene, chapter), "changed": True}
 
     def reorder_chapters(
         self,
