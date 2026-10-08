@@ -68,7 +68,7 @@ localStorage 的 `novel-system-api-base` 覆盖只有在同时存在 `novel-syst
 - 写作与恢复：`src/ws-writer.jsx`（入口）与 `src/ws-writer-*.jsx|js`、`src/wr-doc-store.jsx`、`src/wr-recovery-center.jsx`
 - 目录（章 / 场的唯一交接面，场景 sid = 后端 `scene_id`）：`src/ws-catalog.jsx`；共用场景设计卡 `src/ws-scene-design.jsx`、场景卡同步状态 `src/ws-design-sync.jsx`（契约见 [`../docs/book-spine-catalog-contract.md`](../docs/book-spine-catalog-contract.md)）
 - AI 起草台（左栏是全书书脊）：`src/ws-scene.jsx` 与 `src/ws-scene-*.jsx|js`、`src/ws-scene-run.jsx`
-- 章节编排：`src/ws-author.jsx` 与 `src/ws-author-*.jsx|js`（AI 编排 `ws-author-ai.jsx` + store `ws-author-ai-store.js`）；章节运行 `src/ws-chapter-run.jsx`
+- 章节编排：`src/ws-author.jsx` 与 `src/ws-author-*.jsx|js`（章节蓝图卡 `ws-author-ai.jsx` + store `ws-author-ai-store.js`，戏剧卡 `ws-author-drama.jsx`）；章节运行 `src/ws-chapter-run.jsx`
 - 成稿中心：`src/ws-manuscripts.jsx` 与 `src/ws-manuscripts-*.jsx|js`、`src/ws-manuscripts-store.jsx`
 - 风格参考：`src/ws-styleref.jsx` 与 `src/ws-styleref-*.jsx|js`（状态与接口在 `src/ws-styleref-store.js`）
 - 资料 / 回收站 / 设置：`src/ws-library*.jsx|js`、`src/ws-trash.jsx`、`src/ws-settings*.jsx`

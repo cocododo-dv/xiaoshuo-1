@@ -13,7 +13,7 @@
 「这一场的设计归构思」标记（``design_owner``）随之去掉。场景运行现做的蓝图走 ``near_final_planning`` 的规划快照，
 两边读同一种蓝图行（``chapter_architecture``）。
 
-历史设计文档：docs/history/chapter-arrangement-llm-design-2026-07-16.md §3（其中的伏笔 / 张力 / 作者偏好输入与
+历史设计文档：docs/history/catalog/chapter-arrangement-llm-design-2026-07-16.md §3（其中的伏笔 / 张力 / 作者偏好输入与
 方向 / 补全 / 体检三条通道已退役）。
 """
 from __future__ import annotations
