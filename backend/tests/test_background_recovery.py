@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import logging
 import threading
 import time
 
@@ -14,6 +15,7 @@ from novel_system.db.models import (
     LlmCall,
     LlmCallAttempt,
     SceneCard,
+    SystemConfigSnapshot,
 )
 from novel_system.db.session import SessionLocal
 from novel_system.services.background_recovery import (
@@ -413,6 +415,63 @@ def test_startup_recovery_uses_configured_ttl_for_unowned_llm_reservations(
     ]
     session.expire_all()
     assert session.get(LlmCall, "legacy-startup-recovery").accounting_status == "released"
+
+
+def _retired_snapshot_warnings(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if "no longer read" in record.getMessage()]
+
+
+def test_startup_warns_once_about_a_legacy_prompts_snapshot_and_keeps_the_row(session, caplog) -> None:
+    """提示词只读仓库的 config/prompts.yaml（2026-10）：老安装库里还留着活动的 prompts 快照（可能有作者在旧界面里
+    改过的提示词）时，行原样留着，启动时记一条警告说它不再被读。"""
+    session.add(
+        SystemConfigSnapshot(
+            snapshot_id="config_prompts_legacy",
+            category="prompts",
+            version=3,
+            yaml_raw="templates: {}\n",
+            parsed_json={"templates": {}},
+            validation_json={"ok": True},
+            status="active",
+            active_flag=1,
+            created_by="ops.config",
+        )
+    )
+    session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        summary = run_startup_recovery()
+
+    warnings = _retired_snapshot_warnings(caplog)
+    assert len(warnings) == 1
+    assert "prompts" in warnings[0] and "config/prompts.yaml" in warnings[0]
+    assert summary["retired_config_snapshots"] == ["prompts"]
+    session.expire_all()
+    legacy = session.get(SystemConfigSnapshot, "config_prompts_legacy")
+    assert legacy is not None and legacy.active_flag == 1
+
+
+def test_startup_says_nothing_without_a_legacy_snapshot(session, caplog) -> None:
+    session.add(
+        SystemConfigSnapshot(
+            snapshot_id="config_prompts_superseded",
+            category="prompts",
+            version=1,
+            yaml_raw="templates: {}\n",
+            parsed_json={"templates": {}},
+            validation_json={"ok": True},
+            status="superseded",
+            active_flag=0,
+            created_by="ops.config",
+        )
+    )
+    session.commit()
+
+    with caplog.at_level(logging.WARNING):
+        summary = run_startup_recovery()
+
+    assert _retired_snapshot_warnings(caplog) == []
+    assert summary["retired_config_snapshots"] == []
 
 
 # ---------------------------------------------------------------------------

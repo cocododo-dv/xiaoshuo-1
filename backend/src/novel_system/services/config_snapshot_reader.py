@@ -2,11 +2,15 @@
 
 Parsers and provider services depend on this small query boundary instead of
 depending on the mutation-heavy ``system_config`` service that imports them.
+
+``warn_retired_config_snapshots``：系统配置以前还有 prompts 这一类（2026-10 起提示词只读仓库的
+``config/prompts.yaml``）；老安装库里留着的活动快照行原样不动，启动时记一条警告说它不再被读。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -20,7 +24,12 @@ from novel_system.services.config_cache import ContentKeyedCache
 from novel_system.services.database_errors import is_database_busy_error
 
 
+_LOGGER = logging.getLogger(__name__)
+
 _TRANSIENT_DB_RETRY_DELAYS = (0.05, 0.15)
+
+# 退役的配置类别：库里也许还留着它们的活动快照，但已经没有任何代码读它们
+RETIRED_CONFIG_CATEGORIES = ("prompts",)
 
 T = TypeVar("T")
 
@@ -113,3 +122,26 @@ def _decode_stored_payload(stored: str | bytes | None) -> dict[str, Any]:
     """库里 ``parsed_json`` 原文 → 与 ORM 读出来的 ``dict(parsed_json or {})`` 相同的 dict。"""
     value = json.loads(stored) if stored is not None else None
     return dict(value or {})
+
+
+def warn_retired_config_snapshots(session) -> list[str]:
+    """库里还有活动快照的退役类别（按 ``RETIRED_CONFIG_CATEGORIES`` 的顺序）；有就记一条警告。行原样留着（旧界面里
+    改过的提示词还在里面，要找回可以从库里读出来），只是不再被读。启动恢复调一次（``background_recovery``）。"""
+    found = set(
+        session.execute(
+            select(SystemConfigSnapshot.category)
+            .where(
+                SystemConfigSnapshot.category.in_(RETIRED_CONFIG_CATEGORIES),
+                SystemConfigSnapshot.active_flag == 1,
+            )
+            .distinct()
+        ).scalars()
+    )
+    retired = [category for category in RETIRED_CONFIG_CATEGORIES if category in found]
+    if retired:
+        _LOGGER.warning(
+            "active system-config snapshots of the retired categories %s are no longer read: prompts come only "
+            "from config/prompts.yaml; the rows are kept untouched in system_config_snapshots",
+            ", ".join(retired),
+        )
+    return retired

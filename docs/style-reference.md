@@ -312,8 +312,8 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 
 ## 11. 部署与运维
 
-- **提示词同步**：保存过提示词快照的安装读库内快照。改了任何风格模板都要 `python -m novel_system.tools.sync_prompt_templates`（干跑）再
-  `--execute`；学习作业开工前核对模板契约，旧模板直接拒为 `STYLE_REFERENCE_LEARN_CONFIG_MISSING`，不白花调用。
+- **提示词**：只读仓库的 `config/prompts.yaml`（2026-10 起系统配置不再有提示词快照，部署不用另做什么）。学习作业解析输出要用的
+  模板字段由 `tests/test_style_reference_learn_units.py` 的模板契约守着，开工时不再逐个查。
 - **新节点要路由**：保存过 models 快照的安装上，快照里没有路由的节点 fail-closed（`LLM_ROUTE_NOT_CONFIGURED`）；到系统配置「一键补齐」。
 - **输出预算**：models 快照只存作者为每个节点选的服务与模型（迁移 `20260929_0096` 把旧快照里抄进去的参数都去掉了），温度、输出预算、
   推理档位解析时取 spec——spec 里修好的默认值随发布直接生效。要高于默认值（例如某个中转的思考 token 特别多）时用
@@ -353,7 +353,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `…_BOOK_DUPLICATE`（409）/ `…_BOOK_EMPTY`（400）/ `…_UPLOAD_TOO_LARGE`（413）/ `…_BOOK_FORMAT_UNSUPPORTED` | 同一份文本已在书库（`details.book_id`）/ 没有正文 / 超过 10 MB / 不是 txt、md |
 | `…_CLASSIFICATION_FAILED`（502） | 某批重试后仍失败；游标保留，「继续分类」 |
 | `…_ALREADY_ACTIVE` / `…_BOOK_LEARNING` / `…_BOOK_CLASSIFYING` / `…_BOOK_NOT_READY` | 同一本书有冲突的作业在跑，或分类没完成；等它结束、取消或「继续分类」 |
-| `…_LEARN_CONFIG_MISSING` | 学习节点没有路由或模板是旧版（`details.stale_templates` 列出哪几个，如 `style_ref_tag_windows` 还是 v1）；「一键补齐」+ `sync_prompt_templates --execute` |
+| `…_LEARN_CONFIG_MISSING` | 学习节点没有路由（`details.missing_routes` 列出哪几个）；「一键补齐」 |
 | `…_INPUT_TOO_SMALL` / 学习失败 `card_filtered_empty` | 正文太少 / 卡句全被专名、禁用词或原文重合滤掉（在用的画像不受影响） |
 | `…_PROFILE_STALE`（409） | 画像的依据变过；重新学习再用于作品 |
 | `…_CHECK_NOT_BOUND` / `…_CHECK_TARGET_INVALID` / `…_CHECK_JUDGE_FAILED` / `…_CHECK_NOT_ACTIVE` | 对照检查没有可对照的参考 / `text` 与 `scene_id` 没有恰好给一个（超过 6 万字的 `text` 在请求校验就被拒）/ 评审调用失败 / 取消一个已结束的检查 |

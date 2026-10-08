@@ -310,29 +310,20 @@ def accept_first_draft(
         "thresholds": thresholds.audit() if hasattr(thresholds, "audit") else None,
         "slot_key": slot_key,
     }
-    if reason == style_step.REASON_TEMPLATE_MISSING:
-        notice = style_notice(
-            STYLE_NOTICE_REVISION_REJECTED,
-            "首稿测得与作者有明显差距，但这台机器的提示词快照里还没有定向修改模板（请运行 sync_prompt_templates），"
-            "这一场保留首稿。",
-            severity="warning",
-            reason=reason,
-        )
-    else:
-        notice = style_notice(
-            STYLE_NOTICE_FIRST_DRAFT_ACCEPTED,
-            {
-                style_step.REASON_WITHIN_RANGE: "首稿读数在参考作者的正常范围内，风格步没有再调模型，首稿即风格稿。",
-                style_step.REASON_READING_UNRELIABLE: "首稿太短（或参考书的样例窗口太少），读数不可信；为免越改越远，首稿即风格稿。",
-                style_step.REASON_READING_UNAVAILABLE: "参考书还没有可用的读数尺子，风格步没有再调模型，首稿即风格稿。",
-                style_step.REASON_READING_FAILED: "首稿的读数这次没算出来（读数出了错，不是参考书没有尺子），风格步没有再调模型，首稿即风格稿；下次运行会重新读。",
-                style_step.REASON_CANDIDATE_SLOT: "首稿作为候选之一参与按读数排序。",
-            }.get(reason, "风格步保留了首稿。"),
-            severity="warning" if reason == style_step.REASON_READING_FAILED else notice_severity,
-            reason=reason,
-            percentile=getattr(first_reading, "percentile", None),
-            distance=getattr(first_reading, "distance", None),
-        )
+    notice = style_notice(
+        STYLE_NOTICE_FIRST_DRAFT_ACCEPTED,
+        {
+            style_step.REASON_WITHIN_RANGE: "首稿读数在参考作者的正常范围内，风格步没有再调模型，首稿即风格稿。",
+            style_step.REASON_READING_UNRELIABLE: "首稿太短（或参考书的样例窗口太少），读数不可信；为免越改越远，首稿即风格稿。",
+            style_step.REASON_READING_UNAVAILABLE: "参考书还没有可用的读数尺子，风格步没有再调模型，首稿即风格稿。",
+            style_step.REASON_READING_FAILED: "首稿的读数这次没算出来（读数出了错，不是参考书没有尺子），风格步没有再调模型，首稿即风格稿；下次运行会重新读。",
+            style_step.REASON_CANDIDATE_SLOT: "首稿作为候选之一参与按读数排序。",
+        }.get(reason, "风格步保留了首稿。"),
+        severity="warning" if reason == style_step.REASON_READING_FAILED else notice_severity,
+        reason=reason,
+        percentile=getattr(first_reading, "percentile", None),
+        distance=getattr(first_reading, "distance", None),
+    )
     notices = [notice]
     ledger.add_draft(
         row_id,
@@ -409,24 +400,6 @@ def run_targeted_revision(
     首稿永远在候选里），没过的槽位保留首稿原文（选择门按正文去重）。
     """
     template_name = "style_targeted_revision"
-    if not svc._prompt_builder().has_template(template_name):
-        return accept_first_draft(
-            svc,
-            scene=scene,
-            state=state,
-            bundle=bundle,
-            first_row_id=first_row_id,
-            first_content=first_content,
-            first_reading=first_reading,
-            first_reading_id=first_reading_id,
-            reason=style_step.REASON_TEMPLATE_MISSING,
-            thresholds=thresholds,
-            row_id=row_id,
-            slot_key=slot_key,
-            slot_order=slot_order,
-            product_callback=product_callback,
-            attempt_details_extra=attempt_details_extra,
-        )
     card, line_states = _policy_card(policy)
     dimensions = style_step.revision_dimensions(first_reading, getattr(policy, "dimension_states", None))
     differences = style_step.revision_differences(first_reading, dimensions)

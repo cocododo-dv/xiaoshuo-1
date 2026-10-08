@@ -31,7 +31,7 @@ Alembic 的 `env.py` 与每个 `novel_system.tools.*` 都会拒绝导入另一�
   「请换回与数据库匹配的代码版本」，重启不会让库降级。不重启、原地 `alembic upgrade head` 也可以：结构跟上之后的第一个
   `/api/*` 请求或 `/ready` 探测会补跑启动时推迟的启动恢复与后台清扫。`--reload` 的开发后端在迁移落地之前就会热加载新模型，
   这段时间看到的就是这个 503。
-- 会写库的运维工具（`reset_author_state`、`sync_prompt_templates`、`raise_llm_output_budget`、`refresh_style_reference_books`、
+- 会写库的运维工具（`reset_author_state`、`raise_llm_output_budget`、`refresh_style_reference_books`、
   `purge_style_reference_books`）在库版本与代码不一致时拒绝 `--execute`（退出码 2，与 `/ready` 同一条标准）；干跑照常。
 - `20260802_0077` 合并过两条曾经发布过的分支（`20260717_0074 → 20260717_0075` 与 `20260722_0074 → 20260725_0076`）：停在
   任一分支上的库都直接 `alembic upgrade head`，不要手改 `alembic_version`。
@@ -103,7 +103,6 @@ Alembic 的 `env.py` 与每个 `novel_system.tools.*` 都会拒绝导入另一�
 3. 代码快进到新版本，在 `backend/` 下手工 `alembic upgrade head`（不要等启动脚本去升级：第 4 步要在后端启动之前做）。
 4. `python -m novel_system.tools.compact_db <库文件>` 先干跑（报告库多大、会清掉多少行），再加 `--execute`：清掉过期的幂等重放缓存，
    把 `auto_vacuum` 切成 INCREMENTAL，`VACUUM`，完整性与外键检查，截断 WAL。库还在被使用时它拒绝执行；需要约一份库大小的空闲磁盘。
-5. 保存过提示词快照的安装：`python -m novel_system.tools.sync_prompt_templates`（干跑）再 `--execute`，把这一轮改过的模板同步进库。
-6. 启动，确认 `/ready` 返回 `ready`；每台设备上打开着的工作台页面，在新界面里改任何东西之前全部刷新一次：前后端一起换了版本，没刷新的旧页面还在调用已经删掉的接口，它手里的旧构思缓存也可能盖掉你在新界面里的改动。
+5. 启动，确认 `/ready` 返回 `ready`；每台设备上打开着的工作台页面，在新界面里改任何东西之前全部刷新一次：前后端一起换了版本，没刷新的旧页面还在调用已经删掉的接口，它手里的旧构思缓存也可能盖掉你在新界面里的改动。
 
 之后幂等重放缓存按 72 小时保留期每 6 小时清理一次（启动后的第一拍不清），风格参考作业记录按保留期每天清理一次。

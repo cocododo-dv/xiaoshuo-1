@@ -211,8 +211,8 @@ def _not_bound_error(params: Mapping[str, Any]) -> DomainError:
 
 
 def _judge_runtime() -> NodeRuntime:
-    """评审节点的路由（``soft_qc``）与模板（``style_ref_check_judge``）；读不出来 / 没有路由 / 模板不在（保存过提示词
-    快照、还没 sync 的安装缺新模板）→ 409。建作业时查一次，作业开工时再载一次。"""
+    """评审节点的路由（``soft_qc``）与模板（``style_ref_check_judge``）；读不出来 / 没有路由 / 模板不在 → 409。
+    建作业时查一次，作业开工时再载一次。"""
     try:
         load = load_node_runtimes((CHECK_NODE_ID,), template_names={CHECK_NODE_ID: CHECK_TEMPLATE})
     except NodeConfigUnavailable as exc:
@@ -231,19 +231,12 @@ def _judge_runtime() -> NodeRuntime:
         )
     runtime = load.runtimes.get(CHECK_NODE_ID)
     if runtime is None:
+        # 提示词只读仓库的 config/prompts.yaml：模板缺了只能是程序的问题（CI 的模板清点先拦），作者在设置里补不了
         raise DomainError(
             CHECK_CONFIG_MISSING_CODE,
-            "这台机器的提示词快照里还没有对照检查的评审模板：运行 sync_prompt_templates --execute 后再试。",
+            "对照检查的评审节点（文学质检 soft_qc）或它的提示词模板读不出来。",
             status_code=409,
-            details={
-                "template": CHECK_TEMPLATE,
-                "node_id": CHECK_NODE_ID,
-                "author_action": {
-                    "action": "sync_prompt_templates",
-                    "view": "systemConfig",
-                    "label": "同步提示词模板",
-                },
-            },
+            details={"reason": "template_missing", "node_id": CHECK_NODE_ID, "template": CHECK_TEMPLATE},
         )
     return runtime
 

@@ -2985,7 +2985,7 @@ templates:
                 additionalProperties: true
   narrative_event_extract:
     # 2026-09-30 v1（B11-16）：从成稿正文里抽「持久的状态变化」给正史核对当候选（成稿中心的「提取」与归档时的
-    # 可选自动抽取共用）。原来写死在 prose_event_extractor.py 里，现在进模板：有版本号、走 sync_prompt_templates、
+    # 可选自动抽取共用）。原来写死在 prose_event_extractor.py 里，现在进模板：有版本号、
     # 受模板契约测试守着。正文按段落切成 ≤6000 字的几段，每段一次调用；多于一段时用户消息标明「第几段」。
     version: "2026-09-30.v1"
     # 一段正文 ≤6000 字（按一字一 token 估）+ 系统提示，留余量。

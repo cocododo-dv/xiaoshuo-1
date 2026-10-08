@@ -3,12 +3,13 @@
 - :func:`open_checked_session`：会写库的工具（``--execute``）先核对 ``alembic_version`` 与代码认的
   ``CURRENT_SCHEMA_REVISION``；对不上（库没升级、或是代码比库旧）就不写，告诉操作者先 ``alembic upgrade head``，
   以退出码 2 拒跑——与 ``GET /ready`` 同一条标准。干跑照常打开（只读）。
-- :func:`active_snapshot_payload` / :func:`activate_snapshot_payload`：两个改系统配置快照的工具
-  （``sync_prompt_templates``、``raise_llm_output_budget``）共用的「读活动快照 → 改 → 另存为新版本并激活」。
+- :func:`active_snapshot_payload` / :func:`activate_snapshot_payload`：改系统配置快照的工具
+  （``raise_llm_output_budget``）用的「读活动快照 → 改 → 另存为新版本并激活」。
 """
 
 from __future__ import annotations
 
+import copy
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
 from novel_system.db.session import SessionLocal
-from novel_system.services.config_cache import safe_load_yaml
+from novel_system.services.config_snapshot_reader import active_snapshot
 from novel_system.services.system_config import SystemConfigService
 
 # 退出码 2：没碰任何东西就拒跑（与检出守卫、E2E 通道的端口守卫同一个约定）
@@ -58,13 +59,17 @@ def open_checked_session(tool: str, *, writes: bool) -> Iterator[Session]:
 
 
 def active_snapshot_payload(service: SystemConfigService, category: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """``(活动快照的元数据, 解析后的配置)``；这一类还没有存过快照时元数据为 ``None``、配置为空字典。"""
+    """``(活动快照的 snapshot_id 与版本, 配置)``；这一类还没有存过快照时元数据为 ``None``、配置为空字典。
 
-    overview = service.overview()["categories"][category]
-    snapshot = overview.get("active_snapshot")
-    if not snapshot:
+    配置是活动快照的 ``parsed_json``（运行时读的就是它）的深拷贝，工具可以就地改。"""
+
+    snapshot = active_snapshot(service.session, category)
+    if snapshot is None:
         return None, {}
-    return snapshot, safe_load_yaml(overview["yaml_raw"]) or {}
+    return (
+        {"snapshot_id": snapshot.snapshot_id, "version": snapshot.version},
+        copy.deepcopy(dict(snapshot.parsed_json or {})),
+    )
 
 
 def activate_snapshot_payload(service: SystemConfigService, category: str, payload: dict[str, Any], *, actor: str) -> dict[str, Any]:

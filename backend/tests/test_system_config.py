@@ -629,7 +629,7 @@ llm:
     assert "must not be negative" in excinfo.value.message
 
 
-def test_active_model_and_prompt_snapshots_feed_runtime_loaders(session, monkeypatch) -> None:
+def test_active_models_snapshot_feeds_the_routing_loader(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     models_yaml = """
 task_routing:
@@ -644,43 +644,32 @@ retry_budget:
 job_runtime:
   verify_lease_ttl_seconds: 99
 """.strip()
-    prompts_yaml = """
-templates:
-  neutral_draft:
-    version: custom.v1
-    input_token_budget: 500
-    system_prompt: "Custom system prompt"
-    task_prompt: "Custom task prompt"
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - scene_text
-      properties:
-        scene_text:
-          type: string
-""".strip()
 
     assert _activate_config(session, "models", models_yaml)["active"] is True
-    assert _activate_config(session, "prompts", prompts_yaml)["active"] is True
 
     routing_config = load_model_routing_config()
     assert routing_config.task_routing["neutral_draft"].model == "custom-neutral"
     assert routing_config.task_routing["neutral_draft"].max_output_tokens == 321
 
-    prompt = PromptBuilder().build(
-        {
-            "scene_id": "CH001_SC01",
-            "chapter_id": "CH001",
-            "inline_digests": {
-                "chapter_goal": "Goal",
-                "scene_card": "Scene",
-            },
-        },
-        "neutral_draft",
-    )
-    assert prompt["template_version"] == "custom.v1"
-    assert prompt["system_prompt"] == "Custom system prompt"
+
+def test_prompts_are_no_longer_a_config_category(session, monkeypatch) -> None:
+    """提示词只读仓库的 config/prompts.yaml（2026-10）：系统配置不再收 prompts 快照（以前存得下、却没有界面能写，
+    存下之后整份盖住仓库文件，每次改模板都要跑同步工具）。"""
+    import pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.system_config import CONFIG_CATEGORIES
+
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    assert "prompts" not in CONFIG_CATEGORIES
+    with pytest.raises(DomainError) as excinfo:
+        _create_config_draft(session, "prompts", "templates: {}\n")
+
+    assert excinfo.value.code == "CONFIG_CATEGORY_UNSUPPORTED"
+    assert excinfo.value.status_code == 404
+    assert session.execute(select(SystemConfigSnapshot)).scalars().all() == []
+    prompt = PromptBuilder().build({"scene_id": "CH001_SC01", "chapter_id": "CH001"}, "neutral_draft")
+    assert prompt["template_name"] == "neutral_draft"
 
 
 def test_system_config_rejects_invalid_models_yaml(session, monkeypatch) -> None:

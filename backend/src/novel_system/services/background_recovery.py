@@ -6,7 +6,8 @@ workers harmless: at most one worker can move a row into an owned running
 state.
 
 - 启动恢复（``run_startup_recovery``，lifespan 同步调用一次）：排队的任务、租约已过期 / 没有租约的 running
-  任务再派发；过期的取消请求收尾；遗留的 LLM 记账预留回收。
+  任务再派发；过期的取消请求收尾；遗留的 LLM 记账预留回收；库里留着退役配置类别（prompts）的活动快照时
+  记一条警告。
 - 周期恢复（B03-01，``start_run_job_sweeper``，每分钟一拍，启动那一拍不跑）：进程还活着时，租约过期、本进程
   里又没有它的工人的 running 任务再派发；主人已死的取消请求收尾。同一拍顺带跑到期的全系统维护任务
   （``services/maintenance.py``）。
@@ -184,6 +185,15 @@ def run_startup_recovery() -> dict[str, Any]:
     except Exception:  # pragma: no cover - startup boundary
         logger.exception("startup recovery failed while sweeping expired cancel requests")
         summary["runtime_sweep"] = {"error": "scan_failed"}
+
+    try:
+        from novel_system.services.config_snapshot_reader import warn_retired_config_snapshots
+
+        with SessionLocal() as session:
+            summary["retired_config_snapshots"] = warn_retired_config_snapshots(session)
+    except Exception:  # pragma: no cover - startup boundary
+        logger.exception("startup check of retired system-config snapshots failed")
+        summary["retired_config_snapshots"] = {"error": "scan_failed"}
 
     # 风格参考 v3 的作业（分类 / 学习 / 对照检查）由作业表的常驻清扫线程续跑（lifespan 里启动）。旧版遗留的两件
     # 修复（旧抽取流程的「运行中」run、没有作业行可续的分类中的书）由迁移 20260929_0094 做过一次，开机不再扫。

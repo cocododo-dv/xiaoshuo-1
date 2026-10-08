@@ -217,7 +217,6 @@ const STEP_TEXT = {
   reading_unreliable: { tone: "neutral", text: "首稿太短（或参考书能比的片段太少），量不准，没有再改" },
   reading_unavailable: { tone: "neutral", text: "参考书还没有量像不像的尺子，首稿没有再改" },
   best_of_n_candidate: { tone: "neutral", text: "首稿作为候选之一，和修改稿一起按像不像排序" },
-  revision_template_missing: { tone: "warn", text: "首稿和作者差得明显，但「定向修改」的提示词模板还没同步，保留首稿" },
   reading_failed: { tone: "warn", text: "量首稿时出了错（不是参考书的问题），为免越改越远，没有再改" },
 };
 
@@ -383,7 +382,7 @@ const ERROR_TEXT = {
   STYLE_REFERENCE_CHECK_NO_REFERENCE: "参考书还没有可以拿来比的片段：等段落分类做完、学完文风之后再查。",
   STYLE_REFERENCE_CHECK_REFERENCE_EMPTY: "这份文风画像拿不出可以对照的参考（没有原文片段，也没有文风卡）：先学习文风。",
   STYLE_REFERENCE_CHECK_JUDGE_FAILED: "模型的参考评审没有完成（调用失败或没给出分数），可以重新检查。",
-  STYLE_REFERENCE_CHECK_CONFIG_MISSING: "这台机器还没有对照检查用的评审提示词：同步提示词模板（sync_prompt_templates --execute）后再试。",
+  STYLE_REFERENCE_CHECK_CONFIG_MISSING: "对照检查用的评审模型（文学质检）还没配好：到「设置 → AI 模型」一键补齐后再试。",
   STYLE_REFERENCE_CHECK_NOT_FOUND: "这次检查的记录已经不在了，重新检查一次。",
   STYLE_REFERENCE_CHECK_NOT_ACTIVE: "这次检查已经结束了，不用取消。",
   STYLE_REFERENCE_CHECK_TARGET_INVALID: "要检查的对象没有给对：贴一段文字或选一场（二选一），并说清对照哪份参考。",

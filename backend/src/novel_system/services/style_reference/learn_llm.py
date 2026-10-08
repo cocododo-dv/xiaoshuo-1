@@ -58,16 +58,6 @@ LEARN_CALL_FAILED_CODE = "STYLE_REFERENCE_LEARN_LLM_CALL_FAILED"
 # 预算估计的安全余量（与旧合成同一口径：CJK 一字一 token 的上界 ×1.1 + schema 文本）
 _ESTIMATE_MULTIPLIER = 1.1
 
-# 模板契约：作业按这些 schema 字段解析输出。抽取 / 合成沿用旧节点 id，保存过提示词快照的安装里拿到的可能还是
-# 旧模板（旧抽取 schema 是顶层 observations / forbidden_patterns）——发出去注定解析失败、白花调用，所以开工前查。
-# 路径里遇到数组就进 items。
-TEMPLATE_CONTRACT: dict[str, tuple[tuple[str, ...], ...]] = {
-    **{node: (("dimensions", "observations"), ("dimensions", "avoid")) for node in EXTRACT_NODES.values()},
-    NODE_SYNTHESIZE: (("dimensions", "do"), ("dimensions", "avoid"), ("temperament",)),
-    NODE_PROTECTED_TERMS: (("terms",),),
-    NODE_TAG_WINDOWS: (("windows", "situations"), ("windows", "dimensions"), ("windows", "gist")),
-}
-
 
 class LearnCallError(Exception):
     """一次学习调用失败（供应商报错、渲染失败、输出为空）——调用方可以重试。"""
@@ -87,9 +77,12 @@ class LearnCallResult:
 
 
 def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, NodeRuntime]:
-    """载入学习节点的路由（DB node_routing 优先、yaml 兜底）与提示词模板；缺哪个都报 409（中文 + 去系统配置）。"""
+    """载入学习节点的路由（DB node_routing 优先、yaml 兜底）与提示词模板；缺哪个都报 409（中文 + 去系统配置）。
+
+    模板的输出字段与作业的解析代码随同一次发布到达（提示词只读仓库的 config/prompts.yaml），两者对得上由
+    ``tests/test_style_reference_learn_units.py`` 的模板契约守着，开工时不再逐个查。"""
     try:
-        load = load_node_runtimes(node_ids, template_ok=template_meets_contract)
+        load = load_node_runtimes(node_ids)
     except NodeConfigUnavailable as exc:
         raise DomainError(
             LEARN_CONFIG_MISSING_CODE,
@@ -99,17 +92,12 @@ def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, N
         ) from exc.cause
     missing_routes = load.missing_routes
     missing_templates = load.missing_templates
-    stale_templates = load.stale_templates
-    if missing_routes or missing_templates or stale_templates:
+    if missing_routes or missing_templates:
         parts: list[str] = []
         if missing_routes:
             parts.append("没有路由的节点:" + "、".join(missing_routes) + "(到「设置 → 模型与接入」一键补齐)")
-        if missing_templates or stale_templates:
-            parts.append(
-                "提示词模板缺失或还是旧版本:"
-                + "、".join(missing_templates + stale_templates)
-                + "(保存过提示词快照的安装要同步提示词模板:sync_prompt_templates --execute)"
-            )
+        if missing_templates:
+            parts.append("提示词模板缺失:" + "、".join(missing_templates))
         raise DomainError(
             LEARN_CONFIG_MISSING_CODE,
             "学习文风要用的模型节点还没配好。" + ";".join(parts) + "。",
@@ -117,7 +105,6 @@ def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, N
             details={
                 "missing_routes": missing_routes,
                 "missing_templates": missing_templates,
-                "stale_templates": stale_templates,
                 "author_action": {
                     "action": "configure_llm_nodes",
                     "view": "systemConfig",
@@ -126,24 +113,6 @@ def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, N
             },
         )
     return dict(load.runtimes)
-
-
-def _schema_path_present(schema: Any, path: Sequence[str]) -> bool:
-    node: Any = schema
-    for key in path:
-        if isinstance(node, Mapping) and node.get("type") == "array":
-            node = node.get("items")
-        properties = node.get("properties") if isinstance(node, Mapping) else None
-        if not isinstance(properties, Mapping) or key not in properties:
-            return False
-        node = properties[key]
-    return True
-
-
-def template_meets_contract(node_id: str, template: Any) -> bool:
-    """模板的 structured_schema 带着作业解析要用的字段（``TEMPLATE_CONTRACT``）；不在契约里的节点不查。"""
-    schema = getattr(template, "structured_schema", None)
-    return all(_schema_path_present(schema, path) for path in TEMPLATE_CONTRACT.get(node_id, ()))
 
 
 def _task_text(runtime: NodeRuntime, extra_instruction: str | None) -> str:
@@ -264,11 +233,9 @@ __all__ = [
     "NODE_PROTECTED_TERMS",
     "NODE_SYNTHESIZE",
     "NODE_TAG_WINDOWS",
-    "TEMPLATE_CONTRACT",
     "call_structured",
     "estimate_input_tokens",
     "load_learn_runtimes",
     "payload_fits",
     "render_messages",
-    "template_meets_contract",
 ]

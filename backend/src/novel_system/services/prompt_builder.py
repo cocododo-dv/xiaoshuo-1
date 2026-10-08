@@ -53,10 +53,10 @@ SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "number", "integer", "boo
 # ── 场景 / 规划 / 章节三族的输入预算下限（量出来的，不是猜的）──
 #
 # 这些数字与 config/prompts.yaml 里对应模板的 input_token_budget 相同；代码侧再保
-# 一份下限，是因为「库里有活动 prompts 快照时仓库文件不会被读」——已经在 系统配置
-# 里保存过 prompts 的实装，快照里仍是估算器改成「一个汉字一 token」之前的旧值
-# （1800–3600），不加这道地板，场景跑到 near_final_acceptance_review 就会以
-# CONTINUITY_BUDGET_EXCEEDED fail-closed，900 字的稿子都过不去。
+# 一份下限，当初是因为库里的 prompts 快照会盖住仓库文件、带着估算器改成「一个汉字
+# 一 token」之前的旧值（1800–3600）。2026-10 起提示词只读仓库文件，这道地板留作
+# 护栏：模板里的预算被改低时，场景不至于跑到 near_final_acceptance_review 就以
+# CONTINUITY_BUDGET_EXCEEDED fail-closed。
 #
 # 实测方法：用 backend/tests 夹具（seed_runtime_fixture + BundleBuilder）搭真实
 # bundle，按各调用点的拼装函数拼出**最终** user prompt（基础 prompt + 稿件 + 调用点
@@ -170,10 +170,6 @@ class PromptBuilder:
     def __init__(self, template_path: str | Path | None = None) -> None:
         self._templates = load_prompt_templates(template_path)
 
-    def has_template(self, template_name: str) -> bool:
-        """模板在不在（保存过提示词快照、还没 ``sync_prompt_templates`` 的安装可能缺新模板）。"""
-        return template_name in self._templates
-
     def build(
         self,
         bundle_snapshot: Mapping[str, Any],
@@ -227,28 +223,21 @@ class PromptBuilder:
         }
 
 
-# 解析好的模板按来源内容记忆（活动 prompts 快照的原文 / 文件正文，见 config_cache）：同一份内容只解析一次，
-# 内容一变（系统配置保存 / 切换快照、sync_prompt_templates、改文件）下一次读取就重新解析。
+# 解析好的模板按文件正文记忆（见 config_cache）：同一份内容只解析一次，改了文件下一次读取就重新解析。
 _PROMPT_TEMPLATE_CACHE = ContentKeyedCache(maxsize=4)
 
 
 def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTemplate]:
-    """提示词模板：库里有活动 prompts 快照读快照，否则读 ``config/prompts.yaml``；给 ``path`` 就读那份文件。
+    """提示词模板：读仓库的 ``config/prompts.yaml``；给 ``path`` 就读那份文件。
+
+    2026-10 起提示词只有这一个来源：系统配置不再有 prompts 这一类，老安装库里留着的活动 prompts 快照不再读
+    （启动时记一条警告，见 ``config_snapshot_reader.warn_retired_config_snapshots``）。
 
     每次返回一个新的 dict（调用方可以增删键），里面的 ``PromptTemplate`` 与它的 ``structured_schema``
     由缓存共享、只读——要改 schema 先深拷贝（``PromptBuilder.build`` 已经返回拷贝）。
     """
-    if path is None:
-        from novel_system.services.config_snapshot_reader import load_active_config_parsed
-
-        templates = load_active_config_parsed(
-            "prompts", parse_prompt_templates, cache=_PROMPT_TEMPLATE_CACHE
-        )
-        if templates is None:
-            templates = _load_prompt_templates_file(_default_prompts_config_path())
-    else:
-        templates = _load_prompt_templates_file(Path(path))
-    return dict(templates)
+    config_path = _default_prompts_config_path() if path is None else Path(path)
+    return dict(_load_prompt_templates_file(config_path))
 
 
 def _load_prompt_templates_file(config_path: Path) -> dict[str, PromptTemplate]:

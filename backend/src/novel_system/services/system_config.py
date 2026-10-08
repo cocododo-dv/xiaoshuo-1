@@ -1,4 +1,6 @@
-"""系统配置：五类配置快照（api / models / prompts / allowlists / hash_contract）与「设置 → AI 模型」的服务。
+"""系统配置：四类配置快照（api / models / allowlists / hash_contract）与「设置 → AI 模型」的服务。
+
+提示词不在这里：2026-10 起只读仓库的 ``config/prompts.yaml``（``prompt_builder.load_prompt_templates``）。
 
 2026-09-30 拆开（B09-13 / B09-11）：
 * ``system_config_secrets``：密钥的加密存取与状态；
@@ -10,7 +12,7 @@
 
 ``load_active_config_payload`` / ``load_secret_value`` 在本模块经 ``SessionLocal`` 与 ``time.sleep``
 读库（测试在这里打桩）。没有界面能重新激活旧快照：运维回滚用 ``SystemConfigService(session).activate(
-<snapshot_id>, actor_ref=...)``（``sync_prompt_templates`` / ``raise_llm_output_budget`` 也是这样写快照的）。
+<snapshot_id>, actor_ref=...)``（``raise_llm_output_budget`` 也是这样写快照的）。
 """
 
 from __future__ import annotations
@@ -78,7 +80,6 @@ from novel_system.services.llm_route_config import (
     writable_models_payload,
 )
 from novel_system.services.llm_routing import parse_model_routing_config, routing_for_models_payload
-from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
 from novel_system.services.system_config_secrets import (
     LLM_API_KEY_SECRET_ID,
     LLM_PROVIDER_SECRET_PREFIX,
@@ -111,10 +112,9 @@ __all__ = [
 ]
 
 
-CONFIG_CATEGORIES = ("api", "models", "prompts", "allowlists", "hash_contract")
+CONFIG_CATEGORIES = ("api", "models", "allowlists", "hash_contract")
 YAML_CONFIG_FILES = {
     "models": "models.yaml",
-    "prompts": "prompts.yaml",
     "allowlists": "allowlists.yaml",
     "hash_contract": "hash_contract.yaml",
 }
@@ -156,7 +156,7 @@ class SystemConfigService:
             self.session.flush()
 
     def overview(self, *, include_content: bool = True) -> dict[str, Any]:
-        """运行时状态与五类配置的现状。
+        """运行时状态与各类配置的现状。
 
         ``include_content`` 时每类带 YAML 正文与解析结果（运维工具要读）；``GET /api/v1/system-config``
         只要摘要（来源、校验结果、活动快照的版本，api 的密钥状态）——以前它把每一份历史快照的正文都带上，
@@ -867,12 +867,9 @@ def validate_config(category: str, yaml_raw: str) -> tuple[dict[str, Any], dict[
         if category == "models":
             parse_model_routing_config(parsed)
             return parsed, {"ok": True, "message": "models config is valid"}
-        if category == "prompts":
-            parse_prompt_templates(parsed)
-            return parsed, {"ok": True, "message": "prompts config is valid"}
         if category in {"allowlists", "hash_contract"}:
             return parsed, {"ok": True, "message": f"{category} config is valid"}
-    except (yaml.YAMLError, ValueError, LLMConfigurationError, PromptConfigurationError) as exc:
+    except (yaml.YAMLError, ValueError, LLMConfigurationError) as exc:
         return {}, {"ok": False, "message": str(exc)}
 
     raise DomainError("CONFIG_CATEGORY_UNSUPPORTED", f"unsupported config category {category}", status_code=404)

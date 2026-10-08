@@ -9,8 +9,8 @@
 
 已有画像的书**就地更新**那份画像（同一个 profile_id、version_tag +1、状态 active），绑定照常生效——还有生效绑定的
 归档画像（迁移 0092 把旧版画像归档）同样就地更新并复活为 active；没有画像的书新建一份 active 画像。严格 LLM：
-没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``；学习节点没有路由、提示词模板缺失或还是旧版本（保存过提示词快照、
-没同步）建作业时就 409 ``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（开工时再查一次）。
+没有模型 409 ``STYLE_REFERENCE_LLM_REQUIRED``；学习节点没有路由（或提示词模板缺失）建作业时就 409
+``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（开工时再查一次）。
 """
 
 from __future__ import annotations
@@ -45,13 +45,10 @@ from novel_system.services.style_reference.jobs import (
 )
 from novel_system.services.style_reference.learn_llm import (
     LAYERS,
-    LEARN_CONFIG_MISSING_CODE,
     LEARN_NODE_IDS,
-    NODE_TAG_WINDOWS,
     load_learn_runtimes,
 )
 from novel_system.services.style_reference.learn_tags import plan_tag_batches
-from novel_system.services.style_reference.llm_nodes import NodeRuntime
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.tags import TAGS_VERSION
 from novel_system.services.style_reference.windows import (
@@ -215,40 +212,6 @@ def _skipped_layers(book: StyleReferenceBook, *, force: bool) -> list[str]:
     return [layer for layer in LAYERS if assessment.get(layer) == "skip"]
 
 
-def _tag_template_is_v2(template: Any) -> bool:
-    """窗口标签模板的输出带 ``windows[].dimensions``（v2，2026-09-24）。旧的 v1 模板（保存过提示词快照、没同步）
-    还在要 ``devices``：用它打出来的标签没有维度、却会记成当前版本，之后再也不会重打——所以按旧模板一律拒。"""
-    schema = getattr(template, "structured_schema", None)
-    try:
-        return "dimensions" in schema["properties"]["windows"]["items"]["properties"]
-    except (KeyError, TypeError):
-        return False
-
-
-def ensure_tag_template_current(runtimes: Mapping[str, NodeRuntime]) -> None:
-    """``load_learn_runtimes`` 之外的一条契约：打标签的模板必须是 v2（见 :func:`_tag_template_is_v2`）；不是 → 与
-    模板缺失同一个 409 ``STYLE_REFERENCE_LEARN_CONFIG_MISSING``（``details.stale_templates``）。"""
-    runtime = runtimes.get(NODE_TAG_WINDOWS)
-    if runtime is None or _tag_template_is_v2(runtime.template):
-        return
-    raise DomainError(
-        LEARN_CONFIG_MISSING_CODE,
-        "学习文风要用的模型节点还没配好。提示词模板缺失或还是旧版本:"
-        f"{NODE_TAG_WINDOWS}(窗口标签 v2 输出维度,保存过提示词快照的安装要同步提示词模板:sync_prompt_templates --execute)。",
-        status_code=409,
-        details={
-            "missing_routes": [],
-            "missing_templates": [],
-            "stale_templates": [NODE_TAG_WINDOWS],
-            "author_action": {
-                "action": "sync_prompt_templates",
-                "view": "systemConfig",
-                "label": "同步提示词模板",
-            },
-        },
-    )
-
-
 def start_learn_job(
     session: Session,
     book_id: str,
@@ -289,8 +252,8 @@ def start_learn_job(
             status_code=409,
             details={"book_id": book_id, "job_id": active.job_id, "state": active.state},
         )
-    # 节点路由 / 提示词模板缺失或是旧版本:建作业之前就 409(不建一个注定在工人里失败的作业);作业开工时再查一次
-    ensure_tag_template_current(load_learn_runtimes())
+    # 节点路由 / 提示词模板缺失:建作业之前就 409(不建一个注定在工人里失败的作业);作业开工时再查一次
+    load_learn_runtimes()
     ensure_cloud_llm_allowed(book, operation="learn_style", node_ids=LEARN_NODE_IDS, llm_client=llm_client)
     skipped = _skipped_layers(book, force=force)
     if len(skipped) == len(LAYERS):
@@ -499,7 +462,6 @@ __all__ = [
     "RUN_DISPATCH_STATE",
     "active_learn_job",
     "cancel_learn",
-    "ensure_tag_template_current",
     "estimate_learning",
     "latest_learn_job",
     "learn_payload",

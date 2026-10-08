@@ -173,15 +173,7 @@ class SceneBlueprintService:
         facts = policy.defers_house_taste()
         source = self._source_snapshot(scene, chapter, policy=policy)
         template_name = FACTS_TEMPLATE_NAME if facts else "scene_blueprint"
-        try:
-            prompt = self.prompt_builder.build(source["snapshot"], template_name)
-        except KeyError:
-            if not facts:
-                raise
-            # 库里存过 prompts 快照、还没 sync 进事实版模板的安装：退回写法版（sync_prompt_templates 后生效）
-            _LOGGER.warning("prompt template %s missing; falling back to scene_blueprint", FACTS_TEMPLATE_NAME)
-            facts = False
-            prompt = self.prompt_builder.build(source["snapshot"], "scene_blueprint")
+        prompt = self.prompt_builder.build(source["snapshot"], template_name)
         user_prompt = _blueprint_user_prompt(
             prompt["user_prompt"],
             scene=scene,

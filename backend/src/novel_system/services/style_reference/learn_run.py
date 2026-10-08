@@ -110,7 +110,6 @@ from novel_system.services.style_reference.learn_job import (
     REASON_TAGGING_FAILED,
     RUN_DISPATCH_STATE,
     LearnFailedError,
-    ensure_tag_template_current,
     set_run_status,
     tag_plan_input,
     windows_needing_tags,
@@ -321,7 +320,6 @@ class _LearnRun(JobRun):
             raise LLMRequiredError(operation="learn_style")
         self.client = client
         self.runtimes = load_learn_runtimes()
-        ensure_tag_template_current(self.runtimes)
         ensure_cloud_llm_allowed(
             book,
             operation="learn_style",

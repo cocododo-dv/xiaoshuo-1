@@ -3,8 +3,9 @@
 提示词模板与模型路由按**来源内容**记忆（``services/config_cache.py``）：同一份内容只解析一次，内容一变下一次
 读取就是新配置。这里守三件事：
 
-1. 作者在系统配置里保存 / 切换 / 回滚快照、``sync_prompt_templates`` / ``raise_llm_output_budget`` 激活新快照、
-   迁移就地改写快照、改仓库 yaml（哪怕大小与修改时间都不变）——下一次读取立刻看到新内容，不必重启；
+1. 作者在系统配置里保存 / 切换 / 回滚 models 快照、``raise_llm_output_budget`` 激活新快照、迁移就地改写快照、
+   改仓库 yaml（哪怕大小与修改时间都不变）——下一次读取立刻看到新内容，不必重启；提示词只读仓库的
+   ``config/prompts.yaml``（库里留着的旧 prompts 快照不再读，2026-10 起）；
 2. C 解析器与纯 Python 解析器对仓库里每份 yaml 解析结果相同，出错时的报错逐字相同；
 3. 回归守卫：代表性的只读请求不重复解析 yaml、不写库；只读服务构造时不读提示词与运行时配置。
 """
@@ -204,7 +205,7 @@ def test_prompt_templates_are_parsed_once_per_content(monkeypatch) -> None:
 
     for _ in range(3):
         assert "neutral_draft" in load_prompt_templates()
-        assert PromptBuilder().has_template("hard_qc")
+        assert PromptBuilder().build({}, "hard_qc")["template_name"] == "hard_qc"
         assert "neutral_draft" in load_prompt_templates(REPO_CONFIG / "prompts.yaml")
 
     assert len(parses) == 1
@@ -221,38 +222,50 @@ def test_each_caller_gets_its_own_template_mapping() -> None:
     assert "made_up" not in second
 
 
-def test_prompt_snapshot_save_switch_and_rollback_are_visible_at_once(session) -> None:
-    from_file = load_prompt_templates()["neutral_draft"]
-
-    first = _activate(session, "prompts", {"templates": {"neutral_draft": _template("甲版：雨城的旧信")}})
-    assert load_prompt_templates()["neutral_draft"].system_prompt == "甲版：雨城的旧信"
-
-    _activate(session, "prompts", {"templates": {"neutral_draft": _template("乙版：林昭的案卷")}})
-    assert load_prompt_templates()["neutral_draft"].system_prompt == "乙版：林昭的案卷"
-    assert PromptBuilder().build({}, "neutral_draft")["system_prompt"] == "乙版：林昭的案卷"
-
-    SystemConfigService(session).activate(first, actor_ref="test")  # 回滚到甲版
-    assert load_prompt_templates()["neutral_draft"].system_prompt == "甲版：雨城的旧信"
-    assert not PromptBuilder().has_template("hard_qc")
-
-    session.execute(update(SystemConfigSnapshot).values(active_flag=0, status="superseded"))
+def _seed_legacy_prompts_snapshot(session, templates: dict) -> None:
+    """一份活动的 prompts 快照行：系统配置以前能存这一类（2026-10 起不再有，也不再读），老安装的库里可能还留着。"""
+    payload = {"templates": templates}
+    session.add(
+        SystemConfigSnapshot(
+            snapshot_id="config_prompts_legacy",
+            category="prompts",
+            version=1,
+            yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            parsed_json=payload,
+            validation_json={"ok": True, "message": "prompts config is valid"},
+            status="active",
+            active_flag=1,
+            created_by="ops.config",
+        )
+    )
     session.commit()
-    assert load_prompt_templates()["neutral_draft"] == from_file
+
+
+def test_a_legacy_active_prompts_snapshot_is_not_read(session) -> None:
+    """提示词只来自仓库的 config/prompts.yaml：库里留着的活动 prompts 快照（只有一个模板、正文也不同）不再盖住
+    仓库文件——以前它整份替代仓库文件，快照里缺的模板就「不存在」，要跑同步工具才补得上。"""
+    from_file = load_prompt_templates(REPO_CONFIG / "prompts.yaml")
+    _seed_legacy_prompts_snapshot(session, {"neutral_draft": _template("快照旧版：雨城的旧信")})
+
+    templates = load_prompt_templates()
+    assert set(templates) == set(from_file)
+    assert templates["neutral_draft"] == from_file["neutral_draft"]
+    assert PromptBuilder().build({}, "neutral_draft")["system_prompt"] == from_file["neutral_draft"].system_prompt
+    assert PromptBuilder().build({}, "hard_qc")["template_name"] == "hard_qc"
 
 
 def test_snapshot_rewritten_in_place_is_visible_at_once(session) -> None:
-    """迁移（如 0074）会就地改写活动快照：同一 snapshot_id、同一版本号，内容不同。"""
-    _activate(session, "prompts", {"templates": {"neutral_draft": _template("改写前")}})
-    assert load_prompt_templates()["neutral_draft"].system_prompt == "改写前"
+    """迁移（如 0074、0096）会就地改写活动快照：同一 snapshot_id、同一版本号，内容不同。"""
+    _activate(session, "models", _models(1200))
+    assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 1200
 
-    rewritten = {"templates": {"neutral_draft": _template("改写后")}}
     session.execute(
         update(SystemConfigSnapshot)
-        .where(SystemConfigSnapshot.category == "prompts", SystemConfigSnapshot.active_flag == 1)
-        .values(parsed_json=rewritten)
+        .where(SystemConfigSnapshot.category == "models", SystemConfigSnapshot.active_flag == 1)
+        .values(parsed_json=_models(2400))
     )
     session.commit()
-    assert load_prompt_templates()["neutral_draft"].system_prompt == "改写后"
+    assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 2400
 
 
 def test_prompts_file_edit_is_visible_even_when_size_and_mtime_do_not_change(tmp_path, monkeypatch) -> None:
@@ -272,28 +285,6 @@ def test_prompts_file_edit_is_visible_even_when_size_and_mtime_do_not_change(tmp
 
     assert load_prompt_templates()["neutral_draft"].system_prompt == "旧信乙"
     assert load_prompt_templates(prompts)["neutral_draft"].system_prompt == "旧信乙"
-
-
-def test_sync_prompt_templates_activation_is_visible_at_once(session, tmp_path, monkeypatch) -> None:
-    from novel_system.tools import sync_prompt_templates
-
-    repo = tmp_path / "prompts.yaml"
-    repo.write_text(
-        yaml.safe_dump(
-            {"templates": {"neutral_draft": _template("仓库新版", version="2026-09-29.v2")}},
-            allow_unicode=True,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(sync_prompt_templates, "_repo_prompts_path", lambda: repo)
-    _activate(session, "prompts", {"templates": {"neutral_draft": _template("快照旧版")}})
-    assert load_prompt_templates()["neutral_draft"].system_prompt == "快照旧版"
-
-    stamp_schema_revision()  # 工具的 --execute 先核对库结构版本（tools/_cli.py）
-    assert sync_prompt_templates.main(["--execute"]) == 0
-
-    synced = load_prompt_templates()["neutral_draft"]
-    assert (synced.version, synced.system_prompt) == ("2026-09-29.v2", "仓库新版")
 
 
 # ---------------------------------------------------------------- 模型路由与租约
@@ -316,13 +307,17 @@ def test_model_routing_is_parsed_once_per_content(monkeypatch) -> None:
 def test_models_snapshot_changes_reach_routing_and_lease_ttl_at_once(session) -> None:
     from novel_system.tools import raise_llm_output_budget
 
-    _activate(session, "models", _models(1200, claim_ttl=321))
+    first = _activate(session, "models", _models(1200, claim_ttl=321))
     assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 1200
     assert idempotency.owner_lease_ttl_seconds() == 321
 
     _activate(session, "models", _models(1500, claim_ttl=654))
     assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 1500
     assert idempotency.owner_lease_ttl_seconds() == 654
+
+    SystemConfigService(session).activate(first, actor_ref="test")  # 回滚到第一版
+    assert load_model_routing_config().task_routing["neutral_draft"].max_output_tokens == 1200
+    assert idempotency.owner_lease_ttl_seconds() == 321
 
     stamp_schema_revision()  # 工具的 --execute 先核对库结构版本（tools/_cli.py）
     assert raise_llm_output_budget.main(["--node", "neutral_draft", "--floor", "4096", "--execute"]) == 0
@@ -433,7 +428,7 @@ def test_read_only_services_build_neither_prompts_nor_runtime_settings_until_use
     with pytest.raises(AssertionError):
         runner.settings
     monkeypatch.undo()
-    assert services[1].prompt_builder.has_template("scene_blueprint")
+    assert services[1].prompt_builder.build({}, "scene_blueprint")["template_name"] == "scene_blueprint"
     assert services[1].prompt_builder is services[1].prompt_builder
     assert services[1]._llm_runner.settings.llm_enabled is False
 

@@ -33,8 +33,7 @@ GitHub Actions 在每次推送（以及 PR）上跑同一套检查。
 
 - **迁移**：照[数据库迁移](migrations.md)写；`CURRENT_SCHEMA_REVISION` 改成新的 head；迁移测试升到自己的版本；
   `tests/test_metadata_isolation.py` 绿；不可逆或只改数据的迁移在说明里写清楚，部署前必须停服备份。
-- **提示词**：`config/prompts.yaml` 里改过的模板都升了 `version`；部署时在保存过提示词快照的安装上跑
-  `python -m novel_system.tools.sync_prompt_templates --execute`。
+- **提示词**：`config/prompts.yaml` 里改过的模板都升了 `version`（提示词只读这份文件，部署不用另做什么）。
 - **新的 LLM 节点**：默认值只写在 `backend/src/novel_system/services/llm_node_registry.py` 的 spec 里；配置过模型的安装要到
   「设置 · AI 模型」点「一键补齐」给它分路由，否则这个节点 fail-closed。
 - **删接口**：加进 `backend/tests/test_retired_surface.py`，按需下调 `tests/test_api_openapi_contract.py` 的数量下限；React 不再调用它。
@@ -46,8 +45,7 @@ GitHub Actions 在每次推送（以及 PR）上跑同一套检查。
 2. `python -m novel_system.tools.db_backup --backup <库> <备份>` 做一份校验过的备份；涉及不可逆迁移或压缩库时，这份备份作为
    有名字的存档长期保留。
 3. 代码快进到新版本；`alembic upgrade head`。
-4. 按需：`compact_db <库> --execute`（重构上线那一次必须做，见[数据库迁移](migrations.md) §4）、`sync_prompt_templates --execute`、
-   「一键补齐」。
+4. 按需：`compact_db <库> --execute`（重构上线那一次必须做，见[数据库迁移](migrations.md) §4）、「一键补齐」。
 5. 启动（`scripts/start-all-linux.sh` / `start-dev.cmd`），确认 `/ready` 是 `ready`；每台设备上开着的工作台页面，在新界面里改任何东西之前全部刷新。
 
 ## 5. 不由这里证明的东西

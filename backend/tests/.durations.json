@@ -316,7 +316,6 @@
  "test_style_reference_windows.py": 3.67,
  "test_style_windows_surface.py": 1.46,
  "test_suite_layout.py": 10.17,
- "test_sync_prompt_templates.py": 4.06,
  "test_system_config.py": 15.33,
  "test_system_config_stale_routes.py": 5.15,
  "test_test_isolation.py": 21.54,

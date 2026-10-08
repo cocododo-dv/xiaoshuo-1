@@ -41,7 +41,7 @@
 - `POST …/steps/{step_key}/generate`：新增 `direction_turn_id`（方向来自哪一回合）与 `direction_index`（方向回合的第几条）。服务端按回合种类推出 `direction_kind`（方向回合 → `candidate`，问答回合 → `coach_reply`），生成成功后在回合上记 `adoption_json = {step_run_id, candidate_index, adopted_at}`，在这一版 `health_json.direction` 记 `{kind, turn_id, candidate_index, label, sha}`。回合不存在 / 不属于本作品 → 404 `SNOWFLAKE_DIRECTION_TURN_NOT_FOUND`；编号不对 → 400 `SNOWFLAKE_DIRECTION_INDEX_INVALID`；指了回合没带正文 → 400 `SNOWFLAKE_DIRECTION_TEXT_REQUIRED`。
 - `POST …/assistant`：每轮的要点差异随回合落表（`brief_delta_json`），`assistant_history` 里每条回合带 `turn_kind` / `candidates` / `brief_delta` / `adoption`。教练看到的 `conversation.recent_turns` 里，方向回合是 `{kind: "candidates", message, directions[{label, tag, text}], chosen}`，问答回合是 `{kind: "chat", …, adopted_as_direction}`——作者选定的方向等于作者接受了它，教练可以把它记为要点里的「决定」。
 - 迁移 `20260917_0088`：`snowflake_assistant_turns` 加 `turn_kind`（历史行回填 `chat`）、`candidates_json`、`brief_delta_json`、`adoption_json`。
-- 提示词：`snowflake_workspace_assistant` v6、`snowflake_step_candidates` v6（2026-09-30 起 v7）——已保存过提示词快照的安装要跑 `python -m novel_system.tools.sync_prompt_templates --execute`。
+- 提示词：`snowflake_workspace_assistant` v6、`snowflake_step_candidates` v6（2026-09-30 起 v7）。
 
 ## 5. 有意不做的事
 
