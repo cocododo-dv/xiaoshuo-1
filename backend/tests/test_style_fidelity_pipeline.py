@@ -133,8 +133,9 @@ def test_accepted_first_draft_runs_through_soft_qc_near_final_and_archive(sessio
     final = rows[-1]
     assert final.profile_id == profile_id and final.draft_ref == state.current_final_scene_row_id
     assert final.judge_json["overall"] == 8.4 and final.judge_json["source"] == "reference_judge"
-    product = state.run_checkpoint_json["artifact_refs"]["archive_drift_product"]
+    product = state.run_checkpoint_json["artifact_refs"]["archive_effects"]["fidelity_reading"]
     assert product["outcome"] == "recorded" and product["reading_id"] == final.reading_id
+    assert product["reading_source"] == "pipeline"
 
     # 工作台生成摘要：本次运行的「像不像」
     from novel_system.services.style_fidelity_view import current_run_style_fidelity
@@ -144,6 +145,44 @@ def test_accepted_first_draft_runs_through_soft_qc_near_final_and_archive(sessio
     assert summary["first_draft"]["reading_id"] == rows[0].reading_id
     assert summary["final"]["reading_id"] == final.reading_id and summary["judge"]["overall"] == 8.4
     assert summary["patch"] is None and summary["revision"] is None
+
+
+def test_the_archive_reading_commits_with_the_archive_step_and_is_redone_after_a_crash_before_it(session, monkeypatch) -> None:
+    """归档读数在归档第 4 步的事务里：断在那一步提交之前，终稿读数没有留下；续跑重做这一步，终稿读数正好一条。"""
+    _bind_resume_project(session)
+    _install_readings(monkeypatch, {}, default=_reading(0.8, 35.0))
+    execution_id = "idempotency:fid-archive-crash"
+
+    def orchestrator() -> Orchestrator:
+        return _orchestrator(
+            session,
+            _CountingGenerationClient(),
+            _JudgedSoftQc(session, {"soft_qc:0": "continue"}, {"soft_qc:0": 8.4}),
+            _PassNearFinal(session),
+        )
+
+    first = orchestrator()
+    original_save = first._save_run_checkpoint
+
+    def crash_before_sub4_commit(node_key, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        if node_key == "near_final_ready" and kwargs.get("sub_index") == 4:
+            session.flush()
+            assert [(r.source, r.stage) for r in _readings(session)][-1] == ("pipeline", "final")
+            raise RuntimeError("crash before the archive step commits")
+        return original_save(node_key, **kwargs)
+
+    first._save_run_checkpoint = crash_before_sub4_commit
+    with pytest.raises(RuntimeError, match="crash before the archive step commits"):
+        first.run_scene(SCENE_ID, execution_id=execution_id)
+    session.expire_all()
+    assert [(r.source, r.stage) for r in _readings(session)] == [("pipeline", "first_draft")]
+
+    assert orchestrator().run_scene(SCENE_ID, execution_id=execution_id)["scene_status"] == "archived"
+    rows = _readings(session)
+    assert [(r.source, r.stage) for r in rows] == [("pipeline", "first_draft"), ("pipeline", "final")]
+    state = session.get(SceneRunState, SCENE_ID)
+    product = state.run_checkpoint_json["artifact_refs"]["archive_effects"]["fidelity_reading"]
+    assert product["reading_id"] == rows[-1].reading_id
 
 
 @pytest.mark.parametrize(

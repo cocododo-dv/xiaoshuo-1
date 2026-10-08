@@ -69,7 +69,7 @@ SCENE_RUN_STAGE_ORDER: tuple[str, ...] = (
 SCENE_STEP_CLAIMED = "planning_running"
 
 # 检查点节点（scene_run_checkpoint.RUN_CHECKPOINT_ORDER）→ 存下这个节点之后正在进行的阶段。
-# 风格稿的逐稿进度存在 hard_qc_ready 的 sub_index 上；归档尾巴的 8 个子步都存在 near_final_ready 上。
+# 风格稿的逐稿进度存在 hard_qc_ready 的 sub_index 上；归档尾段的两步（子游标 4、5）也存在 near_final_ready 上。
 _CHECKPOINT_STAGES: dict[str, str] = {
     "budget_ready": "planning_running",
     "planning_ready": "bundle_built",

@@ -1,16 +1,13 @@
 """运行本章在归档步假报 RUN_CHECKPOINT_OUTPUT_MISSING、以及 run-status 假报 completed 两处回归。
 
 产品路径：React 章节编排（v2 目录建章 + 场景）→ 起草台跑单场景 → 点「运行本章」。
-章尾场景（is_chapter_last=1）走到归档步时要做章级准定稿评审（chapter_near_final_review），
-该节点以 chapter scope 记账，记账层要求 SceneRunState.active_run_job_id == 本章任务 id。
 
 bug 1（根因）：ChapterRunnerService._set_current_scene 只在 ORM 对象上赋 active_run_job_id，
 没有 flush；Orchestrator.run_scene → SceneRunCheckpointService.acquire_execution →
-session.refresh(state) 把这条未落库的归属改动直接丢掉（scene 级节点容忍 None，所以整条
-场景管线照常跑完，只有章级节点被拒）。拒绝发生在记账台账落行之前，LLMNodeRunner.run 仍把
-一个从未写入的 llm_call_id 塞进 LLMNodeExecutionError，evaluate_chapter 的兜底分支把它
-持久化成 evaluator_llm_call_id，归档步随即以 RUN_CHECKPOINT_OUTPUT_MISSING 失败——
-真实原因（LLM_ACCOUNTING_CONTEXT_INVALID: chapter run job has no active current scene）被吞掉。
+session.refresh(state) 把这条未落库的归属改动直接丢掉。章级记账（chapter scope）要求
+SceneRunState.active_run_job_id == 本章任务 id，于是当时章尾归档步的章级准定稿评审在记账台账
+落行之前被拒，归档步以 RUN_CHECKPOINT_OUTPUT_MISSING 假失败。那次评审（付费、结果没人读）已删
+（G4 B3-1b.2），运行本章不再有章级的模型调用；归属照旧必须先落库（第一条用例）。
 
 bug 2：run-status / prepare_full_run 的 _reconcile_job 只看 SceneRunState 是否有定稿行就把
 failed 任务重新推导成 completed / 100%，latest_error 清空；作者看到绿色 100%，且再点
@@ -26,6 +23,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     ChapterGoal,
+    ChapterMemory,
     ChapterRunJob,
     FinalScene,
     LlmCall,
@@ -39,7 +37,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.near_final import NearFinalAcceptanceService
-from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, chapter_scene_execution_id
+from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from tests.real_llm_fakes import (
     _SCENE_PIPELINE_RUNNER_MODULES,
     ScenePipelineOnlineFake,
@@ -198,9 +196,21 @@ def test_set_current_scene_ownership_survives_checkpoint_refresh(client, session
     assert state.active_run_job_id == job.job_id, "chapter run ownership must be durable before scene execution"
 
 
-def test_run_full_over_catalog_chapter_last_scene_runs_chapter_near_final_review(client, session, monkeypatch) -> None:
-    """修复前：整条场景管线跑完，归档步以 RUN_CHECKPOINT_OUTPUT_MISSING 假失败，
-    llm_calls 里根本没有 chapter_near_final_review 这一行。"""
+def _assert_no_chapter_review(session, chapter_id: str) -> None:
+    """章级准定稿评审删了：没有章级的模型调用，也没有章级的评审行。"""
+    assert not session.execute(
+        select(LlmCall).where(LlmCall.chapter_id == chapter_id, LlmCall.scope_type == "chapter")
+    ).scalars().all()
+    assert not session.execute(
+        select(LlmCall).where(LlmCall.node_id == "chapter_near_final_review")
+    ).scalars().all()
+    assert not session.execute(
+        select(WriterEvaluation).where(WriterEvaluation.object_type == "chapter", WriterEvaluation.object_id == chapter_id)
+    ).scalars().all()
+
+
+def test_run_full_over_catalog_chapter_last_scene_archives_without_a_chapter_review(client, session, monkeypatch) -> None:
+    """运行本章跑到章末那一场：归档一次做完（章汇总也重建了），任务 completed，不再有章级准定稿评审的调用。"""
 
     install_online_pipeline(monkeypatch)
     _, chapter_id, scene_id = _catalog_chapter_ready_to_run(client)
@@ -212,37 +222,18 @@ def test_run_full_over_catalog_chapter_last_scene_runs_chapter_near_final_review
 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert (data["latest_error"] or {}).get("code") != "RUN_CHECKPOINT_OUTPUT_MISSING", data
+    assert data["latest_error"] is None, data
     assert data["status"] == "completed", data
     assert data["completed_scene_ids"] == [scene_id]
-    job_id = data["job_id"]
 
     session.expire_all()
-    review_calls = session.execute(
-        select(LlmCall).where(
-            LlmCall.node_id == "chapter_near_final_review",
-            LlmCall.chapter_id == chapter_id,
-        )
-    ).scalars().all()
-    assert len(review_calls) == 1, "the chapter near-final review must be a real ledgered provider call"
-    review_call = review_calls[0]
-    assert review_call.scope_type == "chapter"
-    assert review_call.run_job_id == job_id
-    assert review_call.execution_id == chapter_scene_execution_id(job_id, scene_id)
-    assert review_call.execution_step_key == "archive:chapter_near_final:0"
-    assert review_call.accounting_status == "settled"
-
-    evaluation = session.execute(
-        select(WriterEvaluation).where(
-            WriterEvaluation.object_type == "chapter",
-            WriterEvaluation.object_id == chapter_id,
-        )
-    ).scalars().one()
-    assert evaluation.evaluator_llm_call_id == review_call.llm_call_id
-
+    _assert_no_chapter_review(session, chapter_id)
     state = session.get(SceneRunState, scene_id)
     assert state.scene_status == "archived"
     assert state.active_run_job_id is None
+    effects = state.run_checkpoint_json["artifact_refs"]["archive_effects"]
+    assert effects["chapter_aggregate"]["outcome"] == "aggregated"
+    assert session.get(ChapterMemory, effects["chapter_aggregate"]["chapter_memory_row_id"]).chapter_id == chapter_id
 
     status = client.get(f"/api/v1/chapters/{chapter_id}/run-status").json()["data"]
     assert status["status"] == "completed"
@@ -250,12 +241,12 @@ def test_run_full_over_catalog_chapter_last_scene_runs_chapter_near_final_review
     assert status["latest_error"] is None
 
 
-def test_run_job_after_scene_job_runs_chapter_near_final_review(client, session, monkeypatch) -> None:
+def test_run_job_after_scene_job_archives_the_chapter_last_scene(client, session, monkeypatch) -> None:
     """产品顺序：起草台先按 strict 跑单场景 run-job（停在 quality_warning_pending_acceptance，
     无定稿行），再从章节编排点运行本章（run-job → worker → run_full）。
 
-    修复前：章任务重新跑完整条场景管线，在归档步以 RUN_CHECKPOINT_OUTPUT_MISSING 落 failed，
-    llm_calls 里没有任何 chapter_near_final_review 行。"""
+    修复前：章任务重新跑完整条场景管线，在归档步（当时的章级准定稿评审）以 RUN_CHECKPOINT_OUTPUT_MISSING
+    落 failed。现在章任务跑完整条管线、归档完成，没有章级的模型调用。"""
 
     fake = _install_strict_stop_pipeline(monkeypatch)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
@@ -286,9 +277,6 @@ def test_run_job_after_scene_job_runs_chapter_near_final_review(client, session,
     assert state.current_final_scene_row_id is None, "strict stop must not have written final text"
     assert state.active_run_job_id is None
     scene_pass_requests = len(fake.requests)
-    assert not session.execute(
-        select(LlmCall).where(LlmCall.node_id == "chapter_near_final_review", LlmCall.chapter_id == chapter_id)
-    ).scalars().all(), "the strict stop happens before the archive step, so no chapter review has run yet"
 
     response = client.post(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/run-job",
@@ -303,15 +291,7 @@ def test_run_job_after_scene_job_runs_chapter_near_final_review(client, session,
     assert job.error_code != "RUN_CHECKPOINT_OUTPUT_MISSING", (job.error_code, job.error_text)
     assert job.status == "completed", (job.status, job.error_code, job.error_text)
     assert len(fake.requests) > scene_pass_requests, "the chapter run must have executed the scene pipeline itself"
-    review_calls = session.execute(
-        select(LlmCall).where(
-            LlmCall.node_id == "chapter_near_final_review",
-            LlmCall.chapter_id == chapter_id,
-        )
-    ).scalars().all()
-    assert [(call.accounting_status, call.run_job_id, call.execution_step_key) for call in review_calls] == [
-        ("settled", job_id, "archive:chapter_near_final:0")
-    ]
+    _assert_no_chapter_review(session, chapter_id)
     state = session.get(SceneRunState, scene_id)
     assert state.scene_status == "archived"
     assert state.current_final_scene_row_id
@@ -473,19 +453,19 @@ def test_run_status_reports_archive_step_failure_with_its_code(client, session, 
 
     def _archive_failure(*_args, **_kwargs):
         raise DomainError(
-            "CHAPTER_NEAR_FINAL_REVIEW_FAILED",
-            "chapter near-final review failed: provider unavailable",
-            status_code=502,
+            "SOURCE_SAFETY_BLOCKED",
+            "source-safety scan blocked archive — text is kept and can be revised",
+            status_code=409,
             details={
                 "author_action": {
-                    "title": "章级评审失败",
-                    "message": "模型服务暂不可用，请稍后重新运行本章。",
+                    "title": "归档被来源安全检查拦下",
+                    "message": "正文保留着，改过之后请重新运行本章。",
                 }
             },
         )
 
     monkeypatch.setattr(
-        "novel_system.services.orchestrator.Orchestrator._run_archive_chapter_evaluation",
+        "novel_system.services.orchestrator.Orchestrator._archive_stage_effects",
         _archive_failure,
     )
 
@@ -496,8 +476,8 @@ def test_run_status_reports_archive_step_failure_with_its_code(client, session, 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["status"] == "failed", data
-    assert data["latest_error"]["code"] == "CHAPTER_NEAR_FINAL_REVIEW_FAILED"
-    assert data["latest_error"]["author_action"]["message"] == "模型服务暂不可用，请稍后重新运行本章。"
+    assert data["latest_error"]["code"] == "SOURCE_SAFETY_BLOCKED"
+    assert data["latest_error"]["author_action"]["message"] == "正文保留着，改过之后请重新运行本章。"
 
     session.expire_all()
     state = session.get(SceneRunState, scene_id)
@@ -507,8 +487,8 @@ def test_run_status_reports_archive_step_failure_with_its_code(client, session, 
     assert status["status"] == "failed", status
     assert status["progress_pct"] == 0
     assert status["completed_scene_ids"] == []
-    assert status["latest_error"]["code"] == "CHAPTER_NEAR_FINAL_REVIEW_FAILED"
-    assert status["latest_error"]["author_action"]["message"] == "模型服务暂不可用，请稍后重新运行本章。"
+    assert status["latest_error"]["code"] == "SOURCE_SAFETY_BLOCKED"
+    assert status["latest_error"]["author_action"]["message"] == "正文保留着，改过之后请重新运行本章。"
 
 
 def test_run_job_worker_keeps_author_action_when_claimed_job_fails_outside_scene_execution(

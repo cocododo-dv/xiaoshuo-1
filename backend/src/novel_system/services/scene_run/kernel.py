@@ -125,12 +125,7 @@ class RunCheckpointKernelMixin:
         # observing cancellation.  Cancellation therefore fences only the next node.
         self._raise_if_run_cancelled()
 
-    def _reconcile_execution_step(
-        self,
-        execution_step_key: str,
-        *,
-        chapter_scope: bool = False,
-    ) -> None:
+    def _reconcile_execution_step(self, execution_step_key: str) -> None:
         if self._checkpoint_service is None or self._execution_id is None:
             return
         self._checkpoint_service.reconcile_step_output(
@@ -138,7 +133,6 @@ class RunCheckpointKernelMixin:
             execution_id=self._execution_id,
             execution_step_key=execution_step_key,
             output_exists=False,
-            ledger_scope="chapter" if chapter_scope else "scene",
         )
 
     def _validate_checkpoint_llm_output(

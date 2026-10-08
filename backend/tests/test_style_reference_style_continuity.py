@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
@@ -61,7 +60,7 @@ def test_contract_deliberate_repetition_reads_the_layer_that_takes_effect() -> N
 
 
 # ---------------------------------------------------------------------------
-# 归档读数槽位（archive:style_drift:0，风格参考 v3 起记「像不像」读数）
+# 归档读数（风格参考 v3 起记「像不像」读数，不再是漂移驾驶）
 # ---------------------------------------------------------------------------
 
 
@@ -69,10 +68,9 @@ def _effects(session) -> SceneArchiveEffects:
     return SceneArchiveEffects(session, None, execution_id=None, run_job_id=None)
 
 
-def test_archive_reading_slot_writes_no_drift_event_and_passes_the_checkpoint_validator(session) -> None:
-    from novel_system.services.errors import DomainError
-    from novel_system.services.orchestrator import Orchestrator
-
+def test_archive_reading_writes_no_drift_event(session) -> None:
+    """归档读数（风格参考 v3 起记「像不像」读数，流水线在归档第 4 步经 Archiver 记）不再写漂移事件；书没有参照分布
+    → not_applicable。"""
     seed_work(session, project_id="P_W6_ARC", scenes_per_chapter=1)
     seed_binding(
         session,
@@ -89,22 +87,6 @@ def test_archive_reading_slot_writes_no_drift_event_and_passes_the_checkpoint_va
     assert product["outcome"] == "not_applicable"
     kinds = set(session.scalars(select(StyleReferenceMetricEvent.event_kind)).all())
     assert "style_drift_observed" not in kinds
-    # 已持久化的检查点按原 kind / step_key 续跑：读数槽位的产品必须过真实校验器
-    orch = Orchestrator(session)
-    reading_product = orch._archive_product(
-        scene=scene,
-        kind="style_drift",
-        outcome=product["outcome"],
-        step_key="archive:style_drift:0",
-        input_hash=orch._text_hash(LONG_SENTENCE_TEXT),
-        **{key: value for key, value in product.items() if key != "outcome"},
-    )
-    assert orch._validate_archive_drift_product(scene, reading_product, require_checkpoint_hash=False) == reading_product
-    with pytest.raises(DomainError) as excinfo:
-        orch._validate_archive_drift_product(
-            scene, {**reading_product, "outcome": "not_an_outcome"}, require_checkpoint_hash=False
-        )
-    assert excinfo.value.code == "RUN_CHECKPOINT_CORRUPT"
 
 
 def test_style_continuity_no_longer_exposes_drift_steering() -> None:

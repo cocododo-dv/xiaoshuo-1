@@ -703,8 +703,6 @@ def test_extract_requires_session_before_provider_io() -> None:
 def test_prose_control_plane_failure_crosses_recording_catches(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", "true")
-    from types import SimpleNamespace
-
     from novel_system.services.narrative_event_log import NarrativeEventLog
     from novel_system.services.orchestrator import Orchestrator
 
@@ -723,21 +721,7 @@ def test_prose_control_plane_failure_crosses_recording_catches(session, monkeypa
         orch._record_prose_events(NarrativeEventLog(session), None, base, "prose")
     assert direct.value is error
 
-    scene = SimpleNamespace(
-        scene_id="s_control",
-        chapter_id="c_control",
-        project_id="p_control",
-        pov_character_id=None,
-        onstage_chars_json=[],
-        exit_change="",
-        location=None,
-        writer_brief_json={},
-    )
-    contract = SimpleNamespace(payload_json={})
-    orch._record_prose_events = raise_control
-    with pytest.raises(type(error)) as outer:
-        orch._record_narrative_events(scene, contract, "prose")
-    assert outer.value is error
+
 # Event rows are position-addressed; unit tests that exercise the recorder need
 # the same minimal catalog identity as the production archive path.
 def _seed_event_scene(session, project_id: str, chapter_id: str, scene_id: str) -> None:

@@ -12,7 +12,7 @@ bundle / 首稿 / 硬 QC 的读回、规划、归档尾段、检查点内核）�
   ``scene_generation_service`` / ``execution_contract_service`` / ``llm_runner``；
 - 每次运行的四个字段 ``_execution_id`` / ``_run_job_id`` / ``_checkpoint_service`` / ``_lease_renewer``（测试直接设）；
 - 在类上打桩或在实例上覆盖的方法（``_run_scene_pipeline``、``_best_of_n_count``、``_reconcile_execution_step``、
-  ``_run_archive_*``、``_archive_product``、``_archive_manifest``、``_record_*_events``、``_capture_failure_audits`` /
+  ``_archive_stage_effects``、``_archive_product``、``_archive_manifest``、``_record_prose_events``、``_capture_failure_audits`` /
   ``_restore_failure_audits``、``_near_final_warning_findings``、
   ``_style_patch_keep_decision``、``_near_final_rewrite_drift``、``_resume_after_selection_pipeline`` …）——
   名字都留在 ``Orchestrator`` 上（继承来的），类上的打桩按 MRO 先于 mixin；

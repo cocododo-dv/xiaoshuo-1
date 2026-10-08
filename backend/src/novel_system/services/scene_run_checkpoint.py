@@ -31,8 +31,9 @@ _TERMINAL_EXECUTION_STATUSES = frozenset({"failed", "completed", "cancelled"})
 # 记上（写的永远是现在的代码）。bundle_ready 之后哪一步写进检查点的形状变了，就加一：续跑一份停在 bundle_ready 之后、
 # 却不是当前格式写下的检查点 → 409 ``RUN_CHECKPOINT_FORMAT_OUTDATED``（作者重新起草，见 :func:`checkpoint_format_outdated`）。
 # 预算 / 规划 / bundle 三步与格式无关，停在那里的旧运行照常续跑。
-# 1 = 最初；2 = 行快照只记哈希（P01c，没有标记）；3 = 删了自动批评（软 QC 第 0 步只剩 soft_input），从这一版起带标记。
-CHECKPOINT_FORMAT = 3
+# 1 = 最初；2 = 行快照只记哈希（P01c，没有标记）；3 = 删了自动批评（软 QC 第 0 步只剩 soft_input），从这一版起带标记；
+# 4 = 归档尾段收成两步（准终稿第 4 步一次做完确定性收尾、第 5 步正文抽取；章级准终稿评审删了）。
+CHECKPOINT_FORMAT = 4
 _FORMAT_FREE_CHECKPOINTS = frozenset(
     RUN_CHECKPOINT_ORDER[: RUN_CHECKPOINT_ORDER.index("bundle_ready") + 1]
 )
@@ -433,14 +434,12 @@ class SceneRunCheckpointService:
         execution_step_key: str,
         output_exists: bool,
         allow_local_rejected_output: bool = False,
-        ledger_scope: Literal["scene", "chapter"] = "scene",
     ) -> str:
-        """步位产物与它的账本行对账。``ledger_scope="chapter"``：这一步的调用记在章上（章级评审），账本行不带场景。"""
-        effective_scene_id = scene_id if ledger_scope == "scene" else None
+        """步位产物与它的账本行对账。"""
         calls = self.session.execute(
             select(LlmCall)
             .where(
-                LlmCall.scene_id == effective_scene_id,
+                LlmCall.scene_id == scene_id,
                 LlmCall.execution_id == execution_id,
                 LlmCall.execution_step_key == execution_step_key,
             )
@@ -463,7 +462,7 @@ class SceneRunCheckpointService:
             calls = self.session.execute(
                 select(LlmCall)
                 .where(
-                    LlmCall.scene_id == effective_scene_id,
+                    LlmCall.scene_id == scene_id,
                     LlmCall.execution_id == execution_id,
                     LlmCall.execution_step_key == execution_step_key,
                 )

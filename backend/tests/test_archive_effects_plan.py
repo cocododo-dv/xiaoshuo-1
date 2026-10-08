@@ -3,9 +3,9 @@
 - 晋升（成稿中心；带作者稿的采纳也走它）重建章汇总之后，卷汇总也跟着做；
 - 不带作者稿的两种采纳（已归档的重放、流水线稿）既不重建章汇总，也不做卷汇总（章级读者读时现拼）。
 
-流水线那一边（章末那一场的归档第 8 / 9 步）由 ``test_scene_run_checkpoint_archive.py`` 的
-``test_chapter_last_sub9_volume_boundary_crash_reuses_same_summary`` 与
-``test_chapter_last_volume_rolls_up_the_stored_aggregate_when_stage_8_cannot_rebuild_it``（第 8 步拼不出章汇总，第 9 步
+流水线那一边（章末那一场的归档第 4 步里的章汇总 / 卷汇总）由 ``test_scene_run_checkpoint_archive.py`` 的
+``test_chapter_last_volume_boundary_resume_reuses_the_same_summary`` 与
+``test_chapter_last_volume_rolls_up_the_stored_aggregate_when_the_chapter_cannot_rebuild_it``（拼不出章汇总，卷汇总
 照样卷存着的那份）钉住；晋升这一次章汇总没重建成、卷汇总记 ``skipped`` 的那一条在 ``test_chapter_aggregate_derive_on_read.py``。
 """
 
@@ -227,7 +227,7 @@ def test_adopt_replay_of_an_archived_scene_rebuilds_neither_aggregate(client, se
 
 def test_adopt_of_a_pipeline_draft_rebuilds_neither_aggregate(client, session) -> None:
     """不带作者稿、采纳流水线停下的稿子（章末场、卷边界上）：归档了，但不重建章汇总、不做卷汇总——不照搬流水线
-    「章末那一场做第 8 / 9 步」的规则。"""
+    「章末那一场重建章汇总、卷汇总」的规则。"""
     _seed_volume_boundary_chapters(session)
     draft_row_id = f"draft_style_{SCENE_ID}_v1"
     session.add(

@@ -1,14 +1,13 @@
 """Archive-time side-effect recorders extracted from the scene orchestrator.
 
-This module owns the post-approval archival effect cluster: narrative event
-recording (prose-grounded candidates only — the plan-based rule events were never
-read and are no longer written, B11-02) and the archive-time slot for the style
-fidelity reading (风格参考 v3: the old style-drift steering was removed; the slot
-keeps its checkpoint step key so persisted checkpoints still resume). The
-archive-time vector index of the final text was retired with the similar-scene
-prompt section ([批准#1], 重评 R1); its checkpoint slot records a ``retired`` product. The methods here were moved from
-``Orchestrator`` — checkpoint step keys, event payload fields, and every
-product/degraded return value are unchanged.
+Two recorders live here: the opt-in prose event extraction (archive step 5,
+``archive:prose_event_extract:0`` — prose-grounded candidates only, staged for
+the author's canon review) and the archive-time style fidelity reading (风格参考
+v3; every archive path records it through ``Archiver.archive_final_scene``, the
+pipeline inside its atomic archive step 4). The plan-based rule events (never
+read, B11-02), the retired vector index ([批准#1]) and the old style-drift
+steering are gone, and so are their checkpoint slots (checkpoint format 4,
+G4 B3-1a.2).
 
 Dispatch contract: cluster-internal cross-calls go through ``self._dispatch``
 (the hosting ``Orchestrator`` when constructed by its delegates, else ``self``).
@@ -23,7 +22,6 @@ caching one across runs.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -33,18 +31,12 @@ from novel_system.db.models import (
     SceneCard,
     SceneDraft,
 )
-from novel_system.services.llm_accounting import (
-    LLMAccountingError,
-    LLMCallContext,
-    is_llm_control_plane_failure,
-)
+from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.hash_engine import sha256_json_plain, sha256_text
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
-
-_LOGGER = logging.getLogger(__name__)
 
 
 class SceneArchiveEffects:
@@ -72,50 +64,6 @@ class SceneArchiveEffects:
     @staticmethod
     def _json_hash(payload: Any) -> str:
         return sha256_json_plain(payload)
-
-    def _record_narrative_events(
-        self,
-        scene: SceneCard,
-        contract,
-        content: str,
-        *,
-        include_prose: bool = True,
-        degrade_errors: bool = True,
-        final_scene_row_id: str | None = None,
-    ) -> list[str]:
-        """归档时往叙事事件账本里记的东西。
-
-        以前先按场景卡的「计划」记一批规则事件（出场、位置、出口变化、揭示、关系转折），记成 ``planned``；可运行时
-        重放只认 ``accepted``，也没有任何代码把它们升级——每次归档都写、从来没人读（B11-02）。现在不再写：归档第 5 步
-        （``archive:rule_events:0``）照旧产出一份空的 ``rule_events`` 产品，写过规则事件的旧检查点照样按原样校验、续跑。
-        ``include_prose`` 时只剩正文抽取（同样是暂存、等作者在正史核对里决定）。
-        """
-        if not include_prose:
-            return []
-        try:
-            from novel_system.services.narrative_event_log import NarrativeEventLog
-
-            _result, event_ids = self._dispatch._record_prose_events(
-                NarrativeEventLog(self.session),
-                scene,
-                self._dispatch._archive_event_base(scene, contract),
-                content,
-                final_scene_row_id=final_scene_row_id,
-                return_event_ids=True,
-            )
-            self.session.flush()
-            return list(event_ids)
-        except Exception as exc:
-            if is_llm_control_plane_failure(exc) or isinstance(exc, LLMAccountingError):
-                raise
-            if not degrade_errors:
-                raise
-            _LOGGER.warning(
-                "narrative event recording degraded for scene %s",
-                scene.scene_id,
-                exc_info=True,
-            )
-            return []
 
     def _resolve_scene_project_id(self, scene: SceneCard, contract=None) -> str:
         """Resolve project ownership exclusively from relational authority."""
@@ -224,11 +172,6 @@ class SceneArchiveEffects:
             },
         )
         return (result, event_ids) if return_event_ids else result
-
-    # 归档检查点 ``archive:style_drift:0``（sub 11，产品 kind ``style_drift``）这个槽位留着：已持久化的检查点
-    # 按它续跑，校验器接受 {"recorded", "not_applicable", "no_op", "observed", "degraded"}。风格参考 v3 起槽位里记的是
-    # 「像不像」读数（``outcome="recorded"`` + ``reading_id``），而不再是漂移驾驶（旧写端对作者自己的书 95–98% 报警，
-    # 还会改下一场的选窗、关轮换）。
 
     def _record_archive_fidelity_reading(
         self,
