@@ -77,7 +77,7 @@ vi.mock("./ws-ai-providers.jsx", () => ({
   WsAiProviders: { refresh: vi.fn(() => Promise.resolve()) },
   useAiProviders: () => ({
     loaded: true, loading: false, error: null,
-    overview: { readiness: { ready: fx.aiReady }, api_snapshot: { enabled: true } },
+    overview: { readiness: { ready: fx.aiReady } },
   }),
 }));
 
