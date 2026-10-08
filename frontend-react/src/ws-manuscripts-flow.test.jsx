@@ -8,7 +8,6 @@ const flow = vi.hoisted(() => ({
   refresh: vi.fn().mockResolvedValue({}),
   body: vi.fn(() => null),
   snapshot: vi.fn(),
-  setReviewState: vi.fn().mockResolvedValue({}),
   approveFinal: vi.fn().mockResolvedValue({ approved_chapter_id: "c1" }),
   reopenFinal: vi.fn().mockResolvedValue({ reopened_chapter_id: "c1" }),
   decideCanonCandidate: vi.fn().mockResolvedValue({}),
@@ -37,7 +36,6 @@ vi.mock("./ws-works.jsx", () => ({
     retry: worksRefresh,
   },
 }));
-vi.mock("./ws-review-store.js", () => ({ rvPush: vi.fn() }));
 /* 诊断计数与诊断页签：这里只验成稿中心把它们接在哪儿；面板本身在 ws-manuscripts-diagnosis.test.jsx */
 const diagFx = vi.hoisted(() => ({ chapters: {}, scenes: {} }));
 vi.mock("./ws-diagnosis-summary.jsx", () => ({
@@ -68,11 +66,10 @@ vi.mock("./ws-manuscripts-store.jsx", () => ({
   manuscriptChapterEligible: () => true,
   manuscriptDisplayState: (state) => state,
 }));
-/* 批准 / 重新打开 / 退回对话框走 WsDialog，挂在 document.body 上：对话框相关的查询用 document */
+/* 批准 / 重新打开对话框走 WsDialog，挂在 document.body 上：对话框相关的查询用 document */
 const dialog = () => document.querySelector('[role="dialog"]');
 
 import { WsManuscripts } from "./ws-manuscripts.jsx";
-import { rvPush } from "./ws-review-store.js";
 const mounted = [];
 
 function chapter(state) {
@@ -118,6 +115,9 @@ async function renderPage(state, go = vi.fn(), { strict = false } = {}) {
   return host;
 }
 
+const chapterRowOf = (host, backendId) => [...host.querySelectorAll('[data-testid="manuscript-chapter-item"]')]
+  .find((node) => node.getAttribute("data-chapter-id") === backendId);
+
 async function click(node) {
   await act(async () => node.click());
   await act(async () => Promise.resolve());
@@ -140,7 +140,6 @@ beforeEach(() => {
   flow.refresh.mockResolvedValue({});
   flow.body.mockReturnValue(COMPLETE_BODY);
   flow.snapshot.mockReturnValue(readySnapshot());
-  flow.setReviewState.mockResolvedValue({});
   flow.approveFinal.mockResolvedValue({ approved_chapter_id: "c1" });
   flow.reopenFinal.mockResolvedValue({ reopened_chapter_id: "c1" });
   flow.decideCanonCandidate.mockResolvedValue({});
@@ -177,6 +176,8 @@ describe("成稿中心权威章节流", () => {
 
     await click(check);
     expect(confirm.disabled).toBe(false);
+    // 正史都核对过：对话框里没有「正史未核对」那一句
+    expect(document.querySelector('[data-testid="approve-canon-pending"]')).toBeNull();
     await click(confirm);
 
     expect(flow.approveFinal).toHaveBeenCalledTimes(1);
@@ -202,14 +203,33 @@ describe("成稿中心权威章节流", () => {
     expect(worksRefresh).toHaveBeenCalledWith("projects");
   });
 
-  it("送入审阅等待服务端目录 PATCH 成功后再刷新权威目录", async () => {
+  it("正文齐了、还没批准的章：页脚直接给「批准为终稿」，不再先「送入审阅」，也没有「退回小修」（2026-10）", async () => {
     const host = await renderPage("draft");
-    const button = [...host.querySelectorAll("button")].find((node) => node.textContent.includes("送入审阅"));
-    await click(button);
+    const foot = host.querySelector(".ms-reader-foot");
+    expect(foot.textContent).not.toContain("送入审阅");
+    expect(foot.textContent).not.toContain("退回小修");
+    expect(host.querySelector(".ms-foot-note").textContent).toContain("通读无误后批准为终稿");
+    const open = host.querySelector('[data-testid="approve-final-open"]');
+    expect(open.disabled).toBe(false);
+    await click(open);
+    await click(document.querySelector('[data-testid="approve-read-confirm"]'));
+    await click(document.querySelector('[data-testid="approve-final-confirm"]'));
 
-    expect(flow.setReviewState).toHaveBeenCalledWith("p1", "c1", "review");
+    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", { readNote: "", revisionNotes: "" });
     expect(catalogRefresh).toHaveBeenCalledWith("p1");
-    expect(host.textContent).toContain("状态已由服务端确认");
+    expect(host.querySelector(".ms-status").textContent).toContain("终稿已由服务端批准并锁定");
+  });
+
+  it("目录里各场都有终稿、还没批准的章自己就列在「等你批准」下（目录状态还停在规划中也一样），默认选中它", async () => {
+    const written = { ...chapter("planned"), scenes: [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "done", work: { hasFinal: true } }] };
+    const other = { ...chapter("planned"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false, words: { cur: 900, target: 4000 },
+      scenes: [{ sid: "ch02s1", backendId: "s21", title: "雾", state: "writing", work: { hasFinal: false } }] };
+    const host = await renderPage([other, written]);
+    const groups = [...host.querySelectorAll(".ms-list-group")].map((g) => g.querySelector(".ms-list-grouphd span").textContent);
+    expect(groups).toEqual(["等你批准", "写作中"]);
+    expect(host.querySelector(".ms-reader-title").textContent).toBe("盐场的早班");
+    expect(host.querySelector('[data-testid="manuscripts-head"]').textContent).toContain("1 章等你批准");
+    expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(false);
   });
 
   it("服务端正文失败时显示错误与重试，潮汐演示章也不回退示例正文", async () => {
@@ -278,7 +298,12 @@ describe("成稿中心权威章节流", () => {
 
     await click(host.querySelector('[data-testid="manuscript-canon-tab"]'));
     expect(host.textContent).toContain("他的右臂已经折断");
-    expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(true);
+    // 正史核对可选（2026-10 起不拦定稿）：还有候选没裁决，批准照样能点；页签里说清没核对的场不进后续的事实记忆
+    expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(false);
+    const panel = host.querySelector('[data-testid="manuscript-canon-panel"]');
+    expect(panel.textContent).toContain("本章还有场的事实没核对（可选）");
+    expect(panel.textContent).toContain("未核对的场不进入后续章节的事实记忆");
+    expect(panel.textContent).not.toContain("落槌");
 
     await click(host.querySelector('[data-testid="canon-candidate-accept"]'));
     expect(flow.decideCanonCandidate).toHaveBeenCalledWith("p1", "c1", "fc1", {
@@ -286,6 +311,59 @@ describe("成稿中心权威章节流", () => {
       selected_entity_id: null,
       expected_final_scene_row_id: "final_s1_v1",
     });
+  });
+
+  it("按章依次定稿：写齐了但不是当前章的章照样列在「等你批准」，却不默认选中；「批准为终稿」不可点，页脚说先批哪一章", async () => {
+    const current = { ...chapter("planned"), current: true, scenes: [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "writing", work: { hasFinal: false } }] };
+    const later = { ...chapter("planned"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false,
+      scenes: [{ sid: "ch02s1", backendId: "s21", title: "雾", state: "done", work: { hasFinal: true } }] };
+    const host = await renderPage([current, later]);
+    expect(host.querySelector(".ms-reader-title").textContent).toBe("盐场的早班");          // 默认选当前章，不是写齐了的后一章
+
+    await click(chapterRowOf(host, "c2"));
+    expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
+    expect(host.querySelector(".ms-reader-sub").textContent).toContain("等你批准");
+    const open = host.querySelector('[data-testid="approve-final-open"]');
+    expect(open.disabled).toBe(true);
+    expect(open.getAttribute("title")).toBe("按章依次定稿：先批准第 1 章。");
+    expect(host.querySelector(".ms-foot-note").textContent).toContain("按章依次定稿：先批准第 1 章。");
+    await click(open);
+    expect(dialog()).toBeNull();
+    expect(flow.approveFinal).not.toHaveBeenCalled();
+  });
+
+  it("正史还没核对的章：页脚不指去「核对正史」，批准照样能点；批准对话框只提一句未核对的场数，不拦", async () => {
+    const pending = {
+      ...COMPLETE_BODY,
+      canonContinuity: {
+        ...COMPLETE_BODY.canonContinuity,
+        complete: false, synced_scene_count: 0, pending_scene_ids: ["s1"],
+        scenes: [{ ...COMPLETE_BODY.canonContinuity.scenes[0], status: "pending_extraction", complete: false }],
+      },
+    };
+    flow.snapshot.mockReturnValue(readySnapshot(pending));
+    const host = await renderPage("review");
+    const foot = host.querySelector(".ms-reader-foot");
+    expect(foot.textContent).not.toContain("正史");
+    const open = host.querySelector('[data-testid="approve-final-open"]');
+    expect(open.disabled).toBe(false);
+    expect(open.getAttribute("title")).toBeNull();
+
+    await click(open);
+    expect(document.querySelector('[data-testid="approve-canon-pending"]').textContent)
+      .toBe("1 场正史未核对，不影响定稿（未核对的场不进入后续章节的事实记忆）。");
+    await click(document.querySelector('[data-testid="approve-read-confirm"]'));
+    await click(document.querySelector('[data-testid="approve-final-confirm"]'));
+    expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", { readNote: "", revisionNotes: "" });
+  });
+
+  it("已定稿、正史没核对的章：导出本章照样能点，页脚说的是终稿锁定，不是正史", async () => {
+    const pending = { ...COMPLETE_BODY, canonContinuity: { ...COMPLETE_BODY.canonContinuity, complete: false, pending_scene_ids: ["s1"] } };
+    flow.snapshot.mockReturnValue(readySnapshot(pending));
+    const host = await renderPage("approved");
+    expect(host.querySelector('[data-testid="chapter-export"]').disabled).toBe(false);
+    expect(host.querySelector(".ms-foot-note").textContent).toContain("终稿已锁定");
+    expect(host.querySelector(".ms-reader-foot").textContent).not.toContain("正史");
   });
 
   it("本章导出会二次核验，服务端失败后显示失败且不下载", async () => {
@@ -531,6 +609,56 @@ describe("成稿中心 · 阶段、下一步与空态", () => {
     expect(pop.textContent).not.toContain("该范围内没有章节");
   });
 
+  it("统一导出：没写齐的章也能导出——范围说明讲几章缺几场（不是错误），文件里缺的场留一行占位", async () => {
+    flow.snapshot.mockReturnValue(readySnapshot(PARTIAL));
+    const blobs = [];
+    const hadCreate = URL.createObjectURL;
+    const hadRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((blob) => { blobs.push(blob); return "blob:manuscript"; });
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      const host = await renderPage([planned()]);
+      await click(host.querySelector(".ms-export-btn"));
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      const pop = host.querySelector(".ms-export-pop");
+      const run = pop.querySelector('[data-testid="manuscript-export-run"]');
+      expect(run.disabled).toBe(false);
+      expect(pop.querySelector(".ms-export-status").classList.contains("is-error")).toBe(false);
+      expect(pop.querySelector('[role="alert"]')).toBeNull();
+      expect(pop.querySelector('[data-testid="manuscript-export-note"]').textContent)
+        .toBe("其中 1 章还不完整（缺 1 场），文件里每个缺的场留一行「（本场还没有终稿）」。");
+
+      await click(run);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(blobs).toHaveLength(1);
+      // jsdom 的 Blob 没有 text()：用 FileReader 读回导出的 Markdown
+      const md = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = reject;
+        reader.readAsText(blobs[0]);
+      });
+      expect(md).toContain("### 01 · 交班\n\n第一场的正文。");
+      expect(md).toContain("### 02 · 夜渡\n\n（本场还没有终稿）");
+    } finally {
+      URL.createObjectURL = hadCreate;
+      URL.revokeObjectURL = hadRevoke;
+    }
+  });
+
+  it("统一导出：范围里一个字的终稿都没有才拒绝，说的是没有终稿正文，不是「缺场景正文」", async () => {
+    const empty = { completion: "empty", missingSceneIds: ["s1", "s2"], canonContinuity: null, scenes: [] };
+    flow.snapshot.mockReturnValue(readySnapshot(empty));
+    const host = await renderPage([planned()]);
+    await click(host.querySelector(".ms-export-btn"));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const pop = host.querySelector(".ms-export-pop");
+    expect(pop.querySelector('[data-testid="manuscript-export-run"]').disabled).toBe(true);
+    expect(pop.querySelector(".ms-export-status").textContent).toBe("该范围内还没有终稿正文。");
+    expect(pop.querySelector('[data-testid="manuscript-export-note"]')).toBeNull();
+  });
+
   it("统一导出：打开时焦点进面板（读屏报出对话框名）；焦点离开这一块就收起，只是掉到空处不收", async () => {
     const host = await renderPage("review");
     const btn = host.querySelector(".ms-export-btn");
@@ -657,14 +785,15 @@ describe("成稿中心 · 拆分后的页头、状态行与对话框", () => {
   it("换一章时，上一章的提示不跟过来", async () => {
     const other = { ...chapter("draft"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" };
     const host = await renderPage([chapter("draft"), other]);
-    const submit = [...host.querySelectorAll("button")].find((node) => node.textContent.includes("送入审阅"));
-    await click(submit);
-    expect(host.textContent).toContain("状态已由服务端确认");
+    await click(host.querySelector('[data-testid="approve-final-open"]'));
+    await click(document.querySelector('[data-testid="approve-read-confirm"]'));
+    await click(document.querySelector('[data-testid="approve-final-confirm"]'));
+    expect(host.textContent).toContain("终稿已由服务端批准并锁定");
 
     const row = [...host.querySelectorAll('[data-testid="manuscript-chapter-item"]')].find((node) => node.getAttribute("data-chapter-id") === "c2");
     await click(row);
     expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
-    expect(host.textContent).not.toContain("状态已由服务端确认");
+    expect(host.textContent).not.toContain("终稿已由服务端批准并锁定");
   });
 
   it("批准对话框按 Esc 关闭；服务端处理中 Esc 关不掉", async () => {
@@ -713,52 +842,12 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
     expect(document.activeElement).toBe(opener);
   });
 
-  it("开发模式下退回对话框的焦点落在理由框上；定位到场是方向键可切换的单选，只有选中的一场占 Tab 位", async () => {
-    const ch = chapter("review");
-    ch.scenes = [...ch.scenes, { sid: "ch01s2", backendId: "s2", title: "夜渡", state: "done" }];
-    const go = vi.fn();
-    const host = await renderPage([ch], go, { strict: true });
-    const opener = button(host.querySelector(".ms-reader-foot"), "退回小修");
-    opener.focus();
-    await click(opener);
-    await flushFocus();
-    const area = dialog().querySelector("textarea");
-    expect(document.activeElement).toBe(area);
-
-    const group = dialog().querySelector('[role="radiogroup"][aria-label="定位到场"]');
-    const radios = [...group.querySelectorAll('[role="radio"]')];
-    expect(radios.map((r) => r.tabIndex)).toEqual([0, -1]);
-    await act(async () => { radios[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
-    expect(radios[1].getAttribute("aria-checked")).toBe("true");
-    expect(radios.map((r) => r.tabIndex)).toEqual([-1, 0]);
-    expect(document.activeElement).toBe(radios[1]);
-
-    await typeTextarea(area, "第二场的交代太满");
-    await click(button(dialog(), "退回并生成待办"));
-    expect(rvPush).toHaveBeenCalledWith(expect.objectContaining({
-      title: "退回小修：第 1 章 · 盐场的早班",
-      where: "第 1 章 · 夜渡",
-    }));
-    expect(rvPush.mock.calls[0][0].actions[0].scene).toBe("ch01s2");
-    // 「直达深改」默认勾着：带着深改姿态进写作台，落在定位的那一场
-    expect(go).toHaveBeenLastCalledWith("writer", [
-      { type: "ws:writer-scene", detail: "ch01s2" },
-      { type: "ws:writer-posture", detail: "deep" },
-    ]);
-  });
-
-  it("章名是占位的「第 1 章」时，进度条提示与退回待办的标题都不写两遍", async () => {
+  it("章名是占位的「第 1 章」时，进度条提示与批准对话框的标题都不写两遍", async () => {
     const host = await renderPage([{ ...chapter("review"), title: "第 1 章" }]);
-    expect(host.querySelector(".ms-progress-cell").getAttribute("title")).toBe("第 1 章：审阅中");
+    expect(host.querySelector(".ms-progress-cell").getAttribute("title")).toBe("第 1 章：等你批准");
 
-    await click(button(host.querySelector(".ms-reader-foot"), "退回小修"));
-    await typeTextarea(dialog().querySelector("textarea"), "开头交代太多");
-    await click(button(dialog(), "退回并生成待办"));
-    expect(rvPush).toHaveBeenCalledWith(expect.objectContaining({
-      title: "退回小修：第 1 章",
-      where: "第 1 章 · 交班",
-      detail: "开头交代太多",
-    }));
+    await click(host.querySelector('[data-testid="approve-final-open"]'));
+    expect(dialog().querySelector(".ws-dialog-title").textContent).toBe("批准终稿：第 1 章");
   });
 
   it("导出本章用完整章名：文件名（也是文件里的一级标题）不截成「…」", async () => {
@@ -782,42 +871,52 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
     }
   });
 
-  it("送审在途时换章：结果不报到新章头上；回到原章时按钮仍在忙，结果落回原章", async () => {
-    const other = { ...chapter("draft"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" };
-    const host = await renderPage([chapter("draft"), other]);
-    let resolveSubmit;
-    flow.setReviewState.mockReturnValueOnce(new Promise((resolve) => { resolveSubmit = resolve; }));
-    const submitButton = () => button(host.querySelector(".ms-reader-foot"), "送入审阅");
+  it("导出本章在途时换章：结果不报到新章头上；回到原章时按钮仍在忙，结果落回原章", async () => {
+    const other = { ...chapter("approved"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" };
+    const host = await renderPage([chapter("approved"), other]);
+    const hadCreate = URL.createObjectURL;
+    const hadRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:manuscript");
+    URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    try {
+      let resolveRefresh;
+      flow.refresh.mockReturnValueOnce(new Promise((resolve) => { resolveRefresh = resolve; }));
+      const exportButton = () => host.querySelector('[data-testid="chapter-export"]');
 
-    await click(submitButton());
-    expect(flow.setReviewState).toHaveBeenCalledWith("p1", "c1", "review");
-    expect(submitButton().disabled).toBe(true);
+      await click(exportButton());
+      expect(exportButton().disabled).toBe(true);
 
-    await click(chapterRow(host, "c2"));
-    expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
-    expect(submitButton().disabled).toBe(false);
-    await click(chapterRow(host, "c1"));
-    expect(submitButton().disabled).toBe(true);
-    await click(chapterRow(host, "c2"));
+      await click(chapterRow(host, "c2"));
+      expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
+      expect(exportButton().disabled).toBe(false);
+      await click(chapterRow(host, "c1"));
+      expect(exportButton().disabled).toBe(true);
+      await click(chapterRow(host, "c2"));
 
-    await act(async () => { resolveSubmit({}); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
-    expect(host.textContent).not.toContain("状态已由服务端确认");
+      await act(async () => { resolveRefresh({}); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+      expect(host.textContent).not.toContain("本章已导出");
 
-    await click(chapterRow(host, "c1"));
-    expect(submitButton().disabled).toBe(false);
-    expect(host.querySelector(".ms-status").textContent).toContain("状态已由服务端确认");
+      await click(chapterRow(host, "c1"));
+      expect(exportButton().disabled).toBe(false);
+      expect(host.querySelector(".ms-status").textContent).toContain("本章已导出");
+    } finally {
+      URL.createObjectURL = hadCreate;
+      URL.revokeObjectURL = hadRevoke;
+    }
   });
 
-  it("停在「对比」上退回小修：本章没有对比了就回到正文，不留一个没有选中项的分段", async () => {
-    const host = await renderPage("review");
+  it("停在「对比」上重新打开：本章没有对比了就回到正文，不留一个没有选中项的分段", async () => {
+    const host = await renderPage("approved");
     const checked = () => host.querySelector('.ms-reader-tools [role="radio"][aria-checked="true"]');
     await click(button(host.querySelector(".ms-reader-tools"), "对比"));
     expect(checked().textContent).toBe("对比");
 
+    // 重新打开之后服务端把章设成草稿；这一场在目录里也没有终稿了 → 不再「等你批准」，也就没有对比
     catalogRefresh.mockImplementationOnce(async () => { fixture.catalog = [chapter("draft")]; return {}; });
-    await click(button(host.querySelector(".ms-reader-foot"), "退回小修"));
-    await typeTextarea(dialog().querySelector("textarea"), "第二段节奏太慢");
-    await click(button(dialog(), "退回并生成待办"));
+    await click(host.querySelector('[data-testid="reopen-final-open"]'));
+    await typeTextarea(document.querySelector('textarea[placeholder*="打破终稿锁"]'), "第二段节奏太慢");
+    await click(document.querySelector('[data-testid="reopen-final-confirm"]'));
 
     expect(button(host.querySelector(".ms-reader-tools"), "对比")).toBeUndefined();
     expect(checked() && checked().textContent).toBe("正文");

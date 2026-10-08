@@ -157,10 +157,10 @@ describe("全书体检 · 只报读得出来的事实", () => {
 });
 
 describe("章的显示状态、章节体检与卷带", () => {
-  it("章的阶段与主页、成稿中心同一条规则：审阅 / 定稿 / 退回小修的草稿照流程；目录说写作中、有字、有一场在写或写完 = 写作中", () => {
+  it("章的阶段与主页、成稿中心同一条规则：定稿、以前送审的章、重新打开后的草稿照流程；目录说写作中、有字、有一场在写或写完 = 写作中", () => {
     expect(chapterStage(chapter("a", { state: "approved" }))).toBe("approved");
     expect(chapterStage(chapter("b", { state: "review" }))).toBe("review");
-    // 成稿中心「退回小修」把章设成 draft：章节编排以前读成写作中 / 规划中
+    // 重新打开终稿把章设成 draft（以前成稿中心的「退回小修」也是）：章节编排以前读成写作中 / 规划中
     expect(chapterStage(chapter("c", { state: "draft", words: { cur: 900, target: 0 }, scenes: [scene("s1", { state: "done" })] }))).toBe("draft");
     // 目录说写作中、还没有字：以前章节编排读成规划中，主页 / 成稿中心读成写作中
     expect(chapterStage(chapter("d", { state: "writing", scenes: [scene("s2")] }))).toBe("writing");
@@ -184,12 +184,12 @@ describe("章的显示状态、章节体检与卷带", () => {
     ].map(chapterStarted)).toEqual([true, true, true, true, false, false]);
   });
 
-  it("序列栏的数按同一条阶段规则：审阅中 / 草稿有章时单独成一项，不再记在「写作中」名下", () => {
+  it("序列栏的数按同一条阶段规则：等你批准 / 草稿有章时单独成一项，不再记在「写作中」名下", () => {
     const tally = arrRailTally([
       chapter("a", { state: "review" }), chapter("b", { state: "review" }), chapter("c", { state: "review" }),
       chapter("d", { state: "draft" }), chapter("e", { state: "planned" }),
     ]);
-    expect(tally.map((t) => [t.label, t.n])).toEqual([["已定稿", 0], ["审阅中", 3], ["草稿", 1], ["写作中", 0], ["规划中", 1]]);
+    expect(tally.map((t) => [t.label, t.n])).toEqual([["已定稿", 0], ["等你批准", 3], ["草稿", 1], ["写作中", 0], ["规划中", 1]]);
   });
 
   it("章节体检：只报读得出来的事实，与构思同步只对有构思分章的书出现", () => {

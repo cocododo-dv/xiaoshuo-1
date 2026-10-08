@@ -4,10 +4,10 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
 /* ==========================================================
    ws-manuscripts-compile — 成稿中心的纯函数
    ----------------------------------------------------------
-   · 服务端权威稿的判定（能不能送审 / 批准 / 导出，卡在哪一步）；
+   · 服务端权威稿的判定（正文齐没齐、能不能批准，卡在哪一步）；正史核对不在其中（可选，不拦批准与导出）；
    · 目录章 + 服务端聚合快照 → 阅读器用的逐场正文；
    · 目录 → 左栏的章行、分组与整书进度格；
-   · 导出：把一个范围内的章编译成 Markdown / 纯文本 / Word 兼容 HTML。
+   · 导出：把一个范围内的章编译成 Markdown / 纯文本 / Word 兼容 HTML（没写齐的章照样导出，缺的场留一行占位）。
    快照一律由调用方传入（通常是 WsManuStore.snapshot 的结果），这里不读 store、
    不碰 DOM、不写 window——所以能直接单测。
    ========================================================== */
@@ -15,7 +15,8 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
 /* 没有后端 id / 还没拉过的章：没有正文可言（工作流与导出都用这一份） */
 export const MANU_IDLE_SNAPSHOT = Object.freeze({ status: "idle", body: null, error: null });
 
-/* 服务端说这一章可以流转：聚合完整、没有缺场、正史核验完成。 */
+/* 服务端说这一章的正文齐了、可以批准：聚合完整、没有缺场。
+   正史核对不在其中（2026-10 起）：没核对的场照样能批准、导出，只是不进入后续章节的事实记忆。 */
 export function manuCanonicalComplete(snapshot) {
   const body = snapshot && snapshot.body;
   return !!(
@@ -23,31 +24,32 @@ export function manuCanonicalComplete(snapshot) {
     && body.completion === "complete"
     && Array.isArray(body.missingSceneIds)
     && body.missingSceneIds.length === 0
-    && body.canonContinuity
-    && body.canonContinuity.complete === true
   );
 }
 
-/* 还不能流转时，一句话说清卡在哪。 */
+/* 还不能批准时，一句话说清卡在哪。 */
 export function manuCanonicalBlockReason(snapshot) {
   if (!snapshot || snapshot.status === "idle") return "正在等待服务端正文核验。";
   if (snapshot.status === "loading") return "正在从服务端加载权威正文。";
   if (snapshot.status === "error") return (snapshot.error && snapshot.error.message) || "服务端正文加载失败，请重试。";
   const missing = (snapshot.body && snapshot.body.missingSceneIds) || [];
   if (missing.length) return `服务端仍缺 ${missing.length} 场归档正文。`;
-  const canon = snapshot.body && snapshot.body.canonContinuity;
-  if (!canon) return "服务端尚未返回本章正史核验状态。";
-  if ((canon.missing_final_scene_ids || []).length) return `仍有 ${canon.missing_final_scene_ids.length} 场缺少终稿，无法核验正史。`;
-  if ((canon.pending_scene_ids || []).length) return `仍有 ${canon.pending_scene_ids.length} 场正史待核对。`;
-  if (Number(canon.pending_candidate_count || 0) > 0) return `仍有 ${canon.pending_candidate_count} 条事实候选待裁决。`;
   return "服务端尚未将本章标记为可流转稿。";
 }
 
-/* 各场都已归档（缺的只是正史核对）——页脚据此把下一步指向「去核对正史」而不是写作台。 */
-export function manuScenesArchived(snapshot) {
-  const body = snapshot && snapshot.body;
-  return !!(snapshot && snapshot.status === "ready" && body
-    && (body.missingSceneIds || []).length === 0 && body.completion === "complete");
+/* 按章依次定稿：只有项目的当前章（目录的 current = 后端 project.current_chapter_id）能批准，别的章服务端一律 409
+   PROJECT_CHAPTER_NOT_CURRENT。轮到这一章就是空串；没轮到就说先批哪一章——写齐了的后一章照样读作「等你批准」，
+   但「批准为终稿」不该邀请一次注定失败的批准。 */
+export function manuApprovalTurnReason(chapter, chapters) {
+  if (!chapter || chapter.current) return "";
+  const current = (chapters || []).find((c) => c && c.current);
+  return current ? `按章依次定稿：先批准${chapterLabel(current, { withTitle: false })}。` : "按章依次定稿：这一章还没轮到。";
+}
+
+/* 有终稿、正史还没核对的场数——批准对话框里一句不拦的提示（服务端没给正史状态就是 0）。 */
+export function manuCanonPendingCount(snapshot) {
+  const canon = snapshot && snapshot.status === "ready" && snapshot.body && snapshot.body.canonContinuity;
+  return canon && Array.isArray(canon.pending_scene_ids) ? canon.pending_scene_ids.length : 0;
 }
 
 /* 成稿中心看的戏剧卡四格（键与叫法同 labels/catalog.js 的 DRAMA_FIELDS：结构页签的概要卡、导出的附录都按这个顺序） */
@@ -119,6 +121,7 @@ export function manuChapterRows(chapters, eligible) {
       n: c.n,
       title: c.title,
       stage: chapterStage(c),
+      current: !!c.current,
       words: (c.words && c.words.cur) || 0,
       scenes: scenes.length,
       sceneDone: scenes.filter((s) => s.state === "done").length,
@@ -141,10 +144,11 @@ export function manuListGroups(rows) {
     .filter((g) => g.items.length > 0);
 }
 
-/* 默认选中：等你批准的 → 写作中的 → 第一章。 */
+/* 默认选中：项目的当前章（按章依次定稿，只有它批得了）→ 等你批准的 → 写作中的 → 第一章。 */
 export function manuDefaultPick(rows) {
   const list = rows || [];
-  return list.find((c) => c.stage === "review") || list.find((c) => c.stage === "writing") || list[0] || null;
+  return list.find((c) => c.current && c.stage !== "approved") || list.find((c) => c.stage === "review")
+    || list.find((c) => c.stage === "writing") || list[0] || null;
 }
 
 /* 整书进度格：按目录全序（含还没进成稿中心的规划章），计划章数比目录多时补占位格。 */
@@ -154,24 +158,6 @@ export function manuProgressCells(chapters, planChapters) {
     cells.push({ id: `plan${i}`, n: String(i + 1), title: "", stage: "planned", plan: true });
   }
   return cells;
-}
-
-/* 退回小修的待办：理由 + 定位到哪一场 + 直达深改的动作（rvPush 的载荷）。picked 是成稿中心的章行。 */
-export function manuReturnTodo(picked, { reason, sid, sceneTitle } = {}) {
-  const head = chapterLabel(picked, { withTitle: false });
-  return {
-    kind: "qc", priority: 1,
-    // 「退回小修：第 3 章 · 盐场」；章名是占位的「第 3 章」时不写两遍
-    title: `退回小修：${chapterLabel(picked, { maxTitle: Infinity })}`,
-    where: `${head}${sceneTitle ? " · " + sceneTitle : ""}`,
-    source: "成稿中心",
-    detail: reason,
-    actions: [
-      { label: "直达深改 · 定位本场", intent: "primary", op: "nav", to: "writer", scene: sid, posture: "deep" },
-      { label: "查看本章", intent: "ghost", op: "nav", to: "manuscripts" },
-      { label: "标记完成", intent: "quiet", op: "resolve" },
-    ],
-  };
 }
 
 /* 先去写哪一场：服务端说缺的第一场，没有就目录里第一场没写完的。 */
@@ -185,7 +171,12 @@ export function manuFirstMissingScene(chapter, snapshot) {
 
 /* ---------- 导出 ---------- */
 
-/* 一个范围能不能导出；能就返回空串。snapshotOf(chapter) 给出该章的服务端快照。 */
+/* 导出文件里缺终稿的那一场留的一行：缺口写在明处，没写齐的章不会被当成写齐的一章 */
+export const MANU_MISSING_SCENE_LINE = "（本场还没有终稿）";
+
+/* 一个范围能不能导出；能就返回空串。snapshotOf(chapter) 给出该章的服务端快照。
+   没同步、读失败、还在读的章拦下（编译只认刚从服务端读到的终稿）；读到了就能导出，写没写齐、正史核没核都不管——
+   只有整个范围一个字的终稿都没有才拒绝。缺几场由 manuScopeNote 另说一句（2026-10：以前要每章写齐、正史核完才肯导出）。 */
 export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   const selected = (chapters || []).filter((c) => scopeIds.includes(c.id));
   if (!selected.length) return "该范围内没有章节。";
@@ -196,9 +187,21 @@ export function manuScopeProblem(chapters, scopeIds, snapshotOf) {
   if (failed) return (failed.error && failed.error.message) || "服务端正文加载失败。";
   const pending = snapshots.filter((snapshot) => snapshot.status === "idle" || snapshot.status === "loading");
   if (pending.length) return `正在核验 ${pending.length} 章服务端正文…`;
-  const incomplete = snapshots.filter((snapshot) => !manuCanonicalComplete(snapshot));
-  if (incomplete.length) return `有 ${incomplete.length} 章仍缺场景正文，暂不能导出。`;
+  const anyText = selected.some((c, i) => { const body = manuBuildBody(c, snapshots[i]); return !!(body && body.live); });
+  if (!anyText) return "该范围内还没有终稿正文。";
   return "";
+}
+
+/* 能导出、但范围里有没写齐的章时的一句说明（不是错误）；都写齐了就是空串。 */
+export function manuScopeNote(chapters, scopeIds, snapshotOf) {
+  let short = 0;
+  let missing = 0;
+  (chapters || []).filter((c) => scopeIds.includes(c.id)).forEach((c) => {
+    const body = manuBuildBody(c, snapshotOf ? snapshotOf(c) : null);
+    const gaps = body ? body.scenes.filter((s) => s.missing).length : 0;
+    if (gaps) { short += 1; missing += gaps; }
+  });
+  return short ? `其中 ${short} 章还不完整（缺 ${missing} 场），文件里每个缺的场留一行「${MANU_MISSING_SCENE_LINE}」。` : "";
 }
 
 /* 导出里的章标题用完整章名（不截断）；和 labels 里的同名 chapterHeading（章号 / 章名两段）不是一回事，所以另起名字 */
@@ -232,7 +235,8 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
       if (body) {
         body.scenes.forEach((s) => {
           chunks.push(`### ${s.idx} · ${s.title}\n`);
-          s.paras.forEach((p) => chunks.push(p + "\n"));
+          if (s.missing) chunks.push(MANU_MISSING_SCENE_LINE + "\n");
+          else s.paras.forEach((p) => chunks.push(p + "\n"));
         });
       } else {
         chunks.push("（本章尚无正文）\n");
@@ -249,8 +253,16 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
     const chunks = [title + "\n"];
     bodies.forEach(({ c, body }) => {
       chunks.push(`\n\n${fullChapterTitle(c)}\n`);
-      if (body) body.scenes.forEach((s) => { chunks.push(""); s.paras.forEach((p) => chunks.push("    " + p)); });
-      else chunks.push("（本章尚无正文）");
+      // 段首缩进两个全角空格（中文排版的习惯；以前是四个半角空格）
+      if (body) {
+        body.scenes.forEach((s) => {
+          chunks.push("");
+          if (s.missing) chunks.push(MANU_MISSING_SCENE_LINE);
+          else s.paras.forEach((p) => chunks.push("\u3000\u3000" + p));
+        });
+      } else {
+        chunks.push("（本章尚无正文）");
+      }
     });
     return { name: `${title}.txt`, content: chunks.join("\n"), mime: "text/plain;charset=utf-8" };
   }
@@ -264,7 +276,8 @@ export function manuCompile(book, chapters, scopeIds, fmt, opts = {}) {
     html += `<h2>${esc(fullChapterTitle(c))}</h2>`;
     if (body) {
       body.scenes.forEach((s) => {
-        html += `<h3>${esc(s.idx)} · ${esc(s.title)}</h3>` + s.paras.map((p) => `<p>${esc(p)}</p>`).join("");
+        html += `<h3>${esc(s.idx)} · ${esc(s.title)}</h3>`
+          + (s.missing ? `<p>${esc(MANU_MISSING_SCENE_LINE)}</p>` : s.paras.map((p) => `<p>${esc(p)}</p>`).join(""));
       });
     } else {
       html += "<p>（本章尚无正文）</p>";

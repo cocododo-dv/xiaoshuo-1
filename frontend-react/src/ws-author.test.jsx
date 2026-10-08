@@ -849,7 +849,7 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(window.location.hash).not.toBe("#snowflake");   // 有外壳就不自己改 hash
   });
 
-  it("章的阶段与主页、成稿中心同一条规则：退回小修的章读作「草稿」、目录说写作中的章读作「写作中」；序列栏把审阅中 / 草稿单独数", async () => {
+  it("章的阶段与主页、成稿中心同一条规则：重新打开的章读作「草稿」、目录说写作中的章读作「写作中」；序列栏把等你批准 / 草稿单独数", async () => {
     catalogState.ready = true;
     catalogState.chapters = [
       chapter("ch01", "退回的章", { state: "draft", words: { cur: 900, target: 4000 }, scenes: [{ sid: "s1", backendId: "b1", title: "一", kind: "主动", state: "done", goal: "", obstacle: "", turn: "" }] }),
@@ -859,11 +859,11 @@ describe("章节编排 · 服务端目录真相", () => {
     ];
     await act(async () => root.render(<WsAuthor />));
     const states = [...host.querySelectorAll('[data-testid="arr-chapter-card"] .arr-card-state')].map((node) => node.textContent);
-    expect(states).toEqual(["草稿", "写作中", "审阅中", "审阅中"]);
+    expect(states).toEqual(["草稿", "写作中", "等你批准", "等你批准"]);
 
     await act(async () => click(host.querySelector(".arr-card-title")));
     const stat = [...host.querySelectorAll(".arr-rail-stat > span")].map((node) => node.textContent);
-    expect(stat).toEqual(["0 已定稿", "2 审阅中", "1 草稿", "1 写作中", "0 规划中"]);
+    expect(stat).toEqual(["0 已定稿", "2 等你批准", "1 草稿", "1 写作中", "0 规划中"]);
   });
 
   it("还没动笔的章（规划中 / 待写）在卡片上章名一样淡一档：卡片按阶段挂 s-*，样式表两种阶段都有", async () => {

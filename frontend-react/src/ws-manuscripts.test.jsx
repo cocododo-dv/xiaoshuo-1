@@ -202,15 +202,11 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     expect(reads()).toBe(5);
   });
 
-  it("送审与退回等待目录服务端确认，不做本地假流转", async () => {
+  it("没有「送审 / 退回」这一步了（2026-10）：store 不再改目录上的章状态，批准只走项目级 approve-final", async () => {
     const { mod, client } = await loadStore();
-
-    await mod.WsManuStore.setReviewState("p1", "c1", "review");
-    await mod.WsManuStore.setReviewState("p1", "c1", "draft");
-
-    expect(client.apiPatch).toHaveBeenNthCalledWith(1, "/api/v2/projects/p1/catalog/chapters/c1", { state: "review" });
-    expect(client.apiPatch).toHaveBeenNthCalledWith(2, "/api/v2/projects/p1/catalog/chapters/c1", { state: "draft" });
-    await expect(mod.WsManuStore.setReviewState("p1", "c1", "approved")).rejects.toThrow("审阅状态无效");
+    expect(mod.WsManuStore).not.toHaveProperty("setReviewState");
+    await mod.WsManuStore.refresh("c1");
+    expect(client.apiPatch).not.toHaveBeenCalled();
   });
 
   it("批准终稿：「已通读」随「确认定稿」一次提交，绑定读到的那一份正文的哈希（批准 #10）", async () => {

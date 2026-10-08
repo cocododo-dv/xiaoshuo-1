@@ -6,7 +6,6 @@ import { WrDocs } from "./wr-doc-store.jsx";
 import { sameManuscriptText } from "./wr-doc-cache.js";
 import { contentSafetyReviewFromError, exactCodesMatch } from "./wr-content-safety-review.jsx";
 import { copyGatePromoteMessage, finalGateNotes, isCopyGateError } from "./ws-copy-gate.js";
-import { wsConfirm } from "./ws-notify.jsx";
 import { WR_EMPTY_DOC, wrCountText, wrPrepareLoadedHTML, wrSerializeManuscript } from "./ws-writer-manuscript.js";
 import { wrSceneIsApproved } from "./ws-writer-catalog.js";
 import { useWrEvent } from "./ws-writer-hooks.js";
@@ -341,9 +340,6 @@ export function canonicalPromotionErrorMessage(error) {
   if (code === "AUTHOR_DRAFT_LOCK_PENDING") {
     return "本章锁定那一刻你写的几句还没保存到服务端（在「同步与恢复」里，路上那一次有了结果就会接着保存）；这次没有提升。等草稿保存成功后再点一次「提升为权威正文」。";
   }
-  if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
-    return "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
-  }
   if (code === "CHAPTER_APPROVED_LOCKED") {
     return "该章节已批准锁定，需要先明确重开章节，才能更新权威正文。";
   }
@@ -371,7 +367,6 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
   /* 提升没成之后权威正文的状态：作者自己接着写、草稿已往前走（MOVED_BY_SELF）或还没确认存上（UNSAVED / UNCONFIRMED）、
      换成了作者自己采纳的稿（ADOPTED）、编辑器被这一页自己这边换了一版（REPLACED）照 WrDocs 说，不是「提升失败」 */
   const failedCanonicalStatus = (sceneId, code) => {
-    if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") return "reconcile";
     return code === "AUTHOR_DRAFT_MOVED_BY_SELF" || code === "AUTHOR_DRAFT_UNSAVED" || code === "AUTHOR_DRAFT_LOCK_PENDING"
       || code === "AUTHOR_DRAFT_UNCONFIRMED" || code === "AUTHOR_DRAFT_ADOPTED" || code === "AUTHOR_DRAFT_REPLACED"
       ? canonicalStatusOf(sceneId)
@@ -405,21 +400,14 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
         return;
       }
     }
-    /* 两个明确的选项代替浏览器的「确定 / 取消」：作者回答的是「改了什么」，不是「要不要继续」。
-       问的是编辑器眼下这一稿：记下它，确认框开着时水合 / 后台复核落地、编辑器被换成了别处的版本，WrDocs 就不提升
-       （作者确认的不是那一稿；复核三 W1-R3A-1 · W1-R3B-5） */
+    /* 提升的是作者点下去时编辑器里的这一稿：记下它，WrDocs 等这一场落定的途中水合 / 后台复核落地、编辑器被换成了别处的版本，
+       就不提升（作者看的不是那一稿；复核三 W1-R3A-1 · W1-R3B-5）。
+       不再先问「这次只改了文字表达吗？」（2026-10）：WrDocs 一律按「事实待核对」提升，和 AI 起草台「采纳并归档」一样，
+       这一场的正史随之待核对（成稿中心「正史」页签，可选）。以前按「事实未变」提升，没核对过正史的场一定被服务端拒绝。 */
     const asked = shownHTML();
-    const confirmed = await wsConfirm({
-      title: "这次只改了文字表达吗？",
-      body: "提升为权威正文前请确认：人物、时间、地点、物品和剧情结果都没有变。改了故事事实的话先不要提升——系统不会静默沿用旧的叙事事件。",
-      confirmLabel: "只改了文字，提升",
-      cancelLabel: "改了事实，先不提升",
-    });
-    if (!confirmed) return;
-
     setCanonicalStatus("promoting");
     try {
-      const data = await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged", expectedText: asked });
+      const data = await WrDocs.promote(activeScene, { expectedText: asked });
       // 提升在路上时作者又存了一稿：提升的是较早的那个修订号，照 WrDocs 说「待更新」，不说「已更新」
       setCanonicalStatus(canonicalStatusOf(activeScene));
       notify(promotedMessage("草稿已提升为权威正文，场景记忆与章节汇总已随之重建。", data));
@@ -458,9 +446,8 @@ export function useCanonicalPromotion({ activeScene, doc, notify }) {
     setCanonicalStatus("promoting");
     const acceptedForRetry = [...new Set([...(review.acceptedCodes || []), ...exactCodes])];
     try {
-      // 逐项复核的还是作者当初确认「只改了文字」的那一稿：这期间编辑器被换成了别处的版本就不提升
+      // 逐项复核的还是作者当初点「提升」时的那一稿：这期间编辑器被换成了别处的版本就不提升
       const data = await WrDocs.promote(review.sid, {
-        narrativeEffect: "facts_unchanged",
         acceptedWarningCodes: acceptedForRetry,
         ...(review.expectedText !== undefined ? { expectedText: review.expectedText } : {}),
       });

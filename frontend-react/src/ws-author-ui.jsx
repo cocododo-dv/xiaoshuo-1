@@ -14,12 +14,12 @@ import { chapterStage, chapterStageDerived, chapterStateMeta } from "./labels/ca
 export const blurOnEnter = (e) => { if (e.key === "Enter" && !isImeComposing(e)) e.target.blur(); };
 
 /* 章的状态：与主页、成稿中心同一条规则（labels/catalog.js 的 chapterStage，只显示不回写）。
-   已定稿 / 审阅中 / 草稿来自审阅与批准流程，其余按各场的进度读出来。 */
+   已定稿、重新打开后的草稿来自批准流程，其余（含各场都有终稿的「等你批准」）按各场的进度读出来。 */
 function ArrChapterStateTag({ ch }) {
   const m = chapterStateMeta(chapterStage(ch));
   return (
     <Tag tone={m.tone} dot className="arr-state-tag"
-      title={chapterStageDerived(ch) ? "按各场的进度显示：有一场动了笔就是写作中。审阅与终稿批准由成稿中心推进。" : "由审阅与终稿批准流程推进"}>
+      title={chapterStageDerived(ch) ? "按各场的进度显示：有一场动了笔就是写作中，各场都有终稿就等你批准。终稿批准在成稿中心。" : "由成稿中心的终稿批准推进"}>
       {m.label}
     </Tag>
   );

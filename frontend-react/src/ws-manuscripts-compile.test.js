@@ -2,8 +2,8 @@
 // 快照全部由测试直接给出——这些函数不读 store，所以不需要 mock 任何模块。
 import { describe, expect, it } from "vitest";
 import {
-  manuBuildBody, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
-  manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScenesArchived, manuScopeProblem,
+  manuApprovalTurnReason, manuBuildBody, manuCanonPendingCount, manuCanonicalBlockReason, manuCanonicalComplete, manuChapterRows, manuCompile,
+  manuDefaultPick, manuFirstMissingScene, manuListGroups, manuProgressCells, manuScopeNote, manuScopeProblem,
 } from "./ws-manuscripts-compile.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -40,26 +40,30 @@ function chapter(extra = {}) {
 }
 
 describe("权威稿判定", () => {
-  it("只有聚合完整、没有缺场、正史核验完成才算可流转", () => {
+  it("正文齐了（聚合完整、没有缺场）就可以批准；正史核没核完不算在里面", () => {
     expect(manuCanonicalComplete(COMPLETE)).toBe(true);
     expect(manuCanonicalComplete({ ...COMPLETE, status: "loading" })).toBe(false);
     expect(manuCanonicalComplete(ready({ ...COMPLETE.body, missingSceneIds: ["s2"] }))).toBe(false);
-    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false } }))).toBe(false);
+    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, completion: "partial" }))).toBe(false);
+    // 正史没核对、还有候选待裁决，甚至服务端没给正史状态：照样可以批准（2026-10 起正史不拦定稿与导出）
+    const unverified = { ...CANON_DONE, complete: false, pending_scene_ids: ["s1"], pending_candidate_count: 2 };
+    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, canonContinuity: unverified }))).toBe(true);
+    expect(manuCanonicalComplete(ready({ ...COMPLETE.body, canonContinuity: null }))).toBe(true);
   });
 
-  it("卡住的原因按「加载 → 缺场 → 正史」的顺序说一句", () => {
+  it("卡住的原因按「加载 → 缺场」说一句，不再提正史", () => {
     expect(manuCanonicalBlockReason(null)).toBe("正在等待服务端正文核验。");
     expect(manuCanonicalBlockReason({ status: "error", error: { message: "服务暂时不可用" } })).toBe("服务暂时不可用");
     expect(manuCanonicalBlockReason(ready({ ...COMPLETE.body, missingSceneIds: ["s2"] }))).toBe("服务端仍缺 1 场归档正文。");
-    expect(manuCanonicalBlockReason(ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_candidate_count: 2 } })))
-      .toBe("仍有 2 条事实候选待裁决。");
+    expect(manuCanonicalBlockReason(ready({ ...COMPLETE.body, completion: "empty", canonContinuity: { ...CANON_DONE, complete: false, pending_candidate_count: 2 } })))
+      .toBe("服务端尚未将本章标记为可流转稿。");
   });
 
-  it("各场都已归档但正史没核完：scenesArchived 为真、complete 为假", () => {
-    const snap = ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_scene_ids: ["s1"] } });
-    expect(manuScenesArchived(snap)).toBe(true);
-    expect(manuCanonicalComplete(snap)).toBe(false);
-    expect(manuScenesArchived(ready({ ...COMPLETE.body, completion: "partial", missingSceneIds: ["s2"] }))).toBe(false);
+  it("正史未核对的场数 = 有终稿、还没核对的场（服务端的 pending_scene_ids）；没给正史状态、还没读到都是 0", () => {
+    expect(manuCanonPendingCount(ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_scene_ids: ["s1", "s2"] } }))).toBe(2);
+    expect(manuCanonPendingCount(COMPLETE)).toBe(0);
+    expect(manuCanonPendingCount(ready({ ...COMPLETE.body, canonContinuity: null }))).toBe(0);
+    expect(manuCanonPendingCount({ status: "loading", body: null, error: null })).toBe(0);
   });
 });
 
@@ -99,6 +103,27 @@ describe("左栏与进度格", () => {
     expect(manuDefaultPick(rows).id).toBe("ch02");
   });
 
+  it("按章依次定稿：默认选中项目的当前章（目录的 current），哪怕别的章写齐了在等你批准；章行带着 current", () => {
+    const book = [
+      chapter({ state: "planned", current: false, scenes: [{ sid: "a", backendId: "s1", state: "done", work: { hasFinal: true } }] }),
+      chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", state: "planned", current: true, words: { cur: 300 }, scenes: [] }),
+    ];
+    const rows = manuChapterRows(book);
+    expect(rows.map((r) => [r.id, r.stage, r.current])).toEqual([["ch01", "review", false], ["ch02", "writing", true]]);
+    expect(manuDefaultPick(rows).id).toBe("ch02");
+    // 当前章不在左栏（还没动笔）：照旧「等你批准 → 写作中 → 第一章」
+    expect(manuDefaultPick(rows.filter((r) => r.id !== "ch02")).id).toBe("ch01");
+  });
+
+  it("按章依次定稿的原因：轮到这一章是空串；没轮到就说先批哪一章；目录里没有当前章也照实说没轮到", () => {
+    const first = chapter({ current: true });
+    const second = chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false });
+    expect(manuApprovalTurnReason(first, [first, second])).toBe("");
+    expect(manuApprovalTurnReason(second, [first, second])).toBe("按章依次定稿：先批准第 1 章。");
+    expect(manuApprovalTurnReason(second, [{ ...first, current: false }, second])).toBe("按章依次定稿：这一章还没轮到。");
+    expect(manuApprovalTurnReason(null, [first])).toBe("");
+  });
+
   it("进度格按目录全序，计划章数多于目录时补占位格", () => {
     const cells = manuProgressCells(catalog, 5);
     expect(cells.map((c) => c.stage)).toEqual(["approved", "writing", "planned", "planned", "planned"]);
@@ -116,12 +141,48 @@ describe("左栏与进度格", () => {
 describe("导出", () => {
   const snapshotOf = (c) => (c.backendId === "c1" ? COMPLETE : { status: "idle", body: null, error: null });
 
-  it("范围问题：没章 / 没同步 / 还在核验 / 缺正文，都说清楚；全齐了返回空串", () => {
+  const PARTIAL = ready({ ...COMPLETE.body, completion: "partial", missingSceneIds: ["s2"], scenes: [COMPLETE.body.scenes[0]] });
+  const EMPTY = ready({ completion: "empty", missingSceneIds: ["s1", "s2"], canonContinuity: null, scenes: [] });
+
+  it("范围问题：没章 / 没同步 / 加载失败 / 还在核验都说清楚；全齐了返回空串", () => {
     const chapters = [chapter(), chapter({ id: "ch02", backendId: "" })];
     expect(manuScopeProblem(chapters, [], snapshotOf)).toBe("该范围内没有章节。");
     expect(manuScopeProblem(chapters, ["ch02"], snapshotOf)).toBe("有 1 章尚未同步到服务端。");
     expect(manuScopeProblem([chapter({ backendId: "c9" })], ["ch01"], snapshotOf)).toBe("正在核验 1 章服务端正文…");
+    expect(manuScopeProblem([chapter()], ["ch01"], () => ({ status: "error", body: null, error: { message: "服务暂时不可用" } }))).toBe("服务暂时不可用");
     expect(manuScopeProblem(chapters, ["ch01"], snapshotOf)).toBe("");
+  });
+
+  it("没写齐的章照样能导出（正史也不看）；整个范围一个字的终稿都没有才拒绝", () => {
+    const two = [chapter(), chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" })];
+    const partialOf = (c) => (c.backendId === "c1" ? PARTIAL : EMPTY);
+    expect(manuScopeProblem(two, ["ch01"], partialOf)).toBe("");
+    expect(manuScopeProblem(two, ["ch01", "ch02"], partialOf)).toBe("");
+    const unverified = ready({ ...COMPLETE.body, canonContinuity: { ...CANON_DONE, complete: false, pending_scene_ids: ["s1"] } });
+    expect(manuScopeProblem(two, ["ch01"], () => unverified)).toBe("");
+    expect(manuScopeProblem(two, ["ch02"], partialOf)).toBe("该范围内还没有终稿正文。");
+  });
+
+  it("范围说明：有没写齐的章时说一句几章缺几场（不是错误）；全齐了、还没核验完都是空串", () => {
+    const two = [chapter(), chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" })];
+    const partialOf = (c) => (c.backendId === "c1" ? PARTIAL : EMPTY);
+    expect(manuScopeNote(two, ["ch01"], partialOf)).toBe("其中 1 章还不完整（缺 1 场），文件里每个缺的场留一行「（本场还没有终稿）」。");
+    expect(manuScopeNote(two, ["ch01", "ch02"], partialOf)).toBe("其中 2 章还不完整（缺 3 场），文件里每个缺的场留一行「（本场还没有终稿）」。");
+    expect(manuScopeNote(two, ["ch01"], snapshotOf)).toBe("");
+    expect(manuScopeNote(two, ["ch02"], snapshotOf)).toBe("");
+  });
+
+  it("缺终稿的场在三种格式里都留一行「（本场还没有终稿）」，不会被当成写齐的一章", () => {
+    const partialOf = () => PARTIAL;
+    const md = manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "md", { snapshotOf: partialOf }).content;
+    expect(md).toContain("### 01 · 交班\n\n潮水退去。");
+    expect(md).toContain("### 02 · 夜渡\n\n（本场还没有终稿）");
+    const txt = manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "txt", { snapshotOf: partialOf }).content;
+    expect(txt).toContain("　　闸门上有字。\n\n（本场还没有终稿）");
+    const doc = manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "doc", { snapshotOf: partialOf }).content;
+    expect(doc).toContain("<h3>02 · 夜渡</h3><p>（本场还没有终稿）</p>");
+    // 写齐的章里没有占位
+    expect(manuCompile({ title: "测试长篇" }, [chapter()], ["ch01"], "md", { snapshotOf }).content).not.toContain("本场还没有终稿");
   });
 
   it("Markdown：书名、目录、「第 N 章 · 章名」、逐场段落、戏剧卡附录", () => {
@@ -137,9 +198,10 @@ describe("导出", () => {
     expect(out.content).toContain("> 戏剧卡 — 核心承诺：闸门背后是谁；主线推进：—；人物变化：—；结尾余味：灯");
   });
 
-  it("纯文本：段首缩进四格；没有快照的章写「本章尚无正文」", () => {
+  it("纯文本：段首缩进两个全角空格（中文排版的习惯）；没有快照的章写「本章尚无正文」", () => {
     const out = manuCompile({ title: "测试长篇" }, [chapter(), chapter({ id: "ch02", backendId: "c2", n: "02", title: "雾里的灯" })], ["ch01", "ch02"], "txt", { snapshotOf });
-    expect(out.content).toContain("    潮水退去。");
+    expect(out.content).toContain("\n　　潮水退去。\n　　闸门上有字。");
+    expect(out.content).not.toContain("    潮水退去。");
     expect(out.content).toContain("第 2 章 · 雾里的灯\n");
     expect(out.content).toContain("（本章尚无正文）");
   });

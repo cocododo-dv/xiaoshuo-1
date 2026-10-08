@@ -1,14 +1,12 @@
 import React from "react";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { rvPush } from "./ws-review-store.js";
 import { WsManuStore } from "./ws-manuscripts-store.jsx";
 import { wsToast } from "./ws-notify.jsx";
-import { writerIntents } from "./ws-view-intents.js";
 import { readyWorkId } from "./lib/ready-work.js";
 import { chapterLabel } from "./labels/catalog.js";
 import {
-  MANU_IDLE_SNAPSHOT, manuCanonicalBlockReason, manuCanonicalComplete, manuCompile, manuReturnTodo,
+  MANU_IDLE_SNAPSHOT, manuCanonicalBlockReason, manuCanonicalComplete, manuCompile,
 } from "./ws-manuscripts-compile.js";
 
 /* ==========================================================
@@ -17,7 +15,7 @@ import {
    · manuSnapshotOf / useManuCanonical：选中章的服务端聚合快照（WsManuStore 的同步缓存）；
    · manuRefreshChapters / manuDownload：导出前的逐章补拉与浏览器下载；
    · useChapterActionStatus：每章一个动作状态（各动作各自的忙碌标记 + 一条状态消息）；
-   · useManuWorkflow：送审、退回、批准、重新打开、导出本章，对话框开关也在这里。
+   · useManuWorkflow：批准、重新打开、导出本章，对话框开关也在这里（2026-10 起没有送审 / 退回小修这一步）。
    ========================================================== */
 
 const { useCallback, useEffect, useRef, useState } = React;
@@ -70,7 +68,7 @@ const IDLE_STATUS = { busy: IDLE_BUSY, message: null };
 
 /* 每章一个动作状态 { busy: { workflow, export }, message }。message 是最近一次动作的结果：
    { tone: "danger" | "ok", text, scope }——以前三套 {busy, error, note} 按优先级拼成一条，旧的错误会压住新的成功提示。
-   状态按章存：送审、导出都不在模态框里，作者可以在请求途中点左栏换章。begin(scope) 在动作开始时锁定章 id，
+   状态按章存：导出本章不在模态框里，作者可以在请求途中点左栏换章。begin(scope) 在动作开始时锁定章 id，
    finish / fail 写回这一章，不管作者此刻在看哪一章；回到那一章时，按钮仍按它的在途状态禁用。
    换章时离开的那一章的旧消息清掉（在途动作的结果仍会落到它头上），忙碌标记保留。 */
 export function useChapterActionStatus(pickedId) {
@@ -106,9 +104,9 @@ export function useChapterActionStatus(pickedId) {
 }
 
 /* 章级流转。参数：picked（成稿中心的章行）、chapter（对应的目录章）、canonical（它的快照）、
-   bump（重读快照）、book（{ title, kind }）、chapters（整份目录，导出本章用）、go（导航）。 */
-export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapters, go }) {
-  const [dialog, setDialog] = useState(null); // null | "return" | "approve" | "reopen"
+   bump（重读快照）、book（{ title, kind }）、chapters（整份目录，导出本章用）。 */
+export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapters }) {
+  const [dialog, setDialog] = useState(null); // null | "approve" | "reopen"
   const exportBusyRef = useRef(new Set()); // 防双击：state 在同一帧里还来不及变，按章记
   const projectId = readyWorkId(WsWorks);
   const pickedId = picked ? picked.id : null;
@@ -129,45 +127,6 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
     if (!backendId) return;
     await WsManuStore.refresh(backendId);
     bump();
-  };
-
-  const submitToReview = async () => {
-    if (!picked || status.busy.workflow) return;
-    const current = manuSnapshotOf(chapter);
-    if (!manuCanonicalComplete(current)) {
-      refuse("workflow", `${manuCanonicalBlockReason(current)}送审已暂停。`);
-      return;
-    }
-    if (!projectId || !backendId) {
-      refuse("workflow", "章节尚未同步到服务端，暂时不能送审。");
-      return;
-    }
-    const run = begin("workflow");
-    try {
-      await WsManuStore.setReviewState(projectId, backendId, "review");
-      await refreshSources();
-      run.finish("ok", "已送入审阅；状态已由服务端确认。");
-    } catch (e) {
-      run.fail((e && e.message) || "送审失败。");
-    }
-  };
-
-  /* 退回小修 = 理由 + 定位 + 待办，三者缺一不可；可顺手直达写作台深改姿态 */
-  const returnToDraft = async ({ reason, sid, sceneTitle, openDeep }) => {
-    if (!projectId || !backendId || status.busy.workflow) return;
-    const run = begin("workflow");
-    try {
-      await WsManuStore.setReviewState(projectId, backendId, "draft");
-      await refreshSources();
-    } catch (e) {
-      run.fail((e && e.message) || "退回小修失败。");
-      return;
-    }
-    rvPush(manuReturnTodo(picked, { reason, sid, sceneTitle }));
-    setDialog(null);
-    run.finish("ok", "已退回草稿，并生成修订待办。");
-    /* 直达深改：定位到场时进那一场的深改姿态；没定位到场也照样进深改姿态（点名的 posture 没有 sid 也带上） */
-    if (openDeep && go) go("writer", writerIntents(sid, { posture: "deep" }));
   };
 
   const approveFinal = async ({ readNote, revisionNotes }) => {
@@ -246,6 +205,6 @@ export function useManuWorkflow({ picked, chapter, canonical, bump, book, chapte
   return {
     status, dialog, workflowError,
     openDialog, closeDialog,
-    retryCanonical, submitToReview, returnToDraft, approveFinal, reopenFinal, exportChapter,
+    retryCanonical, approveFinal, reopenFinal, exportChapter,
   };
 }

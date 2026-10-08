@@ -31,7 +31,8 @@ describe("hmDeriveSpine", () => {
   it("图例覆盖后端全部章节状态、顺序固定、0 章的阶段也在，叫法与成稿中心 / 章节编排同一个词（不再有短称）", () => {
     const legend = hmDeriveSpine([CH(1, "review")]).legend;
     expect(legend.map(l => l.state)).toEqual(["approved", "review", "draft", "writing", "planned", "todo"]);
-    expect(legend.map(l => l.label)).toEqual(["已定稿", "审阅中", "草稿", "写作中", "规划中", "待写"]);
+    // review = 各场都有终稿、还没批准（2026-10 起不用先送审），叫「等你批准」
+    expect(legend.map(l => l.label)).toEqual(["已定稿", "等你批准", "草稿", "写作中", "规划中", "待写"]);
     expect(legend.map(l => l.n)).toEqual([0, 1, 0, 0, 0, 0]);
   });
 

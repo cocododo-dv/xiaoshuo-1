@@ -3,7 +3,7 @@ import { I } from "./icons.jsx";
 import { wsToast } from "./ws-notify.jsx";
 import { CloseButton, PageHeader, Segmented, Spinner, Tag, usePopover } from "./ws-ui.jsx";
 import { CHAPTER_STATE_META, CHAPTER_STATE_ORDER, chapterLabel, chapterStateMeta } from "./labels/catalog.js";
-import { manuCompile, manuScopeProblem } from "./ws-manuscripts-compile.js";
+import { manuCompile, manuScopeNote, manuScopeProblem } from "./ws-manuscripts-compile.js";
 import { manuDownload, manuRefreshChapters, manuSnapshotOf } from "./ws-manuscripts-workflow.js";
 
 /* ==========================================================
@@ -71,7 +71,8 @@ function ManuHero({ book, cells, activeId, stats, exportCtx, fidelity = null }) 
 
 const EXPORT_FORMATS = [["md", "Markdown"], ["txt", "纯文本"], ["doc", "Word"]];
 
-/* 统一导出：逐章核验服务端权威正文后编译下载。
+/* 统一导出：逐章核验服务端权威正文后编译下载。没写齐的章照样导出（缺的场在文件里留一行占位），
+   面板里另说一句几章缺几场——那是说明，不是错误；整个范围一个字的终稿都没有才拒绝。
    面板是非模态浮层（ws-ui 的 usePopover：点外面、Esc、焦点离开这一块都收起，Esc 把焦点还给按钮）。
    打开时焦点进面板本身（role=dialog，读屏报出「统一导出」，下一下 Tab 就是面板里的第一个控件）——不直接落在
    某个单选上：一打开就开始核验，核验中所有控件都是禁用的，落在它们上面的焦点会被浏览器丢回 <body>。
@@ -157,10 +158,12 @@ function ManuExport({ ctx }) {
     ? "正在核验服务端正文…"
     : exportState.error || scopeProblem || `约 ${scopeWords.toLocaleString()} 字 · ${scopeIds.length} 章`;
   const statusIsError = !exportState.busy && !!(exportState.error || scopeProblem);
+  // 范围里有没写齐的章：状态行下面另说一句（不是错误，照样能导出）
+  const scopeNote = exportState.busy || statusIsError ? "" : manuScopeNote(catChs, scopeIds, manuSnapshotOf);
 
   return (
     <div className="ms-export">
-      {/* 整书导出是次要动作：这一页唯一的实心主按钮留给阅读器页脚里这一章的下一步（续写 / 核对正史 / 送审） */}
+      {/* 整书导出是次要动作：这一页唯一的实心主按钮留给阅读器页脚里这一章的下一步（续写 / 批准） */}
       <button ref={btnRef} type="button" className={`btn btn-ghost ms-export-btn ${open ? "is-open" : ""}`} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((o) => !o)}>
         <I.UploadCloud size={15} /> 统一导出
       </button>
@@ -191,6 +194,8 @@ function ManuExport({ ctx }) {
             <label className="ms-export-opt"><input type="checkbox" checked={toc} disabled={exportState.busy} onChange={(e) => setToc(e.target.checked)} /> 生成目录</label>
             <label className="ms-export-opt"><input type="checkbox" checked={appendix} disabled={exportState.busy} onChange={(e) => setAppendix(e.target.checked)} /> 附戏剧卡附录</label>
           </div>
+
+          {scopeNote && <p className="ms-export-note" data-testid="manuscript-export-note">{scopeNote}</p>}
 
           <div className="ms-export-foot">
             <span className={`ms-export-status ${statusIsError ? "is-error" : ""}`} role={statusIsError ? "alert" : "status"}>

@@ -7,7 +7,6 @@ const CANONICAL_LABELS = {
   promoting: "正在提升权威正文…",
   review: "内容风险待作者复核",
   current: "权威正文已更新",
-  reconcile: "需先核对事实变更",
   error: "权威正文提升失败",
 };
 
@@ -44,7 +43,7 @@ function WrCanonicalControl({ saveStatus, canonicalStatus, disabled = false, onP
         disabled={promotionDisabled}
         hidden={none}
         onClick={onPromote}
-        title="只在这次修改没有改变故事事实时使用：把已保存的草稿提升为运行时的权威正文"
+        title="把已保存的草稿提升为运行时的权威正文（这一场的正史随之待核对，在成稿中心「正史」页签里核对，可选）"
       >
         {busy ? "提升中…" : "提升为权威正文"}
       </button>

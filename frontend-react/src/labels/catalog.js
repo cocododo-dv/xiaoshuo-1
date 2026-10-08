@@ -6,7 +6,7 @@
    「计划中 / 待聚合」、在主页叫「规划」。这里给一份：
    · CHAPTER_STATE_META —— 目录状态 → 中文叫法 / 语气色（ws-ui 的 tone）；SCENE_STATE_META —— 场的三态；
    · chapterStage（旧名 manuscriptStage）—— 一章走到哪一步：主页、成稿中心、章节编排同一条规则；
-     chapterStarted —— 其中「动笔了没有」那一半；
+     chapterStarted —— 其中「动笔了没有」那一半；chapterProseComplete —— 「各场都有终稿了没有」那一半；
    · chapterLabel / sceneLabel / *ById —— 后端 id → 「第 N 章 · 章名」「第 N 章 · 第 M 场」；
    · DRAMA_FIELDS —— 戏剧卡六格的键与叫法（编辑器、成稿中心、导出附录同一套）。
    纯函数：章节列表由调用方传入（通常是 WsCatalog.get()），不读 store、不写 window。
@@ -16,13 +16,14 @@
 
 /* 与后端 CatalogService.CHAPTER_STATES 同源；数组顺序即图例顺序。
    tone 用 ws-ui 的语气：ok 完成、warn 等你拍板、info 中性、accent 正在进行。
+   review 是「各场都有终稿、还没批准」（2026-10 起由各场读出来，不用先「送入审阅」），所以叫「等你批准」，不叫「审阅中」。
    一个状态只有一个叫法：以前还有一列「短称」（定稿 / 送审 / 在写 / 规划），主页图例用短称、悬停说明用全称，
    同一章在主页叫「在写」、在成稿中心和章节编排叫「写作中」。 */
 export const CHAPTER_STATE_ORDER = ["approved", "review", "draft", "writing", "planned", "todo"];
 
 export const CHAPTER_STATE_META = {
   approved: { label: "已定稿", tone: "ok" },
-  review: { label: "审阅中", tone: "warn" },
+  review: { label: "等你批准", tone: "warn" },
   draft: { label: "草稿", tone: "info" },
   writing: { label: "写作中", tone: "accent" },
   planned: { label: "规划中", tone: "neutral" },
@@ -45,24 +46,35 @@ export function chapterStarted(chapter) {
     scene.state === "writing" || scene.state === "done" || scene.state === "archived" || Number(scene.words) > 0));
 }
 
-/* 流程定下的阶段：审阅与终稿批准（成稿中心推进）、退回小修后的草稿。其余阶段按各场的进度读。 */
-const WORKFLOW_STAGES = ["approved", "review", "draft"];
+/* 这一章各场都有终稿了吗：目录场的 work.hasFinal（后端 catalog_reader 的 has_final——这一场有当前终稿）。
+   没有场的章、没带工作状态的场（乐观新建还没回包）都不算。 */
+export function chapterProseComplete(chapter) {
+  const scenes = (chapter && chapter.scenes) || [];
+  return scenes.length > 0 && scenes.every((scene) => !!(scene && scene.work && scene.work.hasFinal));
+}
 
 /* 一章的阶段——主页、成稿中心、章节编排同一条规则（2026-10，批准 #19）：
-   已定稿 / 审阅中 / 草稿照目录；目录说「写作中」、已经有字、或者有一场在写 / 写完了，就是「写作中」；
-   否则照目录说「待写」或「规划中」（认不出的状态也读作规划中）。只用于显示，绝不回写。
+   已定稿照目录；各场都有终稿、还没批准就是「等你批准」（review，按各场读出来——2026-10 起去掉了「送入审阅」那一步，
+   批准不要求先送审，服务端批准时照旧要求各场都有终稿）；目录上以前送审的「审阅中」、重新打开终稿后的「草稿」照旧读；
+   目录说「写作中」、已经有字、或者有一场在写 / 写完了，就是「写作中」；否则照目录说「待写」或「规划中」
+   （认不出的状态也读作规划中）。只用于显示，绝不回写。
    以前章节编排自己一条规则：退回小修的「草稿」章读成写作中或规划中、目录说写作中但还没字的章读成规划中，
    同一章在三个视图里叫法不一样。 */
 export function chapterStage(chapter) {
   const state = chapter && chapter.state;
-  if (WORKFLOW_STAGES.includes(state) || state === "writing") return state;
+  if (state === "approved") return state;
+  if (chapterProseComplete(chapter)) return "review";
+  if (state === "review" || state === "draft" || state === "writing") return state;
   if (chapterStarted(chapter)) return "writing";
   return state === "todo" ? "todo" : "planned";
 }
 
-/* 这一章的阶段是不是按各场读出来的（不是审阅 / 批准 / 退回这些流程定下的）——状态标签的悬停说明据此说话 */
+/* 这一章的阶段是不是按各场读出来的（含写齐了的「等你批准」）；已定稿、重新打开后的草稿、以前送审的章是流程定下的
+   ——状态标签的悬停说明据此说话 */
 export function chapterStageDerived(chapter) {
-  return !WORKFLOW_STAGES.includes(chapter && chapter.state);
+  const stage = chapterStage(chapter);
+  if (stage === "approved" || stage === "draft") return false;
+  return stage !== "review" || chapterProseComplete(chapter);
 }
 
 /* 旧名：成稿中心、主页一直这样叫它 */
