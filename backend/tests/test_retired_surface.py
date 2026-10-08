@@ -38,6 +38,8 @@ RETIRED_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/api/v1/scenes/{scene_id}/preflight/create-cards", "声线卡 / 关系卡闸门退役"),
     # 系统配置 OAuth 登录
     ("POST", "/api/v1/system-config/llm/oauth/{provider}/start", "OAuth 登录退役"),
+    # 系统配置的五类摘要：React 不调用，开发启动脚本的探活改读 GET …/system-config/llm 的 runtime（G2 B2-4）
+    ("GET", "/api/v1/system-config", "G2 B2-4"),
     ("GET", "/api/v1/system-config/llm/oauth/callback", "OAuth 登录退役"),
     # v1 雪花规划器与 /api/v1/projects/{id}/snowflake*（批准 #16a，R9）
     ("GET", "/api/v1/projects/{project_id}/snowflake", "批准 #16a"),

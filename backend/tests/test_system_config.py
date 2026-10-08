@@ -188,36 +188,6 @@ def test_repo_model_config_declares_independent_provider_attempt_budget() -> Non
     assert routing_config.retry_budget["provider_attempt_budget"] == DEFAULT_PROVIDER_ATTEMPT_BUDGET
 
 
-def test_system_config_read_is_a_summary_without_yaml_or_history(client) -> None:
-    """重评 R15a:GET /api/v1/system-config 只给摘要——它唯一的调用方(开发启动脚本)只看 runtime;
-    以前每一份历史快照的 YAML 正文都随它发出(MB 级)。"""
-    response = client.get("/api/v1/system-config")
-
-    assert response.status_code == 200
-    payload = response.json()["data"]
-    assert set(payload) == {"runtime", "categories"}
-    assert payload["runtime"]["admin_configured"] is False
-    assert payload["runtime"]["secret_configured"] is False
-    models = payload["categories"]["models"]
-    assert models["source"] == "repo_default"
-    assert models["active_snapshot"] is None
-    assert "yaml_raw" not in models and "parsed" not in models
-    assert payload["categories"]["api"]["secrets"]["llm_api_key"]["configured"] is False
-
-
-def test_system_config_read_summarises_the_active_snapshot_version(client, session, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-    snapshot = _activate_config(session, "models", "node_routing: {}\n")
-
-    models = client.get("/api/v1/system-config").json()["data"]["categories"]["models"]
-
-    assert models["source"] == "database_active"
-    assert models["active_snapshot"]["snapshot_id"] == snapshot["snapshot_id"]
-    assert models["active_snapshot"]["version"] == snapshot["version"]
-    assert models["active_snapshot"]["active"] is True
-    assert "yaml_raw" not in models["active_snapshot"] and "parsed" not in models["active_snapshot"]
-
-
 def test_system_config_write_requires_admin_token(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")

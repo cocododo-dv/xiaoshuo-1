@@ -152,28 +152,6 @@ class SystemConfigService:
         else:
             self.session.flush()
 
-    def overview(self, *, include_content: bool = True) -> dict[str, Any]:
-        """运行时状态与各类配置的现状。
-
-        ``include_content`` 时每类带 YAML 正文与解析结果（运维工具要读）；``GET /api/v1/system-config``
-        只要摘要（来源、校验结果、活动快照的版本，api 的密钥状态）——以前它把每一份历史快照的正文都带上，
-        MB 级，而唯一的调用方（开发启动脚本的探活）只看 runtime（2026-09-30 重评 R15a）。
-        """
-        categories = {}
-        for category in CONFIG_CATEGORIES:
-            payload = self._category_payload(category)
-            if not include_content:
-                payload = _category_summary(payload)
-            categories[category] = payload
-        return {
-            "runtime": {
-                "admin_configured": bool(_admin_token()),
-                "secret_configured": bool(_config_secret()),
-                "supported_categories": list(CONFIG_CATEGORIES),
-            },
-            "categories": categories,
-        }
-
     def create_draft(self, *, category: str, yaml_raw: str, actor_ref: str) -> dict[str, Any]:
         """另存一份草稿（运维工具的入口，``tools/_cli.activate_snapshot_payload``）；密钥不经这里存——只经「设置 → AI
         模型」按服务保存（``save_llm_provider``）。"""
@@ -313,7 +291,7 @@ class SystemConfigService:
         return {
             "provider_catalog": provider_catalog(),
             "default_provider_id": llm_payload.get("default_provider_id") or next(iter(providers.keys()), None),
-            # runtime 随 overview 带出,管理面前端无需再拉全量 /system-config(含全部历史快照)
+            # 运行时状态(管理令牌 / 配置密钥是否设好):设置页与开发启动脚本的探活都读这里
             "runtime": {
                 "admin_configured": bool(_admin_token()),
                 "secret_configured": bool(_config_secret()),
@@ -727,8 +705,6 @@ class SystemConfigService:
                 "validation": validation,
                 "active_snapshot": None,
             }
-        if category == "api":
-            payload["secrets"] = {LLM_API_KEY_SECRET_ID: self._secret_status(LLM_API_KEY_SECRET_ID)}
         return payload
 
     def _current_api_llm_payload(self) -> dict[str, Any]:
@@ -887,21 +863,6 @@ def _serialize_snapshot(snapshot: SystemConfigSnapshot) -> dict[str, Any]:
         "created_at": snapshot.created_at,
         "activated_at": snapshot.activated_at,
     }
-
-
-_SNAPSHOT_SUMMARY_KEYS = ("snapshot_id", "category", "version", "status", "active", "created_by", "created_at", "activated_at")
-
-
-def _category_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """一类配置的摘要：去掉 YAML 正文与解析结果（活动快照也只留版本信息）。"""
-    summary = {key: payload[key] for key in ("category", "source", "validation") if key in payload}
-    active = payload.get("active_snapshot")
-    summary["active_snapshot"] = (
-        {key: active.get(key) for key in _SNAPSHOT_SUMMARY_KEYS} if isinstance(active, dict) else None
-    )
-    if "secrets" in payload:
-        summary["secrets"] = payload["secrets"]
-    return summary
 
 
 def _ensure_category(category: str) -> None:

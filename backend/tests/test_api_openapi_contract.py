@@ -47,8 +47,8 @@ def test_every_versioned_api_operation_documents_standard_success_and_error_enve
     # deliberate endpoint retirement (2026-09 subtraction batch 1: v1 → 91, v2 → 96;
     # 2026-09-30 refactor, routes with no UI caller retired — approved #6 / #7 / #16a / #24a / #25: v1 → 84, v2 → 89;
     # I2: P02b retires the review badge / legacy review-item detail / preference profile (#24a / #6) and P04 adds the
-    # non-AI chapter-plan gap list: v1 → 81, v2 → 90).
-    assert operation_counts["v1"] >= 80
+    # non-AI chapter-plan gap list: v1 → 81, v2 → 90; round 2 G2 B2-4 retires GET /api/v1/system-config: v1 → 80).
+    assert operation_counts["v1"] >= 79
     assert operation_counts["v2"] >= 89
 
 

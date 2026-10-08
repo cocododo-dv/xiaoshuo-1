@@ -115,7 +115,7 @@ try {
     $reactUrl = Read-RequiredText -Path $reactUrlFile
     Wait-Until -Label "backend readiness" -Condition { Test-UrlHealthy -Url "$backendUrl/ready" } -TimeoutSeconds 90
     Wait-Until -Label "React frontend home" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds 60
-    $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config" -TimeoutSec 5
+    $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config/llm" -TimeoutSec 5
     Assert-True -Condition ($overview.data.runtime.secret_configured -eq $true) -Message "Dev backend must provide NOVEL_SYSTEM_CONFIG_SECRET so local API-key providers can be saved."
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after start."
     Assert-True -Condition (Test-Path $reactPidFile) -Message "Missing React frontend PID file after start."
@@ -125,7 +125,7 @@ try {
     $reactUrl = Read-RequiredText -Path $reactUrlFile
     Wait-Until -Label "backend after restart" -Condition { Test-UrlHealthy -Url "$backendUrl/ready" } -TimeoutSeconds 90
     Wait-Until -Label "React frontend after restart" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds 60
-    $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config" -TimeoutSec 5
+    $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config/llm" -TimeoutSec 5
     Assert-True -Condition ($overview.data.runtime.secret_configured -eq $true) -Message "Restarted dev backend must keep NOVEL_SYSTEM_CONFIG_SECRET configured."
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after restart."
     Assert-True -Condition (Test-Path $reactPidFile) -Message "Missing React frontend PID file after restart."
