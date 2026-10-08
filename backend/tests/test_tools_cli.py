@@ -71,7 +71,7 @@ def test_snapshot_tools_refuse_before_touching_the_active_snapshot(capsys) -> No
             "model_profiles": {"quality_strong": {"description": "d", "provider": "openai_compatible", "model": "m"}},
             "task_routing": {"snowflake_step_generate": {"provider": "openai_compatible", "model": "m", "max_output_tokens": 100}},
         }
-        created = service.create_draft(category="models", yaml_raw=yaml.safe_dump(payload), secrets=None, actor_ref="test")
+        created = service.create_draft(category="models", yaml_raw=yaml.safe_dump(payload), actor_ref="test")
         service.activate(created["snapshot"]["snapshot_id"], actor_ref="test")
         session.commit()
         before = service.overview()["categories"]["models"]["active_snapshot"]["snapshot_id"]

@@ -13,6 +13,7 @@ from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.system_config import SystemConfigService, load_llm_provider_runtime_configs
+from novel_system.services.system_config_secrets import save_secret_value
 from novel_system.settings import get_settings
 from tests.support.api_client import AutoKeyTestClient
 
@@ -34,15 +35,13 @@ def _local_provider_body(**overrides) -> dict:
     return body
 
 
-def _create_config_draft(session, category: str, yaml_raw: str, *, secrets: dict | None = None) -> dict:
+def _create_config_draft(session, category: str, yaml_raw: str) -> dict:
     """保存一份配置草稿（运维工具的入口；HTTP 的 drafts / activate 路由没有界面调用，已删——重评 R15a）。"""
-    return SystemConfigService(session).create_draft(
-        category=category, yaml_raw=yaml_raw, secrets=secrets, actor_ref="ops.config"
-    )
+    return SystemConfigService(session).create_draft(category=category, yaml_raw=yaml_raw, actor_ref="ops.config")
 
 
-def _activate_config(session, category: str, yaml_raw: str, *, secrets: dict | None = None) -> dict:
-    created = _create_config_draft(session, category, yaml_raw, secrets=secrets)
+def _activate_config(session, category: str, yaml_raw: str) -> dict:
+    created = _create_config_draft(session, category, yaml_raw)
     return SystemConfigService(session).activate(created["snapshot"]["snapshot_id"], actor_ref="ops.config")["snapshot"]
 
 
@@ -537,10 +536,22 @@ def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch)
     assert "admin" not in response.text.lower()
 
 
-def test_api_config_draft_encrypts_secret_and_active_snapshot_feeds_settings(client, session, monkeypatch) -> None:
+def test_legacy_llm_api_key_and_the_active_api_snapshot_feed_settings(client, session, monkeypatch) -> None:
+    """配置草稿不再收密钥：create_draft(secrets=…) 写旧 llm_api_key 的那条路只有测试走得到（运维工具都传 None），删掉；
+    密钥只经「设置 → AI 模型」按服务保存。老安装库里的 llm_api_key 照旧读得到（读的兜底留着），也照旧不外露。"""
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
+    save_secret_value(
+        session,
+        secret_id="llm_api_key",
+        raw_value="super-secret-key",
+        actor_ref="ops.config",
+        secret_type="api_key",
+        metadata={"provider_id": "legacy", "provider_type": "openai_compatible"},
+    )
+    session.commit()
+    assert session.get(SystemSecret, "llm_api_key").encrypted_value != "super-secret-key"
     yaml_raw = """
 llm:
   provider: openai_compatible
@@ -549,22 +560,18 @@ llm:
   timeout_seconds: 12.5
 """.strip()
 
-    created = _create_config_draft(session, "api", yaml_raw, secrets={"llm_api_key": "super-secret-key"})
+    created = _create_config_draft(session, "api", yaml_raw)
     draft = created["snapshot"]
+    assert set(created) == {"snapshot"}
     assert draft["validation"]["ok"] is True
-    assert "super-secret-key" not in repr(created)
-    assert created["secrets"]["llm_api_key"]["configured"] is True
-    assert session.get(SystemSecret, "llm_api_key").encrypted_value != "super-secret-key"
 
     activated = SystemConfigService(session).activate(draft["snapshot_id"], actor_ref="ops.config")
     assert activated["snapshot"]["active"] is True
 
-    read_response = client.get("/api/v1/system-config")
+    read_response = client.get("/api/v1/system-config/llm")
     assert read_response.status_code == 200
     assert "super-secret-key" not in read_response.text
-    api_payload = read_response.json()["data"]["categories"]["api"]
-    assert api_payload["source"] == "database_active"
-    assert api_payload["secrets"]["llm_api_key"]["configured"] is True
+    assert read_response.json()["data"]["api_snapshot"]["snapshot_id"] == draft["snapshot_id"]
 
     settings = get_settings()
     assert settings.llm_provider == "openai_compatible"

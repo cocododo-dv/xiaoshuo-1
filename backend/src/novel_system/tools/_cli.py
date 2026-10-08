@@ -78,7 +78,6 @@ def activate_snapshot_payload(service: SystemConfigService, category: str, paylo
     created = service.create_draft(
         category=category,
         yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-        secrets=None,
         actor_ref=actor,
     )
     return service.activate(created["snapshot"]["snapshot_id"], actor_ref=actor)["snapshot"]

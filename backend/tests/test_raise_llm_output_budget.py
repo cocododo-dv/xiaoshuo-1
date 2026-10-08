@@ -45,7 +45,7 @@ def _activate(session, payload: dict) -> None:
     service = SystemConfigService(session)
     created = service.create_draft(
         category="models", yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-        secrets=None, actor_ref="test",
+        actor_ref="test",
     )
     service.activate(created["snapshot"]["snapshot_id"], actor_ref="test")
 

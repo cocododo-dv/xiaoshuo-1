@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -41,12 +41,14 @@ class LlmProviderConfigRequest(StrictRequestModel):
     api_key: str | None = Field(default=None, max_length=16_384)
 
 
+# 写路由的两个接口只存活动快照：activate 只收 true（还开着的旧页面照发 true），false 回 422——以前它存下一份草稿，
+# 删掉激活接口之后没有任何接口能再激活它。
 class LlmNodeRouteSyncRequest(StrictRequestModel):
     provider_id: str | None = Field(default=None, max_length=255)
     model: str | None = Field(default=None, max_length=255)
-    activate: bool = True
+    activate: Literal[True] = True
 
 
 class LlmRoleRoutesRequest(StrictRequestModel):
     assignments: BoundedJsonObject
-    activate: bool = True
+    activate: Literal[True] = True

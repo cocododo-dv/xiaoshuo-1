@@ -174,14 +174,9 @@ class SystemConfigService:
             "categories": categories,
         }
 
-    def create_draft(
-        self,
-        *,
-        category: str,
-        yaml_raw: str,
-        secrets: dict[str, str] | None,
-        actor_ref: str,
-    ) -> dict[str, Any]:
+    def create_draft(self, *, category: str, yaml_raw: str, actor_ref: str) -> dict[str, Any]:
+        """另存一份草稿（运维工具的入口，``tools/_cli.activate_snapshot_payload``）；密钥不经这里存——只经「设置 → AI
+        模型」按服务保存（``save_llm_provider``）。"""
         _ensure_category(category)
         parsed, validation = validate_config(category, yaml_raw)
         if not validation["ok"]:
@@ -205,12 +200,8 @@ class SystemConfigService:
             created_by=actor_ref,
         )
         self.session.add(snapshot)
-        secret_payload = self._save_secrets(category=category, secrets=secrets or {}, actor_ref=actor_ref)
         self._finish_mutation()
-        return {
-            "snapshot": _serialize_snapshot(snapshot),
-            "secrets": secret_payload,
-        }
+        return {"snapshot": _serialize_snapshot(snapshot)}
 
     def activate(self, snapshot_id: str, *, actor_ref: str) -> dict[str, Any]:
         snapshot = self.session.get(SystemConfigSnapshot, snapshot_id)
@@ -357,8 +348,6 @@ class SystemConfigService:
             category="api",
             parsed={"llm": llm_payload},
             validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
             actor_ref=actor_ref,
         )
         secret_status = self._secret_status(llm_provider_api_key_secret_id(provider_id))
@@ -401,8 +390,6 @@ class SystemConfigService:
             category="api",
             parsed={"llm": llm_payload},
             validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
             actor_ref=actor_ref,
         )
         self._finish_mutation()
@@ -432,8 +419,6 @@ class SystemConfigService:
             category="api",
             parsed={"llm": llm_payload},
             validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
             actor_ref=actor_ref,
         )
         secret = self.session.get(SystemSecret, llm_provider_api_key_secret_id(provider_id))
@@ -528,18 +513,14 @@ class SystemConfigService:
             )
 
         routing_config = parse_route_config_or_raise(config_payload)
-        activate = bool_value(payload.get("activate", False))
-        if activate:
-            validate_activating_node_route_bindings(
-                node_routing=routing_config.node_routing,
-                providers=providers,
-            )
+        validate_activating_node_route_bindings(
+            node_routing=routing_config.node_routing,
+            providers=providers,
+        )
         snapshot = self._store_config_snapshot(
             category="models",
             parsed=config_payload,
             validation={"ok": True, "message": "models config is valid"},
-            status="active" if activate else "draft",
-            active=activate,
             actor_ref=actor_ref,
         )
         self._finish_mutation()
@@ -700,25 +681,21 @@ class SystemConfigService:
             }
 
         routing_config = parse_route_config_or_raise(config_payload)
-        activate = bool_value(payload.get("activate", True))
-        if activate:
-            # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
-            # 未触达节点保持原状(与今日的默认 repo 路由同等待遇)。
-            touched_node_ids = {node_id for entry in applied.values() for node_id in entry["node_ids"]}
-            validate_activating_node_route_bindings(
-                node_routing={
-                    node_id: task_config
-                    for node_id, task_config in routing_config.node_routing.items()
-                    if node_id in touched_node_ids
-                },
-                providers=providers,
-            )
+        # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
+        # 未触达节点保持原状(与今日的默认 repo 路由同等待遇)。
+        touched_node_ids = {node_id for entry in applied.values() for node_id in entry["node_ids"]}
+        validate_activating_node_route_bindings(
+            node_routing={
+                node_id: task_config
+                for node_id, task_config in routing_config.node_routing.items()
+                if node_id in touched_node_ids
+            },
+            providers=providers,
+        )
         snapshot = self._store_config_snapshot(
             category="models",
             parsed=config_payload,
             validation={"ok": True, "message": "models config is valid"},
-            status="active" if activate else "draft",
-            active=activate,
             actor_ref=actor_ref,
         )
         self._finish_mutation()
@@ -767,15 +744,13 @@ class SystemConfigService:
         category: str,
         parsed: dict[str, Any],
         validation: dict[str, Any],
-        status: str,
-        active: bool,
         actor_ref: str,
     ) -> SystemConfigSnapshot:
-        if active:
-            previous = active_snapshot(self.session, category)
-            if previous is not None:
-                previous.active_flag = 0
-                previous.status = "superseded"
+        """设置页的每个写动作都另存一版并立即激活（上一版置为 superseded，留作回滚）。"""
+        previous = active_snapshot(self.session, category)
+        if previous is not None:
+            previous.active_flag = 0
+            previous.status = "superseded"
         yaml_raw = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
         snapshot = SystemConfigSnapshot(
             snapshot_id=f"config_{category}_{uuid.uuid4().hex[:12]}",
@@ -784,9 +759,9 @@ class SystemConfigService:
             yaml_raw=yaml_raw,
             parsed_json=parsed,
             validation_json=validation,
-            status=status,
-            active_flag=1 if active else 0,
-            activated_at=utcnow() if active else None,
+            status="active",
+            active_flag=1,
+            activated_at=utcnow(),
             created_by=actor_ref,
         )
         self.session.add(snapshot)
@@ -797,21 +772,6 @@ class SystemConfigService:
             select(func.max(SystemConfigSnapshot.version)).where(SystemConfigSnapshot.category == category)
         ).scalar_one_or_none()
         return int(current or 0) + 1
-
-    def _save_secrets(self, *, category: str, secrets: dict[str, str], actor_ref: str) -> dict[str, Any]:
-        if category != "api" or LLM_API_KEY_SECRET_ID not in secrets:
-            return {LLM_API_KEY_SECRET_ID: self._secret_status(LLM_API_KEY_SECRET_ID)} if category == "api" else {}
-        raw_value = str(secrets.get(LLM_API_KEY_SECRET_ID) or "").strip()
-        if not raw_value:
-            return {LLM_API_KEY_SECRET_ID: self._secret_status(LLM_API_KEY_SECRET_ID)}
-        status = self._save_secret_value(
-            secret_id=LLM_API_KEY_SECRET_ID,
-            raw_value=raw_value,
-            actor_ref=actor_ref,
-            secret_type="api_key",
-            metadata={"provider_id": "legacy", "provider_type": "openai_compatible"},
-        )
-        return {LLM_API_KEY_SECRET_ID: status}
 
     def _save_secret_value(
         self,

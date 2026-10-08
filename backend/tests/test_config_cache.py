@@ -83,7 +83,6 @@ def _activate(session, category: str, payload: dict) -> str:
     created = service.create_draft(
         category=category,
         yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-        secrets=None,
         actor_ref="test",
     )
     snapshot_id = created["snapshot"]["snapshot_id"]
