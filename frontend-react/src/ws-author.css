@@ -448,7 +448,7 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 .arr-dgroup-head { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
 .arr-dgroup-head svg { color: var(--ink-3); }
 .arr-dgroup-rule { flex: 1; height: 1px; margin-left: 4px; background: var(--line-1); }
-/* 戏剧卡的格子、护栏、AI 编排的蓝图：两列，编辑器窄了（下面的容器查询）并成一列 */
+/* 戏剧卡的格子、护栏、章节蓝图：两列，编辑器窄了（下面的容器查询）并成一列 */
 .arr-dgroup-fields, .arr-guard-grid, .arr-bp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .arr-field {
   display: flex; flex-direction: column; gap: 5px; padding: 10px 12px;
@@ -476,32 +476,12 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
   .arr-dgroup-fields, .arr-guard-grid, .arr-bp-grid { grid-template-columns: 1fr; }
 }
 
-/* AI 编排卡（蓝图 / 方向 / 补全） */
-.arr-ai-tabs { margin-bottom: var(--s4); }
+/* 章节蓝图卡 */
 .arr-ai-pane { display: flex; flex-direction: column; gap: var(--s3); }
 .arr-ai-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
-.arr-ai-hint { flex: 1 1 200px; max-width: 360px; height: 28px; font-size: var(--fs-sm); }
-.arr-ai-list { display: flex; flex-direction: column; gap: var(--s2); }
-.arr-ai-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.arr-ai-cand-body { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); line-height: 1.7; color: var(--ink-2); }
-.arr-ai-cand-risk { color: var(--ink-3); }
-.arr-ai-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.arr-ai-row {
-  display: grid; grid-template-columns: 18px minmax(120px, 200px) minmax(0, 1fr); align-items: baseline; gap: var(--s2);
-  padding: 7px 4px; border-bottom: 1px solid var(--line-1); cursor: pointer;
-}
-.arr-ai-row input { accent-color: var(--accent); }
-.arr-ai-row-label { font-size: var(--fs-xs); color: var(--ink-3); }
-.arr-ai-row-value { font-size: var(--fs-sm); color: var(--ink-1); }
-@container arr-ed (max-width: 640px) {
-  .arr-ai-row { grid-template-columns: 18px minmax(0, 1fr); }
-  .arr-ai-row-value { grid-column: 2; }
-}
-.arr-ai-bullets { margin: 4px 0 0 18px; padding: 0; }
 .arr-ai-note { margin-top: var(--s2); }
 .arr-ai-unsaved { margin-left: var(--s2); vertical-align: 1px; }
 .arr-sync { font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
-.arr-sync b { color: var(--ink-2); font-weight: 600; }
 
 /* ---------- right context（章节体检 + 视角 · 时空） ---------- */
 .arr-ctx {
@@ -520,14 +500,6 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 .arr-check.is-warn svg { color: var(--warn); }
 .arr-check-val { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; }
 .arr-check.is-warn .arr-check-val { color: var(--warn-ink); }
-.arr-ai-health { display: flex; flex-direction: column; gap: 8px; padding-top: var(--s3); border-top: 1px dashed var(--line-2); }
-.arr-ai-health-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
-.arr-ai-health-title { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
-.arr-ai-health-title svg { color: var(--ink-3); }
-.arr-ai-findings .arr-check { align-items: start; }
-.arr-ai-finding { grid-column: 2 / -1; display: grid; gap: 2px; min-width: 0; }
-.arr-ai-finding-text { font-size: var(--fs-xs); color: var(--ink-3); }
-.arr-ai-finding-apply { justify-self: start; }
 .arr-meta { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
 .arr-meta li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: var(--fs-sm); }
 .arr-meta li span { flex-shrink: 0; color: var(--ink-3); white-space: nowrap; }

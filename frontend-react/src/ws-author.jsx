@@ -19,11 +19,11 @@ import { chapterLabel, chapterOwnTitle } from "./labels/catalog.js";
    两种模式：
    · 全书编排（overview，ws-author-overview.jsx）—— 结构 / 节奏两个镜头 + 全书体检 + 按卷分组的章节清单
    · 章节详情（detail）—— 序列栏（ws-author-side.jsx）· 编辑器（ws-author-detail.jsx：构思条 / 场景看板 / 交接 /
-     戏剧卡 / AI 编排）· 章节体检（ws-author-side.jsx）
+     戏剧卡 / 章节蓝图）· 章节体检（ws-author-side.jsx）
    外壳只管：接住目录、现在看哪一章 / 哪种模式、焦点跟着模式走，再把各块拼起来。其余零件：
    管线（ws-author-hooks.js）、「整理章节结构」这扇门（ws-author-plan-door.jsx）、当前章的改动（ws-author-edits.js）、
    批量删除（ws-author-batch.js）、读取中 / 空作品的版面（ws-author-states.jsx）、小零件（ws-author-ui.jsx）、
-   AI 编排（ws-author-ai.jsx）、派生事实（ws-author-derive.js）。
+   章节蓝图（ws-author-ai.jsx）、派生事实（ws-author-derive.js）。
 
    阶段 Z「一张章表、两扇门」：雪花整理出来的章（structure.owner === "plan"）是构思分章的延续，不是另一份。
    · 章的结构（哪几场归哪一章、先后、幕）只有一个编辑器——「整理章节结构」面板，这里直接开得出来；
@@ -205,8 +205,7 @@ function WsAuthor({ go }) {
               ctxOpen={ctxOpen} onToggleCtx={() => setCtxOpen((v) => !v)} warnCount={warnCount}
               goView={goView} onConfigureModel={onConfigureModel} />
             <div className="arr-ctx-scrim" aria-hidden="true" onClick={closeCtx} />
-            <ArrChapterContext ch={ch} checks={checks} snow={snow} onOpenPlan={openPlan} open={ctxOpen} onClose={closeCtx}
-              onConfigureModel={onConfigureModel} />
+            <ArrChapterContext ch={ch} checks={checks} snow={snow} onOpenPlan={openPlan} open={ctxOpen} onClose={closeCtx} />
           </>
         )}
       </div>

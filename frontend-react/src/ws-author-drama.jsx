@@ -22,8 +22,8 @@ const ARR_DRAMA_GROUPS = [
 ].map((group) => ({ ...group, fields: DRAMA_FIELDS.filter((field) => field.group === group.key) }));
 
 /* 戏剧卡的一格。textarea 不受控（边写边存会打断输入法），所以 key 带上服务端的值：
-   AI 编排写入、目录重拉带来新值时换一个新的框显示新值；失焦时只有真的改了才写回——
-   以前 key 只有章 id，重拉之后框里还是旧字，下一次失焦把旧字写回去，把刚应用的建议悄悄冲掉。 */
+   目录重拉带来新值时换一个新的框显示新值；失焦时只有真的改了才写回——
+   以前 key 只有章 id，重拉之后框里还是旧字，下一次失焦把旧字写回去，把服务端的新值悄悄冲掉。 */
 function ArrDramaText({ className, label, value, ck, locked, onCommit, placeholder }) {
   const v = value || "";
   return (
