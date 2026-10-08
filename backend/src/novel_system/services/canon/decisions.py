@@ -13,6 +13,7 @@ from novel_system.db.models import (
     FinalScene,
     NarrativeEvent,
     OperationLog,
+    SceneCard,
     TimelineEvent,
     utcnow,
 )
@@ -359,6 +360,25 @@ class CanonDecisionsMixin:
         self.session.flush()
         return {**self.scene_status(project_id, scene_id), "commit_id": commit_id}
 
+    def facts_committed(self, final_scene_row_id: str | None, *, scene: SceneCard, project_id: str) -> bool:
+        """这一版终稿的正史核对过、现在仍然有效：它是这一场的一版终稿，场景快照完整，带一次与正文哈希对得上的完成提交。
+
+        「事实不变」只能沿用这样一版的事实（:meth:`carry_forward_facts_unchanged` 的前提）。晋升权威正文先问这一句，
+        答否就按「需要重新核对」发布、正史待核对，不去撞沿用的 409（``canonical_manuscripts``）。
+        """
+        if not final_scene_row_id:
+            return False
+        final = self.session.get(FinalScene, final_scene_row_id)
+        snapshot = self.session.get(ContinuitySnapshot, f"continuity_scene_{final_scene_row_id}")
+        return bool(
+            final is not None
+            and final.scene_id == scene.scene_id
+            and final.chapter_id == scene.chapter_id
+            and snapshot is not None
+            and snapshot.status == "complete"
+            and self._has_valid_completion_commit(final, snapshot, project_id=project_id, scene_id=scene.scene_id)
+        )
+
     def carry_forward_facts_unchanged(
         self,
         final_scene_row_id: str,
@@ -380,25 +400,7 @@ class CanonDecisionsMixin:
                     "source_final_scene_row_id": source_final_scene_row_id,
                 },
             )
-        source_final = self.session.get(FinalScene, source_final_scene_row_id)
-        source_snapshot = self.session.get(
-            ContinuitySnapshot,
-            f"continuity_scene_{source_final_scene_row_id}",
-        )
-        source_commit_valid = self._has_valid_completion_commit(
-            source_final,
-            source_snapshot,
-            project_id=project_id,
-            scene_id=scene.scene_id,
-        )
-        if (
-            source_final is None
-            or source_final.scene_id != scene.scene_id
-            or source_final.chapter_id != scene.chapter_id
-            or source_snapshot is None
-            or source_snapshot.status != "complete"
-            or not source_commit_valid
-        ):
+        if not self.facts_committed(source_final_scene_row_id, scene=scene, project_id=project_id):
             raise DomainError(
                 "CANON_CARRY_SOURCE_NOT_COMMITTED",
                 "来源那一版终稿的正史没有完整核对（或正文后来变了），不能沿用它的事实",

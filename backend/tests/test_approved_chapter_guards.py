@@ -9,7 +9,6 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
 )
-from novel_system.services.canon_continuity import CanonContinuityService
 from tests.support.catalog import mark_chapter_approved as _approve_chapter
 
 
@@ -312,10 +311,11 @@ def test_chapter_order_requires_strict_complete_project_set_and_keeps_approved_p
     assert empty.status_code == 422
 
 
-def test_review_read_confirmation_and_approval_require_complete_canonical_manuscript(
+def test_review_and_approval_require_complete_canonical_manuscript(
     client,
     session,
 ) -> None:
+    """送审 / 定稿只看正文写齐没有；正史核对不再拦（B2-2）——没核对完照样能送审、能定稿，正史状态照旧报告。"""
     project_id = _create_project(client, title="Completion guard")
     chapter = _create_chapter(client, project_id, "Complete me", current=True)
     chapter_id = chapter["chapter_id"]
@@ -363,16 +363,9 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
         scene.scene_id for scene in scenes
     ]
 
-    read_incomplete = client.post(
-        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm",
-        json={"note": "I should not be able to confirm this."},
-    )
-    assert read_incomplete.status_code == 409
-    assert read_incomplete.json()["error"]["code"] == "CHAPTER_CANONICAL_MANUSCRIPT_INCOMPLETE"
-
     approve_incomplete = client.post(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
-        json={},
+        json={"read_confirmation": {"body_hash": "0" * 64, "note": "I should not be able to approve this."}},
         headers={"X-Idempotency-Key": "approve-incomplete-canonical"},
     )
     assert approve_incomplete.status_code == 409
@@ -390,22 +383,9 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
 
     _archive_scene(session, scenes[1], content="Second canonical scene.")
     session.commit()
-    canon_pending = client.patch(
-        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
-        json={"state": "review"},
-    )
-    assert canon_pending.status_code == 409
-    assert canon_pending.json()["error"]["code"] == "CHAPTER_CANON_NOT_COMMITTED"
-
-    canon = CanonContinuityService(session)
-    for scene in scenes:
-        canon.verify_scene_complete(
-            project_id,
-            scene.scene_id,
-            actor_ref="test-author",
-            note="测试已通读当前终稿，确认本场正史事实完整。",
-        )
-    session.commit()
+    canon = client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["canon_continuity"]
+    assert canon["complete"] is False
+    assert canon["pending_scene_ids"] == [scene.scene_id for scene in scenes]
     submitted = client.patch(
         f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
         json={"state": "review"},
@@ -413,16 +393,81 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["data"]["changed"] is True
 
-    read = client.post(
-        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm",
-        json={"note": "Read the complete canonical chapter."},
-    )
-    assert read.status_code == 200, read.text
-
+    body_hash = client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["body_hash"]
     approved = client.post(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
-        json={"revision_notes": "Complete."},
+        json={
+            "revision_notes": "Complete.",
+            "read_confirmation": {"body_hash": body_hash, "note": "Read the complete canonical chapter."},
+        },
         headers={"X-Idempotency-Key": "approve-complete-canonical"},
     )
     assert approved.status_code == 200, approved.text
     assert approved.json()["data"]["approved_chapter_id"] == chapter_id
+    after = client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["canon_continuity"]
+    assert after["complete"] is False
+
+
+def test_canon_of_an_approved_chapter_can_still_be_verified_but_its_text_stays_locked(client, session) -> None:
+    """正史不再拦定稿，于是定稿之后才去核对正史成了常事：核对只写正史账本、不碰正文，定稿的章照样能核对；
+    批准锁照旧挡正文——定稿前就存好、还没晋升的那一版作者稿，定稿之后再晋升 409 CHAPTER_APPROVED_LOCKED，
+    作者稿再保存也 409；终稿、指针与正文哈希都不动。"""
+    project_id = _create_project(client, title="雨城旧信")
+    chapter = _create_chapter(client, project_id, "旧信", current=True)
+    chapter_id = chapter["chapter_id"]
+    scene_id = chapter["scenes"][0]["scene_id"]
+    draft = _post(client, f"/api/v1/author-drafts/scene/{scene_id}/ensure")["draft"]
+    saved = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "<p>林昭在雨里拆开那封旧信。</p>", "base_revision_no": draft["revision_no"]},
+    )
+    assert saved.status_code == 200, saved.text
+    revision = saved.json()["data"]["draft"]["revision_no"]
+    final_id = _post(
+        client,
+        f"/api/v1/author-drafts/{draft['draft_id']}/promote-canonical",
+        {"base_revision_no": revision, "expected_current_final_scene_row_id": None, "narrative_effect": "requires_reconcile"},
+    )["final_scene_row_id"]
+    # 定稿前又改了一版、还没晋升：定稿之后想把它提升上去，就是对已批准章的正文写入
+    pending = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "<p>林昭在雨里拆开那封旧信，又合上了。</p>", "base_revision_no": revision},
+    )
+    assert pending.status_code == 200, pending.text
+    revision = pending.json()["data"]["draft"]["revision_no"]
+
+    detail = client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]
+    assert detail["canon_continuity"]["complete"] is False
+    approved = _post(
+        client,
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
+        {"read_confirmation": {"body_hash": detail["body_hash"]}},
+    )
+    assert approved["approved_chapter_id"] == chapter_id
+
+    verified = _post(
+        client,
+        f"/api/v1/projects/{project_id}/canon/scenes/{scene_id}/verify",
+        {"note": "定稿之后补核：这一场没有新的事实。", "expected_final_scene_row_id": final_id},
+    )
+    assert verified["complete"] is True
+    assert client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["canon_continuity"]["complete"] is True
+
+    promoted = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/promote-canonical",
+        json={"base_revision_no": revision, "expected_current_final_scene_row_id": final_id, "narrative_effect": "requires_reconcile"},
+        headers={"X-Idempotency-Key": "approved-guard-promote-after-approval"},
+    )
+    assert promoted.status_code == 409, promoted.text
+    assert promoted.json()["error"]["code"] == "CHAPTER_APPROVED_LOCKED"
+    edited = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": "<p>林昭把旧信压回案卷底下。</p>", "base_revision_no": revision},
+    )
+    assert edited.status_code == 409, edited.text
+    assert edited.json()["error"]["code"] == "CHAPTER_APPROVED_LOCKED"
+    session.expire_all()
+    assert session.query(FinalScene).filter_by(scene_id=scene_id).count() == 1
+    assert session.get(SceneRunState, scene_id).current_final_scene_row_id == final_id
+    assert session.get(FinalScene, final_id).content == "林昭在雨里拆开那封旧信。"
+    assert client.get(f"/api/v1/chapter-manuscripts/{chapter_id}").json()["data"]["body_hash"] == detail["body_hash"]

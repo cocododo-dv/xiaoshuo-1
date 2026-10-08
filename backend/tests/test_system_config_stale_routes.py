@@ -461,6 +461,8 @@ def test_provider_save_rejects_invalid_api_mode(client, monkeypatch) -> None:
     assert "api_mode" in error["message"]
     assert "completions" in error["message"]
     assert "bad_mode" in error["message"]
+    # 点名的是标识，说明文字是中文（批准 #27，联审 RV-M）
+    assert "不受支持" in error["message"] and "unsupported" not in error["message"]
 
     overview = client.get("/api/v1/system-config/llm").json()["data"]
     assert "bad_mode" not in overview["providers"]
@@ -537,6 +539,7 @@ def test_sync_missing_replaces_only_the_node_whose_own_stored_route_is_broken(cl
     assert error["code"] == "CONFIG_ROUTE_INVALID"
     assert "neutral_draft" in error["message"]
     assert "api_mode" in error["message"]
+    assert "模型分工配置有误" in error["message"] and "invalid" not in error["message"]
     assert client.get("/api/v1/system-config/llm").json()["data"]["models_snapshot"]["snapshot_id"] == seeded_id
 
     response = client.post(

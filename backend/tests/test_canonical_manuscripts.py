@@ -8,6 +8,7 @@ from sqlalchemy import select
 from novel_system.db.models import (
     AuthorDraft,
     AttemptTracker,
+    CanonCommit,
     ChapterGoal,
     ChapterMemory,
     ChapterState,
@@ -32,7 +33,11 @@ def _seed_scene(
     *,
     draft_content: str = "<p>作者改过的正文。</p>",
     approved: bool = False,
-) -> dict[str, str]:
+    with_old_final: bool = True,
+    verified: bool = True,
+) -> dict[str, str | None]:
+    """一场带作者稿（修订 2）的场。默认上一版权威正文在、正史已核对；``verified=False`` = 正史从没核对过
+    （实库上每一场都是这样），``with_old_final=False`` = 这一场还没有任何权威正文（第一次晋升）。"""
     project_id = f"CANON_{key}"
     chapter_id = f"{project_id}_CH01"
     scene_id = f"{chapter_id}_SC01"
@@ -70,6 +75,27 @@ def _seed_scene(
         )
     )
     session.flush()
+    if not with_old_final:
+        session.add(SceneRunState(scene_id=scene_id, scene_status="ready"))
+        session.add(
+            AuthorDraft(
+                draft_id=draft_id,
+                object_type="scene",
+                object_id=scene_id,
+                source_text_ref="author_blank:scene",
+                content=draft_content,
+                revision_no=2,
+                status="current",
+            )
+        )
+        session.commit()
+        return {
+            "project_id": project_id,
+            "chapter_id": chapter_id,
+            "scene_id": scene_id,
+            "old_final_id": None,
+            "draft_id": draft_id,
+        }
     session.add(
         SceneRunState(
             scene_id=scene_id,
@@ -105,13 +131,14 @@ def _seed_scene(
     )
     session.flush()
     Archiver(session).archive_final_scene(scene_id, old_final_id)
-    CanonContinuityService(session).verify_scene_complete(
-        project_id,
-        scene_id,
-        actor_ref="test",
-        note="fixture verifies the previous final before carry-forward",
-        expected_final_scene_row_id=old_final_id,
-    )
+    if verified:
+        CanonContinuityService(session).verify_scene_complete(
+            project_id,
+            scene_id,
+            actor_ref="test",
+            note="fixture verifies the previous final before carry-forward",
+            expected_final_scene_row_id=old_final_id,
+        )
     aggregate = Aggregator(session).run_final_aggregate(chapter_id)
     assert aggregate and aggregate["status"] == "created"
     session.commit()
@@ -622,6 +649,92 @@ def test_promote_requires_reconcile_publishes_text_but_keeps_canon_pending(clien
     assert state is not None and state.current_final_scene_row_id == data["final_scene_row_id"]
     assert state.narrative_sync_status == "pending_extraction"
     assert session.get(AuthorDraft, seeded["draft_id"]).last_promoted_revision_no == 2
+
+
+def _promotion_log(session, scene_id: str) -> OperationLog:
+    return (
+        session.query(OperationLog)
+        .filter_by(event_type="author_draft_promoted_canonical", object_ref=scene_id)
+        .order_by(OperationLog.operation_id.desc())
+        .first()
+    )
+
+
+def test_facts_unchanged_over_a_never_verified_final_publishes_with_canon_pending(client, session) -> None:
+    """写作台「提升为权威正文」一直带 facts_unchanged。上一版终稿的正史从没核对过（实库上每一场都是这样）时，
+    以前 409 CANON_CARRY_SOURCE_NOT_COMMITTED、重试也永远不成；现在没有可沿用的事实，就和「需要重新核对」一样发布：
+    正文成为权威正文，这一场的正史待核对，什么事实也不凭空沿用。"""
+    seeded = _seed_scene(session, "UNVERIFIED_SOURCE", verified=False)
+
+    response = _promote(client, seeded, key="unverified-source")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["final_scene_row_id"] != seeded["old_final_id"]
+    assert data["narrative_sync_status"] == "pending_extraction"
+    assert data["canon_continuity"]["complete"] is False
+    assert data["canon_continuity"]["status"] == "pending_extraction"
+    session.expire_all()
+    state = session.get(SceneRunState, seeded["scene_id"])
+    assert state is not None and state.current_final_scene_row_id == data["final_scene_row_id"]
+    assert state.narrative_sync_status == "pending_extraction"
+    assert session.get(FinalScene, data["final_scene_row_id"]).content == "作者改过的正文。"
+    assert session.query(CanonCommit).filter_by(scene_id=seeded["scene_id"]).count() == 0
+    payload = _promotion_log(session, seeded["scene_id"]).payload_json
+    assert payload["requested_narrative_effect"] == "facts_unchanged"
+    assert payload["narrative_effect"] == "requires_reconcile"
+    assert payload["narrative_events_preserved"] is False
+
+
+def test_first_promotion_with_facts_unchanged_publishes_with_canon_pending(client, session) -> None:
+    """这一场第一次晋升：没有上一版可沿用。以前 facts_unchanged 在这里 409 CANON_CARRY_SOURCE_REQUIRED。"""
+    seeded = _seed_scene(session, "FIRST_PROMOTION", with_old_final=False)
+
+    response = _promote(client, seeded, key="first-promotion")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["previous_final_scene_row_id"] is None
+    assert data["narrative_sync_status"] == "pending_extraction"
+    assert data["canon_continuity"]["complete"] is False
+    session.expire_all()
+    state = session.get(SceneRunState, seeded["scene_id"])
+    assert state is not None and state.current_final_scene_row_id == data["final_scene_row_id"]
+    assert state.narrative_sync_status == "pending_extraction"
+    assert _promotion_log(session, seeded["scene_id"]).payload_json["narrative_effect"] == "requires_reconcile"
+
+
+def test_same_revision_replay_without_carryable_facts_reports_canon_pending_instead_of_409(client, session) -> None:
+    """同一修订换一个幂等键再提升（已是权威正文，不再写正文）：这一版的正史不完整、来源那一版也早被它取代时，
+    以前照样去沿用来源的事实而 409；现在原样回报，把这一场标成待复核。"""
+    seeded = _seed_scene(session, "REPLAY_NOT_CARRYABLE")
+    first = _promote(client, seeded, key="replay-not-carryable-first")
+    assert first.status_code == 200, first.text
+    final_id = first.json()["data"]["final_scene_row_id"]
+    assert first.json()["data"]["canon_continuity"]["complete"] is True
+    session.expire_all()
+    # 沿用来的那次提交后来失效：这一版的正史不再完整；来源那一版的提交在沿用时已经退役
+    carried = session.query(CanonCommit).filter_by(final_scene_row_id=final_id, status="active").one()
+    carried.status = "superseded"
+    session.commit()
+
+    again = _promote(
+        client,
+        seeded,
+        key="replay-not-carryable-second",
+        expected_current_final_scene_row_id=final_id,
+    )
+
+    assert again.status_code == 200, again.text
+    data = again.json()["data"]
+    assert data["already_current"] is True
+    assert data["final_scene_row_id"] == final_id
+    assert data["canon_continuity"]["complete"] is False
+    session.expire_all()
+    state = session.get(SceneRunState, seeded["scene_id"])
+    assert state is not None and state.current_final_scene_row_id == final_id
+    assert state.narrative_sync_status == "pending_review"
+    assert session.query(CanonCommit).filter_by(final_scene_row_id=final_id, status="active").count() == 0
 
 
 def test_promote_rejects_stale_draft_and_stale_canonical_pointer(client, session) -> None:

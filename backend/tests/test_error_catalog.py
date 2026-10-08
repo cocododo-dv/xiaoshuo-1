@@ -127,13 +127,13 @@ def test_every_english_domain_error_code_has_a_chinese_message() -> None:
     assert missing == [], "这些错误码的说明是英文，给它们在 api/error_catalog.py 里配一句中文：" + ", ".join(missing)
 
 
-def test_catalog_messages_are_chinese_and_use_only_the_message_placeholder() -> None:
+def test_catalog_messages_are_whole_chinese_sentences_without_placeholders() -> None:
+    """作者只看中文（批准 #27）：表里每一句都是完整的中文，不留占位——以前带 ``{message}`` 的把英文原句塞进括号，
+    作者看到「只有作品当前的这一章可以这样操作（only the current chapter final can be approved）。」（联审 RV-M）。"""
     not_chinese = sorted(code for code, text in ERROR_MESSAGES.items() if not CJK.search(text))
     assert not_chinese == []
-    bad_placeholders = sorted(
-        code for code, text in ERROR_MESSAGES.items() if set(re.findall(r"\{[^}]*\}", text)) - {"{message}"}
-    )
-    assert bad_placeholders == []
+    with_placeholders = sorted(code for code, text in ERROR_MESSAGES.items() if re.search(r"\{[^}]*\}", text))
+    assert with_placeholders == []
 
 
 def test_catalog_lists_no_code_the_backend_no_longer_uses() -> None:
@@ -148,12 +148,45 @@ def test_catalog_lists_no_code_the_backend_no_longer_uses() -> None:
     assert stale == []
 
 
-def test_localized_message_keeps_chinese_and_carries_english_detail_in_the_placeholder() -> None:
+def test_localized_message_keeps_chinese_and_never_mixes_the_english_original_in() -> None:
     assert localized_message("SELECTION_LOCKED", "terminal selection is locked") == (ERROR_MESSAGES["SELECTION_LOCKED"], True)
     assert localized_message("SELECTION_LOCKED", "终选已经锁定。") == ("终选已经锁定。", False)
     assert localized_message("NOT_IN_THE_CATALOG", "english text") == ("english text", False)
-    text, replaced = localized_message("CONFIG_ROUTE_MODEL_MISSING", "model m1 is not listed by provider p1")
-    assert replaced and text == "模型分工用了服务商没有列出的模型（model m1 is not listed by provider p1）。"
+    for code, original in (
+        ("CONFIG_ROUTE_MODEL_MISSING", "model m1 is not listed by provider p1"),
+        ("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter final can be approved"),
+        ("CATALOG_STATE_INVALID", "chapter state must be one of ('planned', 'draft')"),
+    ):
+        text, replaced = localized_message(code, original)
+        assert replaced and text == ERROR_MESSAGES[code]
+        assert not re.search(r"[A-Za-z]{3,}", text), text
+
+
+def test_a_not_current_chapter_answers_in_chinese_only(client, monkeypatch) -> None:
+    """RV-M：定稿一章不是当前章的章，作者看到的整句是中文；英文原文只在打开 expose_error_detail 时进 debug_message。"""
+    project_id = client.post("/api/v2/projects", json={"title": "雨城旧信", "outline_text": "林昭翻开旧案卷。"}).json()["data"][
+        "project"
+    ]["project_id"]
+    for title, current in (("旧信", True), ("案卷", False)):
+        later = client.post(
+            f"/api/v2/projects/{project_id}/catalog/chapters", json={"title": title, "current": current, "with_scene": False}
+        ).json()["data"]["chapter"]
+    path = f"/api/v1/projects/{project_id}/chapters/{later['chapter_id']}/approve-final"
+    body = {"read_confirmation": {"body_hash": "0" * 64}}
+
+    error = client.post(path, json=body).json()["error"]
+    assert error["code"] == "PROJECT_CHAPTER_NOT_CURRENT"
+    assert error["message"] == ERROR_MESSAGES["PROJECT_CHAPTER_NOT_CURRENT"]
+    assert not re.search(r"[A-Za-z]{3,}", error["message"])
+    assert "debug_message" not in error["details"]
+
+    # expose_error_detail 在建应用时定：另起一个打开它的应用
+    monkeypatch.setenv("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", "true")
+    with TestClient(create_app()) as exposed_client:
+        exposed = exposed_client.post(path, json=body, headers={"X-Idempotency-Key": "not-current-exposed"}).json()["error"]
+    assert exposed["code"] == "PROJECT_CHAPTER_NOT_CURRENT"
+    assert exposed["message"] == ERROR_MESSAGES["PROJECT_CHAPTER_NOT_CURRENT"]
+    assert exposed["details"]["debug_message"] == "only the current chapter final can be approved"
 
 
 def _app_raising(exc: Exception):

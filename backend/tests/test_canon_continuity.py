@@ -934,7 +934,8 @@ def test_replacement_completion_supersedes_prior_revision_canon(session) -> None
     assert projected.get("injury") == "右臂痊愈"
 
 
-def test_chapter_status_reports_pending_scene_and_blocks_publish_contract(session) -> None:
+def test_chapter_status_reports_pending_scene_until_it_is_verified(session) -> None:
+    """章的正史状态只是报告（成稿中心「正史」与定稿对话框读它），不再拦送审 / 定稿（B2-2）。"""
     seeded = _seed_scene(session, "CHAPTER")
     service = CanonContinuityService(session)
     service.mark_archive_pending(seeded["final_scene_row_id"])
@@ -942,10 +943,15 @@ def test_chapter_status_reports_pending_scene_and_blocks_publish_contract(sessio
     status = service.chapter_status(seeded["project_id"], seeded["chapter_id"])
     assert status["complete"] is False
     assert status["pending_scene_ids"] == [seeded["scene_id"]]
+    assert not hasattr(service, "require_chapter_complete")
 
-    with pytest.raises(DomainError) as blocked:
-        service.require_chapter_complete(seeded["project_id"], seeded["chapter_id"])
-    assert blocked.value.code == "CHAPTER_CANON_NOT_COMMITTED"
+    service.verify_scene_complete(seeded["project_id"], seeded["scene_id"], actor_ref="author", note="核对过本场。")
+    verified = service.chapter_status(seeded["project_id"], seeded["chapter_id"])
+    assert verified["pending_scene_ids"] == []
+    assert verified["synced_scene_count"] == 1
+    # 下一场还没有终稿：整章照旧不算核对完
+    assert verified["missing_final_scene_ids"] == [seeded["next_scene_id"]]
+    assert verified["complete"] is False
 
 
 def test_canon_review_api_exposes_and_commits_pending_candidate(client, session) -> None:

@@ -6,6 +6,7 @@ overview 每个节点的就绪判断（服务在不在、启用没有、密钥�
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from novel_system.services.errors import DomainError
@@ -274,6 +275,28 @@ def writable_models_payload(models_category: dict[str, Any]) -> tuple[dict[str, 
     return config_payload, prune_retired_routes(config_payload)
 
 
+#: 路由解析（``llm_routing``）英文报错里点名的节点与字段：``task_routing.<节点>.<字段> must be …`` /
+#: ``task_routing.<节点> has unsupported <字段> <值>`` / ``task_routing.<节点> is missing <字段>``
+_ROUTE_ERROR_TARGET = re.compile(
+    r"\btask_routing\.([A-Za-z0-9_-]+)(?:\.([A-Za-z_]+)| has unsupported ([A-Za-z_]+)| is missing ([A-Za-z_]+))?"
+)
+
+
+def _route_config_problem(message: str) -> str:
+    """给作者的中文：点名出错的节点（和字段），英文原句不进说明文字（只在 expose_error_detail 时进 debug_message）。"""
+    match = _ROUTE_ERROR_TARGET.search(message or "")
+    if match is None:
+        return "模型分工配置有误：请在系统设置里检查各节点的分工后重新保存。"
+    node, dotted, unsupported, missing = match.groups()
+    field = dotted or unsupported
+    problem = (
+        f"节点「{node}」缺少 {missing}"
+        if missing
+        else (f"节点「{node}」的 {field} 写得不对" if field else f"节点「{node}」写得不对")
+    )
+    return f"模型分工配置有误：{problem}，请在系统设置里改正后重新保存（或用「一键补齐」换掉这条分工）。"
+
+
 def parse_route_config_or_raise(config_payload: dict[str, Any]):
     """路由解析错误(某节点 api_mode / response_format 写错等)是作者可修的配置问题,
     必须以 422 + 点名节点的消息回到设置页,而不是漏成 500 INTERNAL_ERROR。"""
@@ -282,7 +305,7 @@ def parse_route_config_or_raise(config_payload: dict[str, Any]):
     except LLMConfigurationError as exc:
         raise DomainError(
             "CONFIG_ROUTE_INVALID",
-            f"LLM node route config is invalid: {exc.message}",
+            _route_config_problem(exc.message),
             status_code=422,
             details={"llm_error_code": exc.code},
         ) from exc
@@ -295,8 +318,8 @@ def provider_route_api_mode(provider_id: str, provider: dict[str, Any]) -> str:
     if api_mode not in SUPPORTED_API_MODES:
         raise DomainError(
             "CONFIG_PROVIDER_INVALID",
-            f"provider {provider_id} has unsupported api_mode {api_mode}; "
-            f"set it to one of {', '.join(sorted(SUPPORTED_API_MODES))} and save the provider again",
+            f"服务商「{provider_id}」的 api_mode「{api_mode}」不受支持：改成 {' / '.join(sorted(SUPPORTED_API_MODES))} 之一，"
+            "再重新保存这个服务商。",
             status_code=422,
         )
     return api_mode

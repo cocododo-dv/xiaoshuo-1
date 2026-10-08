@@ -3,7 +3,7 @@
 这个文件过去 1,700 多行，装着作品增改、看板、物化引擎、章节运行与定稿流程和后台 worker（B08-09）。现在：
 
 - ``materialization``：大纲计划 → 目录的物化（落位、移走空章 / 占位章、随章取回）；
-- ``chapter_final_flow``：运行本章、通读确认、确认定稿、重新打开，以及后台 worker；
+- ``chapter_final_flow``：运行本章、确认定稿（含「已通读」）、重新打开，以及后台 worker；
 - ``project_payloads`` / ``project_status``：回包形状、字段归一与状态词表。
 
 ``ProjectService`` 留在这里；上面几个模块里别处（雪花工作区、路由、后台恢复、测试）从 ``projects`` 导入的名字，
@@ -54,7 +54,6 @@ from novel_system.services.project_status import (  # noqa: F401  (re-exported: 
     PROJECT_STATUS_CHAPTER_RUNNING,
     PROJECT_STATUS_COMPLETED,
     PROJECT_STATUS_OUTLINE_DRAFT,
-    REFERENCE_SAFETY_RULES,
 )
 from novel_system.services.scene_lookup import require_project
 from novel_system.services.snowflake_queries import latest_outline_plan
@@ -183,9 +182,6 @@ class ProjectService:
             "latest_plan": outline_plan_payload(latest_plan) if latest_plan else None,
             "chapters": chapters,
             "current_chapter": current_chapter,
-            "review_packet": ProjectChapterFlowService(self.session).review_packet(
-                project, project.current_chapter_id
-            ),
             "next_action": self._next_action(project, latest_plan),
             "runtime": self._runtime_readiness(),
         }

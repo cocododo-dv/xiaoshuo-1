@@ -5,11 +5,13 @@
 回信封时按这张表换成中文：
 
 - 原来的说明已经是中文（有汉字）的原样保留——那是写的人专门写给作者的，往往比这里的通用说法具体；
-- 表里的说明带 ``{message}`` 的，把原来的英文细节（节点名、模型名、字段名这类标识）放进括号里，别的整句替换；
-- 被换掉的英文原文只在 ``NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL`` 打开时放进 ``details.debug_message``。
+- 英文说明整句换成表里的中文，不往中文里掺英文原文——以前表里有五十来条带 ``{message}`` 占位，把英文原句塞进括号，
+  作者看到「只有作品当前的这一章可以这样操作（only the current chapter final can be approved）。」（联审 RV-M，2026-10）；
+- 被换掉的英文原文只在 ``NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL`` 打开时放进 ``details.debug_message``；界面要用的标识
+  （节点、服务商、字段）走 ``details`` 里的结构化字段，不走说明文字。
 
-守卫 ``tests/test_error_catalog.py``：源码里每个带英文说明的 ``DomainError`` 错误码都要在这张表里；表里的说明都是中文；
-表里不留已经没人抛的错误码。
+守卫 ``tests/test_error_catalog.py``：源码里每个带英文说明的 ``DomainError`` 错误码都要在这张表里；表里的说明都是完整的
+中文句子、不带占位；表里不留已经没人抛的错误码。
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "PROJECT_OUTLINE_REQUIRED": "新建作品需要一段大纲文字。",
     "PROJECT_TITLE_REQUIRED": "作品标题不能为空。",
     "PROJECT_CHAPTER_NOT_FOUND": "这一章不属于这部作品。",
-    "PROJECT_CHAPTER_NOT_CURRENT": "只有作品当前的这一章可以这样操作（{message}）。",
+    "PROJECT_CHAPTER_NOT_CURRENT": "只有作品当前的这一章可以这样操作。",
     "PROJECT_OWNERSHIP_CONFLICT": "这一场的归属与它所在的章对不上，请刷新后再试。",
     "PROJECT_OWNERSHIP_UNRESOLVED": "这一场不属于任何作品，无法继续。",
     "OUTLINE_PLAN_NOT_FOUND": "找不到这份大纲计划。",
@@ -56,7 +58,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "CHAPTER_ALREADY_OWNED": "这一章属于另一部作品。",
     "CHAPTER_IDENTITY_IMMUTABLE": "已有的章不能改到另一部作品或另一份大纲下。",
     "CHAPTER_DISPLAY_ORDER_CONFLICT": "另一章已经用了这个章序。",
-    "CHAPTER_PROJECT_REQUIRED": "这一章不属于任何作品，不能发布正史。",
     "SCENE_NOT_FOUND": "找不到这一场。",
     "SCENE_TRASHED": "这一场在回收站里，先恢复它。",
     "SCENE_ALREADY_OWNED": "这一场属于另一部作品。",
@@ -65,7 +66,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "SCENE_STATE_NOT_FOUND": "这一场还没有运行记录。",
     "SCENE_AUTHOR_NOTES_CONFLICT": "这一场的作者笔记在别处改过了，请刷新后再保存。",
     "SCENE_DEEP_REVIEW_PREFERENCES_CONFLICT": "深改面板的设置在别处改过了，请刷新后再保存。",
-    "WRITER_BRIEF_INVALID": "写作简报的格式不对（{message}）。",
+    "WRITER_BRIEF_INVALID": "写作简报的格式不对。",
     "AUTHOR_NOTE_INVALID": "改写指令必须是文字。",
     "AUTHOR_NOTE_TOO_LONG": "改写指令太长了，请精简后再提交。",
     # ---- 目录（章节编排）----
@@ -81,7 +82,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "CATALOG_IMPORT_EMPTY": "导入的目录里没有章。",
     "CATALOG_NOT_EMPTY": "只能向空目录导入。",
     "CATALOG_POV_CHARACTER_NOT_FOUND": "这部作品里没有这个视角人物。",
-    "CATALOG_STATE_INVALID": "状态不在可选的范围里（{message}）。",
+    "CATALOG_STATE_INVALID": "状态不在可选的范围里。",
     "SCENE_ORDER_CHAPTER_MISMATCH": "排序里的场必须都属于同一章。",
     "SCENE_ORDER_DUPLICATE": "场的顺序里有重复的场。",
     "SCENE_ORDER_INCOMPLETE": "场的顺序必须包含这一章的每一场。",
@@ -90,10 +91,10 @@ ERROR_MESSAGES: dict[str, str] = {
     # ---- 资料库 ----
     "LIBRARY_CHARACTER_IN_USE": "这个人物还被构思或起草用着，不能删除。",
     "LIBRARY_CHARACTER_NOT_FOUND": "这部作品里没有这个人物。",
-    "LIBRARY_ENTITY_KIND_INVALID": "条目类型不在可选的范围里（{message}）。",
+    "LIBRARY_ENTITY_KIND_INVALID": "条目类型不在可选的范围里。",
     "LIBRARY_ENTITY_NAME_REQUIRED": "名称不能为空。",
     "LIBRARY_ENTITY_NOT_FOUND": "找不到这个资料条目。",
-    "LIBRARY_ENTITY_STATUS_INVALID": "条目状态不在可选的范围里（{message}）。",
+    "LIBRARY_ENTITY_STATUS_INVALID": "条目状态不在可选的范围里。",
     "LIBRARY_RELATION_CHARACTER_NOT_FOUND": "关系的一端人物不在这部作品里。",
     "LIBRARY_RELATION_NOT_FOUND": "找不到这条关系。",
     "LIBRARY_RELATION_REF_INVALID": "关系两端的写法不对（要么是条目，要么是人物）。",
@@ -103,24 +104,24 @@ ERROR_MESSAGES: dict[str, str] = {
     "TIMELINE_REALIZED_EVENT_IMMUTABLE": "这条时间线事件已经写进正史，不能删除。",
     # ---- 回收站 ----
     "TRASH_ENTRY_INVALID": "回收站条目编号不对。",
-    "TRASH_OPERATION_BLOCKED": "回收站操作被拦下了（{message}）。",
+    "TRASH_OPERATION_BLOCKED": "回收站操作被拦下了。",
     # ---- 待办 ----
     "REVIEW_NOT_FOUND": "找不到这张待办卡片。",
     "REVIEW_PROJECT_REQUIRED": "需要指明是哪部作品的待办。",
     "REVIEW_STATE_INVALID": "待办的筛选只能是「待处理」或「稍后提醒」。",
     "REVIEW_ACTION_INDEX_INVALID": "卡片上没有这个动作。",
-    "REVIEW_CARD_KIND_INVALID": "待办卡片的类型不在可选的范围里（{message}）。",
+    "REVIEW_CARD_KIND_INVALID": "待办卡片的类型不在可选的范围里。",
     "REVIEW_CARD_TITLE_REQUIRED": "待办卡片需要标题。",
-    "REVIEW_EFFECT_INVALID": "这个卡片动作缺少必要的信息（{message}）。",
+    "REVIEW_EFFECT_INVALID": "这个卡片动作缺少必要的信息。",
     "REVIEW_EFFECT_PROJECT_REQUIRED": "这个卡片动作需要在一部作品里执行。",
-    "REVIEW_EFFECT_UNKNOWN": "不认识这个卡片动作（{message}）。",
+    "REVIEW_EFFECT_UNKNOWN": "不认识这个卡片动作。",
     # ---- 作者稿 / 权威正文 ----
     "AUTHOR_DRAFT_CONFLICT": "作者稿在别处改过了，请刷新后再操作。",
     "AUTHOR_DRAFT_EMPTY": "空的作者稿不能成为正文。",
     "AUTHOR_DRAFT_INVALID": "作者稿的正文必须是文字。",
     "AUTHOR_DRAFT_NOT_CURRENT": "这不是这一场当前的作者稿，请刷新后再操作。",
     "AUTHOR_DRAFT_NOT_FOUND": "找不到这份作者稿。",
-    "AUTHOR_DRAFT_PROMOTION_INVALID": "晋升正文的请求缺少或带错了参数（{message}）。",
+    "AUTHOR_DRAFT_PROMOTION_INVALID": "晋升正文的请求缺少或带错了参数。",
     "AUTHOR_DRAFT_PROMOTION_SCOPE_UNSUPPORTED": "目前只有场景的作者稿可以晋升为正文。",
     "AUTHOR_DRAFT_PROPOSAL_MODE_UNSUPPORTED": "只支持「AI 续写」这一种候选。",
     "AUTHOR_DRAFT_REVISION_NOT_FOUND": "找不到作者稿的这个历史版本。",
@@ -144,7 +145,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "CHAPTER_CANONICAL_MANUSCRIPT_INCOMPLETE": "这一章还有场没有正文，不能审阅或定稿。",
     "CHAPTER_APPROVAL_NOTES_TOO_LONG": "定稿备注不能超过 2000 字。",
     "CHAPTER_FINAL_NOT_APPROVED": "只有已经定稿的章才能重开。",
-    "CHAPTER_FINAL_READ_CONFIRM_REQUIRED": "请先通读并确认这一章当前的正文，再定稿。",
     "CHAPTER_FINAL_READ_CONFIRM_UNAVAILABLE": "这一章现在还没有可以通读的正文。",
     "CHAPTER_READ_CONFIRM_INVALID": "「已通读」需要带上读到的那一份正文的指纹，请刷新后再确认。",
     "CHAPTER_READ_CONFIRM_NOTE_TOO_LONG": "通读备注不能超过 1000 字。",
@@ -171,8 +171,8 @@ ERROR_MESSAGES: dict[str, str] = {
     "RESUME_EXECUTION_NOT_FOUND": "没有可以续跑的起草记录，请重新起草这一场。",
     "RESUME_NOT_AVAILABLE": "这一场没有停在终选门，不需要续跑。",
     "NEUTRAL_DRAFT_REPAIR_INVALID": "首稿修复一次后仍不合格，这次起草没有继续；请重新起草。",
-    "SCENE_EXECUTION_CONTRACT_BLOCKED": "场景卡还缺起草需要的内容（{message}）。",
-    "SCENE_BLUEPRINT_INVALID": "模型给出的场景蓝图不完整（{message}），请重新起草。",
+    "SCENE_EXECUTION_CONTRACT_BLOCKED": "场景卡还缺起草需要的内容。",
+    "SCENE_BLUEPRINT_INVALID": "模型给出的场景蓝图不完整，请重新起草。",
     "CANDIDATE_NOT_FOUND": "这份候选稿不属于这一场（可能已被新一轮起草替换），请刷新。",
     "CANDIDATE_NOT_IN_GATE": "这份候选稿不在这次终选的候选里。",
     "SELECTION_LOCKED": "终选已经提交，不能改选；想换一稿，请重新起草这一场。",
@@ -181,7 +181,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "NO_VALID_DRAFT": "这一场还没有可采纳的正文：先起草，或在写作台写好。",
     "INVALID_BUDGET_TOPUP": "追加预算的数量不合法：都要是非负整数，至少一项大于 0。",
     # ---- 写作台深改 ----
-    "PASSAGE_PATCH_INVALID": "局部改写的请求缺少必要的信息（{message}）。",
+    "PASSAGE_PATCH_INVALID": "局部改写的请求缺少必要的信息。",
     "PASSAGE_PATCH_NOT_FOUND": "找不到这份局部改写。",
     "PASSAGE_PATCH_OPTION_NOT_FOUND": "找不到选中的这个改写方案。",
     "WRITER_PASSAGE_PATCH_OUTPUT_INVALID": "模型这次的改写没有可追溯的调用记录，已丢弃；请再试一次。",
@@ -197,25 +197,25 @@ ERROR_MESSAGES: dict[str, str] = {
     "NARRATIVE_CURSOR_PROJECT_MISMATCH": "这一场与作品对不上，请刷新后再试。",
     "NARRATIVE_CURSOR_SCENE_NOT_FOUND": "找不到这一场。",
     # ---- 雪花构思 ----
-    "SNOWFLAKE_LLM_CALL_FAILED": "模型调用失败（{message}）。",
-    "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA": "模型返回的内容格式不对，请再生成一次（{message}）。",
-    "SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING": "这一步的模型分工或提示词没有配置（{message}）。",
+    "SNOWFLAKE_LLM_CALL_FAILED": "模型调用失败。",
+    "SNOWFLAKE_LLM_RESPONSE_INVALID_SCHEMA": "模型返回的内容格式不对，请再生成一次。",
+    "SNOWFLAKE_LLM_ROUTE_OR_PROMPT_MISSING": "这一步的模型分工或提示词没有配置。",
     "SNOWFLAKE_SCENES_REQUIRED": "还没有场景，先在第 09 步列出场景。",
     # ---- 系统配置 ----
-    "CONFIG_CATEGORY_UNSUPPORTED": "不支持这类配置（{message}）。",
-    "CONFIG_PROVIDER_INVALID": "服务商配置有误（{message}）。",
-    "CONFIG_PROVIDER_NOT_FOUND": "找不到这个服务商（{message}）。",
-    "CONFIG_PROVIDER_UNSUPPORTED": "不支持这个服务商类型（{message}）。",
+    "CONFIG_CATEGORY_UNSUPPORTED": "不支持这类配置。",
+    "CONFIG_PROVIDER_INVALID": "服务商配置有误。",
+    "CONFIG_PROVIDER_NOT_FOUND": "找不到这个服务商。",
+    "CONFIG_PROVIDER_UNSUPPORTED": "不支持这个服务商类型。",
     "CONFIG_ROLE_ASSIGNMENTS_REQUIRED": "请至少给一个角色分配模型。",
-    "CONFIG_ROLE_ASSIGNMENT_INVALID": "角色分工的写法不对（{message}）。",
-    "CONFIG_ROLE_SLOT_UNKNOWN": "不认识这个角色（{message}）。",
-    "CONFIG_ROUTE_INVALID": "模型分工配置有误（{message}）。",
-    "CONFIG_ROUTE_MODEL_MISSING": "模型分工用了服务商没有列出的模型（{message}）。",
-    "CONFIG_ROUTE_PROVIDER_MISSING": "模型分工引用了不存在的服务商（{message}）。",
-    "CONFIG_ROUTE_PROVIDER_NOT_READY": "模型分工引用的服务商还没启用或没配好密钥（{message}）。",
+    "CONFIG_ROLE_ASSIGNMENT_INVALID": "角色分工的写法不对。",
+    "CONFIG_ROLE_SLOT_UNKNOWN": "不认识这个角色。",
+    "CONFIG_ROUTE_INVALID": "模型分工配置有误。",
+    "CONFIG_ROUTE_MODEL_MISSING": "模型分工用了服务商没有列出的模型。",
+    "CONFIG_ROUTE_PROVIDER_MISSING": "模型分工引用了不存在的服务商。",
+    "CONFIG_ROUTE_PROVIDER_NOT_READY": "模型分工引用的服务商还没启用或没配好密钥。",
     "CONFIG_SECRET_REQUIRED": "后端没有配置密钥加密口令（NOVEL_SYSTEM_CONFIG_SECRET），不能保存或读取服务商密钥；请用启动脚本启动后端。",
     "CONFIG_SNAPSHOT_NOT_FOUND": "找不到这一版配置。",
-    "CONFIG_VALIDATION_FAILED": "配置没有通过校验（{message}）。",
+    "CONFIG_VALIDATION_FAILED": "配置没有通过校验。",
     # ---- 风格参考 ----
     "STYLE_REFERENCE_BOOK_ENCODING_UNSUPPORTED": "参考书必须是 UTF-8 或 GB18030 编码的文本。",
     "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED": "只支持导入 TXT / MD 格式的参考书。",
@@ -228,57 +228,57 @@ ERROR_MESSAGES: dict[str, str] = {
     "STYLE_REFERENCE_PATH_IMPORT_DISABLED": "服务器路径导入没有开启：请用上传，或先配置允许导入的目录。",
     "STYLE_REFERENCE_PROJECT_NOT_FOUND": "找不到这部作品。",
     "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID": "导入权属声明的格式不对。",
-    "STYLE_REFERENCE_UPLOAD_TOO_LARGE": "参考书太大（{message}）。",
+    "STYLE_REFERENCE_UPLOAD_TOO_LARGE": "参考书太大。",
     "STYLE_REFERENCE_BOOK_NOT_FOUND": "找不到这本参考书。",
     "STYLE_REFERENCE_PROFILE_NOT_FOUND": "找不到这份文风画像。",
     "STYLE_REFERENCE_BINDING_NOT_FOUND": "找不到这条绑定。",
-    "STYLE_REFERENCE_APPLY_PARAM_INVALID": "用于作品的参数不对（{message}）。",
+    "STYLE_REFERENCE_APPLY_PARAM_INVALID": "用于作品的参数不对。",
     "STYLE_REFERENCE_CARD_LINE_STATE_INVALID": "文风卡一句的状态只能是「总带上」「不用这句」或清空。",
     "STYLE_REFERENCE_CARD_LINE_NOT_FOUND": "这份文风卡上没有这一句。",
-    "STYLE_REFERENCE_BANNED_TERM_INVALID": "禁用词的写法不对（{message}）。",
+    "STYLE_REFERENCE_BANNED_TERM_INVALID": "禁用词的写法不对。",
     "STYLE_REFERENCE_BANNED_TERM_NOT_FOUND": "找不到这个禁用词。",
     "STYLE_REFERENCE_BANNED_TERM_PROTECTED": "预置的禁用词不能删除。",
     "STYLE_REFERENCE_CHECK_NOT_FOUND": "找不到这次对照检查。",
-    "STYLE_REFERENCE_CHECK_JUDGE_FAILED": "对照检查的评审没有给出可用的结果（{message}）。",
+    "STYLE_REFERENCE_CHECK_JUDGE_FAILED": "对照检查的评审没有给出可用的结果。",
     "STYLE_REFERENCE_JOB_NOT_FOUND": "找不到这个参考书作业。",
     # ---- 章定稿锁 / 抄袭门 / 输入预算 ----
     "CHAPTER_APPROVED_LOCKED": "这一章已经定稿：要改它或它的场，先在成稿中心重开定稿。",
     "SOURCE_SAFETY_UNAVAILABLE": "参考书抄袭检查这次没能完成，稿子先不归档；稍后再试。",
     "CONTINUITY_BUDGET_EXCEEDED": "这一场的上下文太长，精简之后仍超出模型的输入上限；请把场景拆小一些再起草。",
     # ---- 需要模型的各个节点（fail-closed：没配好模型或调用失败）----
-    "AUTHOR_PROPOSAL_LLM_NOT_CONFIGURED": "AI 续写需要先配好模型（{message}）。",
-    "AUTHOR_PROPOSAL_GENERATE_FAILED": "AI 续写失败了（{message}）。",
-    "SCENE_BLUEPRINT_LLM_REQUIRED": "场景蓝图需要先配好模型（{message}）。",
-    "SCENE_BLUEPRINT_FAILED": "场景蓝图生成失败（{message}）。",
-    "CHAPTER_STORY_ARCHITECTURE_LLM_REQUIRED": "章节故事架构需要先配好模型（{message}）。",
-    "CHAPTER_STORY_ARCHITECTURE_FAILED": "章节故事架构生成失败（{message}）。",
-    "CHAPTER_STORY_ARCHITECTURE_OUTPUT_INVALID": "模型给出的章节故事架构不完整，请再试一次（{message}）。",
-    "CHARACTER_PRESSURE_BLUEPRINT_LLM_REQUIRED": "人物压力蓝图需要先配好模型（{message}）。",
-    "CHARACTER_PRESSURE_BLUEPRINT_FAILED": "人物压力蓝图生成失败（{message}）。",
-    "CHARACTER_PRESSURE_BLUEPRINT_OUTPUT_INVALID": "模型给出的人物压力蓝图不完整，请再试一次（{message}）。",
-    "WRITER_DEEP_REVIEW_LLM_REQUIRED": "AI 深评需要先配好模型（{message}）。",
-    "WRITER_DEEP_REVIEW_LLM_FAILED": "AI 深评失败了（{message}）。",
-    "WRITER_PASSAGE_PATCH_LLM_REQUIRED": "局部改写需要先配好模型（{message}）。",
-    "WRITER_PASSAGE_PATCH_LLM_FAILED": "局部改写失败了（{message}）。",
-    "CHAPTER_PLAN_LLM_CALL_FAILED": "章节编排的模型调用失败（{message}）。",
-    "CHAPTER_PLAN_LLM_RESPONSE_INVALID_SCHEMA": "模型给出的章节编排格式不对，请再试一次（{message}）。",
+    "AUTHOR_PROPOSAL_LLM_NOT_CONFIGURED": "AI 续写需要先配好模型。",
+    "AUTHOR_PROPOSAL_GENERATE_FAILED": "AI 续写失败了。",
+    "SCENE_BLUEPRINT_LLM_REQUIRED": "场景蓝图需要先配好模型。",
+    "SCENE_BLUEPRINT_FAILED": "场景蓝图生成失败。",
+    "CHAPTER_STORY_ARCHITECTURE_LLM_REQUIRED": "章节故事架构需要先配好模型。",
+    "CHAPTER_STORY_ARCHITECTURE_FAILED": "章节故事架构生成失败。",
+    "CHAPTER_STORY_ARCHITECTURE_OUTPUT_INVALID": "模型给出的章节故事架构不完整，请再试一次。",
+    "CHARACTER_PRESSURE_BLUEPRINT_LLM_REQUIRED": "人物压力蓝图需要先配好模型。",
+    "CHARACTER_PRESSURE_BLUEPRINT_FAILED": "人物压力蓝图生成失败。",
+    "CHARACTER_PRESSURE_BLUEPRINT_OUTPUT_INVALID": "模型给出的人物压力蓝图不完整，请再试一次。",
+    "WRITER_DEEP_REVIEW_LLM_REQUIRED": "AI 深评需要先配好模型。",
+    "WRITER_DEEP_REVIEW_LLM_FAILED": "AI 深评失败了。",
+    "WRITER_PASSAGE_PATCH_LLM_REQUIRED": "局部改写需要先配好模型。",
+    "WRITER_PASSAGE_PATCH_LLM_FAILED": "局部改写失败了。",
+    "CHAPTER_PLAN_LLM_CALL_FAILED": "章节编排的模型调用失败。",
+    "CHAPTER_PLAN_LLM_RESPONSE_INVALID_SCHEMA": "模型给出的章节编排格式不对，请再试一次。",
     # ---- 模型调用层原样透出的错误码（记账拒绝、预算用尽、服务商出错）----
     "LLM_PROVIDER_DISABLED": "还没有启用模型：先在系统设置里配好模型。",
-    "LLM_ROUTE_NOT_CONFIGURED": "这个节点还没有分配模型：在系统设置里补齐模型分工（{message}）。",
+    "LLM_ROUTE_NOT_CONFIGURED": "这个节点还没有分配模型：在系统设置里补齐模型分工。",
     "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED": "这一场的 token 预算已用完；已有正文都保留着，追加预算后可以接着起草。",
     "LLM_BUSINESS_ATTEMPT_BUDGET_EXHAUSTED": "这一场的重试次数已用完；已有正文都保留着，追加预算后可以接着起草。",
     "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED": "这一场调用服务商的次数已用完；已有正文都保留着，追加预算后可以接着起草。",
     "LLM_SCENE_CALL_IN_FLIGHT": "这一场还有一次模型调用没有结束，请稍后再试。",
-    "LLM_USAGE_EXCEEDS_RESERVATION": "模型实际用掉的 token 超过了这次预留的额度，结果没有采用（{message}）。",
+    "LLM_USAGE_EXCEEDS_RESERVATION": "模型实际用掉的 token 超过了这次预留的额度，结果没有采用。",
     "LLM_REQUEST_TIMEOUT": "模型响应超时，请稍后重试。",
     "LLM_RATE_LIMITED": "服务商限流了，请稍后重试。",
-    "LLM_HTTP_FAILURE": "调用服务商失败（{message}）。",
-    "LLM_RESPONSE_TRUNCATED": "模型的输出被截断了，请再试一次（{message}）。",
+    "LLM_HTTP_FAILURE": "调用服务商失败。",
+    "LLM_RESPONSE_TRUNCATED": "模型的输出被截断了，请再试一次。",
 }
 
 
 def localized_message(code: str, message: str) -> tuple[str, bool]:
-    """``(作者看的说明, 是否换过)``：原说明已经是中文、或错误码不在表里时原样返回。"""
+    """``(作者看的说明, 是否换过)``：原说明已经是中文、或错误码不在表里时原样返回；否则整句换成表里的中文。"""
 
     original = str(message or "")
     if _CJK.search(original):
@@ -286,10 +286,6 @@ def localized_message(code: str, message: str) -> tuple[str, bool]:
     template = ERROR_MESSAGES.get(code)
     if template is None:
         return original, False
-    if "{message}" in template:
-        if not original:
-            return template.replace("（{message}）", "").replace("{message}", ""), True
-        return template.replace("{message}", original), True
     return template, True
 
 

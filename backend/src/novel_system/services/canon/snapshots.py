@@ -66,17 +66,6 @@ class CanonSnapshotsMixin:
             ),
         }
 
-    def require_chapter_complete(self, project_id: str, chapter_id: str) -> dict[str, Any]:
-        status = self.chapter_status(project_id, chapter_id)
-        if not status["complete"]:
-            raise DomainError(
-                "CHAPTER_CANON_NOT_COMMITTED",
-                "这一章还有场的正史没有核对完成，全部核对完才能定稿",
-                status_code=409,
-                details=status,
-            )
-        return status
-
     def _chapter_scene_rows(self, chapter_id: str) -> list[SceneCard]:
         return list(
             self.session.execute(

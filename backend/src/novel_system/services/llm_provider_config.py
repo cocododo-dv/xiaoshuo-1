@@ -89,14 +89,17 @@ def httpx_trust_env_for_base_url(base_url: str) -> bool:
 def normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     provider_id = required_text(payload.get("provider_id"), "provider_id")
     provider_type = str(payload.get("provider_type") or payload.get("provider") or "").strip()
+    # 这几句经「保存服务商」的 422 CONFIG_PROVIDER_INVALID 原样给作者看：中文、点名取值（批准 #27，联审 RV-M）
     if provider_type not in SUPPORTED_PROVIDERS:
-        raise ValueError(f"unsupported provider {provider_type}")
+        raise ValueError(f"不支持服务商类型「{provider_type}」。")
     credential_mode = str(payload.get("credential_mode") or "api_key")
     if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
-        raise ValueError(f"unsupported credential_mode {credential_mode}")
+        raise ValueError(
+            f"服务商配置有误：凭据方式「{credential_mode}」不受支持，只能是 {' / '.join(sorted(SUPPORTED_CREDENTIAL_MODES))}。"
+        )
     base_url = normalize_provider_base_url(payload.get("base_url") or DEFAULT_PROVIDER_BASE_URLS.get(provider_type), provider_type)
     if not base_url:
-        raise ValueError("provider base_url is required")
+        raise ValueError("服务商配置有误：没有填地址（base_url）。")
     models = payload.get("models") if isinstance(payload.get("models"), list) else []
     provider_options = payload.get("provider_options") if isinstance(payload.get("provider_options"), dict) else {}
     # api_mode 决定节点路由的端点(chat/responses);写错的值会在之后的
@@ -104,8 +107,7 @@ def normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     api_mode = str(payload.get("api_mode") or adapter_registry()[provider_type].default_api_mode)
     if api_mode not in SUPPORTED_API_MODES:
         raise ValueError(
-            f"provider {provider_id} has unsupported api_mode {api_mode}; "
-            f"expected one of {', '.join(sorted(SUPPORTED_API_MODES))}"
+            f"服务商「{provider_id}」的 api_mode「{api_mode}」不受支持：改成 {' / '.join(sorted(SUPPORTED_API_MODES))} 之一。"
         )
     return {
         "provider_id": provider_id,

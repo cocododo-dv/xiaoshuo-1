@@ -51,15 +51,11 @@ class ProjectProfileUpdateRequest(_ProjectFieldsRequest):
     pass
 
 
-# ---- 本章流程：运行本章、已通读、确认定稿、重开定稿 ----
+# ---- 本章流程：运行本章、确认定稿（含已通读）、重开定稿 ----
 
 
 class ProjectChapterRunJobRequest(StrictRequestModel):
     """运行本章没有可调的选项（离线演示已退役，``offline_demo`` 一并删去）；空对象即可。"""
-
-
-class ProjectChapterReadConfirmRequest(StrictRequestModel):
-    note: str | None = Field(default=None, max_length=1000)
 
 
 class ProjectChapterReadConfirmationRequest(StrictRequestModel):
@@ -69,8 +65,9 @@ class ProjectChapterReadConfirmationRequest(StrictRequestModel):
 
 class ProjectChapterApproveFinalRequest(StrictRequestModel):
     revision_notes: str | None = Field(default=None, max_length=2000)
-    # 批准 #10：「已通读」随「确认定稿」一次提交，绑定作者读到的那一份正文（GET chapter-manuscripts 的 body_hash）
-    read_confirmation: ProjectChapterReadConfirmationRequest | None = None
+    # 批准 #10：「已通读」随「确认定稿」一次提交，绑定作者读到的那一份正文（GET chapter-manuscripts 的 body_hash）。
+    # 必填（B2-1）：确认定稿是唯一的「读过并定稿」调用，以前先单独 POST read-confirm 的两步路已删
+    read_confirmation: ProjectChapterReadConfirmationRequest
 
 
 class ProjectChapterReopenFinalRequest(StrictRequestModel):

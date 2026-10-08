@@ -510,11 +510,11 @@ def probe_target(provider_payload: dict[str, Any], *, read_secret: Callable[[str
     """「测试连接」请求体 → 探测目标：校验服务类型、地址与凭据方式，取密钥（请求带的 > 这个服务存的 > 旧版单服务密钥）。"""
     provider = str(provider_payload.get("provider_type") or provider_payload.get("provider") or "openai_compatible")
     if provider not in SUPPORTED_PROVIDERS:
-        raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"unsupported provider {provider}", status_code=422)
+        raise DomainError("CONFIG_PROVIDER_UNSUPPORTED", f"不支持服务商类型「{provider}」。", status_code=422)
 
     base_url = normalize_provider_base_url(provider_payload.get("base_url"), provider)
     if not base_url:
-        raise DomainError("CONFIG_PROVIDER_INVALID", "provider base_url is required", status_code=422)
+        raise DomainError("CONFIG_PROVIDER_INVALID", "服务商配置有误：没有填地址（base_url）。", status_code=422)
 
     provider_id = optional_text(provider_payload.get("provider_id"))
     default_credential_mode = "none" if provider_id and not provider_payload.get("api_key") else "api_key"
@@ -522,7 +522,7 @@ def probe_target(provider_payload: dict[str, Any], *, read_secret: Callable[[str
     if credential_mode not in SUPPORTED_CREDENTIAL_MODES:
         raise DomainError(
             "CONFIG_PROVIDER_INVALID",
-            f"unsupported credential_mode {credential_mode}",
+            f"服务商配置有误：凭据方式「{credential_mode}」不受支持，只能是 {' / '.join(sorted(SUPPORTED_CREDENTIAL_MODES))}。",
             status_code=422,
         )
     api_key = None

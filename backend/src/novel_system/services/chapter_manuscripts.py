@@ -33,12 +33,6 @@ class ChapterManuscriptService:
         self.session = session
         self.lifecycle = AuthorLifecycleService(session)
 
-    def list_manuscripts(self) -> list[dict[str, Any]]:
-        chapters = self.session.execute(
-            select(ChapterGoal).where(ChapterGoal.trashed_flag == 0).order_by(ChapterGoal.chapter_id.asc())
-        ).scalars().all()
-        return [self._chapter_list_item(chapter) for chapter in chapters]
-
     def manuscript_detail(self, chapter_id: str) -> dict[str, Any]:
         chapter = self.lifecycle.require_active_chapter(chapter_id)
         chapter_state = self.session.get(ChapterState, chapter_id)
@@ -92,6 +86,8 @@ class ChapterManuscriptService:
         )
 
     def require_complete(self, chapter_id: str) -> dict[str, Any]:
+        """送审、定稿都只要这一条：每一场都有非空的权威正文。正史核对不拦它们（B2-2）——核对过的事实照旧进提示词与
+        连续性检查，没核对的场只是不进后面的事实记忆；章的正史状态照旧在 ``manuscript_detail`` 的 ``canon_continuity`` 里。"""
         contract = self.completion_contract(chapter_id)
         if (
             contract["completion_status"] != "complete"
@@ -104,44 +100,6 @@ class ChapterManuscriptService:
                 details={"chapter_id": chapter_id, **contract},
             )
         return contract
-
-    def require_publishable(self, chapter_id: str) -> dict[str, Any]:
-        """Require both canonical prose coverage and committed continuity facts."""
-
-        contract = self.require_complete(chapter_id)
-        chapter = self.lifecycle.require_active_chapter(chapter_id)
-        if not chapter.project_id:
-            raise DomainError(
-                "CHAPTER_PROJECT_REQUIRED",
-                "chapter has no project owner and cannot publish continuity canon",
-                status_code=409,
-                details={"chapter_id": chapter_id},
-            )
-        continuity = CanonContinuityService(self.session).require_chapter_complete(
-            chapter.project_id,
-            chapter_id,
-        )
-        return {**contract, "canon_continuity": continuity}
-
-    def _chapter_list_item(self, chapter: ChapterGoal) -> dict[str, Any]:
-        scenes = self._active_scenes(chapter.chapter_id)
-        scene_states = self._scene_states(scenes)
-        scene_entries, _final_scenes = self._scene_entries(scenes, scene_states)
-        assembled = self._assembled_payload(scene_entries)
-        aggregate = self._aggregate_payload(final_chapter_memory(self.session, chapter.chapter_id))
-        return {
-            **self.lifecycle.serialize_chapter_summary(chapter),
-            "scene_count": assembled["scene_count"],
-            "generated_scene_count": assembled["generated_scene_count"],
-            "missing_scene_ids": assembled["missing_scene_ids"],
-            "completion_status": self._completion_status(
-                assembled["scene_count"],
-                assembled["generated_scene_count"],
-            ),
-            "comparison_status": self._comparison_status(assembled["content"], aggregate),
-            "aggregate_row_id": aggregate["row_id"] if aggregate else None,
-            "canon_continuity": self._canon_continuity(chapter),
-        }
 
     def _canon_continuity(self, chapter: ChapterGoal) -> dict[str, Any]:
         if not chapter.project_id:

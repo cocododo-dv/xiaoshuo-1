@@ -321,7 +321,6 @@ def test_the_execution_contract_takes_no_canned_goal(session) -> None:
 def test_catalog_and_payloads_show_the_empty_state(session) -> None:
     from novel_system.services.author_lifecycle import AuthorLifecycleService
     from novel_system.services.catalog import CatalogService
-    from novel_system.services.chapter_final_flow import ProjectChapterFlowService
     from novel_system.services.chapter_plan_llm import empty_slot_gap_items, empty_slot_gaps
     from novel_system.services.project_payloads import chapter_payload
     from novel_system.services.scene_workbench import SceneWorkbenchService
@@ -346,12 +345,6 @@ def test_catalog_and_payloads_show_the_empty_state(session) -> None:
     workbench = SceneWorkbenchService(session).payload(blank.scene_id, diagnostics=True)
     assert (workbench["chapter_goal"]["chapter_goal"], workbench["chapter_goal"]["main_plot_push"]) == ("", None)
     assert (workbench["scene_card"]["scene_goal"], workbench["scene_card"]["beats_json"]) == ("", [])
-    project.status = "chapter_final_review"
-    session.commit()
-    packet = ProjectChapterFlowService(session).review_packet(project, chapter.chapter_id)
-    assert packet is not None and packet["chapter_goal"] == ""
-    review = next(row for row in packet["scene_reviews"] if row["scene_id"] == blank.scene_id)
-    assert review["title"] == blank.scene_id
 
     # 章节编排的待补清单（不是 AI）：没起题名的场，题名同目录
     blank.pov_character_id = None
