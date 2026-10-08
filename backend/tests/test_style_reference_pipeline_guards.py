@@ -460,10 +460,6 @@ def test_near_final_scores_follow_the_declared_scale() -> None:
         {"overall_score": 8.0, "scores": {"story_necessity": 85, "ending_drive": 7, "continuity": -2}}, schema=schema
     )
     assert stray["overall_score"] == 0.8 and stray["scores"] == {"ending_drive": 0.7}
-    # 章级评审的 scores 是开放对象，刻度看 overall_score 的声明
-    chapter_schema = templates["chapter_near_final_review"].structured_schema
-    chapter = _normalize_acceptance_payload({"overall_score": 9.0, "scores": {"escalation": 0.5}}, schema=chapter_schema)
-    assert chapter["overall_score"] == 0.9 and chapter["scores"] == {"escalation": 0.05}
 
 
 def test_near_final_scores_are_rescaled_not_saturated() -> None:

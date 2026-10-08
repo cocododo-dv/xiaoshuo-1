@@ -38,7 +38,6 @@ TEMPLATE_NODE_IDS: dict[str, tuple[str, ...]] = {
     "soft_qc": ("soft_qc",),
     "style_ref_check_judge": ("soft_qc",),
     "near_final_acceptance_review": ("near_final_acceptance_review",),
-    "chapter_near_final_review": ("chapter_near_final_review",),
     # 规划
     "scene_blueprint": ("scene_blueprint",),
     "scene_blueprint_facts": ("scene_blueprint",),

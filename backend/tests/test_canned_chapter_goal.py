@@ -238,7 +238,6 @@ def test_the_retired_goal_is_recognized_only_with_that_chapters_own_name(session
 def test_drafting_prompts_print_no_canned_goal_line(session) -> None:
     from novel_system.services.bundle_builder import BundleBuilder
     from novel_system.services.near_final import NearFinalPlanningService
-    from novel_system.services.near_final_review import NearFinalAcceptanceService
     from novel_system.services.prompt_builder import PromptBuilder
     from novel_system.services.scene_blueprint import SceneBlueprintService
 
@@ -255,10 +254,7 @@ def test_drafting_prompts_print_no_canned_goal_line(session) -> None:
     near_final = NearFinalPlanningService(session)._source_snapshot(
         scene=blank, chapter=chapter, include_chapter_architecture=False
     )["snapshot"]
-    chapter_review = NearFinalAcceptanceService(session)._chapter_bundle(
-        chapter, {"content": "林昭把信递了过去。", "source_text_ref": "chapter_assembled:x"}
-    )["snapshot"]
-    for item in (blueprint, near_final, chapter_review):
+    for item in (blueprint, near_final):
         assert item["inline_digests"]["chapter_goal"] == ""
         assert CANNED_MARK not in json.dumps(item["inline_digests"], ensure_ascii=False)
     assert "## Chapter Goal" not in PromptBuilder().build(blueprint, "scene_blueprint")["user_prompt"]

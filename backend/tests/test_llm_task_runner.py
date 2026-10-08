@@ -778,7 +778,8 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
     # 2026-09-23 风格参考 v3（P5b）：scene_generation.style_first.run_targeted_revision 又加一个（场景运行派生 context）。
     # 2026-09-29 B03-21：准定稿规划的两个生成函数合成一个，少一个调用点。
     # 2026-09-29 重构（B05-10）：写作台的整场深评 / 局部深评 / 局部改写三处合成一个 _run_writer_node（带 context）。
-    assert len(calls) == 13
+    # 2026-10 G4 B3-1b.2：章级准终稿评审（near_final_review.evaluate_chapter，带 chapter 作用域的 context）删了，少一个。
+    assert len(calls) == 12
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 

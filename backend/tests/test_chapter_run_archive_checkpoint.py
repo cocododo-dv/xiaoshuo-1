@@ -18,25 +18,18 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
-    ChapterGoal,
     ChapterMemory,
     ChapterRunJob,
-    FinalScene,
     LlmCall,
-    SceneCard,
     SceneRunState,
-    StoryProject,
     WriterEvaluation,
 )
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
-from novel_system.services.llm_accounting import LLMAccountingRejected
-from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
-from novel_system.services.near_final import NearFinalAcceptanceService
+from novel_system.services.llm_task_runner import LLMNodeRunner
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from tests.real_llm_fakes import (
     _SCENE_PIPELINE_RUNNER_MODULES,
@@ -300,77 +293,6 @@ def test_run_job_after_scene_job_archives_the_chapter_last_scene(client, session
     assert status["status"] == "completed"
     assert status["completed_scene_ids"] == [scene_id]
     assert status["latest_error"] is None
-
-
-# ---------------------------------------------------------------- bug 1（配套）：台账之前被拒不能伪装成评审结果
-
-
-class _RejectedBeforeLedgerRunner:
-    provider_execution_mode = "online"
-
-    def run(self, **kwargs):
-        rejection = LLMAccountingRejected(
-            "LLM_ACCOUNTING_CONTEXT_INVALID",
-            "chapter run job has no active current scene",
-            details={"missing_or_invalid_field": "run_job_id"},
-        )
-        raise LLMNodeExecutionError(
-            llm_call_id=f"llm_call_{kwargs['chapter_id']}_never_written",
-            error_code=rejection.code,
-            message=str(rejection),
-            request_summary={},
-            response_summary={},
-            original_error=rejection,
-            retryable=False,
-        )
-
-
-def _seed_chapter_with_final_scene(session, *, chapter_id: str = "CH_AC01") -> str:
-    """章级评审要读的整章正文：一场、已归档的当前终稿（章级读者读各场终稿现拼，R13）。"""
-    session.add(StoryProject(project_id="PRJ_AC01", title="归档回归", outline_text=""))
-    session.add(ChapterGoal(chapter_id=chapter_id, project_id="PRJ_AC01", planned_scene_count=1, chapter_goal="章目标"))
-    session.flush()
-    scene_id = f"{chapter_id}_SC01"
-    final_id = f"final_scene_{scene_id}_v1"
-    session.add(
-        SceneCard(
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-            project_id="PRJ_AC01",
-            scene_seq=1,
-            scene_goal="章目标",
-            is_chapter_last=1,
-        )
-    )
-    session.add(SceneRunState(scene_id=scene_id, scene_status="archived", current_final_scene_row_id=final_id))
-    session.add(
-        FinalScene(
-            row_id=final_id,
-            scene_id=scene_id,
-            chapter_id=chapter_id,
-            content="她把信封拆成两半，一半留给河。",
-            status="archived",
-            source_bundle_id="bundle_ac01",
-            source_bundle_hash="hash_ac01",
-        )
-    )
-    session.commit()
-    return chapter_id
-
-
-def test_evaluate_chapter_rejected_before_ledger_fails_closed_with_real_code(session) -> None:
-    chapter_id = _seed_chapter_with_final_scene(session)
-    service = NearFinalAcceptanceService(session, llm_runner=_RejectedBeforeLedgerRunner())
-
-    with pytest.raises(DomainError) as raised:
-        service.evaluate_chapter(chapter_id, execution_step_key="archive:chapter_near_final:0")
-
-    assert raised.value.code == "LLM_ACCOUNTING_CONTEXT_INVALID"
-    assert "no active current scene" in raised.value.message
-    assert raised.value.details["node_id"] == "chapter_near_final_review"
-    assert session.execute(
-        select(WriterEvaluation).where(WriterEvaluation.object_type == "chapter")
-    ).scalars().all() == [], "a dangling evaluator_llm_call_id must never be persisted"
 
 
 # ---------------------------------------------------------------- bug 2：run-status 把 failed 假报成 completed

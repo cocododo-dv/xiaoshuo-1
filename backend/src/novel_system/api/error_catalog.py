@@ -149,7 +149,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "CHAPTER_READ_CONFIRM_INVALID": "「已通读」需要带上读到的那一份正文的指纹，请刷新后再确认。",
     "CHAPTER_READ_CONFIRM_NOTE_TOO_LONG": "通读备注不能超过 1000 字。",
     "CHAPTER_REOPEN_REASON_INVALID": "重开定稿需要一句 1 到 1000 字的理由。",
-    "CHAPTER_NEAR_FINAL_SOURCE_MISSING": "章级准终稿评审需要这一章已有终稿正文。",
     "LLM_DISABLED_FOR_CHAPTER_RUN": "还没有启用模型：先在系统设置里配好模型，再运行本章。",
     # ---- 起草（场景运行 / 任务 / 候选终选 / 预算）----
     "INVALID_RUN_POLICY": "运行方式只能是「可靠」或「严格」。",

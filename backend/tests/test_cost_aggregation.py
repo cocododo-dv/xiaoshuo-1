@@ -239,7 +239,6 @@ def test_classify_phase_maps_known_nodes():
     assert ca.classify_phase("snowflake_scene_triage_suggest", "x") == "review"
     # 风格参考验证/评审仍先被 QC/review 关键词抓走，不受生成词干扰
     assert ca.classify_phase("style_ref_validate_semantic", "x") == "quality_check"
-    assert ca.classify_phase("chapter_near_final_review", "x") == "quality_check"
 
 
 # ---- scene_cost --------------------------------------------------------------

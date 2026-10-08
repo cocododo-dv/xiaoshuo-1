@@ -366,14 +366,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         max_output_tokens=5000,
     ),
     LLMNodeSpec(
-        "chapter_near_final_review",
-        "Chapter near-final review",
-        "quality",
-        template_name="chapter_near_final_review",
-        temperature=0.15,
-        max_output_tokens=3200,
-    ),
-    LLMNodeSpec(
         "writer_passage_patch",
         "Writer passage patch",
         "rewrite",

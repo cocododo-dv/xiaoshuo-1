@@ -153,37 +153,15 @@ def _rich_scene_snapshot() -> dict:
     }
 
 
-def _compact_chapter_summary(text: str, limit: int = 1600) -> str:
-    """章级评审提示里的章摘要：超过 1600 字截断并注明（原写作评审服务的截断规则，随该服务删除搬到这里）。"""
-    stripped = (text or "").strip()
-    if len(stripped) <= limit:
-        return stripped
-    return f"{stripped[:limit].rstrip()}\n...[truncated for writer review prompt]..."
-
-
 def _chapter_review_snapshot(content: str) -> dict:
-    """章级评审的快照形状：章目标 + 章 brief + 1600 字截断摘要。"""
+    """「AI 通读本章」（writer_deep_review 的章模式）的快照形状：整章正文在 chapter_summary 里（见
+    writer_deep_review._create_deep_review_with_llm）。"""
     return {
-        "contract_version": "WRITER_CHAPTER_REVIEW_v1",
-        "stage_allowlist_name": "writer_chapter_review",
-        "scene_id": "",
+        "object_type": "chapter",
+        "object_id": "CH001",
         "chapter_id": "CH001",
-        "source_version_refs": {"chapter_goal": "CH001", "chapter_writer_brief": "CH001", "source_text_ref": "chapter_memory:x"},
-        "resolved_ref_ids": {},
-        "ordered_injections": [
-            {"slot": "chapter_goal", "ref_id": "CH001", "digest_key": "chapter_goal"},
-            {"slot": "chapter_writer_brief", "ref_id": "CH001", "digest_key": "chapter_writer_brief"},
-            {"slot": "chapter_summary", "ref_id": "chapter_memory:x", "digest_key": "chapter_summary"},
-        ],
-        "inline_digests": {
-            "chapter_goal": _zh(60, seed=901),
-            "chapter_writer_brief": json.dumps(
-                {key: _zh(60, seed=910 + index) for index, key in enumerate(("core_promise", "plot_movement", "character_shift", "chapter_question", "ending_aftertaste"))},
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            "chapter_summary": _compact_chapter_summary(content),
-        },
+        "scene_id": None,
+        "inline_digests": {"chapter_summary": content},
     }
 
 
@@ -239,8 +217,7 @@ def test_repo_prompt_budgets_match_runtime_floors() -> None:
         "near_final_acceptance_review",
     ):
         assert RUNTIME_MIN_INPUT_BUDGETS[name] == STYLE_PASS_INPUT_TOKEN_BUDGET
-    for name in ("chapter_near_final_review", "writer_deep_review"):
-        assert RUNTIME_MIN_INPUT_BUDGETS[name] == CHAPTER_INPUT_TOKEN_BUDGET
+    assert RUNTIME_MIN_INPUT_BUDGETS["writer_deep_review"] == CHAPTER_INPUT_TOKEN_BUDGET
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +264,11 @@ def test_hard_qc_and_style_draft_fit_a_3000_char_chinese_draft() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_chapter_near_final_review_fits_a_15000_char_chapter() -> None:
-    prompt = PromptBuilder().build(_chapter_review_snapshot(CHAPTER_TEXT), "chapter_near_final_review")
-    final_user_prompt = near_final_module._acceptance_user_prompt(prompt["user_prompt"], source_content=CHAPTER_TEXT)
-    _assert_fits(prompt, final_user_prompt, stale_budget=3200)
+def test_writer_deep_review_fits_a_15000_char_chapter() -> None:
+    """章节族只剩「AI 通读本章」（章级准定稿评审已删）：整章正文放在 chapter_summary 里，15000 字的章装得下。"""
+    prompt = PromptBuilder().build(_chapter_review_snapshot(CHAPTER_TEXT), "writer_deep_review")
+    assert CHAPTER_TEXT in prompt["user_prompt"]
+    _assert_fits(prompt, prompt["user_prompt"], stale_budget=3200)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +282,7 @@ def test_env_override_tightens_every_measured_family(monkeypatch: pytest.MonkeyP
     builder = PromptBuilder()
 
     assert builder.build(snapshot, "hard_qc")["token_budget"]["target_input_tokens"] == 6000
-    assert builder.build(snapshot, "chapter_near_final_review")["token_budget"]["target_input_tokens"] == 6000
+    assert builder.build(snapshot, "writer_deep_review")["token_budget"]["target_input_tokens"] == 6000
     assert builder.build(snapshot, "scene_blueprint")["token_budget"]["target_input_tokens"] == 6000
     # 显式 max_input_tokens 仍然最优先；族外模板不受影响；雪花族不走这里
     assert builder.build(snapshot, "hard_qc", max_input_tokens=60)["token_budget"]["target_input_tokens"] == 60

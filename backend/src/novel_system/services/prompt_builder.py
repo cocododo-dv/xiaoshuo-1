@@ -118,7 +118,6 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     # 2026-09-22 场景诊断：局部深评只看一段 + 结构简报 + k≤3 样例窗口，与局部改写同档
     "writer_passage_review": PLANNING_STYLE_INPUT_TOKEN_BUDGET,
     # 章节族（author_* 两个模板同时服务场景稿与整章稿，按最大者归章节族）
-    "chapter_near_final_review": CHAPTER_INPUT_TOKEN_BUDGET,
     "writer_deep_review": CHAPTER_INPUT_TOKEN_BUDGET,
     # 2026-09-14 WP6.3：作者稿建议（整稿 / 续写 / 近终稿改写 / 语言 / 对白）拿到完整 k 的
     # 样例块（≤60000 字），与风格通道同一档；无绑定时仍是整章稿也装得下的上限。
@@ -161,7 +160,6 @@ HARD_QC_TEMPLATE_NAMES = {
     "near_final_acceptance_review",
 }
 CHAPTER_REVIEW_TEMPLATE_NAMES = {
-    "chapter_near_final_review",
     "writer_deep_review",
 }
 

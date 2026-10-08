@@ -310,7 +310,7 @@ def test_reserved_node_routes_in_live_snapshot_are_stale_and_pruned_by_sync_miss
 
     before = client.get("/api/v1/system-config/llm").json()["data"]
     assert before["stale_routes"] == list(_RESERVED_LEGACY_IDS)
-    assert before["readiness"]["active_route_count"] == 32
+    assert before["readiness"]["active_route_count"] == 31
     assert before["missing_active_routes"] == []
     for node_id in _RESERVED_LEGACY_IDS:
         assert node_id not in before["node_routes"]
@@ -327,7 +327,7 @@ def test_reserved_node_routes_in_live_snapshot_are_stale_and_pruned_by_sync_miss
     assert not set(_RESERVED_LEGACY_IDS) & set(payload["snapshot"]["parsed"]["node_routing"])
     assert "task_routing" not in payload["snapshot"]["parsed"]
     assert payload["overview"]["stale_routes"] == []
-    assert payload["overview"]["readiness"]["active_route_count"] == 32
+    assert payload["overview"]["readiness"]["active_route_count"] == 31
 
 
 def test_role_routes_save_activates_with_reserved_nodes_left_in_legacy_task_routing(client, session, monkeypatch) -> None:
@@ -348,7 +348,7 @@ def test_role_routes_save_activates_with_reserved_nodes_left_in_legacy_task_rout
     assert payload["snapshot"]["active"] is True
     assert payload["pruned_stale_routes"] == list(_RESERVED_LEGACY_IDS)
     assert payload["overview"]["stale_routes"] == []
-    assert payload["overview"]["readiness"]["active_route_count"] == 32
+    assert payload["overview"]["readiness"]["active_route_count"] == 31
 
 
 def test_role_routes_save_prunes_stale_routes_and_reports_them(client, session, monkeypatch) -> None:
