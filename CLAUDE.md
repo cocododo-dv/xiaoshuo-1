@@ -229,7 +229,7 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   (`page`/`page_size` or `cursor`/`limit`), `api/deps.py`.
 - Config lives in the root `config/`: `models.yaml` (only `retry_budget` / `job_runtime`; node defaults live in
   `llm_node_registry.py`), `prompts.yaml`, `pricing.yaml` (author-entered prices; unpriced models show 「未定价」),
-  `allowlists.yaml`, `hash_contract.yaml`, `style_reference/*`.
+  `style_reference/*`.
 
 ### Frontend (`frontend-react/src/`)
 - Stores are plain ES modules — import them (`WsWorks` `ws-works.jsx`, `WsCatalog` `ws-catalog.jsx`, `SnowSync`

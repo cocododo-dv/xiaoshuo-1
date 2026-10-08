@@ -672,6 +672,25 @@ def test_prompts_are_no_longer_a_config_category(session, monkeypatch) -> None:
     assert prompt["template_name"] == "neutral_draft"
 
 
+def test_only_api_and_models_are_config_categories(session, monkeypatch) -> None:
+    """系统配置只剩两类：api（服务与密钥）与 models（节点路由）。allowlists / hash_contract 两份配置文件没有任何代码读
+    （allowlists.yaml 还列着早已删掉的声线卡、关系卡），连同类别一起删掉；BSHASH_v1 的规整规则写在 hash_engine 的
+    模块说明里。"""
+    import pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.system_config import CONFIG_CATEGORIES, YAML_CONFIG_FILES, repo_config_dir
+
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    assert CONFIG_CATEGORIES == ("api", "models")
+    assert YAML_CONFIG_FILES == {"models": "models.yaml"}
+    for category in ("allowlists", "hash_contract"):
+        with pytest.raises(DomainError) as excinfo:
+            _create_config_draft(session, category, "a: 1\n")
+        assert excinfo.value.code == "CONFIG_CATEGORY_UNSUPPORTED" and excinfo.value.status_code == 404
+        assert not (repo_config_dir() / f"{category}.yaml").exists()
+
+
 def test_system_config_rejects_invalid_models_yaml(session, monkeypatch) -> None:
     import pytest
 

@@ -3,8 +3,9 @@
 Parsers and provider services depend on this small query boundary instead of
 depending on the mutation-heavy ``system_config`` service that imports them.
 
-``warn_retired_config_snapshots``：系统配置以前还有 prompts 这一类（2026-10 起提示词只读仓库的
-``config/prompts.yaml``）；老安装库里留着的活动快照行原样不动，启动时记一条警告说它不再被读。
+``warn_retired_config_snapshots``：系统配置以前还有 prompts / allowlists / hash_contract 三类（2026-10 起只剩
+api / models，提示词只读仓库的 ``config/prompts.yaml``）；老安装库里留着的活动快照行原样不动，启动时记一条警告说
+它们不再被读。
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ _LOGGER = logging.getLogger(__name__)
 _TRANSIENT_DB_RETRY_DELAYS = (0.05, 0.15)
 
 # 退役的配置类别：库里也许还留着它们的活动快照，但已经没有任何代码读它们
-RETIRED_CONFIG_CATEGORIES = ("prompts",)
+RETIRED_CONFIG_CATEGORIES = ("prompts", "allowlists", "hash_contract")
 
 T = TypeVar("T")
 
@@ -140,8 +141,8 @@ def warn_retired_config_snapshots(session) -> list[str]:
     retired = [category for category in RETIRED_CONFIG_CATEGORIES if category in found]
     if retired:
         _LOGGER.warning(
-            "active system-config snapshots of the retired categories %s are no longer read: prompts come only "
-            "from config/prompts.yaml; the rows are kept untouched in system_config_snapshots",
+            "active system-config snapshots of the retired categories %s are no longer read (prompts come only "
+            "from config/prompts.yaml); the rows are kept untouched in system_config_snapshots",
             ", ".join(retired),
         )
     return retired

@@ -1,6 +1,7 @@
-"""系统配置：四类配置快照（api / models / allowlists / hash_contract）与「设置 → AI 模型」的服务。
+"""系统配置：两类配置快照（api / models）与「设置 → AI 模型」的服务。
 
-提示词不在这里：2026-10 起只读仓库的 ``config/prompts.yaml``（``prompt_builder.load_prompt_templates``）。
+提示词不在这里：2026-10 起只读仓库的 ``config/prompts.yaml``（``prompt_builder.load_prompt_templates``）；以前的
+allowlists / hash_contract 两类没有任何代码读，同时删掉（BSHASH_v1 的规整规则写在 ``hash_engine`` 的模块说明里）。
 
 2026-09-30 拆开（B09-13 / B09-11）：
 * ``system_config_secrets``：密钥的加密存取与状态；
@@ -112,12 +113,8 @@ __all__ = [
 ]
 
 
-CONFIG_CATEGORIES = ("api", "models", "allowlists", "hash_contract")
-YAML_CONFIG_FILES = {
-    "models": "models.yaml",
-    "allowlists": "allowlists.yaml",
-    "hash_contract": "hash_contract.yaml",
-}
+CONFIG_CATEGORIES = ("api", "models")
+YAML_CONFIG_FILES = {"models": "models.yaml"}
 
 
 def repo_config_dir() -> Path:
@@ -867,8 +864,6 @@ def validate_config(category: str, yaml_raw: str) -> tuple[dict[str, Any], dict[
         if category == "models":
             parse_model_routing_config(parsed)
             return parsed, {"ok": True, "message": "models config is valid"}
-        if category in {"allowlists", "hash_contract"}:
-            return parsed, {"ok": True, "message": f"{category} config is valid"}
     except (yaml.YAMLError, ValueError, LLMConfigurationError) as exc:
         return {}, {"ok": False, "message": str(exc)}
 

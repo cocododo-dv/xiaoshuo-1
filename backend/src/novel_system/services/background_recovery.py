@@ -6,7 +6,7 @@ workers harmless: at most one worker can move a row into an owned running
 state.
 
 - 启动恢复（``run_startup_recovery``，lifespan 同步调用一次）：排队的任务、租约已过期 / 没有租约的 running
-  任务再派发；过期的取消请求收尾；遗留的 LLM 记账预留回收；库里留着退役配置类别（prompts）的活动快照时
+  任务再派发；过期的取消请求收尾；遗留的 LLM 记账预留回收；库里留着退役配置类别（prompts 等）的活动快照时
   记一条警告。
 - 周期恢复（B03-01，``start_run_job_sweeper``，每分钟一拍，启动那一拍不跑）：进程还活着时，租约过期、本进程
   里又没有它的工人的 running 任务再派发；主人已死的取消请求收尾。同一拍顺带跑到期的全系统维护任务
