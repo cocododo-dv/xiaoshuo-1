@@ -215,6 +215,8 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
     # 2026-09-30 P05：书脊的状态词表、目录标签与两阶段落位（B08-15 / B08-23）
     "novel_system.services.project_status": set(),
     "novel_system.services.catalog_labels": {"novel_system.db.models"},
+    # round 2 · B2-5：戏剧卡在运行时的读法——禁用词表（qc_constraints）、两个写蓝图的地方都读它
+    "novel_system.services.chapter_drama": {"novel_system.services.catalog_labels"},
     "novel_system.services.catalog_ordering": {
         "novel_system.db.models",
         "novel_system.services.chapter_approval",

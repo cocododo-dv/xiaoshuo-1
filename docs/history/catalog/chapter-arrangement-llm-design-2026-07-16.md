@@ -6,8 +6,8 @@
 >   2026-09-30 删除（没有任何地方能填），邻章交接、章结构邻域、近几章的视角分布改为从**各场**的真实数据现算；写作偏好学习 2026-09-30 删除。
 > - **fail-closed**：没有可用模型时蓝图生成一律 409 `CHAPTER_PLAN_LLM_NOT_CONFIGURED` + `author_action`，不再有离线 fallback；
 >   写接口一律要 `X-Idempotency-Key`（偏差 ② 不再成立）。
-> - 戏剧卡（§7 的「6 字段 + 护栏」）2026-10 起也进场景运行现做的章节蓝图，「禁止包含」按字面查（`services/chapter_drama.py`、
->   `qc_constraints.literal_forbidden_sources`）。
+> - 戏剧卡（§7 的「6 字段 + 护栏」）2026-10 起也进场景运行现做的章节蓝图，「禁止包含」一行一条、按字面查（`services/chapter_drama.py`、
+>   `qc_constraints.literal_forbidden_term_sources`）；备注不再送给任何写蓝图的模型（§3 的 `author_constraints` 不再带它）。
 > - 前端 store 是 `ws-author-ai-store.js`（`WsAuthorAi`），视图 `ws-author-ai.jsx`（`ArrBlueprintCard`）；文中的 `ws-chapter-plan.jsx` / `ws-author-plan.jsx` 已不存在。
 >
 > 现行实现以 `services/chapter_plan_llm.py`、`services/chapter_planning_context.py`、`api/routes/chapter_plan.py` 的模块说明为准；

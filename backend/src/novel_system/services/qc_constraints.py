@@ -1,8 +1,10 @@
 """场景卡硬约束（必写 / 禁用）的字面读法：起草的验收门、运行前预检、分类器复核与成稿门同一处。
 
-一场要按字面查的禁用词有两处来源（:func:`literal_forbidden_sources`）：场景卡 ``forbidden_text``，和本章戏剧卡的
+一场要按字面查的禁用词有两处来源（:func:`literal_forbidden_term_sources`）：场景卡 ``forbidden_text``，和本章戏剧卡的
 「禁止包含」（``chapter_drama.chapter_forbidden_text``，round 2 · B2-5——卡片一直说它会拦，以前却没有哪一道检查读它）。
-戏剧卡那一格是空的时候，各处的读数与只看场景卡时逐字相同。
+两处各按各的契约拆：场景卡是「顿号 / 逗号分隔的禁用词」（:func:`forbidden_terms`），戏剧卡是「一行一条」
+（:func:`chapter_forbidden_terms`——「别让林昭和她和好，暂时」是一条，不是两个词）；两边都认 ``A|B`` 备选写法、
+不到两个字的不算、防抄袭政策句剔掉。戏剧卡那一格是空的时候，各处的读数与只看场景卡时逐字相同。
 """
 
 from __future__ import annotations
@@ -46,6 +48,12 @@ def forbidden_terms(text: Any) -> list[str]:
     return constraint_terms(strip_reference_policy(text))
 
 
+def chapter_forbidden_terms(text: Any) -> list[str]:
+    """戏剧卡「禁止包含」→ 要按字面查的写法：一行一条（整行就是一条，不再按逗号 / 顿号拆），不到两个字的行不算，
+    防抄袭政策句剔掉；一行里的 ``A|B`` 照旧是备选写法（见 :func:`forbidden_term_hits`）。"""
+    return [line.strip() for line in strip_reference_policy(text).splitlines() if len(line.strip()) >= 2]
+
+
 #: 禁用词的两处来源（预检冲突、成稿门证据按它归因）
 SCENE_FORBIDDEN_SOURCE = "scene_card.forbidden_text"
 CHAPTER_FORBIDDEN_SOURCE = "chapter.drama.forbidden"
@@ -75,24 +83,37 @@ def literal_forbidden_sources(scene: Any, chapter: Any = None) -> list[tuple[str
     return sources
 
 
+def literal_forbidden_term_sources(scene: Any, chapter: Any = None) -> list[tuple[str, list[str]]]:
+    """``[(来源, 禁用词表)]``：每处来源按它自己的契约拆（场景卡 :func:`forbidden_terms`，戏剧卡
+    :func:`chapter_forbidden_terms`）；戏剧卡里与场景卡重复的写法不再记一次，拆不出词的来源不列。
+    词表、命中与预检冲突都从这里读。"""
+    sources: list[tuple[str, list[str]]] = []
+    seen: list[str] = []
+    for source, text in literal_forbidden_sources(scene, chapter):
+        terms = forbidden_terms(text) if source == SCENE_FORBIDDEN_SOURCE else chapter_forbidden_terms(text)
+        if seen:
+            terms = [term for term in terms if term not in seen]
+        if terms:
+            sources.append((source, terms))
+            seen.extend(terms)
+    return sources
+
+
 def literal_forbidden_terms(scene: Any, chapter: Any = None) -> list[str]:
-    """两处来源合起来的禁用词表（按来源次序；戏剧卡里与场景卡重复的词不再记一次）。"""
-    terms: list[str] = []
-    for index, (_source, text) in enumerate(literal_forbidden_sources(scene, chapter)):
-        found = forbidden_terms(text)
-        terms.extend(found if index == 0 else [term for term in found if term not in terms])
-    return terms
+    """两处来源合起来的禁用词表（按来源次序）。"""
+    return [term for _source, terms in literal_forbidden_term_sources(scene, chapter) for term in terms]
 
 
 def literal_forbidden_hits(scene: Any, content: str, chapter: Any = None) -> list[tuple[str, str]]:
     """``content`` 里按字面出现的禁用写法：``[(来源, 写法)]``（按来源次序、去重；``A|B`` 报出现的那一个）。"""
     hits: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for source, text in literal_forbidden_sources(scene, chapter):
-        for term in forbidden_hits(text, content):
-            if term not in seen:
-                seen.add(term)
-                hits.append((source, term))
+    for source, terms in literal_forbidden_term_sources(scene, chapter):
+        for term in terms:
+            for alternative in forbidden_term_hits(term, content):
+                if alternative not in seen:
+                    seen.add(alternative)
+                    hits.append((source, alternative))
     return hits
 
 
@@ -132,6 +153,16 @@ def named_scene_card_sources(
     return sources
 
 
+def forbidden_term_hits(term: str, content: str) -> list[str]:
+    """一条禁用写法在 ``content`` 里按字面出现的写法：``A|B`` 报真正出现的那一个（或几个），不是整条。"""
+    return [alternative for alternative in constraint_alternatives(term) or [term] if alternative in content]
+
+
+def forbidden_term_present(term: str, content: str) -> bool:
+    """一条（已经拆好的）禁用写法有没有出现在 ``content`` 里——不再拆它，戏剧卡的整行照整行查。"""
+    return bool(forbidden_term_hits(term, content))
+
+
 def forbidden_hits(forbidden_text: Any, content: str) -> list[str]:
     """``forbidden_text`` 里在 ``content`` 中按字面出现的禁用写法（按词表顺序、去重）。
 
@@ -141,14 +172,10 @@ def forbidden_hits(forbidden_text: Any, content: str) -> list[str]:
         return []
     hits: list[str] = []
     for term in forbidden_terms(forbidden_text):
-        for alternative in constraint_alternatives(term) or [term]:
-            if alternative in content and alternative not in hits:
+        for alternative in forbidden_term_hits(term, content):
+            if alternative not in hits:
                 hits.append(alternative)
     return hits
-
-
-def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
-    return bool(forbidden_hits(forbidden_text, content))
 
 
 def significant_fragments(text: str) -> list[str]:

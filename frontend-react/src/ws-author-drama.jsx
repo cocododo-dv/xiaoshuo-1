@@ -9,7 +9,8 @@ import { DRAMA_FIELDS, DRAMA_KEYS } from "./labels/catalog.js";
    一格都没写时收成一行。卡上说的都是真的（round 2 · B2-5，以前说会进起草、会拦，其实起草和检查都没读过它）：
    填了的格子与「禁止包含」进章节蓝图——章节蓝图卡的「AI 生成」、起草前现做的蓝图都读（后端 chapter_drama.py），
    起草读的是蓝图，已有的蓝图要重新生成才跟上；「禁止包含」的词还进起草提示里的场景卡、写进正文会按字面查出
-   （起草验收、运行前预检、质检复核、成稿门，后端 qc_constraints.literal_forbidden_sources）。
+   （起草验收、运行前预检、质检复核、成稿门，后端 qc_constraints.literal_forbidden_term_sources）。「禁止包含」一行一条：
+   整行出现才算，不按逗号 / 顿号再拆。备注是作者给自己的话，两个写蓝图的地方都不送。
    ========================================================== */
 
 const { useEffect, useState } = React;
@@ -87,12 +88,12 @@ function ArrDramaCard({ ch, locked, onPatchDrama, sectionRef }) {
               <div className="arr-guard" data-tone="danger">
                 <div className="arr-guard-label"><I.Ban size={12} /> 禁止包含</div>
                 <ArrDramaText className="arr-guard-text" label="禁止包含" value={drama.forbidden} ck={`${ch.id}|forbidden`} locked={locked}
-                  placeholder="这一章不能出现的词或情节，一行一条：起草时告诉 AI，写进正文的词会被查出来" onCommit={(v) => onPatchDrama("forbidden", v)} />
+                  placeholder="这一章不能出现的词或情节，一行一条：起草时告诉 AI，整行写进正文会被查出来" onCommit={(v) => onPatchDrama("forbidden", v)} />
               </div>
               <div className="arr-guard" data-tone="info">
                 <div className="arr-guard-label"><I.Quote size={12} /> 备注</div>
                 <ArrDramaText className="arr-guard-text" label="章节备注" value={drama.notes} ck={`${ch.id}|notes`} locked={locked}
-                  placeholder="给自己留的话" onCommit={(v) => onPatchDrama("notes", v)} />
+                  placeholder="给自己留的话（AI 读不到）" onCommit={(v) => onPatchDrama("notes", v)} />
               </div>
             </div>
           </div>

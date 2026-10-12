@@ -331,10 +331,12 @@ class FinalTextGateService:
                     "details": {"missing_groups": missing_groups},
                 }
             )
-        # 禁用词：场景卡的 forbidden_text 与本章戏剧卡的「禁止包含」，证据指向先命中的那一处
-        forbidden_hits = literal_forbidden_hits(scene, content)
-        if forbidden_hits:
-            source = forbidden_hits[0][0]
+        # 禁用词：场景卡的 forbidden_text 与本章戏剧卡的「禁止包含」——命中了几处就报几条，每条指向它那一处
+        # （作者得知道去哪几个地方改），证据是正文里真正出现的写法
+        forbidden_by_source: dict[str, list[str]] = {}
+        for source, term in literal_forbidden_hits(scene, content):
+            forbidden_by_source.setdefault(source, []).append(term)
+        for source, terms in forbidden_by_source.items():
             issues.append(
                 {
                     "issue_key": "forbidden_text",
@@ -345,6 +347,7 @@ class FinalTextGateService:
                     ),
                     "source": "deterministic",
                     "authority_ref": forbidden_authority_ref(scene, source),
+                    "evidence_spans": [{"text": term} for term in terms[:5]],
                 }
             )
 

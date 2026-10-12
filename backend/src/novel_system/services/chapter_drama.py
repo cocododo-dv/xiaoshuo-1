@@ -4,10 +4,11 @@
 叫法见 ``catalog_labels.DRAMA_SLOT_LABELS``）外加两条护栏（禁止包含 / 备注）。卡片以前说它会进起草、「禁止包含」
 会拦，可场景运行从不读它（round 2 · B2-5）。现在：
 
-- 填了的六格与「禁止包含」进场景运行现做的章节蓝图：``near_final_planning`` 规划快照里的 ``chapter_drama`` 段
-  （渲染位在 ``context_budget.SECTION_SPECS``）；起草读的是蓝图。章节编排的「AI 生成蓝图」本来就读整张卡。
-- 「禁止包含」的词与场景卡 ``forbidden_text`` 一起按字面查（``qc_constraints.literal_forbidden_sources``）。
-- 备注是作者留给自己的话，不进场景运行。
+- 填了的六格与「禁止包含」进章节蓝图：场景运行现做的那一份（``near_final_planning`` 规划快照里的 ``chapter_drama``
+  段，渲染位在 ``context_budget.SECTION_SPECS``）与章节编排的「AI 生成蓝图」（``chapter_planning_context``）读的是
+  同一份 :func:`chapter_drama_for_blueprint`；起草读的是蓝图。
+- 「禁止包含」一行一条，与场景卡 ``forbidden_text`` 一起按字面查（``qc_constraints.literal_forbidden_term_sources``）。
+- 备注是作者留给自己的话：两个写蓝图的地方都不送（不在 :data:`_BLUEPRINT_KEYS` 里），只在界面上显示。
 
 一格都没写（或只有空白）就什么都不加：规划快照、哈希与提示词逐字与以前相同。
 """
@@ -41,8 +42,14 @@ def chapter_forbidden_text(chapter: Any) -> str:
     return _slot_text(chapter_drama(chapter).get("forbidden"))
 
 
-def chapter_drama_digest(chapter: Any) -> str:
-    """规划快照的 ``chapter_drama`` 段：填了的格子（键序固定的 JSON）；一格都没填是空串——调用方据此不加这一段。"""
+def chapter_drama_for_blueprint(chapter: Any) -> dict[str, str]:
+    """送给写蓝图的模型的那几格：填了的六格写法 + 禁止包含（去掉首尾空白；空的、备注都不在里面）。"""
     drama = chapter_drama(chapter)
-    filled = {key: _slot_text(drama.get(key)) for key in _BLUEPRINT_KEYS if _slot_text(drama.get(key))}
+    return {key: _slot_text(drama.get(key)) for key in _BLUEPRINT_KEYS if _slot_text(drama.get(key))}
+
+
+def chapter_drama_digest(chapter: Any) -> str:
+    """规划快照的 ``chapter_drama`` 段：:func:`chapter_drama_for_blueprint`（键序固定的 JSON）；一格都没填是空串——
+    调用方据此不加这一段。"""
+    filled = chapter_drama_for_blueprint(chapter)
     return json.dumps(filled, ensure_ascii=False, sort_keys=True) if filled else ""

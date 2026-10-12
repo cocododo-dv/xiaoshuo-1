@@ -45,6 +45,7 @@ from novel_system.services.chapter_architecture import (
     CHAPTER_ARCHITECTURE_ARTIFACT,
     latest_chapter_architecture,
 )
+from novel_system.services.chapter_drama import chapter_drama_for_blueprint, chapter_forbidden_text
 from novel_system.services.errors import DomainError
 from novel_system.services.story_slots import normalize_story_slot, planned_chapter_goal
 from novel_system.services.hash_engine import canonical_json, normalize
@@ -186,7 +187,8 @@ class ChapterPlanningContextBuilder:
             "act": narrative.get("act"),
             "spine": narrative.get("spine"),
             "promise": narrative.get("promise"),
-            "drama": dict(narrative.get("drama") or {}),
+            # 填了的六格 + 禁止包含，与场景运行现做的蓝图同一张键表；备注是作者给自己的话，不送（chapter_drama）
+            "drama": chapter_drama_for_blueprint(chapter),
         }
 
     def _scene_slot(self, scene: SceneCard, chapter: ChapterGoal) -> dict[str, Any]:
@@ -376,13 +378,11 @@ class ChapterPlanningContextBuilder:
         }
 
     def _constraints_slot(self, chapter: ChapterGoal) -> dict[str, Any]:
-        narrative = dict(chapter.narrative_json or {})
-        drama = dict(narrative.get("drama") or {})
         return {
-            "forbidden": str(drama.get("forbidden") or ""),
+            "forbidden": chapter_forbidden_text(chapter),
             # 旧的物化样板句（防抄袭政策句）不是作者给这一章的禁写，不进规划上下文
             "must_not": normalize_story_slot(chapter.must_not),
-            "notes": str(drama.get("notes") or ""),
+            # 戏剧卡的备注不进：那是作者给自己的话（chapter_drama）
         }
 
 

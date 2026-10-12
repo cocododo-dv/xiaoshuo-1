@@ -20,7 +20,7 @@ from novel_system.services.literary_quality import weighted_score
 from novel_system.services.literary_signals import rule_analysis
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.qc_constraints import (
-    contains_forbidden_term,
+    forbidden_term_present,
     literal_forbidden_terms,
     required_groups,
     required_groups_missing,
@@ -161,7 +161,8 @@ class ConstraintSnapshot:
         """``lengths`` 为 ``None``：调用方不关心长度（修复简报只看缺项、禁用词与完整性），``length_range`` 为空。
 
         必写组与禁用词的判定与硬质检、分类器复核、成稿门同一处（``qc_constraints.required_groups_missing`` /
-        ``contains_forbidden_term``，批准#11）：一整段分不出 ≥2 字的组时整段算一组（与质检同口径）。"""
+        ``forbidden_term_present``，批准#11）：一整段分不出 ≥2 字的组时整段算一组（与质检同口径）；禁用词是拆好的
+        一条一条，不再拆（戏剧卡的一行照整行查）。"""
         required = tuple(required_groups(scene.must_include_text))
         missing = set(required_groups_missing(scene.must_include_text, text))
         forbidden = tuple(literal_forbidden_terms(scene))
@@ -169,7 +170,7 @@ class ConstraintSnapshot:
             required_terms=required,
             satisfied=frozenset(term for term in required if term not in missing),
             forbidden_terms=forbidden,
-            forbidden_present=frozenset(term for term in forbidden if contains_forbidden_term(term, text)),
+            forbidden_present=frozenset(term for term in forbidden if forbidden_term_present(term, text)),
             integrity_markers=tuple(_scene_text_integrity_markers(text)),
             visible_chars=_visible_char_count(text),
             length_range=lengths.hard_range() if lengths is not None else None,
