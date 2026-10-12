@@ -138,7 +138,6 @@ const STYLE_NOTICE_REASON_LABELS = {
     copy_gate_blocked: "修改稿照搬了参考书，已丢掉",
     base_safety_failed: "修改稿没过安全检查，保留首稿",
     revision_reading_unavailable: "修改稿量不出像不像，保留首稿",
-    revision_template_missing: "缺「定向修改」模板，保留首稿",
   },
 };
 const STYLE_NOTICE_REASON_DETAILS = {
@@ -154,7 +153,6 @@ const STYLE_NOTICE_REASON_DETAILS = {
     copy_gate_blocked: "改出来的那一版新添了与参考书原文连续相同的地方，已丢掉，保留首稿。",
     base_safety_failed: "改出来的那一版丢了必写的内容、长度不对或文本不完整，保留首稿。",
     revision_reading_unavailable: "改出来的那一版量不出像不像，没法确认更像，保留首稿。",
-    revision_template_missing: "首稿和作者差得明显，但这台机器还没有「定向修改」的提示词模板（同步提示词模板之后就有），这一场保留首稿。",
   },
   STYLE_PATCH_REVERTED: {
     judge_worse: "软质检的补丁让参考评审分降了，已退回补丁前的稿子；评审的改稿意见留在记录里。",

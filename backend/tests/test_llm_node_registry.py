@@ -58,6 +58,20 @@ def test_node_template_names_resolve_or_are_documented_non_builder():
     )
 
 
+def test_templates_the_code_builds_by_name_are_in_prompts_yaml():
+    """有几处按模板名（不是节点名）装配提示：事实版蓝图、定向修改、对照检查的评审、正文事件抽取，以及注入路由表里
+    借别的节点派发的模板。提示词只读仓库的 config/prompts.yaml（2026-10），这些模板缺了只能是程序的问题——运行时
+    照 fail-closed 报错（不再退回别的模板、也不再叫人去同步提示词），这里在 CI 先拦下。"""
+    from novel_system.services.prose_event_extractor import EXTRACT_TEMPLATE_NAME
+    from novel_system.services.scene_blueprint import FACTS_TEMPLATE_NAME
+    from novel_system.services.style_reference.check_job import CHECK_TEMPLATE
+    from novel_system.services.style_reference.inject.routing import TEMPLATE_NODE_IDS
+
+    templates = load_prompt_templates()
+    names = {EXTRACT_TEMPLATE_NAME, FACTS_TEMPLATE_NAME, CHECK_TEMPLATE, "style_targeted_revision", *TEMPLATE_NODE_IDS}
+    assert sorted(name for name in names if name not in templates) == []
+
+
 def test_documented_non_builder_names_are_actually_absent_from_prompts():
     """自清理：豁免集成员一旦进了 prompts.yaml，应移出豁免集（恢复 A 守护）。"""
     templates = load_prompt_templates()

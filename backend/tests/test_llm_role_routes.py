@@ -83,7 +83,7 @@ def test_save_role_routes_expands_only_slot_nodes(client, monkeypatch) -> None:
         headers=ADMIN_HEADERS,
         json={
             "assignments": {"drafting": {"provider_id": "main_provider", "model": "test-model-b"}},
-            "activate": False,
+            "activate": True,
         },
     )
 
@@ -112,6 +112,46 @@ def test_save_role_routes_expands_only_slot_nodes(client, monkeypatch) -> None:
             assert route.get("provider_id") != "main_provider"
     # 槽位绑定从 node_routes 反推(overview.role_slots),快照不再另存一份没人读的 role_assignments
     assert "role_assignments" not in data["snapshot"]["parsed"]
+
+
+def test_route_writes_always_activate_and_refuse_activate_false(client, session, monkeypatch) -> None:
+    """分工与一键补齐只存活动快照：activate:false 以前存下一份草稿，可删掉激活接口之后没有任何接口能再激活它
+    （React 一直发 true）。现在 activate:false 回 422、什么都不写；还开着的旧页面照发 activate:true 照常生效，
+    不带 activate 也一样。"""
+    from sqlalchemy import func, select
+
+    from novel_system.db.models import SystemConfigSnapshot
+
+    _enable_admin(monkeypatch)
+    _create_provider(client)
+
+    def models_rows() -> int:
+        return session.execute(
+            select(func.count()).select_from(SystemConfigSnapshot).where(SystemConfigSnapshot.category == "models")
+        ).scalar_one()
+
+    assignments = {"drafting": {"provider_id": "main_provider", "model": "test-model-a"}}
+    for path, body in (
+        ("/api/v1/system-config/llm/role-routes", {"assignments": assignments, "activate": False}),
+        ("/api/v1/system-config/llm/node-routes/sync-missing", {"activate": False}),
+    ):
+        refused = client.post(path, headers=ADMIN_HEADERS, json=body)
+        assert refused.status_code == 422, refused.json()
+        assert refused.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+        assert refused.json()["error"]["details"]["issues"][0]["field"].endswith("activate")
+    assert models_rows() == 0
+
+    for path, body in (
+        ("/api/v1/system-config/llm/role-routes", {"assignments": assignments, "activate": True}),
+        ("/api/v1/system-config/llm/node-routes/sync-missing", {"activate": True}),
+        ("/api/v1/system-config/llm/role-routes", {"assignments": assignments}),
+        ("/api/v1/system-config/llm/node-routes/sync-missing", {}),
+    ):
+        response = client.post(path, headers=ADMIN_HEADERS, json=body)
+        assert response.status_code == 200, response.json()
+        assert response.json()["data"]["snapshot"]["active"] is True
+        assert response.json()["data"]["snapshot"]["status"] == "active"
+    assert models_rows() == 4
 
 
 def test_save_role_routes_activate_updates_overview_inference(client, monkeypatch) -> None:

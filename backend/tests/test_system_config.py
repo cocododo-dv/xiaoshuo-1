@@ -13,6 +13,7 @@ from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.system_config import SystemConfigService, load_llm_provider_runtime_configs
+from novel_system.services.system_config_secrets import save_secret_value
 from novel_system.settings import get_settings
 from tests.support.api_client import AutoKeyTestClient
 
@@ -34,15 +35,13 @@ def _local_provider_body(**overrides) -> dict:
     return body
 
 
-def _create_config_draft(session, category: str, yaml_raw: str, *, secrets: dict | None = None) -> dict:
+def _create_config_draft(session, category: str, yaml_raw: str) -> dict:
     """保存一份配置草稿（运维工具的入口；HTTP 的 drafts / activate 路由没有界面调用，已删——重评 R15a）。"""
-    return SystemConfigService(session).create_draft(
-        category=category, yaml_raw=yaml_raw, secrets=secrets, actor_ref="ops.config"
-    )
+    return SystemConfigService(session).create_draft(category=category, yaml_raw=yaml_raw, actor_ref="ops.config")
 
 
-def _activate_config(session, category: str, yaml_raw: str, *, secrets: dict | None = None) -> dict:
-    created = _create_config_draft(session, category, yaml_raw, secrets=secrets)
+def _activate_config(session, category: str, yaml_raw: str) -> dict:
+    created = _create_config_draft(session, category, yaml_raw)
     return SystemConfigService(session).activate(created["snapshot"]["snapshot_id"], actor_ref="ops.config")["snapshot"]
 
 
@@ -187,36 +186,6 @@ def test_repo_model_config_declares_independent_provider_attempt_budget() -> Non
     routing_config = load_model_routing_config(config_path)
 
     assert routing_config.retry_budget["provider_attempt_budget"] == DEFAULT_PROVIDER_ATTEMPT_BUDGET
-
-
-def test_system_config_read_is_a_summary_without_yaml_or_history(client) -> None:
-    """重评 R15a:GET /api/v1/system-config 只给摘要——它唯一的调用方(开发启动脚本)只看 runtime;
-    以前每一份历史快照的 YAML 正文都随它发出(MB 级)。"""
-    response = client.get("/api/v1/system-config")
-
-    assert response.status_code == 200
-    payload = response.json()["data"]
-    assert set(payload) == {"runtime", "categories"}
-    assert payload["runtime"]["admin_configured"] is False
-    assert payload["runtime"]["secret_configured"] is False
-    models = payload["categories"]["models"]
-    assert models["source"] == "repo_default"
-    assert models["active_snapshot"] is None
-    assert "yaml_raw" not in models and "parsed" not in models
-    assert payload["categories"]["api"]["secrets"]["llm_api_key"]["configured"] is False
-
-
-def test_system_config_read_summarises_the_active_snapshot_version(client, session, monkeypatch) -> None:
-    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
-    snapshot = _activate_config(session, "models", "node_routing: {}\n")
-
-    models = client.get("/api/v1/system-config").json()["data"]["categories"]["models"]
-
-    assert models["source"] == "database_active"
-    assert models["active_snapshot"]["snapshot_id"] == snapshot["snapshot_id"]
-    assert models["active_snapshot"]["version"] == snapshot["version"]
-    assert models["active_snapshot"]["active"] is True
-    assert "yaml_raw" not in models["active_snapshot"] and "parsed" not in models["active_snapshot"]
 
 
 def test_system_config_write_requires_admin_token(client, monkeypatch) -> None:
@@ -537,10 +506,22 @@ def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch)
     assert "admin" not in response.text.lower()
 
 
-def test_api_config_draft_encrypts_secret_and_active_snapshot_feeds_settings(client, session, monkeypatch) -> None:
+def test_legacy_llm_api_key_and_the_active_api_snapshot_feed_settings(client, session, monkeypatch) -> None:
+    """配置草稿不再收密钥：create_draft(secrets=…) 写旧 llm_api_key 的那条路只有测试走得到（运维工具都传 None），删掉；
+    密钥只经「设置 → AI 模型」按服务保存。老安装库里的 llm_api_key 照旧读得到（读的兜底留着），也照旧不外露。"""
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
+    save_secret_value(
+        session,
+        secret_id="llm_api_key",
+        raw_value="super-secret-key",
+        actor_ref="ops.config",
+        secret_type="api_key",
+        metadata={"provider_id": "legacy", "provider_type": "openai_compatible"},
+    )
+    session.commit()
+    assert session.get(SystemSecret, "llm_api_key").encrypted_value != "super-secret-key"
     yaml_raw = """
 llm:
   provider: openai_compatible
@@ -549,22 +530,18 @@ llm:
   timeout_seconds: 12.5
 """.strip()
 
-    created = _create_config_draft(session, "api", yaml_raw, secrets={"llm_api_key": "super-secret-key"})
+    created = _create_config_draft(session, "api", yaml_raw)
     draft = created["snapshot"]
+    assert set(created) == {"snapshot"}
     assert draft["validation"]["ok"] is True
-    assert "super-secret-key" not in repr(created)
-    assert created["secrets"]["llm_api_key"]["configured"] is True
-    assert session.get(SystemSecret, "llm_api_key").encrypted_value != "super-secret-key"
 
     activated = SystemConfigService(session).activate(draft["snapshot_id"], actor_ref="ops.config")
     assert activated["snapshot"]["active"] is True
 
-    read_response = client.get("/api/v1/system-config")
+    read_response = client.get("/api/v1/system-config/llm")
     assert read_response.status_code == 200
     assert "super-secret-key" not in read_response.text
-    api_payload = read_response.json()["data"]["categories"]["api"]
-    assert api_payload["source"] == "database_active"
-    assert api_payload["secrets"]["llm_api_key"]["configured"] is True
+    assert read_response.json()["data"]["api_snapshot"]["snapshot_id"] == draft["snapshot_id"]
 
     settings = get_settings()
     assert settings.llm_provider == "openai_compatible"
@@ -629,7 +606,7 @@ llm:
     assert "must not be negative" in excinfo.value.message
 
 
-def test_active_model_and_prompt_snapshots_feed_runtime_loaders(session, monkeypatch) -> None:
+def test_active_models_snapshot_feeds_the_routing_loader(session, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
     models_yaml = """
 task_routing:
@@ -644,43 +621,51 @@ retry_budget:
 job_runtime:
   verify_lease_ttl_seconds: 99
 """.strip()
-    prompts_yaml = """
-templates:
-  neutral_draft:
-    version: custom.v1
-    input_token_budget: 500
-    system_prompt: "Custom system prompt"
-    task_prompt: "Custom task prompt"
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - scene_text
-      properties:
-        scene_text:
-          type: string
-""".strip()
 
     assert _activate_config(session, "models", models_yaml)["active"] is True
-    assert _activate_config(session, "prompts", prompts_yaml)["active"] is True
 
     routing_config = load_model_routing_config()
     assert routing_config.task_routing["neutral_draft"].model == "custom-neutral"
     assert routing_config.task_routing["neutral_draft"].max_output_tokens == 321
 
-    prompt = PromptBuilder().build(
-        {
-            "scene_id": "CH001_SC01",
-            "chapter_id": "CH001",
-            "inline_digests": {
-                "chapter_goal": "Goal",
-                "scene_card": "Scene",
-            },
-        },
-        "neutral_draft",
-    )
-    assert prompt["template_version"] == "custom.v1"
-    assert prompt["system_prompt"] == "Custom system prompt"
+
+def test_prompts_are_no_longer_a_config_category(session, monkeypatch) -> None:
+    """提示词只读仓库的 config/prompts.yaml（2026-10）：系统配置不再收 prompts 快照（以前存得下、却没有界面能写，
+    存下之后整份盖住仓库文件，每次改模板都要跑同步工具）。"""
+    import pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.system_config import CONFIG_CATEGORIES
+
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    assert "prompts" not in CONFIG_CATEGORIES
+    with pytest.raises(DomainError) as excinfo:
+        _create_config_draft(session, "prompts", "templates: {}\n")
+
+    assert excinfo.value.code == "CONFIG_CATEGORY_UNSUPPORTED"
+    assert excinfo.value.status_code == 404
+    assert session.execute(select(SystemConfigSnapshot)).scalars().all() == []
+    prompt = PromptBuilder().build({"scene_id": "CH001_SC01", "chapter_id": "CH001"}, "neutral_draft")
+    assert prompt["template_name"] == "neutral_draft"
+
+
+def test_only_api_and_models_are_config_categories(session, monkeypatch) -> None:
+    """系统配置只剩两类：api（服务与密钥）与 models（节点路由）。allowlists / hash_contract 两份配置文件没有任何代码读
+    （allowlists.yaml 还列着早已删掉的声线卡、关系卡），连同类别一起删掉；BSHASH_v1 的规整规则写在 hash_engine 的
+    模块说明里。"""
+    import pytest
+
+    from novel_system.services.errors import DomainError
+    from novel_system.services.system_config import CONFIG_CATEGORIES, YAML_CONFIG_FILES, repo_config_dir
+
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    assert CONFIG_CATEGORIES == ("api", "models")
+    assert YAML_CONFIG_FILES == {"models": "models.yaml"}
+    for category in ("allowlists", "hash_contract"):
+        with pytest.raises(DomainError) as excinfo:
+            _create_config_draft(session, category, "a: 1\n")
+        assert excinfo.value.code == "CONFIG_CATEGORY_UNSUPPORTED" and excinfo.value.status_code == 404
+        assert not (repo_config_dir() / f"{category}.yaml").exists()
 
 
 def test_system_config_rejects_invalid_models_yaml(session, monkeypatch) -> None:

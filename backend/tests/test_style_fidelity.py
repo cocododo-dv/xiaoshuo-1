@@ -312,23 +312,33 @@ def test_neutral_first_keeps_the_old_restyle_template_and_reads_both_drafts(sess
     ]
 
 
-def test_missing_revision_template_keeps_the_first_draft_with_a_warning(session, monkeypatch) -> None:
+def test_a_missing_revision_template_fails_closed(session, monkeypatch) -> None:
+    """提示词只读仓库的 config/prompts.yaml（2026-10）：定向修改模板缺了只能是程序的问题（CI 的模板清点会先拦下），
+    照 fail-closed 失败、记一条失败的尝试——不再像库里的提示词快照落后时那样悄悄保留首稿、只给一条提示。"""
     scene, bundle, _book, _profile = _bound_scene(session, "fid_tpl")
     runner = _Runner(outputs={}, default=LONG_FIRST)
     service = SceneGenerationService(session, llm_runner=runner)
     first = service.generate_neutral_draft(scene.scene_id, bundle)
     session.commit()
     _install_readings(monkeypatch, {"窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT)})
-    monkeypatch.setattr(service._prompt_builder(), "has_template", lambda name: name != "style_targeted_revision")
-    result = service.generate_style_draft(
-        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
-    )
+    service._prompt_builder()._templates.pop("style_targeted_revision")
+    with pytest.raises(KeyError):
+        service.generate_style_draft(
+            scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+        )
     session.commit()
-    assert len(runner.calls) == 1 and result.content == first.content
-    details = _style_attempt(session, scene.scene_id).details_json
-    assert details["style_step"]["reason"] == S.REASON_TEMPLATE_MISSING
-    notice = details["notices"][0]
-    assert notice["code"] == sg.STYLE_NOTICE_REVISION_REJECTED and notice["severity"] == "warning"
+    assert len(runner.calls) == 1
+    failed = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.scene_id == scene.scene_id,
+            AttemptTracker.step == "style_draft",
+            AttemptTracker.status == "failed",
+        )
+    ).scalar_one()
+    assert failed.details_json["source_draft_row_id"] == first.row_id
+    assert session.execute(
+        select(SceneDraft).where(SceneDraft.scene_id == scene.scene_id, SceneDraft.stage == "style_draft")
+    ).scalars().all() == []
 
 
 # ---------------------------------------------------------------------------

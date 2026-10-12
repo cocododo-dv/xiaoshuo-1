@@ -68,7 +68,7 @@ PRESERVED_LLM_NODE_PREFIXES = ("style_ref_", "reference_")
 # 与 services/scene_rehome.py 的 REHOMED_MODELS / NOT_REHOMED_TABLES 同一个约定。
 PRESERVED_TABLES = frozenset(
     {
-        # 系统配置：模型 / 提示词快照与加密保存的服务商密钥
+        # 系统配置：api / models 快照（连同老安装留着的退役类别快照）与加密保存的服务商密钥
         "system_config_snapshots",
         "system_secrets",
         # 启动恢复的进程级租约，不属于任何作品

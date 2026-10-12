@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
+from novel_system.services.config_snapshot_reader import active_snapshot
 from novel_system.services.system_config import SystemConfigService
 from novel_system.tools import raise_llm_output_budget as tool
 from tests.support.schema import stamp_schema_revision
@@ -45,14 +46,13 @@ def _activate(session, payload: dict) -> None:
     service = SystemConfigService(session)
     created = service.create_draft(
         category="models", yaml_raw=yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-        secrets=None, actor_ref="test",
+        actor_ref="test",
     )
     service.activate(created["snapshot"]["snapshot_id"], actor_ref="test")
 
 
 def _active_payload(session) -> dict:
-    category = SystemConfigService(session).overview()["categories"]["models"]
-    return yaml.safe_load(category["yaml_raw"])
+    return yaml.safe_load(active_snapshot(session, "models").yaml_raw)
 
 
 def _active_routing(session) -> dict:

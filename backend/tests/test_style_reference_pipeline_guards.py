@@ -210,6 +210,24 @@ def test_style_first_binding_gets_a_facts_only_blueprint_with_situation_tags(ses
     assert snapshot["source_version_refs"]["scene_situation_tags"] == ["对峙审问", "悬疑揭示", "计划商议"]
 
 
+def test_a_missing_facts_blueprint_template_fails_closed(session) -> None:
+    """提示词只读仓库的 config/prompts.yaml（2026-10）：事实版蓝图模板缺了只能是程序的问题，照 fail-closed 报错、
+    不调模型——不再像库里的提示词快照落后时那样悄悄退回写法版蓝图（那会把写法要求带进作者手笔直起的场景）。"""
+    from novel_system.db.models import SceneBlueprint
+    from novel_system.services.scene_blueprint import SceneBlueprintService
+
+    _seed_scene(session)
+    _bind(session, draft_mode="style_first", seed="facts_missing")
+    runner = _FactsRunner()
+    service = SceneBlueprintService(session, llm_runner=runner)
+    service.prompt_builder._templates.pop("scene_blueprint_facts")
+
+    with pytest.raises(KeyError):
+        service.generate(SCENE_ID)
+    assert runner.calls == []
+    assert session.query(SceneBlueprint).count() == 0
+
+
 def test_blueprint_mode_follows_the_policy_and_stale_versions_are_regenerated(session) -> None:
     from novel_system.services.scene_blueprint import SceneBlueprintService, is_facts_blueprint
 

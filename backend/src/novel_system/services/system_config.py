@@ -1,4 +1,7 @@
-"""系统配置：五类配置快照（api / models / prompts / allowlists / hash_contract）与「设置 → AI 模型」的服务。
+"""系统配置：两类配置快照（api / models）与「设置 → AI 模型」的服务。
+
+提示词不在这里：2026-10 起只读仓库的 ``config/prompts.yaml``（``prompt_builder.load_prompt_templates``）；以前的
+allowlists / hash_contract 两类没有任何代码读，同时删掉（BSHASH_v1 的规整规则写在 ``hash_engine`` 的模块说明里）。
 
 2026-09-30 拆开（B09-13 / B09-11）：
 * ``system_config_secrets``：密钥的加密存取与状态；
@@ -10,7 +13,7 @@
 
 ``load_active_config_payload`` / ``load_secret_value`` 在本模块经 ``SessionLocal`` 与 ``time.sleep``
 读库（测试在这里打桩）。没有界面能重新激活旧快照：运维回滚用 ``SystemConfigService(session).activate(
-<snapshot_id>, actor_ref=...)``（``sync_prompt_templates`` / ``raise_llm_output_budget`` 也是这样写快照的）。
+<snapshot_id>, actor_ref=...)``（``raise_llm_output_budget`` 也是这样写快照的）。
 """
 
 from __future__ import annotations
@@ -78,7 +81,6 @@ from novel_system.services.llm_route_config import (
     writable_models_payload,
 )
 from novel_system.services.llm_routing import parse_model_routing_config, routing_for_models_payload
-from novel_system.services.prompt_builder import PromptConfigurationError, parse_prompt_templates
 from novel_system.services.system_config_secrets import (
     LLM_API_KEY_SECRET_ID,
     LLM_PROVIDER_SECRET_PREFIX,
@@ -111,13 +113,8 @@ __all__ = [
 ]
 
 
-CONFIG_CATEGORIES = ("api", "models", "prompts", "allowlists", "hash_contract")
-YAML_CONFIG_FILES = {
-    "models": "models.yaml",
-    "prompts": "prompts.yaml",
-    "allowlists": "allowlists.yaml",
-    "hash_contract": "hash_contract.yaml",
-}
+CONFIG_CATEGORIES = ("api", "models")
+YAML_CONFIG_FILES = {"models": "models.yaml"}
 
 
 def repo_config_dir() -> Path:
@@ -155,36 +152,9 @@ class SystemConfigService:
         else:
             self.session.flush()
 
-    def overview(self, *, include_content: bool = True) -> dict[str, Any]:
-        """运行时状态与五类配置的现状。
-
-        ``include_content`` 时每类带 YAML 正文与解析结果（运维工具要读）；``GET /api/v1/system-config``
-        只要摘要（来源、校验结果、活动快照的版本，api 的密钥状态）——以前它把每一份历史快照的正文都带上，
-        MB 级，而唯一的调用方（开发启动脚本的探活）只看 runtime（2026-09-30 重评 R15a）。
-        """
-        categories = {}
-        for category in CONFIG_CATEGORIES:
-            payload = self._category_payload(category)
-            if not include_content:
-                payload = _category_summary(payload)
-            categories[category] = payload
-        return {
-            "runtime": {
-                "admin_configured": bool(_admin_token()),
-                "secret_configured": bool(_config_secret()),
-                "supported_categories": list(CONFIG_CATEGORIES),
-            },
-            "categories": categories,
-        }
-
-    def create_draft(
-        self,
-        *,
-        category: str,
-        yaml_raw: str,
-        secrets: dict[str, str] | None,
-        actor_ref: str,
-    ) -> dict[str, Any]:
+    def create_draft(self, *, category: str, yaml_raw: str, actor_ref: str) -> dict[str, Any]:
+        """另存一份草稿（运维工具的入口，``tools/_cli.activate_snapshot_payload``）；密钥不经这里存——只经「设置 → AI
+        模型」按服务保存（``save_llm_provider``）。"""
         _ensure_category(category)
         parsed, validation = validate_config(category, yaml_raw)
         if not validation["ok"]:
@@ -208,12 +178,8 @@ class SystemConfigService:
             created_by=actor_ref,
         )
         self.session.add(snapshot)
-        secret_payload = self._save_secrets(category=category, secrets=secrets or {}, actor_ref=actor_ref)
         self._finish_mutation()
-        return {
-            "snapshot": _serialize_snapshot(snapshot),
-            "secrets": secret_payload,
-        }
+        return {"snapshot": _serialize_snapshot(snapshot)}
 
     def activate(self, snapshot_id: str, *, actor_ref: str) -> dict[str, Any]:
         snapshot = self.session.get(SystemConfigSnapshot, snapshot_id)
@@ -325,7 +291,7 @@ class SystemConfigService:
         return {
             "provider_catalog": provider_catalog(),
             "default_provider_id": llm_payload.get("default_provider_id") or next(iter(providers.keys()), None),
-            # runtime 随 overview 带出,管理面前端无需再拉全量 /system-config(含全部历史快照)
+            # 运行时状态(管理令牌 / 配置密钥是否设好):设置页与开发启动脚本的探活都读这里
             "runtime": {
                 "admin_configured": bool(_admin_token()),
                 "secret_configured": bool(_config_secret()),
@@ -360,8 +326,6 @@ class SystemConfigService:
             category="api",
             parsed={"llm": llm_payload},
             validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
             actor_ref=actor_ref,
         )
         secret_status = self._secret_status(llm_provider_api_key_secret_id(provider_id))
@@ -404,8 +368,6 @@ class SystemConfigService:
             category="api",
             parsed={"llm": llm_payload},
             validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
             actor_ref=actor_ref,
         )
         self._finish_mutation()
@@ -435,8 +397,6 @@ class SystemConfigService:
             category="api",
             parsed={"llm": llm_payload},
             validation={"ok": True, "message": "api config is valid"},
-            status="active",
-            active=True,
             actor_ref=actor_ref,
         )
         secret = self.session.get(SystemSecret, llm_provider_api_key_secret_id(provider_id))
@@ -531,18 +491,14 @@ class SystemConfigService:
             )
 
         routing_config = parse_route_config_or_raise(config_payload)
-        activate = bool_value(payload.get("activate", False))
-        if activate:
-            validate_activating_node_route_bindings(
-                node_routing=routing_config.node_routing,
-                providers=providers,
-            )
+        validate_activating_node_route_bindings(
+            node_routing=routing_config.node_routing,
+            providers=providers,
+        )
         snapshot = self._store_config_snapshot(
             category="models",
             parsed=config_payload,
             validation={"ok": True, "message": "models config is valid"},
-            status="active" if activate else "draft",
-            active=activate,
             actor_ref=actor_ref,
         )
         self._finish_mutation()
@@ -703,25 +659,21 @@ class SystemConfigService:
             }
 
         routing_config = parse_route_config_or_raise(config_payload)
-        activate = bool_value(payload.get("activate", True))
-        if activate:
-            # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
-            # 未触达节点保持原状(与今日的默认 repo 路由同等待遇)。
-            touched_node_ids = {node_id for entry in applied.values() for node_id in entry["node_ids"]}
-            validate_activating_node_route_bindings(
-                node_routing={
-                    node_id: task_config
-                    for node_id, task_config in routing_config.node_routing.items()
-                    if node_id in touched_node_ids
-                },
-                providers=providers,
-            )
+        # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
+        # 未触达节点保持原状(与今日的默认 repo 路由同等待遇)。
+        touched_node_ids = {node_id for entry in applied.values() for node_id in entry["node_ids"]}
+        validate_activating_node_route_bindings(
+            node_routing={
+                node_id: task_config
+                for node_id, task_config in routing_config.node_routing.items()
+                if node_id in touched_node_ids
+            },
+            providers=providers,
+        )
         snapshot = self._store_config_snapshot(
             category="models",
             parsed=config_payload,
             validation={"ok": True, "message": "models config is valid"},
-            status="active" if activate else "draft",
-            active=activate,
             actor_ref=actor_ref,
         )
         self._finish_mutation()
@@ -753,8 +705,6 @@ class SystemConfigService:
                 "validation": validation,
                 "active_snapshot": None,
             }
-        if category == "api":
-            payload["secrets"] = {LLM_API_KEY_SECRET_ID: self._secret_status(LLM_API_KEY_SECRET_ID)}
         return payload
 
     def _current_api_llm_payload(self) -> dict[str, Any]:
@@ -770,15 +720,13 @@ class SystemConfigService:
         category: str,
         parsed: dict[str, Any],
         validation: dict[str, Any],
-        status: str,
-        active: bool,
         actor_ref: str,
     ) -> SystemConfigSnapshot:
-        if active:
-            previous = active_snapshot(self.session, category)
-            if previous is not None:
-                previous.active_flag = 0
-                previous.status = "superseded"
+        """设置页的每个写动作都另存一版并立即激活（上一版置为 superseded，留作回滚）。"""
+        previous = active_snapshot(self.session, category)
+        if previous is not None:
+            previous.active_flag = 0
+            previous.status = "superseded"
         yaml_raw = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
         snapshot = SystemConfigSnapshot(
             snapshot_id=f"config_{category}_{uuid.uuid4().hex[:12]}",
@@ -787,9 +735,9 @@ class SystemConfigService:
             yaml_raw=yaml_raw,
             parsed_json=parsed,
             validation_json=validation,
-            status=status,
-            active_flag=1 if active else 0,
-            activated_at=utcnow() if active else None,
+            status="active",
+            active_flag=1,
+            activated_at=utcnow(),
             created_by=actor_ref,
         )
         self.session.add(snapshot)
@@ -800,21 +748,6 @@ class SystemConfigService:
             select(func.max(SystemConfigSnapshot.version)).where(SystemConfigSnapshot.category == category)
         ).scalar_one_or_none()
         return int(current or 0) + 1
-
-    def _save_secrets(self, *, category: str, secrets: dict[str, str], actor_ref: str) -> dict[str, Any]:
-        if category != "api" or LLM_API_KEY_SECRET_ID not in secrets:
-            return {LLM_API_KEY_SECRET_ID: self._secret_status(LLM_API_KEY_SECRET_ID)} if category == "api" else {}
-        raw_value = str(secrets.get(LLM_API_KEY_SECRET_ID) or "").strip()
-        if not raw_value:
-            return {LLM_API_KEY_SECRET_ID: self._secret_status(LLM_API_KEY_SECRET_ID)}
-        status = self._save_secret_value(
-            secret_id=LLM_API_KEY_SECRET_ID,
-            raw_value=raw_value,
-            actor_ref=actor_ref,
-            secret_type="api_key",
-            metadata={"provider_id": "legacy", "provider_type": "openai_compatible"},
-        )
-        return {LLM_API_KEY_SECRET_ID: status}
 
     def _save_secret_value(
         self,
@@ -867,12 +800,7 @@ def validate_config(category: str, yaml_raw: str) -> tuple[dict[str, Any], dict[
         if category == "models":
             parse_model_routing_config(parsed)
             return parsed, {"ok": True, "message": "models config is valid"}
-        if category == "prompts":
-            parse_prompt_templates(parsed)
-            return parsed, {"ok": True, "message": "prompts config is valid"}
-        if category in {"allowlists", "hash_contract"}:
-            return parsed, {"ok": True, "message": f"{category} config is valid"}
-    except (yaml.YAMLError, ValueError, LLMConfigurationError, PromptConfigurationError) as exc:
+    except (yaml.YAMLError, ValueError, LLMConfigurationError) as exc:
         return {}, {"ok": False, "message": str(exc)}
 
     raise DomainError("CONFIG_CATEGORY_UNSUPPORTED", f"unsupported config category {category}", status_code=404)
@@ -935,21 +863,6 @@ def _serialize_snapshot(snapshot: SystemConfigSnapshot) -> dict[str, Any]:
         "created_at": snapshot.created_at,
         "activated_at": snapshot.activated_at,
     }
-
-
-_SNAPSHOT_SUMMARY_KEYS = ("snapshot_id", "category", "version", "status", "active", "created_by", "created_at", "activated_at")
-
-
-def _category_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """一类配置的摘要：去掉 YAML 正文与解析结果（活动快照也只留版本信息）。"""
-    summary = {key: payload[key] for key in ("category", "source", "validation") if key in payload}
-    active = payload.get("active_snapshot")
-    summary["active_snapshot"] = (
-        {key: active.get(key) for key in _SNAPSHOT_SUMMARY_KEYS} if isinstance(active, dict) else None
-    )
-    if "secrets" in payload:
-        summary["secrets"] = payload["secrets"]
-    return summary
 
 
 def _ensure_category(category: str) -> None:

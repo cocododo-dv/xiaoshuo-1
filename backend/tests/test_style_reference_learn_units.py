@@ -620,20 +620,41 @@ def test_tag_payload_sends_the_dimension_vocabulary_instead_of_card_devices() ->
 # ---------------------------------------------------------------- 提示词 / 节点契约
 
 
+# 学习作业按这些 schema 字段解析各节点的输出（路径里遇到数组就进 items）。提示词只读仓库的 config/prompts.yaml
+# （2026-10），模板与解析代码随同一次发布到达，这份契约由这里在 CI 里守，作业开工时不再逐个查。
+LEARN_TEMPLATE_CONTRACT: dict[str, tuple[tuple[str, ...], ...]] = {
+    **{
+        f"style_ref_extract_{layer}": (("dimensions", "observations"), ("dimensions", "avoid"))
+        for layer in ("language", "narrative", "scene", "theme")
+    },
+    "style_ref_synthesize_profile": (("dimensions", "do"), ("dimensions", "avoid"), ("temperament",)),
+    "style_ref_protected_terms": (("terms",),),
+    "style_ref_tag_windows": (("windows", "situations"), ("windows", "dimensions"), ("windows", "gist")),
+}
+
+
+def _schema_path_present(schema, path) -> bool:
+    node = schema
+    for key in path:
+        if isinstance(node, dict) and node.get("type") == "array":
+            node = node.get("items")
+        properties = node.get("properties") if isinstance(node, dict) else None
+        if not isinstance(properties, dict) or key not in properties:
+            return False
+        node = properties[key]
+    return True
+
+
 def test_learn_prompts_and_node_routes_are_aligned() -> None:
     from novel_system.services.llm_client import load_model_routing_config
     from novel_system.services.llm_node_registry import get_llm_node_spec
     from novel_system.services.prompt_builder import load_prompt_templates
-    from novel_system.services.style_reference.learn_llm import (
-        LEARN_NODE_IDS,
-        TEMPLATE_CONTRACT,
-        template_meets_contract,
-    )
+    from novel_system.services.style_reference.learn_llm import LEARN_NODE_IDS
 
     root = Path(__file__).resolve().parents[2]
     templates = load_prompt_templates(root / "config" / "prompts.yaml")
     routing = load_model_routing_config(root / "config" / "models.yaml")
-    assert set(TEMPLATE_CONTRACT) == set(LEARN_NODE_IDS)
+    assert set(LEARN_TEMPLATE_CONTRACT) == set(LEARN_NODE_IDS)
     for node_id in LEARN_NODE_IDS:
         spec = get_llm_node_spec(node_id)
         route = routing.task_routing[node_id]
@@ -641,8 +662,9 @@ def test_learn_prompts_and_node_routes_are_aligned() -> None:
         assert spec.temperature == route.temperature == 0.0
         assert spec.max_output_tokens == route.max_output_tokens
         assert templates[node_id].input_token_budget > 0
-        # 作业开工前查的模板契约:仓库里的模板都满足(旧抽取 schema 不满足,见作业测试)
-        assert template_meets_contract(node_id, templates[node_id])
+        # 作业解析输出要用的字段，模板的 schema 里都有
+        for path in LEARN_TEMPLATE_CONTRACT[node_id]:
+            assert _schema_path_present(templates[node_id].structured_schema, path), (node_id, path)
     for layer in ("language", "narrative", "scene", "theme"):
         template = templates[f"style_ref_extract_{layer}"]
         assert "model_default" in template.system_prompt and "devices" in template.system_prompt
@@ -654,16 +676,15 @@ def test_learn_prompts_and_node_routes_are_aligned() -> None:
     item = tag_schema["properties"]["windows"]["items"]["properties"]
     assert item["situations"]["items"]["enum"] == list(SITUATION_TAGS)
     assert item["moods"]["items"]["enum"] == list(MOOD_TAGS)
-    # v2:维度枚举 = 16 维的键,不再有 devices;学习作业开工前按这个模板判 v2
+    # v2:维度枚举 = 16 维的键,不再有 devices
     from novel_system.services.style_reference.tags import DIMENSION_KEYS, MAX_DIMENSIONS
 
     assert item["dimensions"]["items"]["enum"] == list(DIMENSION_KEYS) and item["dimensions"]["maxItems"] == MAX_DIMENSIONS
     assert "devices" not in item and "dimensions" in tag_schema["properties"]["windows"]["items"]["required"]
     assert templates["style_ref_tag_windows"].version >= "2026-09-24.v2"
-    from novel_system.services.style_reference.learn_job import ensure_tag_template_current
     from novel_system.services.style_reference.learn_llm import load_learn_runtimes
 
-    ensure_tag_template_current(load_learn_runtimes())  # 仓库里的模板是 v2:不抛
+    assert set(load_learn_runtimes()) == set(LEARN_NODE_IDS)  # 每个学习节点都有路由与模板
     assert "style_ref_supplement_evidence" not in templates
     assert get_llm_node_spec("style_ref_supplement_evidence") is None
     assert get_llm_node_spec("style_ref_tag_windows").reasoning_level == "off"

@@ -1,7 +1,8 @@
 """风格参考 · 三种作业共用的模型节点载入与记账调用（``style_reference/llm_nodes.py``）。
 
-- 载入按节点顺序列出问题（缺路由 / 缺模板 / 模板不合作业的解析契约），缺路由的节点不再看模板；配置本身读不出来
-  抛 ``NodeConfigUnavailable``——各作业按自己的错误码报：分类报第一个问题、对照检查缺路由与缺模板说法不同；
+- 载入按节点顺序列出问题（缺路由 / 缺模板），缺路由的节点不再看模板；配置本身读不出来抛 ``NodeConfigUnavailable``
+  ——各作业按自己的错误码报：分类报第一个问题、对照检查缺路由与缺模板说法不同（都不再叫人去同步提示词：提示词
+  只读仓库的 config/prompts.yaml，模板缺了只能是程序的问题）；
 - 记账调用：记账 / 控制面失败原样抛出，其余失败换成调用方的错误；给了会话就用它，没给就自己开一个。
 """
 
@@ -46,19 +47,15 @@ def test_problems_are_listed_in_node_order_and_a_missing_route_skips_the_templat
     _install_config(
         monkeypatch,
         routes={"a": _route(), "c": _route(), "d": _route()},
-        templates={"a": _template(), "b": _template(), "d": _template("old")},
+        templates={"a": _template(), "b": _template(), "d": _template("other")},
     )
-    load = llm_nodes.load_node_runtimes(
-        ("a", "b", "c", "d"),
-        template_ok=lambda _node, template: template.version != "old",
-    )
-    assert list(load.runtimes) == ["a"]
+    load = llm_nodes.load_node_runtimes(("a", "b", "c", "d"))
+    assert list(load.runtimes) == ["a", "d"]
     assert load.problems == (
         ("b", llm_nodes.PROBLEM_ROUTE),
         ("c", llm_nodes.PROBLEM_TEMPLATE),
-        ("d", llm_nodes.PROBLEM_STALE),
     )
-    assert load.missing_routes == ["b"] and load.missing_templates == ["c"] and load.stale_templates == ["d"]
+    assert load.missing_routes == ["b"] and load.missing_templates == ["c"]
     runtime = load.runtimes["a"]
     assert runtime.prompt_version == "2026-09-23.v1" and runtime.input_token_budget == 8000
     assert runtime.model == "m" and runtime.route_key == ("p", "m")
@@ -113,8 +110,13 @@ def test_check_judge_config_errors_say_which_part_is_missing(monkeypatch) -> Non
     _install_config(monkeypatch, routes={check_job.CHECK_NODE_ID: _route()}, templates={})
     with pytest.raises(DomainError) as excinfo:
         check_job._judge_runtime()
-    assert excinfo.value.code == check_job.CHECK_CONFIG_MISSING_CODE
-    assert excinfo.value.details["author_action"]["action"] == "sync_prompt_templates"
+    assert excinfo.value.code == check_job.CHECK_CONFIG_MISSING_CODE and excinfo.value.status_code == 409
+    assert excinfo.value.details == {
+        "reason": "template_missing",
+        "node_id": check_job.CHECK_NODE_ID,
+        "template": check_job.CHECK_TEMPLATE,
+    }
+    assert "sync_prompt_templates" not in excinfo.value.message
 
     judge = _template("judge")
     _install_config(

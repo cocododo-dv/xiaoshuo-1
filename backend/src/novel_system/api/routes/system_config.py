@@ -22,12 +22,6 @@ def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
 
-@router.get("/api/v1/system-config")
-def system_config_overview(request: Request, session: Session = Depends(get_session)):
-    # 摘要：运行时状态 + 各类配置的来源与活动快照版本（不带 YAML 正文与历史快照；设置页读 /llm）
-    return respond(request, SystemConfigService(session).overview(include_content=False))
-
-
 @router.post("/api/v1/system-config/test-provider")
 def test_system_config_provider(
     payload: ProviderProbeRequest,

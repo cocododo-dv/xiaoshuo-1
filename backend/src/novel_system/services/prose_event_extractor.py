@@ -21,7 +21,6 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -45,19 +44,13 @@ EXTRACT_TASK_NAME = "narrative_event_extract"
 EXTRACT_TEMPLATE_NAME = "narrative_event_extract"
 # 一次调用最多读的正文字数：归档那一步只读开头这么多；作者点「提取」时按段落切成这么大的几段，读完整场。
 EXTRACT_CHUNK_CHARS = 6000
-_REPO_PROMPTS_PATH = Path(__file__).resolve().parents[4] / "config" / "prompts.yaml"
 
 
 def _extractor_template() -> Any:
-    """抽取的提示词模板：库里有活动提示词快照读快照，否则读仓库的 ``config/prompts.yaml``。
-
-    这个模板以前写死在代码里；保存过提示词快照、还没跑 ``sync_prompt_templates`` 的安装，快照里还没有它——
-    那时用仓库里的这一份（作者不可能改过它，仓库版就是它现在该有的样子）。"""
+    """抽取的提示词模板：仓库 ``config/prompts.yaml`` 里的 ``narrative_event_extract``。"""
     from novel_system.services.prompt_builder import load_prompt_templates
 
     template = load_prompt_templates().get(EXTRACT_TEMPLATE_NAME)
-    if template is None:
-        template = load_prompt_templates(_REPO_PROMPTS_PATH).get(EXTRACT_TEMPLATE_NAME)
     if template is None:
         raise LookupError(f"prompt template {EXTRACT_TEMPLATE_NAME!r} is missing from config/prompts.yaml")
     return template

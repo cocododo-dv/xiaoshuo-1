@@ -80,7 +80,6 @@ REASON_NOT_CLOSER = "not_closer"
 REASON_COPY_BLOCKED = "copy_gate_blocked"
 REASON_BASE_UNSAFE = "base_safety_failed"
 REASON_REVISION_UNREADABLE = "revision_reading_unavailable"
-REASON_TEMPLATE_MISSING = "revision_template_missing"
 # 补丁的去留
 PATCH_DECISION_KEPT = "kept"
 PATCH_DECISION_REVERTED = "reverted"
@@ -455,7 +454,6 @@ __all__ = [
     "REASON_READING_UNAVAILABLE",
     "REASON_READING_UNRELIABLE",
     "REASON_REVISION_UNREADABLE",
-    "REASON_TEMPLATE_MISSING",
     "REASON_WITHIN_RANGE",
     "STYLE_PATCH_KEEP_STEP",
     "card_lines_for",

@@ -396,6 +396,7 @@ describe("像不像（风格参考 v3）", () => {
           { code: "STYLE_FIRST_DRAFT_ACCEPTED", severity: "info", reason: "within_author_range", message: "首稿读数在参考作者的正常范围内，风格步没有再调模型" },
           { code: "STYLE_FIRST_DRAFT_ACCEPTED", severity: "info", reason: "reading_unreliable", message: "…" },
           { code: "STYLE_REVISION_REJECTED", severity: "info", reason: "not_closer", message: "定向修改没有让稿子更像参考作者（读数没有变近）" },
+          // 2026-10 之前的旧记录：「缺定向修改模板」这个原因不再产生（提示词只读仓库文件），按「修改没有采用」的通用说法
           { code: "STYLE_REVISION_REJECTED", severity: "warning", reason: "revision_template_missing", message: "…sync_prompt_templates…" },
           { code: "STYLE_PATCH_REVERTED", severity: "info", reason: "judge_worse", message: "软 QC 的补丁让稿子离参考作者更远" },
           { code: "STYLE_REFERENCE_SAMPLES_BLOCKED", severity: "warning", message: "云端策略不允许" },
@@ -415,7 +416,8 @@ describe("像不像（风格参考 v3）", () => {
     expect(text(0)).toContain("量下来首稿已经像这位作者");
     expect(text(1)).toContain("首稿量不准，没有再改");
     expect(text(2)).toContain("改了一版没有更像，保留首稿");
-    expect(text(3)).toContain("缺「定向修改」模板");
+    expect(text(3)).toContain("修改没有采用，保留首稿");
+    expect(text(3)).not.toMatch(/模板|同步/);
     expect(rows[3].className).toContain("sev-warning");
     expect(text(4)).toContain("补丁没有更像，已退回");
     expect(text(4)).toContain("参考评审分降了");

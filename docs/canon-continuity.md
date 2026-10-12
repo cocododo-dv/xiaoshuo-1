@@ -62,7 +62,7 @@ $env:NOVEL_SYSTEM_LLM_ENABLED = "true"
 $env:NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED = "true"
 ```
 
-未启用自动提取时，场景保持 `pending_extraction`，作者仍可从“正史”页签显式发起。作者点的「提取」按段落把整场分成几段（每段约 6,000 字）逐段读完；归档时的自动提取只读开头约 6,000 字。提示词是 `config/prompts.yaml` 的 `narrative_event_extract` 模板（保存过提示词快照、还没同步的安装用仓库里这一份）。供应商失败、解析失败或发送前拒绝会记为 `degraded`，不会把“没抽出来”解释成“没有事实”。模型返回空列表或若干候选都需要作者在逐条裁决后做场景级完整性确认，避免漏抽被静默放行。
+未启用自动提取时，场景保持 `pending_extraction`，作者仍可从“正史”页签显式发起。作者点的「提取」按段落把整场分成几段（每段约 6,000 字）逐段读完；归档时的自动提取只读开头约 6,000 字。提示词是 `config/prompts.yaml` 的 `narrative_event_extract` 模板。供应商失败、解析失败或发送前拒绝会记为 `degraded`，不会把“没抽出来”解释成“没有事实”。模型返回空列表或若干候选都需要作者在逐条裁决后做场景级完整性确认，避免漏抽被静默放行。
 
 ## 长篇上下文注入
 

@@ -54,9 +54,9 @@ function WsAiSetupNotice({ go, compact = false }) {
       void WsAiProviders.refresh().catch(() => {});
     }
   }, [ai.loaded, ai.loading, ai.error]);
+  /* 就绪与否只看后端的 readiness（以前另看的 api_snapshot.enabled 后端从不给，那条判断恒为假） */
   const readiness = ai.overview && ai.overview.readiness;
-  const globallyDisabled = ai.overview && ai.overview.api_snapshot && ai.overview.api_snapshot.enabled === false;
-  if (!ai.loaded || !readiness || (readiness.ready === true && !globallyDisabled)) return null;
+  if (!ai.loaded || !readiness || readiness.ready === true) return null;
   const openSettings = () => go("settings", { type: "ws:settings-tab", detail: "ai" });
   if (compact) {
     return (

@@ -1,3 +1,19 @@
+"""哈希的唯一来源：文本 / JSON 的规整与 SHA-256，以及 bundle 快照哈希的 BSHASH_v1 契约。
+
+BSHASH_v1（``compute_bundle_hash_projection`` / ``verify_bundle_snapshot_hash``；契约以本模块为准——以前另抄了一份在
+``config/hash_contract.yaml``，没有任何代码读它，2026-10 删掉）：
+
+- 算法 SHA-256，输入是 ``BundleSnapshotHashProjection``（``contract_version``、``stage_allowlist_name``、
+  ``source_version_refs``、``resolved_ref_ids``、``ordered_injections``、``inline_digests``）的 :func:`canonical_json`；
+  ``stage_allowlist_name`` 只是冻结在哈希里的名字（``bundle_build_allowlist_v1``），哪些段进 bundle 由
+  ``bundle_builder`` / ``bundle_sections`` 决定（以前的 ``config/allowlists.yaml`` 同样没有读者，一并删掉）；
+- 文本规整（:func:`normalize`）：Unicode NFC，CRLF → LF，去掉末尾空白；
+- JSON 规整（:func:`canonical_json`）：对象的键按字典序，紧凑分隔符，原样 UTF-8（不转义）；
+- 数组保持原顺序（``ordered_injections`` 的顺序就是哈希的一部分）；空值原样，``null`` / ``[]`` / ``{}`` 互不相同。
+
+不做文本规整的一种：:func:`json_plain` / :func:`sha256_json_plain`（检查点 / 归档 / 审计用）。
+"""
+
 from __future__ import annotations
 
 import hashlib

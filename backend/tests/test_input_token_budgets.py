@@ -8,8 +8,9 @@ a 900-char draft at ``near_final_acceptance_review`` (est 3109 > 3000), a 726-ch
 chapter at ``writer_chapter_revision`` (> 3600), any author draft over ~900 chars at
 ``author_structure_extract`` (> 2600). The budgets were re-measured with realistic Chinese
 payloads (see the comment block above ``neutral_draft`` in ``config/prompts.yaml``) and the
-same numbers are floored in ``prompt_builder.RUNTIME_MIN_INPUT_BUDGETS`` so a live install
-whose DB prompts snapshot still carries the old numbers is protected too.
+same numbers are floored in ``prompt_builder.RUNTIME_MIN_INPUT_BUDGETS`` (originally for
+installs whose DB prompts snapshot carried the old numbers; since 2026-10 prompts come only
+from the repo file and the floor guards against a template budget edited too low).
 
 Every prompt here is composed the way the real call site composes it (base prompt from
 ``PromptBuilder`` + the draft + call-site instructions) and then checked with the very

@@ -20,7 +20,6 @@ import random
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 import yaml
@@ -647,31 +646,6 @@ def test_relearning_only_tags_windows_whose_tags_are_not_current(session, monkey
     assert retag_fake.count(NODE_TAGS) == len(windows)
 
 
-def test_start_refuses_a_v1_tag_template(session, monkeypatch) -> None:
-    """保存过提示词快照、还是 v1 标签模板（要 devices、没有 dimensions）的安装：建作业前 409，作业里也不调。"""
-    seed_book(session)
-    _use(monkeypatch, _fake())
-    config_dir = Path(__file__).resolve().parents[2] / "config"
-    prompts = yaml.safe_load((config_dir / "prompts.yaml").read_text(encoding="utf-8"))
-    old = dict(prompts["templates"]["style_ref_tag_windows"])
-    old["version"] = "2026-09-23.v1"
-    item = old["structured_schema"]["properties"]["windows"]["items"]
-    props = {k: v for k, v in item["properties"].items() if k != "dimensions"}
-    props["devices"] = {"type": "array", "maxItems": 5, "items": {"type": "string"}}
-    old["structured_schema"] = {
-        **old["structured_schema"],
-        "properties": {"windows": {"type": "array", "items": {**item, "properties": props, "required": ["window", "situations", "moods", "devices", "gist"]}}},
-    }
-    prompts["templates"]["style_ref_tag_windows"] = old
-    _activate_snapshot(session, "prompts", prompts)
-    with pytest.raises(DomainError) as excinfo:
-        learn_job.start_learn_job(session, "learn_book")
-    assert excinfo.value.code == "STYLE_REFERENCE_LEARN_CONFIG_MISSING" and excinfo.value.status_code == 409
-    assert excinfo.value.details["stale_templates"] == ["style_ref_tag_windows"]
-    assert excinfo.value.details["author_action"]["view"] == "systemConfig"
-    assert session.scalars(select(StyleReferenceJob)).first() is None
-
-
 def test_a_mismatched_tag_batch_is_retried(session, monkeypatch) -> None:
     once = {"done": False}
 
@@ -864,7 +838,7 @@ def test_start_checks_book_state_active_jobs_and_policy(session, monkeypatch) ->
 
 
 def _activate_snapshot(session, category: str, parsed: dict) -> None:
-    """直接写一份活动配置快照(模拟在这次发布之前就在系统配置里保存过 models / prompts 的安装)。"""
+    """直接写一份活动配置快照(模拟在这次发布之前就在系统配置里保存过 models 的安装)。"""
     session.add(
         SystemConfigSnapshot(
             snapshot_id=f"config_{category}_{uuid.uuid4().hex[:12]}",
@@ -882,11 +856,11 @@ def _activate_snapshot(session, category: str, parsed: dict) -> None:
     session.commit()
 
 
-def test_start_refuses_missing_routes_and_stale_templates_before_creating_a_job(session, monkeypatch) -> None:
-    """保存过 models 快照(没有两个新节点)/ prompts 快照(抽取还是旧 schema)的安装:建作业前就 409,指到系统配置。"""
+def test_start_refuses_missing_routes_before_creating_a_job_and_the_job_checks_again(session, monkeypatch) -> None:
+    """保存过 models 快照(没有两个新节点)的安装:建作业前就 409,指到系统配置;作业建好之后路由才缺,开工时再查一次,
+    不发任何调用。提示词只读仓库的 config/prompts.yaml(2026-10),不再有「模板是旧版」这一种拒法。"""
     seed_book(session)
     _use(monkeypatch, _fake())
-    config_dir = Path(__file__).resolve().parents[2] / "config"
     # 老安装的 models 快照:每个节点都配了路由,只差这次发布新加的两个节点(快照里没有的节点就是没配)
     models = {"node_routing": registry_default_node_routing()}
     for key in ("style_ref_protected_terms", "style_ref_tag_windows"):
@@ -896,34 +870,18 @@ def test_start_refuses_missing_routes_and_stale_templates_before_creating_a_job(
         learn_job.start_learn_job(session, "learn_book")
     assert excinfo.value.code == "STYLE_REFERENCE_LEARN_CONFIG_MISSING" and excinfo.value.status_code == 409
     assert excinfo.value.details["missing_routes"] == ["style_ref_protected_terms", "style_ref_tag_windows"]
+    assert excinfo.value.details["missing_templates"] == []
+    assert "stale_templates" not in excinfo.value.details
     assert excinfo.value.details["author_action"]["view"] == "systemConfig"
+    assert "sync_prompt_templates" not in excinfo.value.message
     assert session.scalars(select(StyleReferenceJob)).first() is None
 
-    session.execute(update(SystemConfigSnapshot).values(active_flag=0, status="superseded"))
-    session.commit()
-    prompts = yaml.safe_load((config_dir / "prompts.yaml").read_text(encoding="utf-8"))
-    old_scene = dict(prompts["templates"]["style_ref_extract_scene"])
-    old_scene["version"] = "2026-08-19.v5"
-    old_scene["structured_schema"] = {
-        "type": "object",
-        "required": ["observations"],
-        "properties": {"observations": {"type": "array", "items": {"type": "object"}}, "forbidden_patterns": {"type": "array"}},
-    }
-    prompts["templates"]["style_ref_extract_scene"] = old_scene
-    _activate_snapshot(session, "prompts", prompts)
-    with pytest.raises(DomainError) as excinfo:
-        learn_job.start_learn_job(session, "learn_book")
-    assert excinfo.value.code == "STYLE_REFERENCE_LEARN_CONFIG_MISSING"
-    assert excinfo.value.details["stale_templates"] == ["style_ref_extract_scene"]
-    assert "sync_prompt_templates" in excinfo.value.message
-    assert session.scalars(select(StyleReferenceJob)).first() is None
-
-    # 作业已建好之后才换成旧模板:开工时再查一次,不发任何调用
+    # 作业已建好之后路由才缺:开工时再查一次,不发任何调用
     session.execute(update(SystemConfigSnapshot).values(active_flag=0, status="superseded"))
     session.commit()
     fake = _use(monkeypatch, _fake())
     job_id = _start("learn_book")
-    _activate_snapshot(session, "prompts", prompts)
+    _activate_snapshot(session, "models", models)
     run_job_inline(job_id)
     job = _job(job_id)
     assert job.state == "failed" and job.error_json["code"] == "STYLE_REFERENCE_LEARN_CONFIG_MISSING"

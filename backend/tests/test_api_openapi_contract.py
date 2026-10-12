@@ -50,8 +50,8 @@ def test_every_versioned_api_operation_documents_standard_success_and_error_enve
     # non-AI chapter-plan gap list: v1 → 81, v2 → 90;
     # round 2 B2-1: the two-step read-confirm and the unscoped chapter-manuscripts list go: v1 → 79;
     # round 2 B2-5 keeps only the chapter blueprint of the desk's AI planning — plan/candidates, plan/fill,
-    # plan/apply, plan/gaps and plan/review retired: v2 → 85).
-    assert operation_counts["v1"] >= 78
+    # plan/apply, plan/gaps and plan/review retired: v2 → 85; round 2 B2-4 retires GET /api/v1/system-config: v1 → 78).
+    assert operation_counts["v1"] >= 77
     assert operation_counts["v2"] >= 84
 
 

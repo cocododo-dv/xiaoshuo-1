@@ -11,6 +11,7 @@ import yaml
 from novel_system.db.models import StyleReferenceBook
 from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
 from novel_system.db.session import SessionLocal
+from novel_system.services.config_snapshot_reader import active_snapshot
 from novel_system.services.system_config import SystemConfigService
 from novel_system.tools import purge_style_reference_books, raise_llm_output_budget, reset_author_state
 from novel_system.tools._cli import REFUSED_EXIT_CODE, schema_revision_problem
@@ -71,15 +72,15 @@ def test_snapshot_tools_refuse_before_touching_the_active_snapshot(capsys) -> No
             "model_profiles": {"quality_strong": {"description": "d", "provider": "openai_compatible", "model": "m"}},
             "task_routing": {"snowflake_step_generate": {"provider": "openai_compatible", "model": "m", "max_output_tokens": 100}},
         }
-        created = service.create_draft(category="models", yaml_raw=yaml.safe_dump(payload), secrets=None, actor_ref="test")
+        created = service.create_draft(category="models", yaml_raw=yaml.safe_dump(payload), actor_ref="test")
         service.activate(created["snapshot"]["snapshot_id"], actor_ref="test")
         session.commit()
-        before = service.overview()["categories"]["models"]["active_snapshot"]["snapshot_id"]
+        before = active_snapshot(session, "models").snapshot_id
     stamp_schema_revision("20260716_0072")
 
     with pytest.raises(SystemExit):
         raise_llm_output_budget.main(["--execute"])
 
     with SessionLocal() as session:
-        after = SystemConfigService(session).overview()["categories"]["models"]["active_snapshot"]["snapshot_id"]
+        after = active_snapshot(session, "models").snapshot_id
     assert after == before

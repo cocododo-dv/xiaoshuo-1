@@ -26,7 +26,7 @@ publication arbiter.
   `backend/tests/fixture_works.py` (`seed_fixture_works`, works `work-a` / `work-b` — keep these literal ids) and
   `backend/tests/fixture_runtime.py` (`seed_runtime_fixture`, also `PRJ_DEMO_CH001`); the product never seeds them.
 - Operator tools, run from `backend/` as `python -m novel_system.tools.<name>`: `reset_author_state`, `db_backup`,
-  `compact_db`, `sync_prompt_templates`, `raise_llm_output_budget`, `refresh_style_reference_books`,
+  `compact_db`, `raise_llm_output_budget`, `refresh_style_reference_books`,
   `purge_style_reference_books`, `build_voice_baseline`. Database writers dry-run unless `--execute`; those that open
   the app's session also refuse `--execute` (exit 2) when the DB revision differs from the code (`tools/_cli.py`).
   Every tool refuses to run another checkout's code (exit 2, `tools/_checkout_guard.py`; Alembic's `env.py` raises).
@@ -97,7 +97,7 @@ irreversible revisions and the refactor deploy order: `docs/migrations.md`. The 
 - Back up **with the services stopped** (`db_backup --backup SRC DST`, `--verify`, `--restore`; drills
   `scripts/db_backup_drill.{sh,ps1}`); never plain-copy the WAL-mode `novel_system.db`.
 - Deploy: stop → `db_backup` (kept as a named archive) → fast-forward → `alembic upgrade head` → `compact_db PATH
-  --execute` → `sync_prompt_templates --execute` (installs with a prompts snapshot) → start → `/ready`.
+  --execute` → start → `/ready`.
 - `reset_author_state` (dry-run; `--execute --yes`) wipes project / snowflake / chapter / run data and keeps reference
   books, profiles and system config.
 
@@ -229,7 +229,7 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
   (`page`/`page_size` or `cursor`/`limit`), `api/deps.py`.
 - Config lives in the root `config/`: `models.yaml` (only `retry_budget` / `job_runtime`; node defaults live in
   `llm_node_registry.py`), `prompts.yaml`, `pricing.yaml` (author-entered prices; unpriced models show 「未定价」),
-  `allowlists.yaml`, `hash_contract.yaml`, `style_reference/*`.
+  `style_reference/*`.
 
 ### Frontend (`frontend-react/src/`)
 - Stores are plain ES modules — import them (`WsWorks` `ws-works.jsx`, `WsCatalog` `ws-catalog.jsx`, `SnowSync`
@@ -252,8 +252,8 @@ test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT` (5174), `…_
 
 ## Invariants and gotchas
 **Live install / config**
-- A saved prompts snapshot wins over `config/prompts.yaml`: after a template edit run `sync_prompt_templates`
-  (keys on `version`; keeps prompts the author edited in the UI unless `--force-text`). Never re-import a whole file.
+- Prompts come only from `config/prompts.yaml` (a leftover active `prompts` snapshot is ignored with one startup
+  warning); an edit reaches the running backend on the next read.
 - Model routing: the node spec in `llm_node_registry.py` is the only default. A saved models snapshot stores each
   node's provider / model choice; missing parameters resolve from the spec, so spec fixes reach configured installs. On
   a configured install a node without a saved route fails closed (`LLM_ROUTE_NOT_CONFIGURED`) until 系统配置「一键补齐」
