@@ -102,8 +102,8 @@ export function sceneStateMeta(state) {
 
 /* ---------- 戏剧卡 ---------- */
 
-/* 戏剧卡的六格：后端 narrative_json.drama 的键，编辑器（章节编排）、成稿中心的结构页签、导出的附录、
-   AI 编排的补丁行都用这一套叫法（2026-10，批准 #19：以前阅读器把键改名成 thrust / turn / after，附录写「转变」「推进」）。
+/* 戏剧卡的六格：后端 narrative_json.drama 的键，编辑器（章节编排）、成稿中心的结构页签、导出的附录
+   都用这一套叫法（2026-10，批准 #19：以前阅读器把键改名成 thrust / turn / after，附录写「转变」「推进」）。
    group 是章节编排里的三组（承诺 / 推进 / 收束）；护栏两格（禁止包含 / 备注）不算在戏剧卡里。 */
 export const DRAMA_FIELDS = [
   { key: "promise", label: "核心承诺", hint: "读完这一章读者会得到什么", group: "promise", primary: true },

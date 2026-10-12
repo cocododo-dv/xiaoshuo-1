@@ -475,15 +475,14 @@ def test_chapter_planning_context_carries_the_style_reference_slot(session) -> N
     assert context.source_version_refs["style_reference_profile_id"] == "sr_profile_cp"
     assert context.context_fingerprint != baseline_fingerprint
 
-    # 四个章规划节点共用 _render_user_prompt：画像按原样多行渲染在 JSON 载荷之后
-    for name in ("chapter_story_architecture", "chapter_scene_plan_candidates", "chapter_scene_plan_fill", "chapter_plan_review"):
-        prompt = _render_user_prompt(load_prompt_templates()[name], context.prompt_payload)
-        json_part = prompt.split("Working payload:\n", 1)[1].split("\n\n", 1)[0]
-        assert '"style_reference"' not in json_part and '"chapter_card"' in json_part
-        assert "Reference author structure (style_reference" in prompt
-        assert "\n[结构画像]" in prompt and f"\n{SAMPLES_BOUNDARY}\n" in prompt and "\n[场景手法]" in prompt
-        assert prompt.index("[结构画像]") < prompt.index("Required top-level JSON keys")
-    plain = _render_user_prompt(load_prompt_templates()["chapter_plan_review"], {"chapter_card": {"no": 1}})
+    # 章节编排的「AI 生成蓝图」用 _render_user_prompt：画像按原样多行渲染在 JSON 载荷之后
+    prompt = _render_user_prompt(load_prompt_templates()["chapter_story_architecture"], context.prompt_payload)
+    json_part = prompt.split("Working payload:\n", 1)[1].split("\n\n", 1)[0]
+    assert '"style_reference"' not in json_part and '"chapter_card"' in json_part
+    assert "Reference author structure (style_reference" in prompt
+    assert "\n[结构画像]" in prompt and f"\n{SAMPLES_BOUNDARY}\n" in prompt and "\n[场景手法]" in prompt
+    assert prompt.index("[结构画像]") < prompt.index("Required top-level JSON keys")
+    plain = _render_user_prompt(load_prompt_templates()["chapter_story_architecture"], {"chapter_card": {"no": 1}})
     assert "Reference author structure" not in plain
 
 
@@ -650,7 +649,7 @@ def test_snowflake_budget_sheds_samples_then_the_card_before_story_material() ->
 
 
 # ---------------------------------------------------------------------------
-# B4(d) · 七个规划模板
+# B4(d) · 规划模板（章节编排的方向 / 补全 / 体检三个模板 2026-10 随通道删了）
 # ---------------------------------------------------------------------------
 
 
@@ -659,9 +658,6 @@ def test_snowflake_budget_sheds_samples_then_the_card_before_story_material() ->
     [
         "scene_blueprint",
         "chapter_story_architecture",
-        "chapter_scene_plan_candidates",
-        "chapter_scene_plan_fill",
-        "chapter_plan_review",
         "snowflake_generate_scene_list",
         "snowflake_generate_scene_details",
     ],

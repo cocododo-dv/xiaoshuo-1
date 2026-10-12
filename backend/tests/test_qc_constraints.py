@@ -4,7 +4,6 @@ from novel_system.services.qc_constraints import (
     REFERENCE_POLICY_SENTENCES,
     constraint_alternatives,
     constraint_terms,
-    contains_forbidden_term,
     forbidden_hits,
     forbidden_terms,
     issue_mentions_source,
@@ -25,8 +24,8 @@ def test_constraint_alternatives_supports_explicit_equivalent_spellings() -> Non
 
 
 def test_forbidden_and_required_checks_share_the_same_leaf_contract() -> None:
-    assert contains_forbidden_term("盐钟、潮声", "他听见潮声") is True
-    assert contains_forbidden_term(None, "潮声") is False
+    assert forbidden_hits("盐钟、潮声", "他听见潮声") == ["潮声"]
+    assert forbidden_hits(None, "潮声") == []
     assert source_field_satisfied("必须找回旧名单", "他终于找回旧名单，却没有打开") is True
     assert source_field_satisfied("必须找回旧名单", "他离开了码头") is False
     assert issue_mentions_source("缺少：找回旧名单", "必须找回旧名单") is True
@@ -42,14 +41,14 @@ def test_the_reference_policy_sentence_is_not_a_list_of_forbidden_words() -> Non
     assert "人物" in constraint_terms(policy)
 
     assert forbidden_terms(policy) == []
-    assert contains_forbidden_term(policy, "这号人物他见得多了，设定或桥段。都不新鲜。") is False
+    assert forbidden_hits(policy, "这号人物他见得多了，设定或桥段。都不新鲜。") == []
     assert strip_reference_policy(policy) == ""
     assert strip_reference_policy(None) == ""
     # 作者真写的禁用词照常生效——单独写、或者接在旧卡那句话后面
     assert forbidden_terms("死亡证明、铜钥匙|黄铜钥匙") == ["死亡证明", "铜钥匙|黄铜钥匙"]
     assert forbidden_terms(policy + "死亡证明") == ["死亡证明"]
-    assert contains_forbidden_term(policy + "死亡证明", "他递过来一张死亡证明。") is True
-    assert contains_forbidden_term(policy + "死亡证明", "这号人物他见得多了。") is False
+    assert forbidden_hits(policy + "死亡证明", "他递过来一张死亡证明。") == ["死亡证明"]
+    assert forbidden_hits(policy + "死亡证明", "这号人物他见得多了。") == []
     for sentence in REFERENCE_POLICY_SENTENCES:
         assert forbidden_terms(sentence) == []
 

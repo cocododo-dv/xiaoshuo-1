@@ -5,8 +5,12 @@ import { DRAMA_FIELDS, DRAMA_KEYS } from "./labels/catalog.js";
 
 /* ==========================================================
    章节详情 · 戏剧卡（从 ws-author-detail.jsx 拆出，2026-10）
-   这一章的写法：承诺、推进和余味，外加两条护栏（禁止包含 / 备注）。它归章节编排（不在构思里），
-   会进章节蓝图和本章每一场的 AI 起草上下文；留空也能写。一格都没写时收成一行。
+   这一章的写法：承诺、推进和余味，外加两条护栏（禁止包含 / 备注）。它归章节编排（不在构思里）；留空也能写，
+   一格都没写时收成一行。卡上说的都是真的（round 2 · B2-5，以前说会进起草、会拦，其实起草和检查都没读过它）：
+   填了的格子与「禁止包含」进章节蓝图——章节蓝图卡的「AI 生成」、起草前现做的蓝图都读（后端 chapter_drama.py），
+   起草读的是蓝图，已有的蓝图要重新生成才跟上；「禁止包含」的词还进起草提示里的场景卡、写进正文会按字面查出
+   （起草验收、运行前预检、质检复核、成稿门，后端 qc_constraints.literal_forbidden_term_sources）。「禁止包含」一行一条：
+   整行出现才算，不按逗号 / 顿号再拆。备注是作者给自己的话，两个写蓝图的地方都不送。
    ========================================================== */
 
 const { useEffect, useState } = React;
@@ -19,8 +23,8 @@ const ARR_DRAMA_GROUPS = [
 ].map((group) => ({ ...group, fields: DRAMA_FIELDS.filter((field) => field.group === group.key) }));
 
 /* 戏剧卡的一格。textarea 不受控（边写边存会打断输入法），所以 key 带上服务端的值：
-   AI 编排写入、目录重拉带来新值时换一个新的框显示新值；失焦时只有真的改了才写回——
-   以前 key 只有章 id，重拉之后框里还是旧字，下一次失焦把旧字写回去，把刚应用的建议悄悄冲掉。 */
+   目录重拉带来新值时换一个新的框显示新值；失焦时只有真的改了才写回——
+   以前 key 只有章 id，重拉之后框里还是旧字，下一次失焦把旧字写回去，把服务端的新值悄悄冲掉。 */
 function ArrDramaText({ className, label, value, ck, locked, onCommit, placeholder }) {
   const v = value || "";
   return (
@@ -54,7 +58,7 @@ function ArrDramaCard({ ch, locked, onPatchDrama, sectionRef }) {
           <Tag tone="neutral" className="tab-num">可选 · {filled}/{DRAMA_KEYS.length}</Tag>
           <I.ChevronDown size={15} className="arr-drama-chev" />
         </span>
-        <span className="card-sub">这一章的写法：承诺、推进和余味。它归这里（不在构思里），会进章节蓝图和本章每一场的 AI 起草上下文；留空也能写。</span>
+        <span className="card-sub">这一章的写法：承诺、推进和余味。它归这里（不在构思里）；生成章节蓝图时 AI 照着它写，起草读的是蓝图（已有的蓝图要重新生成才跟上）。留空也能写。</span>
       </button>
       {open && (
         <div className="arr-drama-groups" id={bodyId}>
@@ -84,12 +88,12 @@ function ArrDramaCard({ ch, locked, onPatchDrama, sectionRef }) {
               <div className="arr-guard" data-tone="danger">
                 <div className="arr-guard-label"><I.Ban size={12} /> 禁止包含</div>
                 <ArrDramaText className="arr-guard-text" label="禁止包含" value={drama.forbidden} ck={`${ch.id}|forbidden`} locked={locked}
-                  placeholder="这一章不能出现的词或情节，一行一条" onCommit={(v) => onPatchDrama("forbidden", v)} />
+                  placeholder="这一章不能出现的词或情节，一行一条：起草时告诉 AI，整行写进正文会被查出来" onCommit={(v) => onPatchDrama("forbidden", v)} />
               </div>
               <div className="arr-guard" data-tone="info">
                 <div className="arr-guard-label"><I.Quote size={12} /> 备注</div>
                 <ArrDramaText className="arr-guard-text" label="章节备注" value={drama.notes} ck={`${ch.id}|notes`} locked={locked}
-                  placeholder="给自己留的话" onCommit={(v) => onPatchDrama("notes", v)} />
+                  placeholder="给自己留的话（AI 读不到）" onCommit={(v) => onPatchDrama("notes", v)} />
               </div>
             </div>
           </div>

@@ -1,7 +1,21 @@
+"""场景卡硬约束（必写 / 禁用）的字面读法：起草的验收门、运行前预检、分类器复核与成稿门同一处。
+
+一场要按字面查的禁用词有两处来源（:func:`literal_forbidden_term_sources`）：场景卡 ``forbidden_text``，和本章戏剧卡的
+「禁止包含」（``chapter_drama.chapter_forbidden_text``，round 2 · B2-5——卡片一直说它会拦，以前却没有哪一道检查读它）。
+两处各按各的契约拆：场景卡是「顿号 / 逗号分隔的禁用词」（:func:`forbidden_terms`），戏剧卡是「一行一条」
+（:func:`chapter_forbidden_terms`——「别让林昭和她和好，暂时」是一条，不是两个词）；两边都认 ``A|B`` 备选写法、
+不到两个字的不算、防抄袭政策句剔掉。戏剧卡那一格是空的时候，各处的读数与只看场景卡时逐字相同。
+"""
+
 from __future__ import annotations
 
 import re
 from typing import Any
+
+from sqlalchemy import inspect as sa_inspect
+
+from novel_system.db.models import ChapterGoal
+from novel_system.services.chapter_drama import chapter_forbidden_text
 
 
 def constraint_terms(text: str) -> list[str]:
@@ -34,6 +48,82 @@ def forbidden_terms(text: Any) -> list[str]:
     return constraint_terms(strip_reference_policy(text))
 
 
+def chapter_forbidden_terms(text: Any) -> list[str]:
+    """戏剧卡「禁止包含」→ 要按字面查的写法：一行一条（整行就是一条，不再按逗号 / 顿号拆），不到两个字的行不算，
+    防抄袭政策句剔掉；一行里的 ``A|B`` 照旧是备选写法（见 :func:`forbidden_term_hits`）。"""
+    return [line.strip() for line in strip_reference_policy(text).splitlines() if len(line.strip()) >= 2]
+
+
+#: 禁用词的两处来源（预检冲突、成稿门证据按它归因）
+SCENE_FORBIDDEN_SOURCE = "scene_card.forbidden_text"
+CHAPTER_FORBIDDEN_SOURCE = "chapter.drama.forbidden"
+
+
+def _attached_chapter(scene: Any) -> Any:
+    """场所在会话里的本章（按 ``scene.chapter_id``）；手搭的、不在会话里的卡没有。"""
+    chapter_id = getattr(scene, "chapter_id", None)
+    state = sa_inspect(scene, raiseerr=False)
+    session = getattr(state, "session", None) if state is not None else None
+    if session is None or not chapter_id:
+        return None
+    with session.no_autoflush:  # 闸门读数不该顺手把会话里没写完的改动冲进库
+        return session.get(ChapterGoal, chapter_id)
+
+
+def literal_forbidden_sources(scene: Any, chapter: Any = None) -> list[tuple[str, str]]:
+    """这一场要按字面查的禁用词从哪来：``[(来源, 原文)]``——场景卡 ``forbidden_text``（防抄袭政策句剔掉）在前，
+    本章戏剧卡的「禁止包含」在后；空的不列。``chapter`` 不给时按场所在的会话找本章。"""
+    sources: list[tuple[str, str]] = []
+    own = strip_reference_policy(getattr(scene, "forbidden_text", None))
+    if own:
+        sources.append((SCENE_FORBIDDEN_SOURCE, own))
+    chapter_text = chapter_forbidden_text(chapter if chapter is not None else _attached_chapter(scene))
+    if chapter_text:
+        sources.append((CHAPTER_FORBIDDEN_SOURCE, chapter_text))
+    return sources
+
+
+def literal_forbidden_term_sources(scene: Any, chapter: Any = None) -> list[tuple[str, list[str]]]:
+    """``[(来源, 禁用词表)]``：每处来源按它自己的契约拆（场景卡 :func:`forbidden_terms`，戏剧卡
+    :func:`chapter_forbidden_terms`）；戏剧卡里与场景卡重复的写法不再记一次，拆不出词的来源不列。
+    词表、命中与预检冲突都从这里读。"""
+    sources: list[tuple[str, list[str]]] = []
+    seen: list[str] = []
+    for source, text in literal_forbidden_sources(scene, chapter):
+        terms = forbidden_terms(text) if source == SCENE_FORBIDDEN_SOURCE else chapter_forbidden_terms(text)
+        if seen:
+            terms = [term for term in terms if term not in seen]
+        if terms:
+            sources.append((source, terms))
+            seen.extend(terms)
+    return sources
+
+
+def literal_forbidden_terms(scene: Any, chapter: Any = None) -> list[str]:
+    """两处来源合起来的禁用词表（按来源次序）。"""
+    return [term for _source, terms in literal_forbidden_term_sources(scene, chapter) for term in terms]
+
+
+def literal_forbidden_hits(scene: Any, content: str, chapter: Any = None) -> list[tuple[str, str]]:
+    """``content`` 里按字面出现的禁用写法：``[(来源, 写法)]``（按来源次序、去重；``A|B`` 报出现的那一个）。"""
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for source, terms in literal_forbidden_term_sources(scene, chapter):
+        for term in terms:
+            for alternative in forbidden_term_hits(term, content):
+                if alternative not in seen:
+                    seen.add(alternative)
+                    hits.append((source, alternative))
+    return hits
+
+
+def forbidden_authority_ref(scene: Any, source: str) -> str:
+    """禁用词证据指向的那一处：场景卡的 ``forbidden_text``，或本章戏剧卡的「禁止包含」。"""
+    if source == CHAPTER_FORBIDDEN_SOURCE:
+        return f"chapter:{getattr(scene, 'chapter_id', '')}.drama.forbidden"
+    return f"scene_card:{getattr(scene, 'scene_id', '')}.forbidden_text"
+
+
 def constraint_alternatives(term: str) -> list[str]:
     """拆分一个约束的等价写法；``A|B`` 表示满足任意一项即可。"""
     return [
@@ -63,6 +153,16 @@ def named_scene_card_sources(
     return sources
 
 
+def forbidden_term_hits(term: str, content: str) -> list[str]:
+    """一条禁用写法在 ``content`` 里按字面出现的写法：``A|B`` 报真正出现的那一个（或几个），不是整条。"""
+    return [alternative for alternative in constraint_alternatives(term) or [term] if alternative in content]
+
+
+def forbidden_term_present(term: str, content: str) -> bool:
+    """一条（已经拆好的）禁用写法有没有出现在 ``content`` 里——不再拆它，戏剧卡的整行照整行查。"""
+    return bool(forbidden_term_hits(term, content))
+
+
 def forbidden_hits(forbidden_text: Any, content: str) -> list[str]:
     """``forbidden_text`` 里在 ``content`` 中按字面出现的禁用写法（按词表顺序、去重）。
 
@@ -72,14 +172,10 @@ def forbidden_hits(forbidden_text: Any, content: str) -> list[str]:
         return []
     hits: list[str] = []
     for term in forbidden_terms(forbidden_text):
-        for alternative in constraint_alternatives(term) or [term]:
-            if alternative in content and alternative not in hits:
+        for alternative in forbidden_term_hits(term, content):
+            if alternative not in hits:
                 hits.append(alternative)
     return hits
-
-
-def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
-    return bool(forbidden_hits(forbidden_text, content))
 
 
 def significant_fragments(text: str) -> list[str]:

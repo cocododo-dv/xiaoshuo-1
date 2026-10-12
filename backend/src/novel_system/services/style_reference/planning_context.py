@@ -147,14 +147,11 @@ def chapter_titles_for_book(session: Session | None, book_id: str | None) -> dic
 
 # 各入口的消费节点（调用方不说是哪个节点时按全部消费节点判，每一个都要满足）
 # resolve_project_style_reference：雪花 09 / 10 场景表（snowflake_step_generate）、分章起章名（snowflake_chapter_plan）、
-# 章规划的四个节点（chapter_planning_context 的 style_reference 槽）
+# 章节编排的「AI 生成蓝图」（chapter_planning_context 的 style_reference 槽）
 PROJECT_PLANNING_NODE_IDS: tuple[str, ...] = (
     "snowflake_step_generate",
     "snowflake_chapter_plan",
     "chapter_story_architecture",
-    "chapter_scene_plan_candidates",
-    "chapter_scene_plan_fill",
-    "chapter_plan_review",
 )
 # build_planning_style_reference：场景蓝图的来源快照、准定稿规划（章架构 / 人物压力）的来源快照
 SCENE_PLANNING_NODE_IDS: tuple[str, ...] = (

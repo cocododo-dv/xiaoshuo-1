@@ -7,8 +7,8 @@ from typing import Any
 
 from novel_system.db.models import QcReport, SceneCard, SceneRunState
 from novel_system.services.qc_constraints import (
-    contains_forbidden_term,
     issue_mentions_source,
+    literal_forbidden_hits,
     required_groups_missing,
     source_field_satisfied,
 )
@@ -340,7 +340,8 @@ class HardQcEngine(QcEngineBase):
     ) -> bool:
         issue_key = str(issue.get("issue_key") or "").strip()
         if issue_key == "forbidden_text":
-            return not contains_forbidden_term(scene.forbidden_text, neutral_content)
+            # 禁用词表 = 场景卡 + 本章戏剧卡的「禁止包含」：正文里真有其中一条，模型的意见就不是误报
+            return not literal_forbidden_hits(scene, neutral_content)
         if (
             issue_key in HARD_QC_STYLE_ONLY_ISSUE_KEYS
             or issue_key in HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS

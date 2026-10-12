@@ -1,23 +1,18 @@
-"""章节编排 LLM 规划 API（v2，挂 catalog 路由族）。
+"""章节编排的章节蓝图 API（v2，挂 catalog 路由族）：GET / PUT architecture + POST architecture/generate（幂等）。
 
-设计文档：docs/chapter-arrangement-llm-design-2026-07-16.md §5。
-- 蓝图三端点：GET/PUT architecture + POST architecture/generate（幂等）
-- 三通道：POST plan/candidates | plan/fill | plan/review（单次结构化咨询调用；
-  每次主动重生成会获得新键，同一网络请求重试则重放，避免重复计费；
-  计量/审计仍由 execute_accounted_call 承担）。没有可用模型时生成 / 三通道回 409 + author_action（fail-closed）。
-- GET plan/gaps：待补清单——按空槽算的，不是 AI 结果，不需要模型。
-- POST plan/apply（幂等）：补丁经服务端 sanitize 后单事务原子回写目录。
+章节蓝图是起草真正读的那一份（场景运行有生效的蓝图就用它，没有才现做一份）：作者可以看、改写，也可以让 AI 重新生成；
+没有可用模型时生成回 409 + author_action（fail-closed）。作者改写的蓝图不因设计 / 绑定变化作废（B07-03）。
+
+2026-10（round 2 · B2-5）：章节编排「AI 编排」的另外三条通道——方向（plan/candidates）、补全（plan/fill + plan/apply，
+连同待补清单 plan/gaps）与 AI 体检（plan/review）——删了：模型账本里一次调用都没有，写操作记录里一次请求都没有；
+出编排方向、补场景卡是构思 09 / 10 步的事（构思整理出来的场，补全的建议本来就全部被拒），整章挑毛病有成稿中心的
+「AI 通读本章」。退役路由见 tests/test_retired_surface.py。
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from novel_system.api.requests.chapter_plan import (
-    ChapterPlanApplyRequest,
-    ChapterPlanCandidatesRequest,
-    ChapterPlanFillRequest,
-)
 from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import BoundedJsonObject, EmptyRequest
@@ -76,91 +71,6 @@ def generate_chapter_architecture(
         action=lambda: ChapterPlanService(session).generate_architecture(
             project_id,
             chapter_id,
-            actor_ref=actor_ref_of(request),
-        ),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/candidates")
-def chapter_plan_candidates(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: ChapterPlanCandidatesRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return mutate(
-        request,
-        session,
-        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
-        action=lambda: ChapterPlanService(session).candidates(project_id, chapter_id, body),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/fill")
-def chapter_plan_fill(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: ChapterPlanFillRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return mutate(
-        request,
-        session,
-        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
-        action=lambda: ChapterPlanService(session).fill(project_id, chapter_id, body),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/review")
-def chapter_plan_review(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json") if payload else {}
-    return mutate(
-        request,
-        session,
-        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
-        action=lambda: ChapterPlanService(session).review(project_id, chapter_id),
-    )
-
-
-@router.get("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/gaps")
-def chapter_plan_gaps(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """待补清单（不是 AI）：这一章的戏剧卡与各场三拍 / 视角还空着哪些。"""
-    result = ChapterPlanService(session).gaps(project_id, chapter_id)
-    return respond(request, result)
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply")
-def chapter_plan_apply(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: ChapterPlanApplyRequest,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json", exclude_unset=True)
-    return mutate(
-        request,
-        session,
-        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
-        action=lambda: ChapterPlanService(session).apply(
-            project_id,
-            chapter_id,
-            body,
             actor_ref=actor_ref_of(request),
         ),
     )

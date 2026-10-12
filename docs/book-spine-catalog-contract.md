@@ -136,7 +136,7 @@
 | 哪些卡 | 雪花物化 / 回流出来的卡，**并且**构思里那一行还在 | 手加的场；构思里那一行已经删掉、因为写过字被作者留下的雪花场 |
 | 形态 / 两组三拍 / POV / 离场变化 / 钩子 | 只在构思第 10 步改。`PATCH …/catalog/scenes/{id}` 真的改了其中一项 → 409 `CATALOG_SCENE_DESIGN_OWNED_BY_PLAN`（`details.fields` + 直达那一场的 `author_action`）；值没变的整卡回写照常通过 | 在章节编排里改 |
 | 彼此的先后 | = 构思第 9 步的行序。`POST /api/v1/chapters/{id}/scene-order` 改变了这些卡的相对顺序 → 409 `CATALOG_SCENE_ORDER_OWNED_BY_PLAN`；手加的场可以挪到任何两场之间 | 可拖 |
-| 章节规划 AI | `sanitize_plan_patch(plan_owned_scene_ids=…)` 丢弃设计槽（`design_owned_by_plan`），提示词载荷里每张卡带 `design_owner`（`chapter_scene_plan_fill` v4 / `chapter_plan_review` v3）；离线缺口清单注明「在构思第 10 步补」 | 只填空 |
+| 章节编排的 AI | 只有「AI 生成蓝图」：只写章节蓝图，不写任何一张场景卡（2026-10 round 2 · B2-5 删了补全 / 体检 / 方向，连同丢弃设计槽的补丁过滤与载荷里的 `design_owner`） | 同左 |
 | 题名、状态、字数、删除、交给 AI / 自己写 | 照常 | 照常 |
 
 预检的 `SCENE_STRUCTURE_INCOMPLETE` 按归属指路。前端：章节编排的行只读 + `在构思里改`，抓手不可拖、形态不可切；写作台大纲不可拖；设计卡与起草台决策条按 `owner` 给 `在构思里改` / `编辑卡`。
@@ -166,7 +166,7 @@
 
 测试：`test_scene_workbench_preflight.py`（缺卡不拦、有卡照旧注入）、`test_scene_run_jobs.py`、`test_fe_scene_run_guards.py`、`test_orchestrator_flow.py`（缺卡照常跑完）、`ws-scene-job.test.jsx` 的「预检阻断」三条（都在旧行为下变红）。
 
-**同一天查实的下一堵墙：防抄袭政策句被当成禁用词表。** 物化（`snowflake_workspace`、`projects.approve_outline_plan` 的兜底、v1 `snowflake_planner`）给每张场景卡的 `forbidden_text` 写「不得复制参考书原文表达、人物、设定或桥段。」——可这个字段的契约是「按字面查的禁用词，顿号 / 逗号分隔，`A|B` 为等价写法」（`qc_constraints.contains_forbidden_term`，硬质检 / 质量分级 `forbidden_text` = 已证实 Q1 / 终稿闸门 `continuity:forbidden_text` 共用）。这句话于是被拆成三个「禁用词」，其中一个是 **`人物`**：正文里出现「这号人物」「可疑人物」就是一条已证实的硬伤，归档被拦（真实作品的 17 张卡全部带着这句话）。和阶段 F 修过的 `must_include_text`（摘要冒充「必须包含」）是同一类毛病。现在：物化不再写这句话（计划没给禁用词就留空；重新物化顺手把旧卡上的清掉）；`qc_constraints.forbidden_terms` / `strip_reference_policy` 是读这个字段的唯一口径——字面检查、预检的约束冲突、分级证据、执行契约的 `must_withhold` 兜底、场景卡摘要里的 `Forbidden text:` 行都先剔掉政策句，作者真写的禁用词（含接在那句话后面的）照常生效。防抄袭本来就不靠这个字段：参考书 n-gram 查重（`style_plagiarism`，Q0）、受保护专名、风格注入里的红线段。测试：`test_qc_constraints.py`、`test_quality_classifier.py`、`test_scene_adopt_archive.py` 的 policy 用例（都在旧读法下变红）。
+**同一天查实的下一堵墙：防抄袭政策句被当成禁用词表。** 物化（`snowflake_workspace`、`projects.approve_outline_plan` 的兜底、v1 `snowflake_planner`）给每张场景卡的 `forbidden_text` 写「不得复制参考书原文表达、人物、设定或桥段。」——可这个字段的契约是「按字面查的禁用词，顿号 / 逗号分隔，`A|B` 为等价写法」（`qc_constraints.forbidden_hits`，硬质检 / 质量分级 `forbidden_text` = 已证实 Q1 / 终稿闸门 `continuity:forbidden_text` 共用）。这句话于是被拆成三个「禁用词」，其中一个是 **`人物`**：正文里出现「这号人物」「可疑人物」就是一条已证实的硬伤，归档被拦（真实作品的 17 张卡全部带着这句话）。和阶段 F 修过的 `must_include_text`（摘要冒充「必须包含」）是同一类毛病。现在：物化不再写这句话（计划没给禁用词就留空；重新物化顺手把旧卡上的清掉）；`qc_constraints.forbidden_terms` / `strip_reference_policy` 是读这个字段的唯一口径——字面检查、预检的约束冲突、分级证据、执行契约的 `must_withhold` 兜底、场景卡摘要里的 `Forbidden text:` 行都先剔掉政策句，作者真写的禁用词（含接在那句话后面的）照常生效。防抄袭本来就不靠这个字段：参考书 n-gram 查重（`style_plagiarism`，Q0）、受保护专名、风格注入里的红线段。测试：`test_qc_constraints.py`、`test_quality_classifier.py`、`test_scene_adopt_archive.py` 的 policy 用例（都在旧读法下变红）。
 
 后来做完的（2026-09-29 重构）：`VoiceProfile` / `RelationProfile` 两张表、bundle 里这两个可选槽位与只靠声线卡的代词漂移检查一起删除（批准 #15，迁移 `20260929_0098`）；物化不再写章级的套话（章目标没有规划时存空串，「推进本章：<章名>」这类旧句子读的时候按「未规划」处理，见 `services/story_slots.py`）。
 
@@ -221,7 +221,7 @@
 ## 14. 没做的
 
 - 章级的张力 / POV / 时间 / 地点 / 入口出口 / 线索 / 对齐这组字段已在 2026-09-30 从目录 API、章节规划上下文与前端删掉（批准 #17a）：
-  章节编排的 AI 体检与编排方向改读各场的真实数据；库里旧的 `narrative_json` 值原样留着，不再读、不再写。
+  章节蓝图的 AI 生成读各场的真实数据（章节编排「AI 编排」的体检与编排方向当时也改读各场，2026-10 随方向 / 补全 / 体检三条通道一起删了，只留章节蓝图）；库里旧的 `narrative_json` 值原样留着，不再读、不再写。
 - 章摘要 / 章目标在章节编排里只读（在分章面板里改）。
 - 新浏览器打开构思时 09 / 10 会各回声式 PATCH 两次（语义上是空操作，步骤状态不变）——与本阶段无关，未处理。
 - 章 slug（`chNN`）与 `#writer` 深链里的章序号仍是位置式的显示序号。

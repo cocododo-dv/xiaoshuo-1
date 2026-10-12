@@ -6,7 +6,8 @@ BSHASH_v1 的哈希依赖注入段的顺序；存库的冻结快照（JSON）依
 信息差、章间过渡）与内部信号（以 ``_`` 开头，不渲染成段落）用 ``digest``。
 
 bundle 能写的正文键在这里一处声明：进提示词的业务段必须在 ``context_budget.SECTION_SPECS`` 里有渲染位
-（``tests/test_prompt_assembly_e2e.py`` 对着这张表查），没声明的键写不进来。
+（``tests/test_prompt_assembly_e2e.py`` 对着这张表查），没声明的键写不进来。只有规划快照写、bundle 不写的段
+（本章戏剧卡）另记在 ``PLANNING_SECTION_DIGEST_KEYS``，好让「每个渲染位都有写入方」那一向也查得到它。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from novel_system.services.chapter_drama import CHAPTER_DRAMA_SECTION_KEY
 from novel_system.services.scene_design_context import SCENE_DESIGN_SECTION_KEY
 from novel_system.services.scene_structure_brief import SCENE_STRUCTURE_SECTION_KEY
 from novel_system.services.style_prompt_injection import SCENE_SITUATION_TAGS_KEY
@@ -45,6 +47,8 @@ BUNDLE_SECTION_DIGEST_KEYS: frozenset[str] = frozenset(
         "volume_summary",
     }
 )
+# 只有规划快照（near_final_planning 的章架构）写、起草 bundle 不写的业务段（渲染位同在 SECTION_SPECS）
+PLANNING_SECTION_DIGEST_KEYS: frozenset[str] = frozenset({CHAPTER_DRAMA_SECTION_KEY})
 # 内部信号：随 bundle 冻结、不渲染成段落
 BUNDLE_SIGNAL_DIGEST_KEYS: frozenset[str] = frozenset(
     {

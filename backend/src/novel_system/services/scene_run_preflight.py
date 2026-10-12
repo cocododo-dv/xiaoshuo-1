@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard
 from novel_system.services.qc_constraints import (
+    CHAPTER_FORBIDDEN_SOURCE,
     constraint_alternatives,
-    forbidden_terms as literal_forbidden_terms,
+    literal_forbidden_term_sources,
     named_scene_card_sources,
 )
 from novel_system.services.scene_design_ownership import design_owned_by_plan
@@ -15,6 +16,32 @@ from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_structure_brief import missing_structure_fields, scene_has_structure
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 from novel_system.services.planning_queries import latest_scene_blueprint
+
+
+#: 预检冲突里「要求写它的那一处」的中文名（``named_scene_card_sources`` 的来源名）
+_REQUIRED_SOURCE_LABELS = {
+    "scene_card.must_include_text": "必须包含",
+    "scene_card.hook": "钩子",
+    "scene_card.exit_change": "离场变化",
+    "scene_card.scene_goal": "场目标",
+}
+_SCENE_CARD_CONFLICT_REASON = "场景要求使用该词，但禁用规则又禁止该词；请先选择保留或替换。"
+
+
+def _required_source_label(source_name: str) -> str:
+    if source_name.startswith("scene_card.beats_json["):
+        index = source_name[len("scene_card.beats_json[") :].rstrip("]")
+        return f"第 {int(index) + 1} 拍" if index.isdigit() else "节拍"
+    return _REQUIRED_SOURCE_LABELS.get(source_name, "场景卡")
+
+
+def _conflict_reason(term: str, required_source: str, forbidden_source: str) -> str:
+    """作者在任务的失败说明里看到的就是这一句（scene_run_jobs 取第一条冲突的它）：戏剧卡的那一条要说清是哪一条、
+    在哪张卡上、去哪里改。"""
+    if forbidden_source != CHAPTER_FORBIDDEN_SOURCE:
+        return _SCENE_CARD_CONFLICT_REASON
+    field = _required_source_label(required_source)
+    return f"本章戏剧卡「禁止包含」里的「{term}」，这一场的{field}要求写它：去章节编排的戏剧卡删掉这一条，或改这一场的{field}。"
 
 
 class SceneRunPreflightService:
@@ -49,30 +76,29 @@ class SceneRunPreflightService:
         }
 
     def _constraint_conflicts(self, scene: SceneCard) -> list[dict[str, Any]]:
-        forbidden_text = scene.forbidden_text
-        if not isinstance(forbidden_text, str) or not forbidden_text.strip():
-            return []
-        forbidden_terms = literal_forbidden_terms(forbidden_text)
-        if not forbidden_terms:
+        # 禁用词两处来源：场景卡 forbidden_text、本章戏剧卡的「禁止包含」（一行一条），各按各的契约拆（qc_constraints 一处读）
+        forbidden_sources = literal_forbidden_term_sources(scene)
+        if not forbidden_sources:
             return []
         positive_sources = self._positive_constraint_sources(scene)
         conflicts: list[dict[str, Any]] = []
-        for term in forbidden_terms:
-            # 与运行期 QC 闸门链同一契约：'A|B' 表示任一备选命中即触禁，
-            # 预检据此判冲突（裸 term 匹配会漏掉带备选写法的约束）。
-            alternatives = constraint_alternatives(term) or [term]
-            for source_name, source_text in positive_sources:
-                if any(alternative in source_text for alternative in alternatives):
-                    conflicts.append(
-                        {
-                            "term": term,
-                            "required_source": source_name,
-                            "forbidden_source": "scene_card.forbidden_text",
-                            "severity": "blocking",
-                            "human_readable_reason": "场景要求使用该词，但禁用规则又禁止该词；请先选择保留或替换。",
-                        }
-                    )
-                    break
+        for forbidden_source, terms in forbidden_sources:
+            for term in terms:
+                # 与运行期 QC 闸门链同一契约：'A|B' 表示任一备选命中即触禁，
+                # 预检据此判冲突（裸 term 匹配会漏掉带备选写法的约束）。
+                alternatives = constraint_alternatives(term) or [term]
+                for source_name, source_text in positive_sources:
+                    if any(alternative in source_text for alternative in alternatives):
+                        conflicts.append(
+                            {
+                                "term": term,
+                                "required_source": source_name,
+                                "forbidden_source": forbidden_source,
+                                "severity": "blocking",
+                                "human_readable_reason": _conflict_reason(term, source_name, forbidden_source),
+                            }
+                        )
+                        break
         return conflicts
 
     def _blocking_items(self, scene: SceneCard, execution_contract) -> list[dict[str, Any]]:

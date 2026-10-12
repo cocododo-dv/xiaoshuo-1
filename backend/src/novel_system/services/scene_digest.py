@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from novel_system.db.models import ChapterGoal, SceneCard
-from novel_system.services.qc_constraints import strip_reference_policy
+from novel_system.services.qc_constraints import SCENE_FORBIDDEN_SOURCE, chapter_forbidden_terms, literal_forbidden_sources
 from novel_system.services.story_slots import planned_beats, planned_chapter_goal
 
 
@@ -17,10 +17,13 @@ def scene_card_digest(scene: SceneCard, chapter: ChapterGoal | None = None) -> s
         lines.append(f"Beats: {'; '.join(str(beat) for beat in beats)}")
     if scene.must_include_text:
         lines.append(f"Required beats to weave naturally: {scene.must_include_text}")
-    # 只有作者真写的禁用词才算「Forbidden text」；旧卡上的防抄袭政策句不是禁用词表（见 qc_constraints）
-    forbidden_text = strip_reference_policy(scene.forbidden_text)
-    if forbidden_text:
-        lines.append(f"Forbidden text: {forbidden_text}")
+    # 只有作者真写的禁用词才算「Forbidden text」；旧卡上的防抄袭政策句不是禁用词表。本章戏剧卡的「禁止包含」
+    # 另起一行（一行一条，按查的时候的那几条连成一行）——起草和质检都按字面查它，模型得先知道（qc_constraints 一处读）
+    for source, text in literal_forbidden_sources(scene, chapter):
+        if source == SCENE_FORBIDDEN_SOURCE:
+            lines.append(f"Forbidden text: {text}")
+        elif chapter_forbidden_terms(text):
+            lines.append(f"Forbidden in this chapter: {'；'.join(chapter_forbidden_terms(text))}")
     if scene.exit_change:
         lines.append(f"Exit change: {scene.exit_change}")
     if scene.hook:

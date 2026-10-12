@@ -2,7 +2,6 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_ACTS } from "./ws-author-data.js";
 import { arrChapterFacts, arrIsPlanChapter, arrRailTally, arrRangeLabel } from "./ws-author-derive.js";
-import { ArrAiHealth } from "./ws-author-ai.jsx";
 import { ArrChapterStateTag, ArrMiniScenes } from "./ws-author-ui.jsx";
 import { isImeComposing, useFocusTrap } from "./ws-dialog.jsx";
 import { CloseButton } from "./ws-ui.jsx";
@@ -26,7 +25,7 @@ function ArrCheckRow({ ok, warn, label, val }) {
   );
 }
 
-function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose, onConfigureModel }) {
+function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose }) {
   const facts = arrChapterFacts(ch);
   const asideRef = React.useRef(null);
   /* 只有抽屉形态（≤1280，页头「体检」按钮拉出来）才会 open：焦点进抽屉、Tab 不逃出去、关上后回到「体检」按钮。
@@ -50,8 +49,6 @@ function ArrChapterContext({ ch, checks, snow, onOpenPlan, open, onClose, onConf
         <ul className="arr-checks">
           {checks.map((row) => <ArrCheckRow key={row.key} ok={row.ok} warn={row.warn} label={row.label} val={row.val} />)}
         </ul>
-        {/* AI 体检与上面的规则体检合在一处：规则免费兜底，AI 补结构性判断 */}
-        <ArrAiHealth ch={ch} locked={ch.state === "approved"} onConfigureModel={onConfigureModel} />
         {snow && snow.canPlan ? (
           <button type="button" className="btn btn-quiet btn-sm arr-ctx-plan" data-testid="arr-ctx-open-plan" onClick={onOpenPlan}>
             <I.Layout size={13} /> 整理章节结构

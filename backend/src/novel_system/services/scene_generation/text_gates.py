@@ -20,8 +20,8 @@ from novel_system.services.literary_quality import weighted_score
 from novel_system.services.literary_signals import rule_analysis
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.qc_constraints import (
-    contains_forbidden_term,
-    forbidden_terms as card_forbidden_terms,
+    forbidden_term_present,
+    literal_forbidden_terms,
     required_groups,
     required_groups_missing,
 )
@@ -144,8 +144,9 @@ ANTI_TEMPLATE_GATE_DIMENSIONS = {
 
 @dataclass(frozen=True, slots=True)
 class ConstraintSnapshot:
-    """一份文字对一张场景卡硬约束的确定性读数：必写组哪些满足、禁用词哪些出现（只经
-    ``qc_constraints.forbidden_terms`` 读，防抄袭政策句不是禁用词表）、完整性标记、可见字数与长度带。"""
+    """一份文字对一张场景卡硬约束的确定性读数：必写组哪些满足、禁用词哪些出现（场景卡的 ``forbidden_text`` 与本章
+    戏剧卡的「禁止包含」，只经 ``qc_constraints.literal_forbidden_terms`` 读，防抄袭政策句不是禁用词表）、完整性标记、
+    可见字数与长度带。"""
 
     required_terms: tuple[str, ...]
     satisfied: frozenset[str]
@@ -160,15 +161,16 @@ class ConstraintSnapshot:
         """``lengths`` 为 ``None``：调用方不关心长度（修复简报只看缺项、禁用词与完整性），``length_range`` 为空。
 
         必写组与禁用词的判定与硬质检、分类器复核、成稿门同一处（``qc_constraints.required_groups_missing`` /
-        ``contains_forbidden_term``，批准#11）：一整段分不出 ≥2 字的组时整段算一组（与质检同口径）。"""
+        ``forbidden_term_present``，批准#11）：一整段分不出 ≥2 字的组时整段算一组（与质检同口径）；禁用词是拆好的
+        一条一条，不再拆（戏剧卡的一行照整行查）。"""
         required = tuple(required_groups(scene.must_include_text))
         missing = set(required_groups_missing(scene.must_include_text, text))
-        forbidden = tuple(card_forbidden_terms(scene.forbidden_text))
+        forbidden = tuple(literal_forbidden_terms(scene))
         return cls(
             required_terms=required,
             satisfied=frozenset(term for term in required if term not in missing),
             forbidden_terms=forbidden,
-            forbidden_present=frozenset(term for term in forbidden if contains_forbidden_term(term, text)),
+            forbidden_present=frozenset(term for term in forbidden if forbidden_term_present(term, text)),
             integrity_markers=tuple(_scene_text_integrity_markers(text)),
             visible_chars=_visible_char_count(text),
             length_range=lengths.hard_range() if lengths is not None else None,
@@ -181,7 +183,7 @@ class ConstraintSnapshot:
 
     @property
     def forbidden_hits(self) -> list[str]:
-        """出现了的禁用词（按场景卡上的次序）。"""
+        """出现了的禁用词（按场景卡、再本章戏剧卡上的次序）。"""
         return [term for term in self.forbidden_terms if term in self.forbidden_present]
 
     @property

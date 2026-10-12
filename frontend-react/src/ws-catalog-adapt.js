@@ -110,7 +110,7 @@ export function catFromApiChapter(c) {
     state: c.state,
     /* 章级的张力 / 线索 / 视角 / 时间 / 地点 / 入口出口 / 衔接不再映射（批准 #17a，重评 R10）：没有任何地方能填，
        后端也不再给、不再收；章节编排里的视角、时间、地点、入口出口一律从各场派生（ws-author-derive.js）。
-       章承诺 promise 留着：它是戏剧卡 promise 的镜像，戏剧卡与 AI 编排都写它。 */
+       章承诺 promise 留着：它是戏剧卡 promise 的镜像，戏剧卡写它。 */
     current: !!c.current,
     words: { cur: (c.words && c.words.cur) || 0, target: (c.words && c.words.target) || 0 },
     promise: c.promise || "",

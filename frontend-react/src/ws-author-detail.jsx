@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_ACTS } from "./ws-author-data.js";
 import { arrChapterEdge, arrIsPlanChapter, arrIsPlanScene, arrRangeLabel } from "./ws-author-derive.js";
-import { ArrAiArrange } from "./ws-author-ai.jsx";
+import { ArrBlueprintCard } from "./ws-author-ai.jsx";
 import { ArrDramaCard } from "./ws-author-drama.jsx";
 import { ArrSceneBoard } from "./ws-author-scenes.jsx";
 import { ArrChapterStateTag, blurOnEnter } from "./ws-author-ui.jsx";
@@ -15,7 +15,7 @@ import { chapterLabel } from "./labels/catalog.js";
 /* ==========================================================
    章节详情 — 中间的编辑器
    页头（面包屑 · 章名 · 状态 / 运行 / 删除 / 体检 · 锚点）→ 构思条 → 场景看板（ws-author-scenes.jsx）→ 交接 →
-   戏剧卡（ws-author-drama.jsx）→ AI 编排（ws-author-ai.jsx）。
+   戏剧卡（ws-author-drama.jsx）→ 章节蓝图（ws-author-ai.jsx）。
    跨视图的去处（写作台、AI 起草台、构思第 10 步）都走外壳给的 goView。
    ========================================================== */
 
@@ -105,12 +105,12 @@ function ArrEditor({
   sceneBatch, onOpenPlan, ctxOpen, onToggleCtx, warnCount, goView, onConfigureModel,
 }) {
   const locked = ch.state === "approved";
-  const refs = { scenes: useRef(null), handoff: useRef(null), drama: useRef(null), ai: useRef(null) };
+  const refs = { scenes: useRef(null), handoff: useRef(null), drama: useRef(null), blueprint: useRef(null) };
   const anchors = [
     { key: "scenes", label: "场景" },
     { key: "handoff", label: "交接" },
     { key: "drama", label: "戏剧卡" },
-    ...(ch.backendId ? [{ key: "ai", label: "AI 编排" }] : []),
+    ...(ch.backendId ? [{ key: "blueprint", label: "章节蓝图" }] : []),
   ];
   const jump = (key) => {
     const node = refs[key].current;
@@ -172,8 +172,8 @@ function ArrEditor({
 
         <ArrHandoffStrip prev={prev} ch={ch} next={next} numOf={numOf} onJump={onJump} sectionRef={refs.handoff} />
         <ArrDramaCard ch={ch} locked={locked} onPatchDrama={onPatchDrama} sectionRef={refs.drama} />
-        {/* AI 编排：蓝图 / 方向 / 补全，咨询式补丁经作者逐条确认后原子回写目录 */}
-        <ArrAiArrange ch={ch} locked={locked} sectionRef={refs.ai} onConfigureModel={onConfigureModel} onEditPlan={editInPlan} />
+        {/* 章节蓝图：起草读的那一份，作者可以改写，也可以让 AI 重新生成 */}
+        <ArrBlueprintCard ch={ch} locked={locked} sectionRef={refs.blueprint} onConfigureModel={onConfigureModel} />
       </div>
     </section>
   );

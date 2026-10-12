@@ -29,6 +29,7 @@ from novel_system.services.chapter_architecture import (
     normalize_chapter_architecture,
     persist_chapter_architecture,
 )
+from novel_system.services.chapter_drama import CHAPTER_DRAMA_SECTION_KEY, chapter_drama_digest
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import sha256_json_normalized
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
@@ -106,6 +107,7 @@ class _PlanningArtifactSpec:
     artifact_type: str
     object_type: str  # "chapter"：每章一份；"scene"：每场一份
     include_chapter_architecture: bool  # 来源快照带不带本章的章架构
+    include_chapter_drama: bool  # 来源快照带不带本章戏剧卡（只有章架构带；人物压力读章架构本身）
     capability_code: str
     failure_code: str
     invalid_code: str
@@ -123,6 +125,7 @@ _PLANNING_ARTIFACT_SPECS: tuple[_PlanningArtifactSpec, ...] = (
         artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
         object_type="chapter",
         include_chapter_architecture=False,
+        include_chapter_drama=True,
         capability_code="CHAPTER_STORY_ARCHITECTURE_LLM_REQUIRED",
         failure_code="CHAPTER_STORY_ARCHITECTURE_FAILED",
         invalid_code="CHAPTER_STORY_ARCHITECTURE_OUTPUT_INVALID",
@@ -136,6 +139,7 @@ _PLANNING_ARTIFACT_SPECS: tuple[_PlanningArtifactSpec, ...] = (
         artifact_type=CHARACTER_PRESSURE_ARTIFACT,
         object_type="scene",
         include_chapter_architecture=True,
+        include_chapter_drama=False,
         capability_code="CHARACTER_PRESSURE_BLUEPRINT_LLM_REQUIRED",
         failure_code="CHARACTER_PRESSURE_BLUEPRINT_FAILED",
         invalid_code="CHARACTER_PRESSURE_BLUEPRINT_OUTPUT_INVALID",
@@ -229,7 +233,10 @@ class NearFinalPlanningService:
         execution_step_key: str | None = None,
     ) -> GenerationPlanningArtifact:
         source = self._source_snapshot(
-            scene=scene, chapter=chapter, include_chapter_architecture=spec.include_chapter_architecture
+            scene=scene,
+            chapter=chapter,
+            include_chapter_architecture=spec.include_chapter_architecture,
+            include_chapter_drama=spec.include_chapter_drama,
         )
         prompt = self.prompt_builder.build(source["snapshot"], spec.artifact_type)
         try:
@@ -333,6 +340,7 @@ class NearFinalPlanningService:
         scene: SceneCard,
         chapter: ChapterGoal,
         include_chapter_architecture: bool,
+        include_chapter_drama: bool = False,
     ) -> dict[str, Any]:
         scene_blueprint = self._latest_scene_blueprint(scene.scene_id)
         source_refs: dict[str, Any] = {
@@ -374,6 +382,15 @@ class NearFinalPlanningService:
                 sort_keys=True,
             ),
         }
+        # round 2 · B2-5：章节编排的戏剧卡（填了的六格 + 禁止包含）进场景运行现做的章架构。一格都没填就不加这一段，
+        # 快照与哈希逐字不变（chapter_drama.chapter_drama_digest）。
+        drama_digest = chapter_drama_digest(chapter) if include_chapter_drama else ""
+        if drama_digest:
+            source_refs[CHAPTER_DRAMA_SECTION_KEY] = chapter.chapter_id
+            injections.append(
+                {"slot": CHAPTER_DRAMA_SECTION_KEY, "ref_id": chapter.chapter_id, "digest_key": CHAPTER_DRAMA_SECTION_KEY}
+            )
+            inline_digests[CHAPTER_DRAMA_SECTION_KEY] = drama_digest
         # 2026-09-13 阶段 A：近终稿评审按作者写下的场景结构核验「三拍是否兑现、坩埚是否可辨认」。
         attach_scene_sections(
             scene, self.session, refs=source_refs, injections=injections, digests=inline_digests, design=False

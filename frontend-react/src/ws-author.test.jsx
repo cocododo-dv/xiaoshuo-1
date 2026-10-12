@@ -639,7 +639,7 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).not.toBeNull();
   });
 
-  it("戏剧卡：AI 编排写入 / 目录重拉带来新值时框里显示新值；失焦没改就不写回（以前会把刚应用的建议冲掉）", async () => {
+  it("戏剧卡：目录重拉带来新值时框里显示新值；失焦没改就不写回（以前会把服务端的新值冲掉）", async () => {
     localStorage.setItem("arr.mode", JSON.stringify("detail"));
     localStorage.setItem("arr.picked", JSON.stringify("ch01"));
     catalogState.ready = true;
@@ -648,10 +648,10 @@ describe("章节编排 · 服务端目录真相", () => {
     const promise = () => host.querySelector('textarea[aria-label="核心承诺"]');
     expect(promise().value).toBe("旧的承诺");
 
-    // 服务端来了新值（plan/apply 之后的重拉）
-    catalogState.chapters = [chapter("ch01", "第一章", { drama: { promise: "AI 补上的承诺" } })];
+    // 服务端来了新值（目录重拉，比如另一个窗口改过）
+    catalogState.chapters = [chapter("ch01", "第一章", { drama: { promise: "服务端的新承诺" } })];
     await act(async () => root.render(<WsAuthor />));
-    expect(promise().value).toBe("AI 补上的承诺");
+    expect(promise().value).toBe("服务端的新承诺");
     await act(async () => { promise().focus(); promise().blur(); });
     expect(WsCatalog.set).not.toHaveBeenCalled();
 

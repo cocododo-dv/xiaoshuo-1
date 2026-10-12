@@ -111,13 +111,14 @@ def test_section_specs_covers_all_bundle_writes() -> None:
     from novel_system.services.bundle_sections import (
         BUNDLE_SECTION_DIGEST_KEYS,
         BUNDLE_SIGNAL_DIGEST_KEYS,
+        PLANNING_SECTION_DIGEST_KEYS,
     )
 
     assert BUNDLE_SECTION_DIGEST_KEYS, "no declared bundle digest keys — declaration drift?"
     assert all(key.startswith("_") for key in BUNDLE_SIGNAL_DIGEST_KEYS)
-    assert not any(key.startswith("_") for key in BUNDLE_SECTION_DIGEST_KEYS)
+    assert not any(key.startswith("_") for key in BUNDLE_SECTION_DIGEST_KEYS | PLANNING_SECTION_DIGEST_KEYS)
     registered = _registered_digest_keys()
-    missing = BUNDLE_SECTION_DIGEST_KEYS - registered
+    missing = (BUNDLE_SECTION_DIGEST_KEYS | PLANNING_SECTION_DIGEST_KEYS) - registered
 
     assert not missing, (
         "inline_digests keys the bundle can write but NOT registered in "
@@ -129,10 +130,11 @@ def test_section_specs_covers_all_bundle_writes() -> None:
 def test_every_render_slot_has_a_bundle_writer() -> None:
     """The reverse direction: a digest key registered in SECTION_SPECS that no bundle writer can fill is a
     dead render slot (``avoid_recent_expressions`` and the ``character_pressure_blueprint`` /
-    ``scene_memory_digest`` aliases were such slots until 2026-10-01)."""
-    from novel_system.services.bundle_sections import BUNDLE_SECTION_DIGEST_KEYS
+    ``scene_memory_digest`` aliases were such slots until 2026-10-01). A slot only the planning snapshot writes
+    (the chapter drama card, ``near_final_planning``) is declared in ``PLANNING_SECTION_DIGEST_KEYS``."""
+    from novel_system.services.bundle_sections import BUNDLE_SECTION_DIGEST_KEYS, PLANNING_SECTION_DIGEST_KEYS
 
-    unwritten = _registered_digest_keys() - BUNDLE_SECTION_DIGEST_KEYS
+    unwritten = _registered_digest_keys() - BUNDLE_SECTION_DIGEST_KEYS - PLANNING_SECTION_DIGEST_KEYS
     assert not unwritten, (
         f"SECTION_SPECS registers digest keys nothing writes (dead render slots): {sorted(unwritten)}"
     )
@@ -150,3 +152,16 @@ def test_bundle_builder_writes_sections_only_through_the_declared_registry() -> 
         if re.search(r"""inline_digests\[[^\]]+\]\s*=""", source):
             offenders.append(path.name)
     assert offenders == []
+
+
+def test_planning_only_sections_are_written_by_the_planning_snapshot_and_never_by_the_bundle() -> None:
+    """``PLANNING_SECTION_DIGEST_KEYS`` is not a loophole: each key there is written by ``near_final_planning`` and by no
+    bundle module (a key both write belongs in ``BUNDLE_SECTION_DIGEST_KEYS``)."""
+    from novel_system.services import near_final_planning
+    from novel_system.services.bundle_sections import BUNDLE_SECTION_DIGEST_KEYS, PLANNING_SECTION_DIGEST_KEYS
+    from novel_system.services.chapter_drama import CHAPTER_DRAMA_SECTION_KEY
+
+    assert PLANNING_SECTION_DIGEST_KEYS == {CHAPTER_DRAMA_SECTION_KEY}
+    assert not PLANNING_SECTION_DIGEST_KEYS & BUNDLE_SECTION_DIGEST_KEYS
+    source = Path(near_final_planning.__file__).read_text(encoding="utf-8")
+    assert "inline_digests[CHAPTER_DRAMA_SECTION_KEY] = " in source

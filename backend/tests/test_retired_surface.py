@@ -50,6 +50,12 @@ RETIRED_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("DELETE", "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}", "批准 #24a"),
     ("DELETE", "/api/v2/projects/{project_id}/catalog/scenes/{scene_id}", "批准 #24a"),
     ("POST", "/api/v2/projects/{project_id}/restore", "批准 #24a"),
+    # 章节编排「AI 编排」只留章节蓝图：方向 / 补全（连同回写与待补清单）/ AI 体检一次都没用过（round 2 · B2-5）
+    ("POST", "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/candidates", "B2-5"),
+    ("POST", "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/fill", "B2-5"),
+    ("POST", "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply", "B2-5"),
+    ("GET", "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/gaps", "B2-5"),
+    ("POST", "/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/review", "B2-5"),
     # 构思：逐场 accept-stale 并进「已复核」（批准 #24a，R15a）
     ("POST", "/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale", "批准 #24a"),
     # 风格参考 v3：旧学习链路的写接口与只读血缘 / 调试端点（批准 #24a）、旧导入轮询、旧样例预览
