@@ -18,6 +18,7 @@ from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_chapter, require_scene
+from novel_system.services.editorial_guidance import attach_editorial_guidance
 from novel_system.services.scene_sections import attach_scene_sections
 from novel_system.services.story_slots import planned_beats, planned_chapter_goal
 from novel_system.services.style_policy import StylePolicy, style_policy_live
@@ -298,6 +299,14 @@ class SceneBlueprintService:
         # 2026-09-13 阶段 F：蓝图也看已确认的设计背景——POV 的目标 / 价值观 / 顿悟给 visible_desire
         # 与 forced_choice 以人物依据，章的幕次与灾难标记、相邻两场给 ending_action 与 next_scene_pull 以位置。
         attach_scene_sections(
+            scene,
+            self.session,
+            refs=snapshot["source_version_refs"],
+            injections=snapshot["ordered_injections"],
+            digests=snapshot["inline_digests"],
+        )
+        # 2026-10-12 编辑通读：作者采纳的、针对这一章的意见也进蓝图（落实在这一场的欲望、抉择与收尾上）；没有就不挂
+        attach_editorial_guidance(
             scene,
             self.session,
             refs=snapshot["source_version_refs"],

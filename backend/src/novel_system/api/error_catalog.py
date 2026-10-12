@@ -260,6 +260,8 @@ ERROR_MESSAGES: dict[str, str] = {
     "WRITER_DEEP_REVIEW_LLM_FAILED": "AI 深评失败了。",
     "CHAPTER_DIGEST_LLM_UNAVAILABLE": "写章摘要需要先配好模型（系统配置里给「故事记忆 · 章摘要」节点选好模型，或点「一键补齐」）。",
     "CHAPTER_DIGEST_LLM_FAILED": "写章摘要时模型调用失败了，这一次没有存；可以再试一次。",
+    "EDITORIAL_REVIEW_LLM_UNAVAILABLE": "编辑通读需要先配好模型（系统配置里给「故事记忆 · 编辑通读」节点选好模型，或点「一键补齐」）。",
+    "EDITORIAL_REVIEW_LLM_FAILED": "编辑通读时模型调用失败了，这一次没有存；可以再试一次。",
     "WRITER_PASSAGE_PATCH_LLM_REQUIRED": "局部改写需要先配好模型。",
     "WRITER_PASSAGE_PATCH_LLM_FAILED": "局部改写失败了。",
     "CHAPTER_PLAN_LLM_CALL_FAILED": "章节编排的模型调用失败。",

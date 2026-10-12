@@ -129,6 +129,16 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.2,
         max_output_tokens=4000,
     ),
+    # 2026-10-12 故事记忆 · 编辑通读：每写完几章通读一遍（全书设计、人物弧、章摘要、线索台账、最近几章正文、后面几章的
+    # 计划），写问题清单与给后面几章的意见（services/story_editorial.py）。要长上下文与判断力：不指定小模型，归「审稿质检」。
+    LLMNodeSpec(
+        "editorial_review",
+        "Editorial read-through (story memory)",
+        "deep_review",
+        template_name="editorial_review",
+        temperature=0.3,
+        max_output_tokens=6000,
+    ),
     # FE-ALIGN P6: 资料库半自动派生（归档正文 → 候选实体/时间线事件 → 待办确认）
     # FE-ALIGN G5: 构思视图的步骤候选生成（3 条不同方向，原型契约形状）
     LLMNodeSpec(

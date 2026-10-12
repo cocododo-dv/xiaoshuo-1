@@ -1,4 +1,5 @@
-"""权威正文与正史：终稿、场景 / 章记忆、章摘要（故事记忆）、章滚动笔记、叙事事件、正史提交、事实候选、连续性快照。"""
+"""权威正文与正史：终稿、场景 / 章记忆、故事记忆（章摘要、线索标记、编辑通读与意见）、章滚动笔记、叙事事件、正史提交、事实候选、
+连续性快照。"""
 
 from __future__ import annotations
 
@@ -118,11 +119,94 @@ class ChapterDigest(Base):
     previous_digest_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
     previous_digest_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     source_hash: Mapped[str] = mapped_column(String, default="")
-    # {summary, ending_state, character_changes[], open_threads[], resolved_threads[]}
+    # {summary, ending_state, character_changes[], threads[]}——threads 是这一章对线索台账的更新（埋下 / 推进 / 兑现），
+    # 台账本身由各章的这份更新按故事顺序推出来（story_memory_digest.fold_threads），不另存
     digest_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     content_hash: Mapped[str] = mapped_column(String, default="")
     llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class StoryThreadMark(Base):
+    """作者对线索台账里一条线的标记（``story_memory``）：``dropped``（放下，不再提醒、不进起草）或 ``resolved``（作者判定
+    已经收了）。台账由章摘要推出来，这张表只是叠在上面的一层；``label_snapshot`` 是标记时那条线的文字——章摘要重写后
+    同一个 id 换成了另一条线（文字对不上），标记就不再生效。取消标记 = 删掉这一行。
+    """
+
+    __tablename__ = "story_thread_marks"
+    __table_args__ = (
+        CheckConstraint("status IN ('dropped','resolved')", name="ck_story_thread_marks_status"),
+        UniqueConstraint("project_id", "thread_id", name="uq_story_thread_marks_thread"),
+    )
+
+    row_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String)
+    thread_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    label_snapshot: Mapped[str] = mapped_column(String, default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class EditorialReview(Base):
+    """编辑通读（``story_editorial``）：每写完几章，AI 读全书设计、各章摘要、线索台账、最近几章正文与后面几章的计划，
+    写一份问题清单（``review_json``）和给后面几章的意见（``EditorialGuidance``）。
+
+    ``through_chapter_id`` 是读到的最后一章，``window_chapter_ids_json`` 是意见针对的后面几章。一部作品同时只有一份
+    ``active``（最新的一份）；新的一份存下时旧的 ``superseded``，旧份里还没决定的意见随之作废，已采纳的照旧生效。
+    """
+
+    __tablename__ = "editorial_reviews"
+    __table_args__ = (
+        CheckConstraint("status IN ('active','superseded')", name="ck_editorial_reviews_status"),
+        CheckConstraint("origin IN ('auto','manual')", name="ck_editorial_reviews_origin"),
+        Index("ix_editorial_reviews_project_status", "project_id", "status"),
+    )
+
+    review_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String)
+    through_chapter_id: Mapped[str] = mapped_column(String)
+    window_chapter_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String, default="active")
+    origin: Mapped[str] = mapped_column(String, default="auto")
+    source_hash: Mapped[str] = mapped_column(String, default="")
+    # {assessment, findings[]}
+    review_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class EditorialGuidance(Base):
+    """编辑通读给后面某一章（``chapter_id``）或整段后面几章（``chapter_id`` 为空 = 这份通读的 window）的一条意见。
+
+    ``proposed`` → 作者 ``accepted``（可以改字，存在 ``author_text``）/ ``dismissed``；新一份通读存下时还没决定的变成
+    ``superseded``。只有 ``accepted`` 的进那一章各场的起草与场景蓝图（``editorial_guidance`` 段）。
+    """
+
+    __tablename__ = "editorial_guidance"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('proposed','accepted','dismissed','superseded')", name="ck_editorial_guidance_status"
+        ),
+        Index("ix_editorial_guidance_review", "review_id"),
+        Index("ix_editorial_guidance_project_status", "project_id", "status"),
+    )
+
+    guidance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    review_id: Mapped[str] = mapped_column(String, ForeignKey("editorial_reviews.review_id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    author_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="proposed")
+    decided_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

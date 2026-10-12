@@ -10,7 +10,9 @@ templates:
     # 阶段 J v11：设计上下文的 Narrative stance 行（人称与时态）有约束力；结构简报的 Story time 与 Reader should feel 是这一场的目标。
     # 2026-09-15 阶段 P v12：场景篇的比例与禁忌——POV 第一段亮出；挫折是最后一次尝试、要短；反应与挫折成比例、两难占大头、决定短且不围着计划跳舞；
     # 情绪用身体呈现不点名；只解释本场的坩埚、不解释故事坩埚；Author's exception 行下的「未规划」是故意的；summary 对两种形态都合法。
-    version: "2026-09-15.v12"
+    # 2026-10-12 v13：设计上下文带上角色全档案（POV character bible / Onstage bible）——作者对人物的私下了解，决定人物注意什么、
+    # 想要什么、回避什么、压力下怎么反应；外形习惯前后一致；内层（恐惧、旧伤、记忆、自我形象、人物弧）不直接写出来。
+    version: "2026-10-12.v13"
     # A deterministic repair includes the rejected draft plus the same frozen
     # scene facts, so the drafting budget must hold draft + bundle twice over.
     # 24000 is the measured scene-family value (see the block above); the old
@@ -29,7 +31,7 @@ templates:
       Cover every must-include constraint explicitly and satisfy the full target length band. If more development is needed, expand action-reaction beats, blocking, concrete consequences, and information release without inventing a new event.
       Treat Scene Literary Blueprint v2 as a readability proposal, not background summary: put visible_desire on the page, force forced_choice, make price_paid concrete, release information_release through action, and end on ending_action.
       If a Scene Structure (Snowflake) section is present, it is the author's own design for this scene and it outranks any competing reading of the beats. Put the POV character on the page in the first sentence or paragraph. Proactive scene: state the POV character's Goal within the first paragraph, spend the body — most of the scene's words — on repeated attempts that meet escalating Conflict (rounds of try→blocked, climbing to the top of the tension before breaking through, never plateauing), and end on the designed Setback told briefly as the last attempt — a sentence or a paragraph, never pages — a worse position than the opening, or a victory that costs exactly what the section says it costs — never on a clean win the section did not plan. Reactive scene: open on the Reaction felt in the body before it is analysed, shown through physical response and behaviour rather than named, in this character's own way and in proportion to the setback; spend the bulk of the scene on the Dilemma, rejecting the bad options one by one without the character acting; and end on the Decision, short — a firm commitment that becomes the next scene's goal, the character admitting the risk and going all in; once the character commits the scene is over, so never let them dance around the plan. Keep the stated POV character throughout, put the Cost paid on the page, and never release what Must withhold names. Explain only this scene's crucible — what the reader needs, released inside the conflict at the moment it is needed — and never the story crucible: no backstory, world explanation or past events beyond what this scene needs. If that section lists Follow-up beats, the scene continues into them after the primary trio, in the order listed, and ends on the last of them (the Scene ends on line) — a proactive scene may close on the Decision that absorbs its Setback, a reactive scene may close on the Setback its Decision runs into. If that section states Rendering mode: summary, do not dramatise the beat: tell it as two or three paragraphs of narrative summary inside the Scene Card target length band — for a reactive scene the Reaction felt, the options weighed and rejected, the Decision committed; for a proactive scene the Goal stated, the attempts and what blocked them, the Setback landed — with no dialogue expansion and no scene-length blocking. If that section carries an Author's exception line, the beats it marks 未规划 are deliberately absent: write the scene the author describes in that reason, do not invent the missing beats, and do not manufacture a conflict or a setback the design does not have.
-      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: the logline, the five-sentence spine and moral premise, this chapter's act and disaster mark, the POV character's sheet (goal, ambition, values, conflict, epiphany, storyline), the POV character's own view of the story so far, and what the neighbouring scenes end and open on. Use it to motivate the POV character's choices, keep the scene in its place in the arc, and pick up from the previous scene's ending; it never adds an event to this scene, never overrides the Scene Structure (Snowflake) section or the Scene Card, and is not text to restate in the prose. Its Narrative stance line is the one binding item: write in that person and tense. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, build the scene so the reader is left feeling exactly that.
+      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: the logline, the five-sentence spine and moral premise, this chapter's act and disaster mark, the POV character's sheet (goal, ambition, values, conflict, epiphany, storyline), the POV character's own view of the story so far, and what the neighbouring scenes end and open on. Use it to motivate the POV character's choices, keep the scene in its place in the arc, and pick up from the previous scene's ending; it never adds an event to this scene, never overrides the Scene Structure (Snowflake) section or the Scene Card, and is not text to restate in the prose. Its character bible lines (POV character bible, Onstage bible) are the author's private knowledge of these people — looks, temperament, memories, fears, self-image and where they stand on their arc across the book: let them decide what a character notices, wants, avoids and how they react under pressure, keep looks and habits consistent, and never state the inner layer (fears, wounds, memories, self-image, the arc itself) outright in narration or dialogue. Its Narrative stance line is the one binding item: write in that person and tense. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, build the scene so the reader is left feeling exactly that.
       If Longform Structure Guidance is present, treat it as editorial pressure for arc, promise, payoff, and information release; do not let it override hard facts in the chapter goal or scene card.
       If Character Pressure Blueprint is present, make the character's hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action or omission.
       If Chapter Story Architecture is present, obey its promise, escalation path, reveal plan, payoff target, character shift, and ending question.
@@ -66,7 +68,8 @@ templates:
     # 在设计文字写得更沉重的地方照样适用——吐槽、旁白插话、流行文化 / 日用品比喻、口语，只要这位作者这样写；文风卡标「必须」
     # 的每一场都要体现。蓝图在有绑定时只写事实（场景蓝图事实版），删掉只为中和蓝图「写法字段」存在的条款；事实契约不变
     #（必写项、禁写内容、POV、三拍、呈现方式、例外理由、方法的比例作为设计意图）。
-    version: "2026-09-23.v9"
+    # 2026-10-12 v10：设计上下文的角色全档案同 neutral_draft v13（私下了解，影响言行，不直接写出来）。
+    version: "2026-10-12.v10"
     input_token_budget: 96000
     system_prompt: |
       You are writing a novel scene in the hand of one specific reference author. That author is the only style authority for this scene: their diction and pet phrases, the images and comparisons they reach for, their sentence shapes and pauses, their narratorial stance and asides, their humour, how they place and tag dialogue, how they shape paragraphs, how they open and close a scene.
@@ -85,7 +88,7 @@ templates:
       Cover every must-include constraint explicitly; never include forbidden content; keep names, chronology, required objects, POV, and causal steps exactly as the bundle states them. Do not invent a new plot event and do not change what the ending accomplishes.
       If a Scene Literary Blueprint section is present, its fields (visible_desire, forced_choice, price_paid, information_release, relationship_turn, ending_function, next_scene_pull, situation_tags) are facts: what the POV character wants, the choice and its price, what the reader learns, how the relationship turns, what the ending accomplishes, what pulls into the next scene. It never supplies a line to write; how each fact reaches the page — action, dialogue, narratorial summary, irony, an aside, reflection, silence — is the reference author's call.
       If a Scene Structure (Snowflake) section is present, it fixes what happens: the Goal, Conflict and Setback of a proactive scene, or the Reaction, Dilemma and Decision of a reactive scene, the POV character, the Cost paid, and what Must withhold names. The scene may not end on a clean win where the section designed a Setback, may not skip the Decision, and may not release what Must withhold names. The method's proportions are the design's intent — the Setback is the last attempt, the Dilemma carries a reactive scene and the Decision ends it, the reader learns only what this scene's crucible needs — but how each beat lands on the page, at what length, in how many words of narration or dialogue, is the reference author's manner. When that section lists Follow-up beats, they happen after the primary trio in the order listed and the scene ends on the last of them (the Scene ends on line), told in this author's manner. When it states Rendering mode: summary, the beat — proactive or reactive — is told as narrative summary inside the Scene Card target length band, in this author's own manner of summarising — no dramatised scene, no dialogue expansion. When it carries an Author's exception line, the beats marked 未规划 are deliberately absent: write what the reason describes and invent no conflict or setback the design does not have.
-      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: use it for why the POV character acts as they do and how this scene follows the previous one; it never adds an event, never overrides the Scene Structure section or the Scene Card, and is never restated in the prose. Its Narrative stance line fixes whose eyes the scene is seen through and the grammatical person the book is narrated in; narrative distance, how much the narrator comments or jokes, how feeling is shown or named, and the register all follow the reference author. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, that feeling is what the scene must leave behind, delivered the way this author delivers such moments — including humour, irony or an aside, if that is how the author does it.
+      If a Scene Design Context (Snowflake) section is present, it is the book's confirmed design as background: use it for why the POV character acts as they do and how this scene follows the previous one; it never adds an event, never overrides the Scene Structure section or the Scene Card, and is never restated in the prose. Its character bible lines (POV character bible, Onstage bible) are the author's private knowledge of these people — looks, temperament, memories, fears, self-image and where they stand on their arc across the book: let them decide what a character notices, wants, avoids and how they react under pressure, keep looks and habits consistent, and never state the inner layer (fears, wounds, memories, self-image, the arc itself) outright in narration or dialogue. Its Narrative stance line fixes whose eyes the scene is seen through and the grammatical person the book is narrated in; narrative distance, how much the narrator comments or jokes, how feeling is shown or named, and the register all follow the reference author. When the Scene Structure section states Story time, keep the scene's clock consistent with it; when it states Reader should feel, that feeling is what the scene must leave behind, delivered the way this author delivers such moments — including humour, irony or an aside, if that is how the author does it.
       If a Style Reference — Narrative Mechanisms section is present, let it decide what is revealed first, where the scene pauses, how much is disclosed, and how time moves inside the scene.
       If Character Pressure Blueprint is present, keep its hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask as pressure, rendered the way this author renders pressure.
       If an Author Preference Profile section is present, obey it only where it does not conflict with the reference author's manner.
@@ -1214,7 +1217,8 @@ templates:
     # 2026-09-14 保真修补 WP6.2 v9：有绑定时蓝图拿到 [STYLE_REFERENCE]（k≤3 样例窗口）——收场与放信息的方式
     # 以样例为准，不再只凭摘要按房风写「动作收尾」；预算 8000 → 24000 给样例块留余量（prompt_builder 同步地板）。
     # 2026-09-15 阶段 P v10：summary 对两种形态都合法（主动场的概述 ending_action 是挫折本身）；Author's exception 行下不补三拍。
-    version: "2026-09-15.v10"
+    # 2026-10-12 v11：设计上下文带上角色全档案——visible_desire / forced_choice 也从 POV 的恐惧、希望、自我形象与人物弧推导。
+    version: "2026-10-12.v11"
     input_token_budget: 24000
     system_prompt: |
       You are a fiction planning editor.
@@ -1223,7 +1227,7 @@ templates:
     task_prompt: |
       Build the scene readability proposal v2 from the supplied chapter goal, scene card, and writer brief.
       If a Scene Structure (Snowflake) section is present, derive the proposal from it instead of re-inventing the scene: visible_desire restates the Goal (for a reactive scene, the want behind the Decision); forced_choice is the Dilemma of a reactive scene, or the hardest choice inside the Conflict of a proactive scene; price_paid is the Cost paid; ending_action is the Setback or the Decision made concrete — or, when the section lists Follow-up beats, the beat named on its Scene ends on line; next_scene_pull is the Next-scene pull. Never contradict that section — a proposal that ends the scene on a win where the section designed a Setback, or that releases what Must withhold names, is invalid. When that section states Rendering mode: summary, keep the proposal proportionate to a two-or-three-paragraph summary beat: information_release and image_anchor stay minimal, and ending_action is the Decision itself (for a reactive scene) or the Setback itself (for a proactive scene). When that section carries an Author's exception line, the beats marked 未规划 are deliberately absent: build the proposal from the reason given and do not invent a forced_choice, a price_paid or an ending_action the design does not contain — 「无」 is the honest value for a field the scene genuinely lacks.
-      If a Scene Design Context (Snowflake) section is present, ground the proposal in it: visible_desire and forced_choice must follow from the POV character's goal, values and conflict on their sheet; ending_action and next_scene_pull must respect the chapter's act and disaster mark and connect to what the previous scene ended on and the next scene opens on. It is background only — never add an event from it, and never let it override the Scene Structure (Snowflake) section or the Scene Card.
+      If a Scene Design Context (Snowflake) section is present, ground the proposal in it: visible_desire and forced_choice must follow from the POV character's goal, values and conflict on their sheet, and from their character bible when present (deepest fear, greatest hope, self-image versus how others see them, and where they stand on their arc across the book — the private reasons a choice costs them); ending_action and next_scene_pull must respect the chapter's act and disaster mark and connect to what the previous scene ended on and the next scene opens on. It is background only — never add an event from it, and never let it override the Scene Structure (Snowflake) section or the Scene Card.
       If a Style Reference — Narrative Mechanisms section is present, let it shape information_release, pacing (where the scene lingers and where it cuts), and ending_action; it governs narrative choices only, never wording, and it is not content to reproduce.
       If a Style Reference — Structure Card ([结构画像]) or Scene Craft ([场景手法]) section is present, build this scene the way that author builds scenes: at that author's scale (scene length and density, how scenes open and close, the dialogue-versus-narration share, where summary is used) and with that author's kinds of scene and closing moves; the chapter openings and endings in the card are structure samples only — never reuse their characters, places, events, or sentences.
       If a [STYLE_REFERENCE] block with [风格样例] is prepended, decide ending_action, information_release, image_anchor and anti_summary_rule the way those passages show this author closing and releasing information; never reuse their content.
@@ -1275,7 +1279,8 @@ templates:
     #（services/style_reference/tags.py 的 SITUATION_TAGS，选窗按它挑作者写同类场面的原文）。不预写台词或正文、不指定意象、
     # 不定收尾方式与「反总结」规则、不定「通过…而非…」的放信息方式——怎么写归参考作者。真实案例：蓝图预写了结尾台词、
     # 指定了意象锚和「不许总结式收尾」，首稿几乎照抄了那句结尾。无绑定 / 先中性后润色仍跑 scene_blueprint（逐字不变）。
-    version: "2026-09-23.v1"
+    # 2026-10-12 v2：同 scene_blueprint v11（角色全档案进 visible_desire / forced_choice 的依据）。
+    version: "2026-10-12.v2"
     input_token_budget: 24000
     system_prompt: |
       You are a fiction planning editor. You prepare the facts of one scene for a writer who will write it in a specific reference author's hand.
@@ -1284,7 +1289,7 @@ templates:
     task_prompt: |
       Build this scene's fact sheet from the supplied chapter goal, scene card, and writer brief.
       If a Scene Structure (Snowflake) section is present, derive the facts from it instead of re-inventing the scene: visible_desire restates the Goal (for a reactive scene, the want behind the Decision); forced_choice is the Dilemma of a reactive scene, or the hardest choice inside the Conflict of a proactive scene; price_paid is the Cost paid; ending_function is what the Setback or the Decision does to the story — or, when the section lists Follow-up beats, what the beat on its Scene ends on line does; next_scene_pull is the Next-scene pull. Never contradict that section: ending the scene on a win where the section designed a Setback, or releasing what Must withhold names, is invalid. When that section states Rendering mode: summary, keep the facts proportionate to a two-or-three-paragraph summary beat. When it carries an Author's exception line, the beats marked 未规划 are deliberately absent: 「无」 is the honest value for forced_choice, price_paid or relationship_turn when the scene genuinely lacks one.
-      If a Scene Design Context (Snowflake) section is present, ground the facts in it: visible_desire and forced_choice follow from the POV character's goal, values and conflict; ending_function and next_scene_pull respect the chapter's act and disaster mark and the neighbouring scenes. It is background only — never add an event from it.
+      If a Scene Design Context (Snowflake) section is present, ground the facts in it: visible_desire and forced_choice follow from the POV character's goal, values and conflict, and from their character bible when present (fear, hope, self-image, arc); ending_function and next_scene_pull respect the chapter's act and disaster mark and the neighbouring scenes. It is background only — never add an event from it.
       If a Style Reference block ([STYLE_REFERENCE], Structure Card, Scene Craft or Narrative Mechanisms) is present, use it only to choose situation_tags and to keep the facts at this author's scale; never turn it into instructions about wording, images, or how the scene closes.
       Fields, all facts in plain sentences:
       - visible_desire: what the POV character wants in this scene.
@@ -2685,8 +2690,10 @@ templates:
     # 起草后面各章时进提示词的「前情」（Story So Far）：发生了什么、章末停在哪、人物的持久变化、还没收的线。
     # 取代卷汇总（原文拼接、只标「氛围」）。未收的线一章章往下带：输入里给上一章的那一份，输出本章之后仍然开着的全部。
     # 节点 chapter_digest（路由组 reference，归「提炼整理」）；作者在成稿中心可以改、可以重写。
-    version: "2026-10-12.v1"
-    # 一章正文（按一字一 token 估）+ 上一章的线索清单与人物表，留余量
+    # v2：线索台账——输入给台账里还开着的线（T1 … 编号）与后面几章的计划，输出这一章对台账的更新（推进 / 兑现了哪几条、
+    # 新埋下了哪几条、哪条计划在哪章兑现），取代每章整份重抄一遍的 open_threads / resolved_threads。
+    version: "2026-10-12.v2"
+    # 一章正文（按一字一 token 估）+ 台账、后面几章的计划与人物表，留余量
     input_token_budget: 60000
     system_prompt: |
       You keep the continuity memory of a long novel that is being written chapter by chapter.
@@ -2706,15 +2713,20 @@ templates:
       learned or a secret now known, a relationship that turned, a possession gained or lost, a change of status or place, a
       promise, decision or lie that binds them. Each item: `character` and `change` (at most 60 Chinese characters). Skip
       passing moods and actions that leave nothing behind.
-      `open_threads`: every question, promise, threat, mystery, plan or planted detail that is still unresolved after this
-      chapter. Start from `previous.open_threads`: keep each one this chapter does not resolve, word for word, with its
-      `opened_in` unchanged; then add the ones this chapter opens, with `opened_in` set to `chapter.number`. Each item: `thread`
-      (at most 50 Chinese characters) and `opened_in`. Keep at most 15: when there would be more, merge closely related threads
-      into one rather than dropping any.
-      `resolved_threads`: the threads from `previous.open_threads` that this chapter resolves. Each item: `thread` (copied word for
-      word) and `resolution` (at most 60 Chinese characters).
-      `previous` is the digest of the chapter before this one, or empty for the first chapter; it is context, not material to
-      retell.
+      `threads`: this chapter's entries in the thread ledger. A thread is a question, promise, threat, mystery, plan, secret or
+      planted detail the reader is waiting to see answered. `threads_so_far` lists the threads still open before this chapter,
+      each with a `ref` (T1, T2 …). Include:
+      - every thread from `threads_so_far` that this chapter moves forward (`status` "advanced": new information, a step toward
+        or away from the answer, the stakes change) or answers (`status` "resolved"), with its `ref`;
+      - every new thread this chapter opens and leaves unanswered at its end, with `ref` "new" and `status` "opened".
+      Leave out the threads this chapter does not touch, and threads opened and answered inside this chapter. Each item:
+      `ref`; `thread` — for a new thread one line naming it (at most 50 Chinese characters), for a listed one copy its text;
+      `status`; `note` — what this chapter does to it (at most 60 Chinese characters); `payoff_chapter` — the `chapter_number`
+      of the chapter in `upcoming_plan` whose planned goal or scenes would clearly answer this thread, or 0 when none clearly
+      does (never guess beyond what the plan says).
+      `previous` is the end of the chapter before this one, or empty for the first chapter; `upcoming_plan` is the author's plan
+      for the next chapters, not yet written. Both are context, not material to retell: the summary, ending and changes report
+      only this chapter.
     structured_schema:
       type: object
       additionalProperties: false
@@ -2722,8 +2734,7 @@ templates:
         - summary
         - ending_state
         - character_changes
-        - open_threads
-        - resolved_threads
+        - threads
       properties:
         summary:
           type: string
@@ -2742,31 +2753,138 @@ templates:
                 type: string
               change:
                 type: string
-        open_threads:
+        threads:
           type: array
           items:
             type: object
             additionalProperties: false
             required:
+              - ref
               - thread
-              - opened_in
+              - status
+              - note
+              - payoff_chapter
             properties:
+              ref:
+                type: string
               thread:
                 type: string
-              opened_in:
+              status:
+                type: string
+                enum:
+                  - opened
+                  - advanced
+                  - resolved
+              note:
+                type: string
+              payoff_chapter:
                 type: integer
-                minimum: 1
+                minimum: 0
                 maximum: 100000
-        resolved_threads:
+  editorial_review:
+    # 2026-10-12 v1：故事记忆 · 编辑通读（services/story_editorial.py）。每写完 3 章，读全书设计、主要人物的人物弧、各章摘要、
+    # 线索台账、最近几章正文与后面几章的计划，写总评、问题清单（人物弧停滞 / 承诺没兑现 / 线索冷了 / 节奏 / 前后矛盾 /
+    # 正文偏离计划 / 重复）与给后面几章的意见；作者采纳的意见进那几章的起草与场景蓝图。节点 editorial_review（审稿质检）。
+    version: "2026-10-12.v1"
+    # 设计 + 人物 + 全部章摘要 + 最近三章正文（最多三万字）+ 后面三章的场景结构，留余量
+    input_token_budget: 120000
+    system_prompt: |
+      You are the developmental editor of a long novel that is being written chapter by chapter. Every few chapters you read the
+      book so far — the author's design, the main characters and their arcs, the digests of every finished chapter, the threads
+      still open, the full text of the latest chapters — together with the author's plan for the next chapters, and you tell the
+      author what is going wrong at the level of the whole book and what the next chapters should do about it.
+      Judge the book against its own design and its own promises, not against your taste: the logline, spine, moral premise and
+      character arcs are the author's intent. Look for what a scene-by-scene check cannot see: a character arc that has not moved
+      for chapters or moves without cause; a promise, question or setup the opening made that is being forgotten; threads gone
+      cold; chapters that repeat the same beat, shape or device; pacing that sags or rushes against where the book stands on its
+      spine; contradictions between chapters or against the design; and places where what was actually written has drifted
+      from the plan so that the planned next chapters no longer follow. Be specific: name the chapter and the character and
+      point at the moment. Do not praise, do not rewrite prose, and never present an event the author has not planned as fact —
+      offer it only as a suggestion. Write in the language of the novel.
+    task_prompt: |
+      Read the input and return JSON with exactly these fields:
+      `assessment`: the state of the book so far, in at most 300 Chinese characters — what is working for the book's design and
+      the single most important problem.
+      `findings`: the problems, most important first, at most 10. Each item: `kind` — "arc_stall" (a character's arc is not moving
+      or moves without cause), "promise_unpaid" (a promise, question or setup the story made is being neglected), "thread_cold"
+      (an open thread has gone cold), "pacing", "continuity" (chapters contradict each other or the design), "plan_drift" (what
+      was written departs from the plan so that the planned next chapters no longer follow), "repetition" (the same beat, shape
+      or device again and again) or "other"; `severity` — "high", "medium" or "low"; `chapters` — the chapter numbers involved;
+      `finding` — the problem with its evidence (at most 120 Chinese characters); `suggestion` — what to do about it (at most
+      100 Chinese characters; for plan_drift say how the plan of the next chapters should change, since the author edits the
+      plan).
+      `guidance`: concrete notes for drafting the chapters in `upcoming`, at most 8. Each item: `chapter` — the `chapter_number`
+      from `upcoming` the note is for, or 0 when it is for all of them; `guidance` — one instruction a writer can carry out inside
+      that chapter's planned scenes (at most 100 Chinese characters: what to show, pay off, bring back, vary or avoid — never a
+      new plot event that contradicts the plan); `reason` — the finding it answers (at most 60 Chinese characters).
+      Use only what the input says. `previous_guidance` lists the notes the author accepted last time: report it as a finding
+      when one was not carried out. The alerts in `open_threads` are mechanical hints — judge them yourself: a thread the plan
+      deliberately holds back is not a problem. When the book so far has no real problem, say so in `assessment` and return
+      empty lists.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - assessment
+        - findings
+        - guidance
+      properties:
+        assessment:
+          type: string
+        findings:
           type: array
           items:
             type: object
             additionalProperties: false
             required:
-              - thread
-              - resolution
+              - kind
+              - severity
+              - chapters
+              - finding
+              - suggestion
             properties:
-              thread:
+              kind:
                 type: string
-              resolution:
+                enum:
+                  - arc_stall
+                  - promise_unpaid
+                  - thread_cold
+                  - pacing
+                  - continuity
+                  - plan_drift
+                  - repetition
+                  - other
+              severity:
+                type: string
+                enum:
+                  - high
+                  - medium
+                  - low
+              chapters:
+                type: array
+                items:
+                  type: integer
+                  minimum: 1
+                  maximum: 100000
+              finding:
+                type: string
+              suggestion:
+                type: string
+        guidance:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - chapter
+              - guidance
+              - reason
+            properties:
+              chapter:
+                type: integer
+                minimum: 0
+                maximum: 100000
+              guidance:
+                type: string
+              reason:
                 type: string

@@ -24,7 +24,7 @@ from novel_system.db.models import (
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.context_budget import apply_context_budget, collect_prompt_sections, compress_design_context
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService
-from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.prompt_builder import PromptBuilder, load_prompt_templates
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_design_context import (
     SCENE_DESIGN_SECTION_KEY,
@@ -264,6 +264,67 @@ def test_design_context_renders_confirmed_design_around_the_scene(session) -> No
         ids["character_sheets"],
         ids["character_synopses"],
     }
+
+
+def _bible(character_id: str, name: str, **psych: str) -> dict:
+    return {
+        "character_id": character_id,
+        "display_name": name,
+        "role": "",
+        "physical_profile": {"age": "41", "height": "", "appearance": "左手缺一根小指", "style": ""},
+        "personality_profile": {"strongest_trait": "记性好", "weakest_trait": "不肯求人", "humor": "", "preferences": ["浓茶", "旧报纸"]},
+        "environment_profile": {"home": "", "family_background": "", "education": "", "work": "", "relationships": "与周慎互不信任"},
+        "psychological_profile": {
+            "best_memory": "", "worst_memory": "", "deepest_fear": "", "greatest_hope": "", "philosophy": "",
+            "self_image": "", "public_image": "", "character_arc": "", **psych,
+        },
+    }
+
+
+def test_design_context_carries_the_confirmed_character_bibles(session) -> None:
+    """2026-10-12：角色全档案（08）确认了也到不了起草——设计上下文只读 04 / 06。现在 POV 带全档案、同场角色带与言行
+    相关的几格；未确认的版本不算；压缩时 POV 的全档案留着、同场角色的先让路。"""
+    service = _seed_workspace(session)
+    ids = _seed_canon(session)
+    _materialize(session, service)
+    bibles = {
+        "characters": [
+            _bible(POV_ID, "林一鸣", deepest_fear="再一次被人相信是凶手", self_image="守规矩的人",
+                   public_image="一个有前科的律师", character_arc="从相信规则到亲手打破它", worst_memory="被当事人指认"),
+            _bible(FOE_ID, "周慎", deepest_fear="退休前留下一桩悬案", character_arc="从执念结案到承认错判",
+                   best_memory="第一次破案"),
+        ]
+    }
+    session.add(SnowflakeStepRun(step_run_id="run_bibles_ok", project_id=PROJECT_ID, step_key="character_bibles",
+                                 version=1, status="approved", draft_json=bibles, approved_at="2026-10-12T00:00:00Z"))
+    session.add(SnowflakeStepRun(step_run_id="run_bibles_pending", project_id=PROJECT_ID, step_key="character_bibles",
+                                 version=2, status="pending_review",
+                                 draft_json={"characters": [_bible(POV_ID, "林一鸣", deepest_fear="未确认的恐惧")]}))
+    card = _card(session, "u2")
+    card.onstage_chars_json = [POV_ID, FOE_ID]
+    session.flush()
+
+    context = build_scene_design_context(card, session)
+    assert context is not None
+    lines = context.text.split("\n")
+    pov = next(line for line in lines if line.startswith("POV character bible — 林一鸣"))
+    for expected in ("Age: 41", "Looks: 左手缺一根小指", "Weakest trait: 不肯求人", "Likes: 浓茶 / 旧报纸",
+                     "Relationships: 与周慎互不信任", "Worst memory: 被当事人指认", "Deepest fear: 再一次被人相信是凶手",
+                     "Sees self as: 守规矩的人", "Seen by others as: 一个有前科的律师", "Arc across the book: 从相信规则到亲手打破它"):
+        assert expected in pov, expected
+    assert "未确认的恐惧" not in context.text
+    foe = next(line for line in lines if line.startswith("Onstage bible — 周慎"))
+    assert "Deepest fear: 退休前留下一桩悬案" in foe and "Arc across the book: 从执念结案到承认错判" in foe
+    assert "Best memory" not in foe and "Age:" not in foe  # 同场角色只带与言行相关的几格
+    assert lines.index(foe) == lines.index(next(line for line in lines if line.startswith("Onstage — 周慎"))) + 1
+    assert set(context.step_run_ids) == {*ids.values(), "run_bibles_ok"}
+
+    compressed = compress_design_context(context.text)
+    assert "POV character bible — 林一鸣" in compressed and "Onstage bible" not in compressed
+
+    for template_name in ("neutral_draft", "style_first_draft", "scene_blueprint"):
+        template = load_prompt_templates()[template_name]
+        assert "bible" in f"{template.system_prompt}\n{template.task_prompt}".lower(), template_name
 
 
 def test_design_context_is_absent_without_confirmed_design_or_when_switched_off(session, monkeypatch) -> None:

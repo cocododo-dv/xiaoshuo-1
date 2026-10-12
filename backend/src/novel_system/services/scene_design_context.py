@@ -7,6 +7,10 @@
 （09 / 10 相邻行）——写手一个字都看不到。Ingermanson 第十步的原话是「读完为这场规划的
 一切，然后开写」；现在读到的不到十分之一。
 
+2026-10-12：角色全档案（08）也进来——POV 角色带外形、性格、处境、心理与人物弧，同场角色带外形、性格、恐惧、
+人际与人物弧（``POV_BIBLE_FIELDS`` / ``ONSTAGE_BIBLE_FIELDS``）。这是作者对人物的私下了解：「影响言行、不直接写出来」
+的指令在提示词模板里。
+
 本模块从**已确认**的雪花产出（``approved`` 或 ``stale``——stale 仍是作者确认过的内容，只是
 上游有了新版本；``pending_review`` 未经作者确认，不算事实）与场景 / 章计划行组装一段
 带标签的背景，作为 ``context_budget.SECTION_SPECS`` 里紧随结构简报的
@@ -54,8 +58,42 @@ _CANON_STEP_KEYS: tuple[str, ...] = (
     "one_paragraph_summary",
     "character_sheets",
     "character_synopses",
+    "character_bibles",
 )
 POV_STORY_EXCERPT_CHARS = 300
+# 角色全档案（08）的一格最多带这么多字；POV 带全档案，同场角色只带与这一场的言行直接相关的几格
+BIBLE_VALUE_MAX_CHARS = 160
+# (分组, 键, 标签)。POV 角色：外形、性格、处境、心理与人物弧——作者对这个人的全部私下了解
+POV_BIBLE_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("physical_profile", "age", "Age"),
+    ("physical_profile", "appearance", "Looks"),
+    ("physical_profile", "style", "Style"),
+    ("personality_profile", "strongest_trait", "Strongest trait"),
+    ("personality_profile", "weakest_trait", "Weakest trait"),
+    ("personality_profile", "humor", "Humour"),
+    ("personality_profile", "preferences", "Likes"),
+    ("environment_profile", "family_background", "Family"),
+    ("environment_profile", "work", "Work"),
+    ("environment_profile", "relationships", "Relationships"),
+    ("psychological_profile", "best_memory", "Best memory"),
+    ("psychological_profile", "worst_memory", "Worst memory"),
+    ("psychological_profile", "deepest_fear", "Deepest fear"),
+    ("psychological_profile", "greatest_hope", "Greatest hope"),
+    ("psychological_profile", "philosophy", "Philosophy"),
+    ("psychological_profile", "self_image", "Sees self as"),
+    ("psychological_profile", "public_image", "Seen by others as"),
+    ("psychological_profile", "character_arc", "Arc across the book"),
+)
+# 同场角色：读者看得见的外形与性格、驱动他此刻言行的恐惧与人际、他走到了人物弧的哪一段
+ONSTAGE_BIBLE_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("physical_profile", "appearance", "Looks"),
+    ("personality_profile", "strongest_trait", "Strongest trait"),
+    ("personality_profile", "weakest_trait", "Weakest trait"),
+    ("environment_profile", "relationships", "Relationships"),
+    ("psychological_profile", "deepest_fear", "Deepest fear"),
+    ("psychological_profile", "public_image", "Seen by others as"),
+    ("psychological_profile", "character_arc", "Arc across the book"),
+)
 _POV_STORY_PREFIX = "视角故事："
 
 
@@ -148,6 +186,20 @@ def build_scene_design_context(scene: SceneCard, session: Session | None) -> Sce
         _use("character_synopses")
         lines.append(f"POV story so far (视角故事, excerpt): {pov_story}")
 
+    # 2026-10-12：角色全档案（08）——作者对人物的私下了解（心理、记忆、恐惧、自我形象、人物弧）。以前起草只看得到
+    # 04 摘要表与 06 视角故事，08 确认了也一个字都到不了写手面前。
+    bibles = canon.get("character_bibles").draft_json if canon.get("character_bibles") else {}
+    bible_items = [item for item in _as_list(bibles.get("characters")) if isinstance(item, dict)]
+    pov_bible_line = _bible_line(
+        "POV character bible",
+        _find_character(bible_items, pov_id, names.get(pov_id)),
+        names.get(pov_id),
+        POV_BIBLE_FIELDS,
+    )
+    if pov_bible_line:
+        _use("character_bibles")
+        lines.append(pov_bible_line)
+
     onstage_ids = [
         _text(item)
         for item in (getattr(scene, "onstage_chars_json", None) or (plan.onstage_chars_json if plan is not None else None) or [])
@@ -155,12 +207,20 @@ def build_scene_design_context(scene: SceneCard, session: Session | None) -> Sce
     ]
     for character_id in dict.fromkeys(onstage_ids):
         sheet = _find_character(characters, character_id, names.get(character_id))
-        if sheet is None:
-            continue
-        _use("character_sheets")
-        one_liner = _text(sheet.get("one_sentence_summary")) or _text(sheet.get("goal"))
-        label = _character_label(sheet, names.get(character_id))
-        lines.append(f"Onstage — {label}: {one_liner}" if one_liner else f"Onstage — {label}")
+        if sheet is not None:
+            _use("character_sheets")
+            one_liner = _text(sheet.get("one_sentence_summary")) or _text(sheet.get("goal"))
+            label = _character_label(sheet, names.get(character_id))
+            lines.append(f"Onstage — {label}: {one_liner}" if one_liner else f"Onstage — {label}")
+        bible_line = _bible_line(
+            "Onstage bible",
+            _find_character(bible_items, character_id, names.get(character_id)),
+            names.get(character_id),
+            ONSTAGE_BIBLE_FIELDS,
+        )
+        if bible_line:
+            _use("character_bibles")
+            lines.append(bible_line)
 
     previous_line, next_line = _neighbour_lines(ordered, plan, names)
     if previous_line:
@@ -315,6 +375,33 @@ def _sheet_line(label: str, sheet: dict[str, Any], fallback_name: str | None) ->
         parts.insert(min(2, len(parts)), "Values: " + " / ".join(values))
     head = f"{label} — {_character_label(sheet, fallback_name)}"
     return f"{head}: " + "; ".join(parts) if parts else head
+
+
+def _bible_line(
+    label: str,
+    bible: dict[str, Any] | None,
+    fallback_name: str | None,
+    fields: tuple[tuple[str, str, str], ...],
+) -> str | None:
+    """一个角色的全档案一行：``label — 名字: 标签: 值; …``；一格都没填 → ``None``。"""
+    if bible is None:
+        return None
+    parts: list[str] = []
+    for group, key, tag in fields:
+        section = bible.get(group)
+        raw = section.get(key) if isinstance(section, dict) else None
+        if isinstance(raw, list):
+            value = " / ".join(_text(item) for item in raw if _text(item))
+        else:
+            value = _text(raw)
+        if not value:
+            continue
+        if len(value) > BIBLE_VALUE_MAX_CHARS:
+            value = value[:BIBLE_VALUE_MAX_CHARS].rstrip() + "…"
+        parts.append(f"{tag}: {value}")
+    if not parts:
+        return None
+    return f"{label} — {_character_label(bible, fallback_name)}: " + "; ".join(parts)
 
 
 def _character_label(sheet: dict[str, Any], fallback_name: str | None) -> str:

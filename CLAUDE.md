@@ -325,8 +325,8 @@ quota vars, `NOVEL_SYSTEM_LLM_{INPUT,OUTPUT}_COST_PER_MILLION_USD` and `…_LLM_
   is a cache. `approve-final` is the one read-and-approve call (`read_confirmation.body_hash` required, bound to the
   body the author read); 等你批准 is derived from complete prose; canon verification is optional and gates neither
   approval nor export. Reopening needs a reason and cascades revocation.
-- Story memory (`story_memory.py`): prompts read working memory (canon + unreviewed extractions) and chapter
-  digests; hard QC / final gate read canon only; author-edited digests are never auto-rewritten.
+- Story memory (`story_memory.py`, `story_editorial.py`): prompts read working memory (canon + unreviewed
+  extractions), digests + derived thread ledger, accepted editorial notes; hard QC / final gate: canon.
 - One diagnosis record (`scene_diagnosis`, stable `signal_id`); ignore lists hold signal ids and are honoured by 文学质量
   and the final gate; writes that change findings return `diagnosis_rollup`.
 - Style reference: jobs are owner-token fenced and a process exit requeues them; `StylePolicy` is the only binding

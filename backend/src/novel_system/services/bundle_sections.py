@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from novel_system.services.chapter_drama import CHAPTER_DRAMA_SECTION_KEY
+from novel_system.services.editorial_guidance import EDITORIAL_GUIDANCE_SECTION_KEY
 from novel_system.services.scene_design_context import SCENE_DESIGN_SECTION_KEY
 from novel_system.services.scene_structure_brief import SCENE_STRUCTURE_SECTION_KEY
 from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY
@@ -46,6 +47,7 @@ BUNDLE_SECTION_DIGEST_KEYS: frozenset[str] = frozenset(
         "scene_summary",
         "chapter_summary",
         STORY_SO_FAR_SECTION_KEY,
+        EDITORIAL_GUIDANCE_SECTION_KEY,
     }
 )
 # 只有规划快照（near_final_planning 的章架构）写、起草 bundle 不写的业务段（渲染位同在 SECTION_SPECS）

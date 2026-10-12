@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from novel_system.services.editorial_guidance import EDITORIAL_GUIDANCE_SECTION_KEY, EDITORIAL_GUIDANCE_SECTION_LABEL
 from novel_system.services.hash_engine import normalize_string
 from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY, compress_story_so_far
 # 估算器住在叶子 token_estimate（老的 ``context_budget.estimate_tokens`` 导入路径照旧可用）
@@ -59,6 +60,8 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
     ("author_instruction", "Author Instruction", ("author_instruction",)),
+    # 2026-10-12 编辑通读：作者采纳的、针对这一章的编辑意见（方向，不是事实）。很短，不压缩；硬 QC 不看。
+    (EDITORIAL_GUIDANCE_SECTION_KEY, EDITORIAL_GUIDANCE_SECTION_LABEL, (EDITORIAL_GUIDANCE_SECTION_KEY,)),
     ("scene_blueprint", "Scene Literary Blueprint", ("scene_blueprint",)),
     ("character_pressure", "Character Pressure Blueprint", ("character_pressure",)),
     ("chapter_story_architecture", "Chapter Story Architecture", ("chapter_story_architecture",)),
@@ -146,6 +149,7 @@ TASK_KIND_POLICIES: dict[str, list[str]] = {
     "hard_qc": [
         "preserve_facts_constraints_and_character_contract",
         "omit_scene_design_context",
+        "omit_editorial_guidance",
         *CONTINUITY_POLICY,
     ],
     "chapter_review": [
@@ -200,8 +204,9 @@ def apply_context_budget(
         for section_name in NEUTRAL_DRAFT_STYLE_SECTIONS:
             _omit_section(section_lookup, section_name)
     if normalized_task_kind == "hard_qc":
-        # 硬 QC 只审事实与硬约束；设计背景（前提、价值观、相邻场）会诱使它核对本场之外的东西。
+        # 硬 QC 只审事实与硬约束；设计背景（前提、价值观、相邻场）与编辑意见（方向）会诱使它核对本场之外的东西。
         _omit_section(section_lookup, "scene_design_context")
+        _omit_section(section_lookup, EDITORIAL_GUIDANCE_SECTION_KEY)
 
     def over_budget() -> bool:
         return (
@@ -397,7 +402,7 @@ def _compress_continuity_digest(text: str) -> str:
     )
 
 
-# 设计背景压缩时保留的行首标签（背景里最省不掉的部分）；其余行（五句脊柱 / 视角故事 / 在场人物）先让路。
+# 设计背景压缩时保留的行首标签（背景里最省不掉的部分）；其余行（五句脊柱 / 视角故事 / 在场人物及其全档案）先让路。
 # 放在这里而不是 scene_design_context.py：那边要读 settings，settings → system_config → prompt_builder →
 # 本模块，反向引用会成环。
 DESIGN_CONTEXT_COMPRESS_KEEP_LABELS: tuple[str, ...] = (
@@ -407,6 +412,8 @@ DESIGN_CONTEXT_COMPRESS_KEEP_LABELS: tuple[str, ...] = (
     "Chapter:",
     "Scene position:",
     "POV character sheet",
+    # 2026-10-12：POV 角色的全档案（心理、人物弧）是这一场人物动机的根，压缩时留着；同场角色的全档案先让路
+    "POV character bible",
     "Previous scene",
     "Next scene",
 )

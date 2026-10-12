@@ -25,6 +25,8 @@ from novel_system.db.models import (
     ChapterDigest,
     ChapterGoal,
     ChapterMemory,
+    EditorialGuidance,
+    EditorialReview,
     FinalScene,
     GenerationPlanningArtifact,
     SceneBlueprint,
@@ -227,13 +229,41 @@ def _seed_book(session) -> None:
                 "summary": "林昭在雨城档案馆打开旧柜，找到一封没有署名的旧信。",
                 "ending_state": "雨一直没停，林昭把旧信揣进怀里离开档案馆。",
                 "character_changes": [{"character": "林昭", "change": "拿到了旧信"}],
-                "open_threads": [{"thread": "旧信是谁寄出的", "opened_in": 1}],
-                "resolved_threads": [],
+                "threads": [
+                    {"id": "P_GOLD_CH01-T1", "thread": "旧信是谁寄出的", "status": "opened", "note": "", "payoff_chapter_id": None}
+                ],
             },
             content_hash="gold",
             source_hash="gold",
             created_at=_at(7),
             updated_at=_at(7),
+        )
+    )
+    # 编辑通读：读到第一章，作者采纳了一条给第二章的意见（第二章各场的 editorial_guidance 段从这里来）
+    session.add(
+        EditorialReview(
+            review_id="editorial_review_gold",
+            project_id=PROJECT_ID,
+            through_chapter_id="P_GOLD_CH01",
+            window_chapter_ids_json=["P_GOLD_CH02"],
+            status="active",
+            origin="auto",
+            review_json={"assessment": "林昭还没遇到阻力。", "findings": []},
+            created_at=_at(8),
+            updated_at=_at(8),
+        )
+    )
+    session.flush()
+    session.add(
+        EditorialGuidance(
+            guidance_id="editorial_guidance_gold",
+            review_id="editorial_review_gold",
+            project_id=PROJECT_ID,
+            chapter_id="P_GOLD_CH02",
+            text="让旧信的来历在第二章露出一角",
+            status="accepted",
+            created_at=_at(8),
+            updated_at=_at(8),
         )
     )
     # 第二章第 2 场单独绑一本参考书（场景作用域，缺省风格直起）

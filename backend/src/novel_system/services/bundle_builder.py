@@ -43,6 +43,11 @@ from novel_system.services.bundle_freshness import (
 from novel_system.services.bundle_sections import BundleSections
 from novel_system.services.hash_engine import compute_bundle_hash_projection, sha256_text
 from novel_system.services.resolver import resolve_chapter_summary, resolve_scene_summary
+from novel_system.services.editorial_guidance import (
+    EDITORIAL_GUIDANCE_SECTION_KEY,
+    accepted_guidance_for_chapter,
+    guidance_text,
+)
 from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY, story_so_far
 from novel_system.services.character_continuity import (
     CHARACTER_CONTRACT_VERSION,
@@ -432,6 +437,15 @@ class BundleBuilder:
                 text=story_memory["text"],
                 refs={"story_so_far_digest_row_ids": story_memory["digest_row_ids"]},
             )
+        # 编辑通读里作者采纳的、针对这一章的意见（story_editorial；没有就不挂，快照逐字不变）
+        guidance = self._editorial_guidance(scene)
+        if guidance is not None:
+            sections.add(
+                EDITORIAL_GUIDANCE_SECTION_KEY,
+                ref_id=scene.chapter_id,
+                text=guidance["text"],
+                refs={EDITORIAL_GUIDANCE_SECTION_KEY: guidance["guidance_ids"]},
+            )
 
         narrative_state = self._narrative_state_digest(scene)
         if narrative_state:
@@ -647,6 +661,16 @@ class BundleBuilder:
         except Exception:  # noqa: BLE001 — continuity aid degrades visibly
             self._slot_degraded(STORY_SO_FAR_SECTION_KEY, scene)
             return None
+
+    def _editorial_guidance(self, scene: SceneCard) -> dict[str, Any] | None:
+        """这一章采纳了的编辑意见（见 ``editorial_guidance``）；读失败只记降级槽。"""
+        try:
+            rows = accepted_guidance_for_chapter(self.session, str(scene.project_id or ""), str(scene.chapter_id or ""))
+        except Exception:  # noqa: BLE001 — author guidance degrades visibly
+            self._slot_degraded(EDITORIAL_GUIDANCE_SECTION_KEY, scene)
+            return None
+        text = guidance_text(rows)
+        return {"text": text, "guidance_ids": [row.guidance_id for row in rows]} if text else None
 
     def _chapter_transition_buffer(self, scene: SceneCard) -> str | None:
         """章间过渡缓冲（见 ``bundle_continuity.chapter_transition_text``）；失败只记降级槽。"""

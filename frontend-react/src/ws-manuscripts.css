@@ -280,6 +280,23 @@
 .ms-memory-digest b { font-weight: 600; }
 .ms-memory-since { margin-left: 8px; color: var(--ink-3); font-family: var(--font-sans); font-size: var(--fs-xs); }
 .ms-memory-empty { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.7; }
+.ms-memory-hint { margin: 10px 0 0; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.6; }
+.ms-memory-thread-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.ms-memory-thread,
+.ms-memory-guidance,
+.ms-memory-finding { display: grid; gap: 5px; padding: 10px 12px; border: 1px solid var(--line-1); border-radius: var(--r-sm); background: var(--paper-2); }
+.ms-memory-thread-main { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: var(--fs-sm); }
+.ms-memory-thread-label { color: var(--ink-1); font-family: var(--font-serif); }
+.ms-memory-thread-meta { color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.6; }
+.ms-memory-thread .ms-canon-actions,
+.ms-memory-guidance .ms-canon-actions { margin-top: 2px; }
+.ms-memory-closed { margin-top: 12px; }
+.ms-memory-closed summary { cursor: pointer; color: var(--ink-3); font-size: var(--fs-xs); margin-bottom: 8px; }
+.ms-memory-assessment,
+.ms-memory-guidance-text { margin: 0; color: var(--ink-1); font-family: var(--font-serif); font-size: var(--fs-sm); line-height: 1.7; }
+.ms-memory-assessment { margin-bottom: 12px; }
+.ms-memory-subhead { margin: 14px 0 8px; color: var(--ink-2); font-size: var(--fs-xs); font-weight: 600; }
+.ms-memory-guidance-edit { width: 100%; font: inherit; font-size: var(--fs-sm); }
 
 @media (max-width: 900px) {
   .ms-canon { padding-inline: 20px; }

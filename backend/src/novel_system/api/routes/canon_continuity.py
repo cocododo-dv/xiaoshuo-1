@@ -8,13 +8,21 @@ from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.canon_continuity import (
     ChapterDigestSaveRequest,
+    EditorialGuidanceDecisionRequest,
     FactCandidateDecisionRequest,
     ManualFactCandidateRequest,
     SceneCanonVerificationRequest,
+    StoryThreadMarkRequest,
 )
 from novel_system.api.response import respond
 from novel_system.services.canon_continuity import CanonContinuityService
-from novel_system.services.story_memory import generate_chapter_digest, save_author_digest, story_memory_overview
+from novel_system.services.story_editorial import decide_guidance, generate_editorial_review
+from novel_system.services.story_memory import (
+    generate_chapter_digest,
+    mark_thread,
+    save_author_digest,
+    story_memory_overview,
+)
 
 
 router = APIRouter(tags=["canon-continuity"])
@@ -166,3 +174,54 @@ def regenerate_chapter_digest(
         action=lambda: generate_chapter_digest(session, project_id, chapter_id),
     )
 
+
+# 线索台账（2026-10-12）：作者放下一条线 / 判它已收 / 取消标记
+@router.post("/api/v1/projects/{project_id}/story-memory/threads/{thread_id}/mark")
+def mark_story_thread(
+    project_id: str,
+    thread_id: str,
+    payload: StoryThreadMarkRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    return mutate(
+        request,
+        session,
+        payload={"project_id": project_id, "thread_id": thread_id, **body},
+        action=lambda: mark_thread(session, project_id, thread_id, status=body["status"], note=body["note"]),
+    )
+
+
+# 编辑通读（2026-10-12，services/story_editorial.py）：作者让它现在读一次；采纳 / 不采纳一条意见
+@router.post("/api/v1/projects/{project_id}/story-memory/editorial-review")
+def run_editorial_review(
+    project_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json") if payload is not None else {}
+    return mutate(
+        request,
+        session,
+        payload={"project_id": project_id, "body": body},
+        action=lambda: generate_editorial_review(session, project_id, origin="manual"),
+    )
+
+
+@router.post("/api/v1/projects/{project_id}/story-memory/editorial-guidance/{guidance_id}/decision")
+def decide_editorial_guidance(
+    project_id: str,
+    guidance_id: str,
+    payload: EditorialGuidanceDecisionRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    return mutate(
+        request,
+        session,
+        payload={"project_id": project_id, "guidance_id": guidance_id, **body},
+        action=lambda: decide_guidance(session, project_id, guidance_id, decision=body["decision"], text=body["text"]),
+    )

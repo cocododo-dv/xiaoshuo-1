@@ -681,7 +681,7 @@ def test_all_production_run_task_calls_pass_explicit_context() -> None:
                 offenders.append(location)
 
     # prose_event_extractor 与故事记忆的章摘要（check_consistency_llm 随死代码删除，auto_critique 随自动批评删除）
-    assert sorted(path for path, _line in calls) == ["services/prose_event_extractor.py", "services/story_memory.py"]
+    assert sorted(path for path, _line in calls) == ["services/prose_event_extractor.py", "services/story_editorial.py", "services/story_memory.py"]
     assert offenders == []
 
 

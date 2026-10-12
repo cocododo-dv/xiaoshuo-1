@@ -91,7 +91,7 @@
     "snapshot_sha256": "c733b5a14ede8f1200b062512ca9c11008c4452ca88a3494c9d9ef919e1cf0db"
   },
   "P_GOLD_CH02_SC01": {
-    "bundle_snapshot_hash": "5ff75fd769f67bb3f56b8f12cd932e3fa1876b195948b07b0d9a1d0ea98fa9cb",
+    "bundle_snapshot_hash": "c565bc24bcdb151a23bf4b002253203587d7b862f6c34307d844ef23b1e51ada",
     "slots": [
       "chapter_goal",
       "scene_card",
@@ -100,6 +100,7 @@
       "scene_writer_brief",
       "character_contract",
       "story_so_far",
+      "editorial_guidance",
       "previous_scene_voice_anchor",
       "scene_summary",
       "chapter_summary"
@@ -114,6 +115,7 @@
       "scene_writer_brief",
       "character_contract",
       "story_so_far_digest_row_ids",
+      "editorial_guidance",
       "previous_scene_voice_anchor_scene_id",
       "previous_scene_voice_anchor_draft_row_id",
       "previous_scene_voice_anchor_stage",
@@ -128,16 +130,17 @@
       "scene_writer_brief",
       "character_contract",
       "story_so_far",
+      "editorial_guidance",
       "chapter_transition_buffer",
       "previous_scene_voice_anchor",
       "scene_summary",
       "chapter_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "f19bc3036af6bec04a3b540dd889ffbe238a58c2966783eb6720e03323c479f7"
+    "snapshot_sha256": "f802c74156f1ed2e9184a9728a87472dcea0bf2bc2a753911435d4fd080406b3"
   },
   "P_GOLD_CH02_SC02": {
-    "bundle_snapshot_hash": "70daaa7080be6c7f0250fc7d3909218f62692a239e6c925d827f4ca541b5e9fe",
+    "bundle_snapshot_hash": "471fc4ede1e8910b0595fcf0ff72d6e9df6ec3aa61aa740306d6915ad828105a",
     "slots": [
       "chapter_goal",
       "scene_card",
@@ -146,6 +149,7 @@
       "scene_writer_brief",
       "character_contract",
       "story_so_far",
+      "editorial_guidance",
       "prev_scene_memory",
       "literary_freshness_budget",
       "chapter_summary"
@@ -164,6 +168,7 @@
       "scene_writer_brief",
       "character_contract",
       "story_so_far_digest_row_ids",
+      "editorial_guidance",
       "previous_scene_voice_anchor_deferred",
       "scene_memory_prev",
       "literary_freshness_source_final_scene_ids",
@@ -179,11 +184,12 @@
       "scene_writer_brief",
       "character_contract",
       "story_so_far",
+      "editorial_guidance",
       "scene_memory",
       "literary_freshness_budget",
       "chapter_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "1f4b4f938e226ba0a53268a68dd5673b76ea00a47077ad930fed0147d9d75f83"
+    "snapshot_sha256": "a4d1bc883769140f08565ef63fd0faa87cbb1561728875181d85d7f4500d206b"
   }
 }

@@ -24,6 +24,7 @@ export function accountingStatusMeta(status) {
 export const LLM_NODE_LABELS = {
   extraction: "通用抽取",
   chapter_digest: "故事记忆 · 章摘要",
+  editorial_review: "故事记忆 · 编辑通读",
   snowflake_step_candidates: "构思 · 方向候选",
   snowflake_step_generate: "构思 · 生成本步",
   snowflake_workspace_assistant: "构思 · 教练",
