@@ -444,6 +444,9 @@ class PipelineMixin:
                         product_callback=product_callback,
                     )
                 )
+            elif "initial:0" in resume_products:
+                # 成稿已存进子检查点、style_ready 还没存时断了：成稿就是这一稿，不再调模型（与多稿那一支同一条）
+                candidates = [resume_products["initial:0"]]
             else:
                 if "initial:0" not in resume_bases:
                     self._reconcile_execution_step(StepKeys.style_draft(0))
