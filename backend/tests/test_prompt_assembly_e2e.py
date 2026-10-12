@@ -36,14 +36,15 @@ from novel_system.services.context_budget import (
     collect_prompt_sections,
 )
 
-# The four keys this regression was written to protect (previously DROPPED).
+# The key this regression protects today. ``volume_summary`` (the §2 summary tower, wave-2 E5) was the last of
+# the four originally dropped keys; on 2026-10-12 the story-memory chapter digests (``story_so_far``) replaced it.
 PREVIOUSLY_DROPPED_KEYS = (
-    "volume_summary",            # §2 summary tower (wave-2 E5)
+    "story_so_far",              # story memory: digests of the earlier chapters (replaced volume_summary)
 )
 
 # digest_key -> (rendered section label, sentinel value injected for the test)
 REVIVED = {
-    "volume_summary": ("Volume Summary (atmosphere only)", "VOLUME_SUMMARY_SENTINEL"),
+    "story_so_far": ("Story So Far", "STORY_SO_FAR_SENTINEL"),
 }
 
 

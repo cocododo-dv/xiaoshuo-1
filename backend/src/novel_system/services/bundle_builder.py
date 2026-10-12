@@ -24,7 +24,6 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
     StoryCharacter,
-    VolumeSummary,
     StyleReferenceBook,
 )
 from novel_system.services.bundle_continuity import (
@@ -44,6 +43,7 @@ from novel_system.services.bundle_freshness import (
 from novel_system.services.bundle_sections import BundleSections
 from novel_system.services.hash_engine import compute_bundle_hash_projection, sha256_text
 from novel_system.services.resolver import resolve_chapter_summary, resolve_scene_summary
+from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY, story_so_far
 from novel_system.services.character_continuity import (
     CHARACTER_CONTRACT_VERSION,
     build_character_contract_digest,
@@ -423,6 +423,16 @@ class BundleBuilder:
                 refs={"character_contract": CHARACTER_CONTRACT_VERSION},
             )
 
+        # 故事记忆（2026-10-12）：此前各章的章摘要 + 未收的线——远处的事实只从这里来（取代卷汇总的原文拼接）
+        story_memory = self._story_so_far(scene)
+        if story_memory is not None:
+            sections.add(
+                STORY_SO_FAR_SECTION_KEY,
+                ref_id=story_memory["digest_row_ids"][-1],
+                text=story_memory["text"],
+                refs={"story_so_far_digest_row_ids": story_memory["digest_row_ids"]},
+            )
+
         narrative_state = self._narrative_state_digest(scene)
         if narrative_state:
             sections.digest("narrative_state", narrative_state)
@@ -490,19 +500,6 @@ class BundleBuilder:
                 ref_id=chapter_summary.chapter_id,
                 text=chapter_summary.content,
                 refs={"chapter_summary_id": chapter_summary.chapter_id},
-            )
-
-        # §2 summary tower: far-horizon volume atmosphere (read-only, NOT a fact source)
-        volume_summary = self._latest_volume_summary(scene)
-        if volume_summary is not None:
-            sections.add(
-                "volume_summary",
-                ref_id=volume_summary.row_id,
-                text=(
-                    "【卷级远景氛围 — 仅供语气/基调延续，严禁当作事实来源；事实一律以权威状态为准】\n"
-                    + (volume_summary.atmosphere_summary or "")
-                ),
-                refs={"volume_summary_row_id": volume_summary.row_id},
             )
 
         projection = BundleSnapshotHashProjection(
@@ -643,24 +640,13 @@ class BundleBuilder:
             self.session, scene, policy, on_degraded=lambda slot: self._slot_degraded(slot, scene)
         )
 
-    def _latest_volume_summary(self, scene: SceneCard) -> VolumeSummary | None:
-        """§2: most recent active volume atmosphere summary for the scene's project."""
-        project_id = scene.project_id
-        if not project_id:
+    def _story_so_far(self, scene: SceneCard) -> dict[str, Any] | None:
+        """「前情」（见 ``story_memory_digest.story_so_far``）；读失败只记降级槽，不阻断 bundle。"""
+        try:
+            return story_so_far(self.session, scene)
+        except Exception:  # noqa: BLE001 — continuity aid degrades visibly
+            self._slot_degraded(STORY_SO_FAR_SECTION_KEY, scene)
             return None
-        return (
-            self.session.execute(
-                select(VolumeSummary)
-                .where(
-                    VolumeSummary.project_id == project_id,
-                    VolumeSummary.active_flag == 1,
-                    VolumeSummary.runtime_eligible == 1,
-                )
-                .order_by(VolumeSummary.volume_seq.desc(), VolumeSummary.row_id.desc())
-            )
-            .scalars()
-            .first()
-        )
 
     def _chapter_transition_buffer(self, scene: SceneCard) -> str | None:
         """章间过渡缓冲（见 ``bundle_continuity.chapter_transition_text``）；失败只记降级槽。"""

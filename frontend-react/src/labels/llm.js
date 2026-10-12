@@ -23,6 +23,7 @@ export function accountingStatusMeta(status) {
    调用方回落到等宽显示原始 id（机器标识，放在 title 里也行）。 */
 export const LLM_NODE_LABELS = {
   extraction: "通用抽取",
+  chapter_digest: "故事记忆 · 章摘要",
   snowflake_step_candidates: "构思 · 方向候选",
   snowflake_step_generate: "构思 · 生成本步",
   snowflake_workspace_assistant: "构思 · 教练",

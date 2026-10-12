@@ -2679,3 +2679,94 @@ templates:
                 type: string
               evidence:
                 type: string
+
+  chapter_digest:
+    # 2026-10-12 v1：故事记忆的章摘要（services/story_memory.py）。每章定稿（或作者已经往后写）之后后台写一份，
+    # 起草后面各章时进提示词的「前情」（Story So Far）：发生了什么、章末停在哪、人物的持久变化、还没收的线。
+    # 取代卷汇总（原文拼接、只标「氛围」）。未收的线一章章往下带：输入里给上一章的那一份，输出本章之后仍然开着的全部。
+    # 节点 chapter_digest（路由组 reference，归「提炼整理」）；作者在成稿中心可以改、可以重写。
+    version: "2026-10-12.v1"
+    # 一章正文（按一字一 token 估）+ 上一章的线索清单与人物表，留余量
+    input_token_budget: 60000
+    system_prompt: |
+      You keep the continuity memory of a long novel that is being written chapter by chapter.
+      After each chapter is finished you write that chapter's digest. Later chapters are drafted from these digests instead of
+      rereading the whole book, so the digest must carry every fact a later chapter could contradict or must pay off.
+      Report only what is on the page of this chapter: never invent an event, a motive, a character, a place or an object, and
+      never guess where the story is going. Write in the language of the chapter text. Call every character by the name used in
+      `characters` when the person appears there; otherwise by the name the chapter uses.
+    task_prompt: |
+      Write the digest of `chapter` from `chapter.text`. Return JSON with exactly these fields:
+      `summary`: what happens in this chapter, in story order, as plain facts — who does what, what is revealed or decided, what
+      changes. At most 300 Chinese characters (about 180 words in another language). No evaluation, no themes, no foreshadowing
+      talk.
+      `ending_state`: where things stand at the last line of the chapter — where the main characters are, what they are doing or
+      about to do, the situation they are in. At most 120 Chinese characters.
+      `character_changes`: durable changes to characters that later chapters must respect — an injury or condition, something
+      learned or a secret now known, a relationship that turned, a possession gained or lost, a change of status or place, a
+      promise, decision or lie that binds them. Each item: `character` and `change` (at most 60 Chinese characters). Skip
+      passing moods and actions that leave nothing behind.
+      `open_threads`: every question, promise, threat, mystery, plan or planted detail that is still unresolved after this
+      chapter. Start from `previous.open_threads`: keep each one this chapter does not resolve, word for word, with its
+      `opened_in` unchanged; then add the ones this chapter opens, with `opened_in` set to `chapter.number`. Each item: `thread`
+      (at most 50 Chinese characters) and `opened_in`. Keep at most 15: when there would be more, merge closely related threads
+      into one rather than dropping any.
+      `resolved_threads`: the threads from `previous.open_threads` that this chapter resolves. Each item: `thread` (copied word for
+      word) and `resolution` (at most 60 Chinese characters).
+      `previous` is the digest of the chapter before this one, or empty for the first chapter; it is context, not material to
+      retell.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - summary
+        - ending_state
+        - character_changes
+        - open_threads
+        - resolved_threads
+      properties:
+        summary:
+          type: string
+        ending_state:
+          type: string
+        character_changes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - character
+              - change
+            properties:
+              character:
+                type: string
+              change:
+                type: string
+        open_threads:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - thread
+              - opened_in
+            properties:
+              thread:
+                type: string
+              opened_in:
+                type: integer
+                minimum: 1
+                maximum: 100000
+        resolved_threads:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - thread
+              - resolution
+            properties:
+              thread:
+                type: string
+              resolution:
+                type: string

@@ -16,7 +16,7 @@ import { chapterLabel, chapterStage, chapterStateMeta, dramaFieldLabel } from ".
 export const MANU_IDLE_SNAPSHOT = Object.freeze({ status: "idle", body: null, error: null });
 
 /* 服务端说这一章的正文齐了、可以批准：聚合完整、没有缺场。
-   正史核对不在其中（2026-10 起）：没核对的场照样能批准、导出，只是不进入后续章节的事实记忆。 */
+   正史核对不在其中（2026-10 起）：没核对的场照样能批准、导出（故事记忆照样用它抽出来的事实，驳回的除外）。 */
 export function manuCanonicalComplete(snapshot) {
   const body = snapshot && snapshot.body;
   return !!(

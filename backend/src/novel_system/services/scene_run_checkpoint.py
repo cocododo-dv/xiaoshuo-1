@@ -32,8 +32,9 @@ _TERMINAL_EXECUTION_STATUSES = frozenset({"failed", "completed", "cancelled"})
 # 却不是当前格式写下的检查点 → 409 ``RUN_CHECKPOINT_FORMAT_OUTDATED``（作者重新起草，见 :func:`checkpoint_format_outdated`）。
 # 预算 / 规划 / bundle 三步与格式无关，停在那里的旧运行照常续跑。
 # 1 = 最初；2 = 行快照只记哈希（P01c，没有标记）；3 = 删了自动批评（软 QC 第 0 步只剩 soft_input），从这一版起带标记；
-# 4 = 归档尾段收成两步（准终稿第 4 步一次做完确定性收尾、第 5 步正文抽取；章级准终稿评审删了）。
-CHECKPOINT_FORMAT = 4
+# 4 = 归档尾段收成两步（准终稿第 4 步一次做完确定性收尾、第 5 步正文抽取；章级准终稿评审删了）；
+# 5 = 第 4 步的产品不再记卷汇总（卷汇总换成故事记忆的章摘要，2026-10-12）。
+CHECKPOINT_FORMAT = 5
 _FORMAT_FREE_CHECKPOINTS = frozenset(
     RUN_CHECKPOINT_ORDER[: RUN_CHECKPOINT_ORDER.index("bundle_ready") + 1]
 )

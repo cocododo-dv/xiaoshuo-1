@@ -375,13 +375,13 @@ def test_promotion_logs_a_chapter_aggregate_it_cannot_rebuild_instead_of_refusin
     assert new_final is not None and new_final.content == "林昭在雨城的案卷里夹了一张便条。"
     assert session.get(SceneRunState, seeded["scene_id"]).current_final_scene_row_id == new_final.row_id
     assert session.get(AuthorDraft, seeded["draft_id"]).last_promoted_revision_no == 2
-    # 汇总没动（拼不出来就不拼），卷汇总跟着章汇总走、也不做；审计里记着这两件事
+    # 汇总没动（拼不出来就不拼），审计里记着；卷汇总已删（2026-10-12），审计里也不再有它
     assert _stored_aggregate(session, seeded["chapter_id"]).row_id == stale.row_id
     log = session.query(OperationLog).filter_by(
         event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
     ).one()
     assert log.payload_json["chapter_aggregate"] == "blocked"
-    assert log.payload_json["volume_aggregate"] == "skipped"
+    assert "volume_aggregate" not in log.payload_json
 
 
 def test_same_revision_replay_does_not_require_an_exact_chapter_aggregate(client, session) -> None:

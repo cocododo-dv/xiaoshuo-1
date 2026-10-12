@@ -61,12 +61,13 @@ class NarrativeEventLog(NarrativeEventStore):
         pov_character_id: str | None = None,
         onstage_character_ids: list[str] | None = None,
     ) -> str:
-        """写作提示词里的权威状态摘要（截到这一场之前）。
+        """写作提示词里的人物状态摘要（截到这一场之前），读工作记忆：正史 + 各场当前终稿上还没核对完的抽取候选
+        （故事记忆，2026-10-12；见 ``replay.NarrativeEventStore.working_events``）。
 
         Wave 4（§5.6）：指定 ``pov_character_id`` 时做 POV 减法投影，隐藏非 POV 秘密内容；``pov=None``
-        保持全知视角全量注入。**硬 QC 不走此方法**——它读 ``check_consistency`` 的全量权威状态。
+        保持全知视角全量注入。**硬 QC 不走此方法**——它读 ``check_consistency`` 的全量正史状态。
         """
-        snapshot = snapshot_before(self, project_id, require_scene_boundary(scene_id))
+        snapshot = snapshot_before(self, project_id, require_scene_boundary(scene_id), working=True)
         if pov_character_id:
             return pov.format_pov_state(snapshot, pov_character_id, onstage_character_ids)
         return digests.format_state(snapshot, onstage_character_ids=onstage_character_ids)
@@ -82,13 +83,13 @@ class NarrativeEventLog(NarrativeEventStore):
         """蓝图 §2 / §11：在场角色之间的信息差摘要（截到这一场之前）。
 
         Wave 4（§5.6）：指定 ``pov_character_id`` 时只展示 POV 独有认知，他人独有内容 / 秘密只给
-        内容无关的盲区提示，绝不打印 "Secrets held by X" 正文；``pov=None`` 保持全量。
+        内容无关的盲区提示，绝不打印 "Secrets held by X" 正文；``pov=None`` 保持全量。读工作记忆（同上）。
         """
         scene_id = require_scene_boundary(scene_id)
         onstage = list(onstage_character_ids or [])
         if len(onstage) < 2:
             return ""
-        snapshot = snapshot_before(self, project_id, scene_id)
+        snapshot = snapshot_before(self, project_id, scene_id, working=True)
         if pov_character_id:
             return pov.format_pov_asymmetry(snapshot, pov_character_id, onstage)
         return digests.format_asymmetry(snapshot, onstage)

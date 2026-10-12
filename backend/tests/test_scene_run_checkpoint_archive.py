@@ -14,7 +14,6 @@ from sqlalchemy import func, select
 
 from novel_system.db.models import (
     AttemptTracker,
-    ChapterGoal,
     ChapterMemory,
     ChapterRunJob,
     ChapterRollingNote,
@@ -24,11 +23,10 @@ from novel_system.db.models import (
     SceneCard,
     SceneMemory,
     SceneRunState,
-    VolumeSummary,
     WriterEvaluation,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.aggregator import VOLUME_CHAPTER_SPAN, Aggregator
+from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.orchestrator import Orchestrator
@@ -188,9 +186,9 @@ def test_crash_after_the_archive_effects_commit_resumes_at_prose_extraction(sess
 
 
 def test_the_archive_tail_writes_one_effects_product_and_a_two_entry_manifest(session) -> None:
-    """检查点格式 4：归档尾段只有两份产品——第 4 步 archive_effects（行 id、四份行快照的哈希、三项收尾的结果；快照本身与
+    """检查点格式 5：归档尾段只有两份产品——第 4 步 archive_effects（行 id、四份行快照的哈希、两项收尾的结果；快照本身与
     整场正文不进检查点）与第 5 步的正文抽取；归档清单两条。成稿门判的就是归档的这一份正文。以前八个子步的产品、章级准终稿
-    评审的结果一个也不写了。"""
+    评审的结果、卷汇总（格式 5 删掉）一个也不写了。"""
     _seed_resume_scene(session)
     result = _orchestrator(session).run_scene(SCENE_ID, execution_id="idempotency:archive-effects-shape")
 
@@ -198,7 +196,7 @@ def test_the_archive_tail_writes_one_effects_product_and_a_two_entry_manifest(se
     assert "chapter_near_final" not in result
     payload = session.get(SceneRunState, SCENE_ID).run_checkpoint_json
     refs, hashes = payload["artifact_refs"], payload["artifact_hashes"]
-    assert payload["checkpoint_format"] == CHECKPOINT_FORMAT == 4
+    assert payload["checkpoint_format"] == CHECKPOINT_FORMAT == 5
     effects = refs["archive_effects"]
     assert (effects["schema_version"], effects["kind"], effects["outcome"], effects["step_key"]) == (
         3,
@@ -207,7 +205,7 @@ def test_the_archive_tail_writes_one_effects_product_and_a_two_entry_manifest(se
         "archive:effects:0",
     )
     assert effects["chapter_aggregate"] == {"outcome": "not_applicable", "reason": "not_chapter_last"}
-    assert effects["volume_aggregate"] == {"outcome": "not_applicable", "reason": "not_chapter_last"}
+    assert "volume_aggregate" not in effects
     assert effects["fidelity_reading"] == {"outcome": "not_applicable", "reason": "unbound"}
     assert set(effects["snapshot_hashes"]) == {"final_scene", "scene_memory", "rolling_note", "archive_attempt"}
     final = session.get(FinalScene, effects["final_scene_row_id"])
@@ -547,8 +545,7 @@ def test_chapter_last_archive_rebuilds_the_chapter_aggregate_without_any_chapter
     memory = session.get(ChapterMemory, chapter["chapter_memory_row_id"])
     assert memory.content == session.get(FinalScene, effects["final_scene_row_id"]).content
     assert memory.active_flag == 1
-    # 这一章没排进书（display_order 为空）：到不了卷边界
-    assert effects["volume_aggregate"] == {"outcome": "no_op", "status": "no_op", "reason": "chapter_unmapped"}
+    assert "volume_aggregate" not in effects
     assert _count(session, LlmCall, LlmCall.scope_type == "chapter") == 0
     assert _count(session, LlmCall, LlmCall.node_id == "chapter_near_final_review") == 0
     assert _count(session, WriterEvaluation, WriterEvaluation.object_type == "chapter") == 0
@@ -556,55 +553,6 @@ def test_chapter_last_archive_rebuilds_the_chapter_aggregate_without_any_chapter
     Aggregator(session).run_final_aggregate(scene.chapter_id)
     session.commit()
     assert session.get(ChapterMemory, chapter["chapter_memory_row_id"]).active_flag == 0
-    assert _orchestrator(session).run_scene(SCENE_ID, execution_id=execution_id)["scene_status"] == "archived"
-
-
-def _seed_prior_chapters(session, count: int) -> None:
-    """这一章前面排着的 ``count`` 章，各有一份存着的章汇总；这一章排在它们后面。"""
-    session.get(ChapterGoal, "CH_RESUME").display_order = count + 1
-    for ordinal in range(1, count + 1):
-        chapter_id = f"CH_RESUME_{ordinal}"
-        session.add(
-            ChapterGoal(chapter_id=chapter_id, project_id="P_RESUME", display_order=ordinal, chapter_goal=f"prior {ordinal}")
-        )
-        session.add(
-            ChapterMemory(
-                row_id=f"chapter_memory_final_{chapter_id}_v1",
-                chapter_id=chapter_id,
-                aggregate_stage="final",
-                content=f"prior atmosphere {ordinal}",
-                active_flag=1,
-                runtime_eligible=1,
-                runtime_eligibility_basis="direct_read",
-            )
-        )
-    session.commit()
-
-
-def test_chapter_last_volume_boundary_resume_reuses_the_same_summary(session) -> None:
-    """卷边界上的章末那一场：第 4 步卷出卷汇总；之后断在正文抽取，续跑不再卷第二份。别的路径后来重卷、取代了它，
-    已归档的重放照样通过（卷汇总同样是派生缓存）。"""
-    _seed_resume_scene(session)
-    scene = _make_chapter_last(session)
-    _seed_prior_chapters(session, VOLUME_CHAPTER_SPAN - 1)
-    execution_id = "idempotency:chapter-last-volume-boundary"
-    first = _orchestrator(session)
-    first._record_prose_events = _raise("stop after the archive effects")
-    with pytest.raises(RuntimeError, match="stop after the archive effects"):
-        first.run_scene(SCENE_ID, execution_id=execution_id)
-
-    volume = _refs(session)["archive_effects"]["volume_aggregate"]
-    assert (volume["outcome"], volume["status"]) == ("aggregated", "created")
-    row_id = volume["volume_summary_row_id"]
-    assert _count(session, VolumeSummary) == 1
-
-    assert _orchestrator(session).run_scene(SCENE_ID, execution_id=execution_id)["scene_status"] == "archived"
-    assert _count(session, VolumeSummary) == 1
-    assert session.get(VolumeSummary, row_id).active_flag == 1
-    window = [f"CH_RESUME_{ordinal}" for ordinal in range(1, VOLUME_CHAPTER_SPAN)] + [scene.chapter_id]
-    Aggregator(session).aggregate_volume_summary("P_RESUME", 1, window)
-    session.commit()
-    assert session.get(VolumeSummary, row_id).active_flag == 0
     assert _orchestrator(session).run_scene(SCENE_ID, execution_id=execution_id)["scene_status"] == "archived"
 
 
@@ -784,14 +732,11 @@ def test_chapter_last_resume_after_the_chapter_was_reordered_still_archives(sess
 # ------------------------------------------------------------------ 卷汇总不看章汇总这一次的结果（复核 I4-R2）
 
 
-def test_chapter_last_volume_rolls_up_the_stored_aggregate_when_the_chapter_cannot_rebuild_it(session) -> None:
-    """流水线的卷汇总不看章汇总这一次重建成没成：章末那一场到了卷边界，章汇总拼不出来（同一章里一条没有场景卡的有效
-    记忆——位置对不上的旧行），卷汇总照样卷，卷进去的是这一章存着的那份旧汇总。晋升不一样：这一次章汇总没重建成就
-    不卷（``volume_aggregate`` 记 ``skipped``，见 test_chapter_aggregate_derive_on_read.py）。这里钉住的是现状，写在
-    services/archive_effects_plan.py 的说明里；两条路径要是对齐，改这里也改那份说明。"""
+def test_chapter_last_archives_when_the_chapter_aggregate_cannot_be_rebuilt(session) -> None:
+    """章末那一场的章汇总拼不出来（同一章里一条没有场景卡的有效记忆——位置对不上的旧行）：第 4 步照样归档，章汇总
+    记 ``no_op`` + 原因、存着的那份原样有效，续跑照常收尾。"""
     _seed_resume_scene(session)
     _make_chapter_last(session)
-    _seed_prior_chapters(session, VOLUME_CHAPTER_SPAN - 1)
     stored = ChapterMemory(
         row_id="chapter_memory_final_CH_RESUME_v1",
         chapter_id="CH_RESUME",
@@ -814,7 +759,7 @@ def test_chapter_last_volume_rolls_up_the_stored_aggregate_when_the_chapter_cann
         )
     )
     session.commit()
-    execution_id = "idempotency:chapter-last-volume-after-blocked-aggregate"
+    execution_id = "idempotency:chapter-last-after-blocked-aggregate"
 
     chapter = _stop_after_archive_effects(session, execution_id)
 
@@ -823,10 +768,6 @@ def test_chapter_last_volume_rolls_up_the_stored_aggregate_when_the_chapter_cann
         "blocked",
         "scene_memory_position_orphan",
     )
-    volume = _refs(session)["archive_effects"]["volume_aggregate"]
-    assert volume["outcome"] == "aggregated"
-    summary = session.get(VolumeSummary, volume["volume_summary_row_id"])
-    assert f"【第{VOLUME_CHAPTER_SPAN}章 氛围】这一章存着的旧汇总。" in summary.atmosphere_summary
     # 章汇总什么也没写：存着的那份还是这一章唯一一份、仍然有效
     assert session.get(ChapterMemory, stored.row_id).active_flag == 1
     assert _count(session, ChapterMemory, ChapterMemory.chapter_id == "CH_RESUME") == 1

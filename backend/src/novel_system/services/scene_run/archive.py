@@ -4,8 +4,8 @@
 复验与归档清单。
 
 - 第 4 步 ``archive_effects``：确定性的收尾一次做完，与检查点在同一个事务里提交——终稿归档（``Archiver``：成稿门照要
-  归档的这一份正文判；场景记忆、章滚动笔记、归档尝试；「像不像」读数，source=pipeline），章末那一场再重建章汇总、
-  卷汇总。断在提交之前什么也没留下，续跑整步重做；提交之后续跑直接去第 5 步。「采纳并归档」「晋升」两条路径一向
+  归档的这一份正文判；场景记忆、章滚动笔记、归档尝试；「像不像」读数，source=pipeline），章末那一场再重建章汇总
+  （卷汇总 2026-10-12 删掉，格式 5）。断在提交之前什么也没留下，续跑整步重做；提交之后续跑直接去第 5 步。「采纳并归档」「晋升」两条路径一向
   这样一次做完（``archive_effects_plan``）。
 - 第 5 步 ``prose_extraction``：可选的正文事件抽取（LLM 节点 ``extraction``，``NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED``
   默认关，关着记一份 ``not_invoked`` 产品）。付费调用的账本行先于产品提交，所以单独一步；产品绑在它的账本行上
@@ -35,7 +35,6 @@ from novel_system.db.models import (
     SceneMemory,
     SceneRunState,
 )
-from novel_system.services.archive_effects_plan import aggregate_volume_after_chapter
 from novel_system.services.llm_accounting import (
     LLMAccountingError,
     LLMCallContext,
@@ -103,17 +102,12 @@ _ARCHIVE_EFFECTS_PRODUCT_KEYS = frozenset(
         "archive_attempt_id",
         "snapshot_hashes",
         "chapter_aggregate",
-        "volume_aggregate",
         "fidelity_reading",
     }
 )
-# 第 4 步记下的三项收尾结果：可取的 outcome，与带结果行时那一行 id 的键
+# 第 4 步记下的两项收尾结果：可取的 outcome，与带结果行时那一行 id 的键
 _ARCHIVE_EFFECT_RESULTS = {
     "chapter_aggregate": ({"not_applicable", "aggregated", "no_op"}, {"aggregated": "chapter_memory_row_id"}),
-    "volume_aggregate": (
-        {"not_applicable", "aggregated", "no_op", "degraded"},
-        {"aggregated": "volume_summary_row_id", "degraded": "error_code"},
-    ),
     "fidelity_reading": (
         {"recorded", "not_applicable", "degraded"},
         {"recorded": "reading_id", "degraded": "error_code"},
@@ -236,8 +230,8 @@ class ArchiveCheckpointMixin:
     ) -> dict[str, Any]:
         """归档第 4 步：确定性的收尾一次做完，产品与检查点一起提交（同一个事务：断在提交之前什么也没留下）。
 
-        终稿归档（成稿门照这一份正文判；读数也在这里记）→ 章末那一场重建章汇总 → 卷汇总（不看章汇总这一次的结果，
-        见 ``archive_effects_plan``）。产品记三行的 id、四份行快照的哈希与三项收尾的结果；返回核对过的产品（与续跑时
+        终稿归档（成稿门照这一份正文判；读数也在这里记）→ 章末那一场重建章汇总（见 ``archive_effects_plan``）。
+        产品记三行的 id、四份行快照的哈希与两项收尾的结果；返回核对过的产品（与续跑时
         ``_validate_archive_effects`` 读回的一样）。
         """
         archive_result = self.archiver.archive_final_scene(
@@ -265,7 +259,6 @@ class ArchiveCheckpointMixin:
                 name: self._json_hash(snapshot(rows[name])) for name, snapshot in _ARCHIVE_SNAPSHOTS.items()
             },
             chapter_aggregate=self._archive_chapter_aggregate(scene),
-            volume_aggregate=self._archive_volume_aggregate(scene),
             fidelity_reading=archive_result.get("fidelity_reading")
             or {"outcome": "not_applicable", "reason": "no_scene"},
         )
@@ -313,15 +306,6 @@ class ArchiveCheckpointMixin:
         )
         self.session.flush()
         return {"outcome": "aggregated" if result.get("status") == "created" else "no_op", **result}
-
-    def _archive_volume_aggregate(self, scene: SceneCard) -> dict[str, Any]:
-        """章末那一场接着卷汇总（到了卷边界才卷，卷的是各章存着的章汇总；在自己的保存点里做，失败只降级）。"""
-        if scene.is_chapter_last != 1:
-            return dict(_NOT_CHAPTER_LAST)
-        result = aggregate_volume_after_chapter(self.session, scene.chapter_id)
-        status = result.get("status")
-        outcome = "aggregated" if status == "created" else ("degraded" if status == "degraded" else "no_op")
-        return {"outcome": outcome, **result}
 
     def _archive_stage_prose(
         self, scene: SceneCard, contract, final_scene: FinalScene
@@ -449,9 +433,9 @@ class ArchiveCheckpointMixin:
         require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
         """复验第 4 步的产品（``product`` 为空就读检查点里的那份）：产品自身（格式、归属、哈希）；终稿归档的四行还在、
-        没被改过（按库里的行重算快照比哈希）、彼此对得上；三项收尾的结果形状。
+        没被改过（按库里的行重算快照比哈希）、彼此对得上；两项收尾的结果形状。
 
-        章汇总 / 卷汇总 / 读数的行不回读：它们是派生缓存与观察，别的归档路径随时重建（R13、[批准#22]），产品只记
+        章汇总 / 读数的行不回读：它们是派生缓存与观察，别的归档路径随时重建（R13、[批准#22]），产品只记
         当时的结果。
         """
         if product is None:

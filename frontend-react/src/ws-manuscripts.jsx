@@ -13,6 +13,7 @@ import { useManuCanonical, useManuWorkflow } from "./ws-manuscripts-workflow.js"
 import { ManuHero } from "./ws-manuscripts-hero.jsx";
 import { ManuFootNote, ManuRead, ManuState, ManuStructure } from "./ws-manuscripts-reader.jsx";
 import { ManuCanon } from "./ws-manuscripts-canon.jsx";
+import { ManuMemory } from "./ws-manuscripts-memory.jsx";
 import { ManuDiagnosis } from "./ws-manuscripts-diagnosis.jsx";
 import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
@@ -23,7 +24,7 @@ import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
    成稿中心 — 一本书在这里一章章成形：页头是整书进度与统一导出，
-   左栏按阶段分组的章，右侧是本章的阅读器（正文 / 结构 / 正史 / 对比）
+   左栏按阶段分组的章，右侧是本章的阅读器（正文 / 结构 / 正史 / 记忆 / 诊断 / 对比）
    和页脚的下一步。
    正文的唯一来源是后端章节聚合（WsManuStore ← GET /chapter-manuscripts/{id}，
    服务端以 FinalScene 归档行为源）；写作器的 wr-doc:* 缓存不是成稿来源——
@@ -92,6 +93,7 @@ function WsManuscripts({ go }) {
     { value: "read", label: "正文" },
     { value: "structure", label: "结构" },
     { value: "canon", label: "正史", testId: "manuscript-canon-tab" },
+    { value: "memory", label: "记忆", testId: "manuscript-memory-tab" },
     { value: "diagnosis", label: chapterDiag && chapterDiag.open ? `诊断 ${chapterDiag.open}` : "诊断", testId: "manuscript-diagnosis-tab" },
     ...(canDiff ? [{ value: "diff", label: "对比" }] : []),
   ];
@@ -140,6 +142,7 @@ function WsManuscripts({ go }) {
           {view === "canon" && (
             <ManuCanon projectId={readyWorkId(WsWorks)} chapterId={catPicked && catPicked.backendId} canonical={canonical} onChanged={bump} />
           )}
+          {view === "memory" && <ManuMemory projectId={readyWorkId(WsWorks)} chapterId={catPicked && catPicked.backendId} />}
           {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} fidelity={fidelity.finals} />}
           {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} fidelity={fidelity.finals} />}
           {view === "diagnosis" && <ManuDiagnosis chapter={catPicked} go={go} />}

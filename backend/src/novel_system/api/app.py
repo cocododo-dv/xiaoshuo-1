@@ -59,6 +59,7 @@ def _start_background_runtime() -> None:
     # its durable CAS, so concurrent ASGI worker startups cannot execute the
     # same job twice.
     from novel_system.services.background_recovery import run_startup_recovery, start_run_job_sweeper
+    from novel_system.services.story_memory import install_story_memory_worker
     from novel_system.services.style_reference.jobs import start_job_sweeper
 
     run_startup_recovery()
@@ -68,11 +69,15 @@ def _start_background_runtime() -> None:
     # 场景 / 章节运行任务：进程还活着时每分钟收拾一次租约过期的孤儿；lifespan 结束时把本进程持有的租约就地
     # 到期，重启后的启动恢复立刻接着跑（B03-01）。
     start_run_job_sweeper()
+    # 故事记忆（2026-10-12）：挂在上面那条巡检线程的维护任务上，每分钟看一次哪些场还没抽事实、哪些章该写 / 重写
+    # 章摘要，真正调模型的一轮派到自己的单线程车道里（services/story_memory.py）。
+    install_story_memory_worker()
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     from novel_system.services.background_recovery import shutdown_run_job_workers
+    from novel_system.services.story_memory import uninstall_story_memory_worker
     from novel_system.services.style_reference.jobs import shutdown_job_workers
     from novel_system.services.style_reference.workers import install_workers
 
@@ -99,6 +104,8 @@ async def _lifespan(_app: FastAPI):
         cancel_deferred_startup()
         shutdown_run_job_workers()
         shutdown_job_workers(wait=False)
+        # 故事记忆：撤掉维护任务、丢下车道里还没开始的一轮（services/story_memory.py）
+        uninstall_story_memory_worker()
 
 
 def _is_loopback_host(host: str | None) -> bool:

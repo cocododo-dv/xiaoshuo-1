@@ -298,11 +298,11 @@ describe("成稿中心权威章节流", () => {
 
     await click(host.querySelector('[data-testid="manuscript-canon-tab"]'));
     expect(host.textContent).toContain("他的右臂已经折断");
-    // 正史核对可选（2026-10 起不拦定稿）：还有候选没裁决，批准照样能点；页签里说清没核对的场不进后续的事实记忆
+    // 正史核对可选（2026-10 起不拦定稿）：还有候选没裁决，批准照样能点；页签里说清没核对的事实照样先进起草、驳回才不用
     expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(false);
     const panel = host.querySelector('[data-testid="manuscript-canon-panel"]');
     expect(panel.textContent).toContain("本章还有场的事实没核对（可选）");
-    expect(panel.textContent).toContain("未核对的场不进入后续章节的事实记忆");
+    expect(panel.textContent).toContain("没核对的也先进后面各场的起草上下文");
     expect(panel.textContent).not.toContain("落槌");
 
     await click(host.querySelector('[data-testid="canon-candidate-accept"]'));
@@ -351,7 +351,7 @@ describe("成稿中心权威章节流", () => {
 
     await click(open);
     expect(document.querySelector('[data-testid="approve-canon-pending"]').textContent)
-      .toBe("1 场正史未核对，不影响定稿（未核对的场不进入后续章节的事实记忆）。");
+      .toBe("1 场正史未核对，不影响定稿（AI 抽出的事实照样用于后面各章的起草，抽错的可以随时在「正史」里驳回）。");
     await click(document.querySelector('[data-testid="approve-read-confirm"]'));
     await click(document.querySelector('[data-testid="approve-final-confirm"]'));
     expect(flow.approveFinal).toHaveBeenCalledWith("p1", "c1", { readNote: "", revisionNotes: "" });

@@ -6,109 +6,19 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-from novel_system.db.models import FactCandidate, LlmCall, LlmCallAttempt, NarrativeEvent, SceneCard
+from novel_system.db.models import FactCandidate, NarrativeEvent, SceneCard
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.prompt_builder import load_prompt_templates
 from tests.narrative_fixtures import WORLD_PROJECT, seed_final_scene, seed_narrative_world, world_scene
+from tests.support.llm_fakes import ScriptedTaskRunner as ScriptedExtractionRunner
 
 SCENE = world_scene(2, 2)
 PROSE = "林远把半页旧信交给苏晚。苏晚这才得知案卷藏在北境。两人从此不再互相试探。"
 REPO_PROMPTS = Path(__file__).resolve().parents[2] / "config" / "prompts.yaml"
-
-
-class _Response:
-    def __init__(self, text: str, llm_call_id: str) -> None:
-        self.text = text
-        self.structured_output = None
-        self.llm_call_id = llm_call_id
-
-
-class ScriptedExtractionRunner:
-    """按次回放抽取结果的记账假模型：每次调用各写一条已结算的 LlmCall（产品侧要核对这条父记录）。"""
-
-    provider_execution_mode = "online"
-
-    def __init__(self, session, replies: list[dict]) -> None:
-        self.session = session
-        self.replies = list(replies)
-        self.calls: list[dict] = []
-
-    def run_task(self, *, task_name, prompt_text, system_prompt, context, **_kwargs):
-        index = len(self.calls)
-        self.calls.append({"task_name": task_name, "prompt_text": prompt_text, "system_prompt": system_prompt})
-        call_id = f"llmcall_canon_extract_{index:02d}"
-        reply = self.replies[index] if index < len(self.replies) else {"events": []}
-        failure = reply.get("__fail__") if isinstance(reply, dict) else None
-        status = "failed" if failure else "settled"
-        self.session.add(
-            LlmCall(
-                llm_call_id=call_id,
-                provider="fake",
-                model="fake",
-                node_id=context.node_id,
-                step=context.step,
-                project_id=context.project_id,
-                chapter_id=context.chapter_id,
-                scene_id=context.scene_id,
-                scope_type=context.scope_type,
-                scope_id=context.scope_id,
-                run_job_id=context.run_job_id,
-                execution_id=context.execution_id,
-                execution_step_key=context.execution_step_key,
-                request_payload_summary={"_accounting_provider_execution_mode": "online"},
-                prompt_tokens=9,
-                completion_tokens=3,
-                total_tokens=12,
-                estimated_tokens=12,
-                reserved_tokens=12,
-                budget_charged_tokens=12,
-                latency_ms=1,
-                usage_is_estimate=False,
-                accounting_status=status,
-                request_dispatched_at="2026-09-30T00:00:00Z",
-                settled_at="2026-09-30T00:00:01Z",
-                error_code=failure,
-            )
-        )
-        self.session.add(
-            LlmCallAttempt(
-                attempt_id=f"attempt_{call_id}",
-                llm_call_id=call_id,
-                provider_attempt_no=0,
-                dispatch_kind="initial",
-                request_max_output_tokens=512,
-                prompt_tokens=9,
-                completion_tokens=3,
-                total_tokens=12,
-                estimated_tokens=12,
-                reserved_tokens=12,
-                budget_charged_tokens=12,
-                latency_ms=1,
-                usage_is_estimate=False,
-                accounting_status=status,
-                request_dispatched_at="2026-09-30T00:00:00Z",
-                settled_at="2026-09-30T00:00:01Z",
-                error_code=failure,
-            )
-        )
-        self.session.flush()
-        if failure:
-            from novel_system.services.llm_task_runner import LLMNodeExecutionError
-
-            raise LLMNodeExecutionError(
-                llm_call_id=call_id,
-                error_code=failure,
-                message=failure,
-                request_summary={},
-                response_summary={},
-                original_error=RuntimeError(failure),
-            )
-        return _Response(json.dumps(reply, ensure_ascii=False), call_id)
 
 
 @pytest.fixture

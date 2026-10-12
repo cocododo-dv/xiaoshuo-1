@@ -120,7 +120,7 @@ _RICH_SECTION_CHARS = {
     "style_rule": 300,
     "banned_rule": 200,
     "foreshadow": 200,
-    "volume_summary": 600,
+    "story_so_far": 1800,
     "style_observation": 300,
     "calibration_line": 200,
     "chapter_transition_buffer": 300,

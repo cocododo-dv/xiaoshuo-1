@@ -18,6 +18,7 @@ from typing import Any
 from novel_system.services.chapter_drama import CHAPTER_DRAMA_SECTION_KEY
 from novel_system.services.scene_design_context import SCENE_DESIGN_SECTION_KEY
 from novel_system.services.scene_structure_brief import SCENE_STRUCTURE_SECTION_KEY
+from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY
 from novel_system.services.style_prompt_injection import SCENE_SITUATION_TAGS_KEY
 from novel_system.services.style_reference.narrative_guidance import NARRATIVE_GUIDANCE_SECTION_KEY
 
@@ -44,7 +45,7 @@ BUNDLE_SECTION_DIGEST_KEYS: frozenset[str] = frozenset(
         "literary_freshness_budget",
         "scene_summary",
         "chapter_summary",
-        "volume_summary",
+        STORY_SO_FAR_SECTION_KEY,
     }
 )
 # 只有规划快照（near_final_planning 的章架构）写、起草 bundle 不写的业务段（渲染位同在 SECTION_SPECS）

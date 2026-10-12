@@ -1,4 +1,4 @@
-"""权威正文与正史：终稿、场景 / 章记忆、卷汇总、章滚动笔记、叙事事件、正史提交、事实候选、连续性快照。"""
+"""权威正文与正史：终稿、场景 / 章记忆、章摘要（故事记忆）、章滚动笔记、叙事事件、正史提交、事实候选、连续性快照。"""
 
 from __future__ import annotations
 
@@ -91,30 +91,38 @@ class ChapterMemory(Base):
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
 
-class VolumeSummary(Base):
-    """§2 summary tower — volume/book-level far-horizon ATMOSPHERE summary.
+class ChapterDigest(Base):
+    """故事记忆的章摘要（``services/story_memory.py``）：一章写完之后由 LLM 写的事实摘要——发生了什么、章末停在哪、
+    人物的持久变化、还没收的线（一章章往下带）。起草后面各章时进「前情」（Story So Far）。
 
-    Blueprint §2: the summary tower is a read-only auxiliary layer supplying
-    far-horizon tone/atmosphere context. It must NEVER be a fact-bearing source —
-    facts are projected from the event log. This rolls up chapter memories into a
-    volume-level digest used as far-horizon mood context for generation.
+    一章同时只有一条 ``active``；重写 / 作者修改都另起一行、旧行 ``superseded``。``source_hash`` 绑住生成时读到的
+    整章正文（``body_hash``）与上一章那份摘要（``previous_digest_hash``）：任一变了就判旧，后台重写——作者改过的
+    （``origin = author``）不自动重写，只提示作者看一眼。取代 2026-06 的卷汇总（原文拼接、只标「氛围」）。
     """
-    __tablename__ = "volume_summaries"
+
+    __tablename__ = "chapter_digests"
+    __table_args__ = (
+        CheckConstraint("status IN ('active','superseded')", name="ck_chapter_digests_status"),
+        CheckConstraint("origin IN ('llm','author')", name="ck_chapter_digests_origin"),
+        Index("ix_chapter_digests_chapter_status", "chapter_id", "status"),
+        Index("ix_chapter_digests_project", "project_id"),
+    )
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(String)
-    volume_seq: Mapped[int] = mapped_column(Integer)
-    chapter_id_start: Mapped[str | None] = mapped_column(String, nullable=True)
-    chapter_id_end: Mapped[str | None] = mapped_column(String, nullable=True)
-    chapter_count: Mapped[int] = mapped_column(Integer, default=0)
-    # Atmosphere-only far-horizon context (tone, mood, thematic arc). NOT facts.
-    atmosphere_summary: Mapped[str] = mapped_column(Text, default="")
-    # Optional structured factual digest derived from event log (state milestones).
-    # 声明未实现：无生成路径，恒 NULL（蓝图 §2 的事实摘要尚未落地）。
-    factual_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
-    active_flag: Mapped[int] = mapped_column(Integer, default=1)
-    runtime_eligible: Mapped[int] = mapped_column(Integer, default=1)
-    runtime_eligibility_basis: Mapped[str] = mapped_column(String, default="direct_read")
+    chapter_id: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    origin: Mapped[str] = mapped_column(String, default="llm")
+    # 生成 / 修改时读到的：整章正文的哈希、上一章那份摘要（行 id 与内容哈希），合起来的 source_hash
+    body_hash: Mapped[str] = mapped_column(String, default="")
+    previous_digest_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    previous_digest_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_hash: Mapped[str] = mapped_column(String, default="")
+    # {summary, ending_state, character_changes[], open_threads[], resolved_threads[]}
+    digest_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    content_hash: Mapped[str] = mapped_column(String, default="")
+    llm_call_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
@@ -361,6 +369,7 @@ class ContinuitySnapshot(Base):
 
 __all__ = [
     "CanonCommit",
+    "ChapterDigest",
     "ChapterMemory",
     "ChapterRollingNote",
     "ContinuitySnapshot",
@@ -368,5 +377,4 @@ __all__ = [
     "FinalScene",
     "NarrativeEvent",
     "SceneMemory",
-    "VolumeSummary",
 ]

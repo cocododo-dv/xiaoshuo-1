@@ -1,6 +1,6 @@
 {
   "P_GOLD_CH01_SC01": {
-    "bundle_snapshot_hash": "e984682d83c0c7ceeb73579f0a5ff0ebef1a3e589b3b02885ed101aefae36d1f",
+    "bundle_snapshot_hash": "345dc3afb200f20ff7f7c6bdb7c1da20ba2ab8510bb19c2d407147d542155438",
     "slots": [
       "chapter_goal",
       "scene_card",
@@ -9,8 +9,7 @@
       "scene_writer_brief",
       "chapter_story_architecture",
       "character_contract",
-      "scene_summary",
-      "volume_summary"
+      "scene_summary"
     ],
     "source_version_ref_keys": [
       "chapter_goal",
@@ -22,8 +21,7 @@
       "scene_writer_brief",
       "chapter_story_architecture_artifact_row_id",
       "character_contract",
-      "scene_summary_id",
-      "volume_summary_row_id"
+      "scene_summary_id"
     ],
     "inline_digest_keys": [
       "chapter_goal",
@@ -33,14 +31,13 @@
       "scene_writer_brief",
       "chapter_story_architecture",
       "character_contract",
-      "scene_summary",
-      "volume_summary"
+      "scene_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "ae53872560f60b38c0c596154d38eddcf3d642ad949edbe052a6ed29e62497b2"
+    "snapshot_sha256": "9feadc9c51d5aff366c2ba77bc399c242510676f54005323c25a0de89cd3c770"
   },
   "P_GOLD_CH01_SC02": {
-    "bundle_snapshot_hash": "04386da74af3be645b860772c0195e5f0b07c58974c84474ce0324df6466d07d",
+    "bundle_snapshot_hash": "7c965ad1ae7904fca54e2134b03df8caac40ae0290768d7d3fde85d4094774bf",
     "slots": [
       "chapter_goal",
       "scene_card",
@@ -54,8 +51,7 @@
       "previous_scene_voice_anchor",
       "prev_scene_memory",
       "literary_freshness_budget",
-      "scene_summary",
-      "volume_summary"
+      "scene_summary"
     ],
     "source_version_ref_keys": [
       "chapter_goal",
@@ -74,8 +70,7 @@
       "previous_scene_voice_anchor_stage",
       "scene_memory_prev",
       "literary_freshness_source_final_scene_ids",
-      "scene_summary_id",
-      "volume_summary_row_id"
+      "scene_summary_id"
     ],
     "inline_digest_keys": [
       "chapter_goal",
@@ -90,14 +85,13 @@
       "previous_scene_voice_anchor",
       "scene_memory",
       "literary_freshness_budget",
-      "scene_summary",
-      "volume_summary"
+      "scene_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "bbce4c159a558922da95a9034e51f9b04afe38e726390d3f439f061d464e9a06"
+    "snapshot_sha256": "c733b5a14ede8f1200b062512ca9c11008c4452ca88a3494c9d9ef919e1cf0db"
   },
   "P_GOLD_CH02_SC01": {
-    "bundle_snapshot_hash": "8a9fd304a0de15b461952d18eb6ad57f3b21aad211f2636f3cd2833f68b6ab73",
+    "bundle_snapshot_hash": "5ff75fd769f67bb3f56b8f12cd932e3fa1876b195948b07b0d9a1d0ea98fa9cb",
     "slots": [
       "chapter_goal",
       "scene_card",
@@ -105,10 +99,10 @@
       "chapter_writer_brief",
       "scene_writer_brief",
       "character_contract",
+      "story_so_far",
       "previous_scene_voice_anchor",
       "scene_summary",
-      "chapter_summary",
-      "volume_summary"
+      "chapter_summary"
     ],
     "source_version_ref_keys": [
       "chapter_goal",
@@ -119,12 +113,12 @@
       "chapter_writer_brief",
       "scene_writer_brief",
       "character_contract",
+      "story_so_far_digest_row_ids",
       "previous_scene_voice_anchor_scene_id",
       "previous_scene_voice_anchor_draft_row_id",
       "previous_scene_voice_anchor_stage",
       "scene_summary_id",
-      "chapter_summary_id",
-      "volume_summary_row_id"
+      "chapter_summary_id"
     ],
     "inline_digest_keys": [
       "chapter_goal",
@@ -133,17 +127,17 @@
       "chapter_writer_brief",
       "scene_writer_brief",
       "character_contract",
+      "story_so_far",
       "chapter_transition_buffer",
       "previous_scene_voice_anchor",
       "scene_summary",
-      "chapter_summary",
-      "volume_summary"
+      "chapter_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "45f7dd3cd5edfff48c6fd1b617d78f48c6a95a2d0e8b5fb96b15a7bb9967fcb8"
+    "snapshot_sha256": "f19bc3036af6bec04a3b540dd889ffbe238a58c2966783eb6720e03323c479f7"
   },
   "P_GOLD_CH02_SC02": {
-    "bundle_snapshot_hash": "041981be2c8980047a1f676b7ba4e2dae7fe7792c7dda2fa906eec2731f6bf7a",
+    "bundle_snapshot_hash": "70daaa7080be6c7f0250fc7d3909218f62692a239e6c925d827f4ca541b5e9fe",
     "slots": [
       "chapter_goal",
       "scene_card",
@@ -151,10 +145,10 @@
       "chapter_writer_brief",
       "scene_writer_brief",
       "character_contract",
+      "story_so_far",
       "prev_scene_memory",
       "literary_freshness_budget",
-      "chapter_summary",
-      "volume_summary"
+      "chapter_summary"
     ],
     "source_version_ref_keys": [
       "chapter_goal",
@@ -169,11 +163,11 @@
       "chapter_writer_brief",
       "scene_writer_brief",
       "character_contract",
+      "story_so_far_digest_row_ids",
       "previous_scene_voice_anchor_deferred",
       "scene_memory_prev",
       "literary_freshness_source_final_scene_ids",
-      "chapter_summary_id",
-      "volume_summary_row_id"
+      "chapter_summary_id"
     ],
     "inline_digest_keys": [
       "chapter_goal",
@@ -184,12 +178,12 @@
       "chapter_writer_brief",
       "scene_writer_brief",
       "character_contract",
+      "story_so_far",
       "scene_memory",
       "literary_freshness_budget",
-      "chapter_summary",
-      "volume_summary"
+      "chapter_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "8fa273e685118e6129f3e0e3e5d913fa0a20c400f503d28ff573f9aad051a5be"
+    "snapshot_sha256": "1f4b4f938e226ba0a53268a68dd5673b76ea00a47077ad930fed0147d9d75f83"
   }
 }

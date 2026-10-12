@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from novel_system.db.models import LlmCall, LlmCallAttempt
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
@@ -130,3 +131,102 @@ def build_fake_paragraph_classifier() -> type[FakeParagraphClassifier]:
     每次给一个新的子类（与搬家前每次现建一个类一样），测试往类上打的补丁不会漏给别的用例。
     """
     return type("FakeLLMClient", (FakeParagraphClassifier,), {})
+
+
+# ---------------------------------------------------------------- run_task 的按次回放（正史提取、故事记忆章摘要）
+
+
+class _Response:
+    def __init__(self, text: str, llm_call_id: str) -> None:
+        self.text = text
+        self.structured_output = None
+        self.llm_call_id = llm_call_id
+
+
+class ScriptedTaskRunner:
+    """``LLMNodeRunner.run_task`` 的记账替身：按次回放 JSON 回复（``{"__fail__": 错误码}`` = 这一次调用失败），每次调用
+    各写一条已结算的 LlmCall 与一次尝试（产品侧要核对这条父记录）。正史「提取」与故事记忆的章摘要共用（2026-10-12 从
+    ``test_canon_extraction.py`` 搬来）。``default`` 是回复用完之后的回复。"""
+
+    provider_execution_mode = "online"
+
+    def __init__(self, session, replies: list[dict], *, default: dict | None = None, call_prefix: str = "llmcall_canon_extract") -> None:
+        self.session = session
+        self.replies = list(replies)
+        self.default = {"events": []} if default is None else default
+        self.call_prefix = call_prefix
+        self.calls: list[dict] = []
+
+    def run_task(self, *, task_name, prompt_text, system_prompt, context, **_kwargs):
+        index = len(self.calls)
+        self.calls.append(
+            {"task_name": task_name, "prompt_text": prompt_text, "system_prompt": system_prompt, "context": context}
+        )
+        call_id = f"{self.call_prefix}_{index:02d}"
+        reply = self.replies[index] if index < len(self.replies) else self.default
+        failure = reply.get("__fail__") if isinstance(reply, dict) else None
+        status = "failed" if failure else "settled"
+        self.session.add(
+            LlmCall(
+                llm_call_id=call_id,
+                provider="fake",
+                model="fake",
+                node_id=context.node_id,
+                step=context.step,
+                project_id=context.project_id,
+                chapter_id=context.chapter_id,
+                scene_id=context.scene_id,
+                scope_type=context.scope_type,
+                scope_id=context.scope_id,
+                run_job_id=context.run_job_id,
+                execution_id=context.execution_id,
+                execution_step_key=context.execution_step_key,
+                request_payload_summary={"_accounting_provider_execution_mode": "online"},
+                prompt_tokens=9,
+                completion_tokens=3,
+                total_tokens=12,
+                estimated_tokens=12,
+                reserved_tokens=12,
+                budget_charged_tokens=12,
+                latency_ms=1,
+                usage_is_estimate=False,
+                accounting_status=status,
+                request_dispatched_at="2026-09-30T00:00:00Z",
+                settled_at="2026-09-30T00:00:01Z",
+                error_code=failure,
+            )
+        )
+        self.session.add(
+            LlmCallAttempt(
+                attempt_id=f"attempt_{call_id}",
+                llm_call_id=call_id,
+                provider_attempt_no=0,
+                dispatch_kind="initial",
+                request_max_output_tokens=512,
+                prompt_tokens=9,
+                completion_tokens=3,
+                total_tokens=12,
+                estimated_tokens=12,
+                reserved_tokens=12,
+                budget_charged_tokens=12,
+                latency_ms=1,
+                usage_is_estimate=False,
+                accounting_status=status,
+                request_dispatched_at="2026-09-30T00:00:00Z",
+                settled_at="2026-09-30T00:00:01Z",
+                error_code=failure,
+            )
+        )
+        self.session.flush()
+        if failure:
+            from novel_system.services.llm_task_runner import LLMNodeExecutionError
+
+            raise LLMNodeExecutionError(
+                llm_call_id=call_id,
+                error_code=failure,
+                message=failure,
+                request_summary={},
+                response_summary={},
+                original_error=RuntimeError(failure),
+            )
+        return _Response(json.dumps(reply, ensure_ascii=False), call_id)

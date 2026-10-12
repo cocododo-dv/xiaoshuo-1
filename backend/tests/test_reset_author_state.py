@@ -47,7 +47,7 @@ from novel_system.db.models import (
     StyleReferenceSceneWindows,
     SystemConfigSnapshot,
     SystemSecret,
-    VolumeSummary,
+    ChapterDigest,
     WriterEvaluation,
 )
 from novel_system.db.base import Base
@@ -189,10 +189,11 @@ def _seed_author_state(session) -> None:
                 fact_key="resolve",
                 fact_value="hardens",
             ),
-            VolumeSummary(
-                row_id="volume_summary_reset",
+            ChapterDigest(
+                row_id="chapter_digest_reset",
                 project_id="PRJ_RESET_SNOW",
-                volume_seq=1,
+                chapter_id="CH_RESET_SNOW",
+                digest_json={"summary": "林昭收下旧信。"},
             ),
             ReviewDerivedSnooze(
                 project_id="PRJ_RESET_SNOW",
@@ -707,7 +708,7 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_audit_traces(s
     assert summary["planned_counts"]["project_writing_stats"] == 1
     assert summary["planned_counts"]["snowflake_chapter_plans"] == 1
     assert summary["planned_counts"]["narrative_events"] == 1
-    assert summary["planned_counts"]["volume_summaries"] == 1
+    assert summary["planned_counts"]["chapter_digests"] == 1
     assert summary["planned_counts"]["review_derived_snoozes"] == 1
     assert summary["planned_counts"]["author_draft_revisions"] == 1
     assert summary["planned_counts"]["style_reference_scene_windows"] == 1
@@ -749,7 +750,7 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
         StoryCharacter,
         ProjectWritingStats,
         NarrativeEvent,
-        VolumeSummary,
+        ChapterDigest,
         ReviewDerivedSnooze,
         ChapterGoal,
         ChapterState,

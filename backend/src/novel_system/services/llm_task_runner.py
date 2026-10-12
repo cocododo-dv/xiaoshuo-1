@@ -502,9 +502,13 @@ class LLMNodeRunner(RuntimeLLMAccess):
         system_prompt: str,
         context: LLMCallContext,
         temperature_override: float | None = None,
+        template: Any | None = None,
     ) -> LLMResponse:
         """Ad-hoc single-shot LLM call for auxiliary advisory passes (§8 LLM critic,
-        §2 prose event extraction).
+        §2 prose event extraction, story-memory chapter digests).
+
+        ``template`` (a ``prompts.yaml`` template) adds its name, version and structured
+        schema to the request and its audit summary.
 
         Unlike ``run``, this is NOT persisted as a scene draft and never blocks the
         pipeline: callers must opt-in (guard on settings) and wrap the call so that any
@@ -540,6 +544,12 @@ class LLMNodeRunner(RuntimeLLMAccess):
                 retryable=False,
             ) from exc
         prompt = {"system_prompt": system_prompt, "token_budget": {}}
+        if template is not None:
+            prompt.update(
+                template_name=getattr(template, "name", None) or task_name,
+                template_version=getattr(template, "version", None),
+                structured_schema=dict(getattr(template, "structured_schema", None) or {}),
+            )
         request = self._build_request(
             prompt,
             user_prompt=prompt_text,

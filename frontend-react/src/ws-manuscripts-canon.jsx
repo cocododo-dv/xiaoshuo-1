@@ -5,9 +5,10 @@ import { Notice, Spinner } from "./ws-ui.jsx";
 import { CanonManualEntry, CanonSceneCard } from "./ws-manuscripts-canon-parts.jsx";
 
 /* ==========================================================
-   正史审核台：AI 从终稿里抽出的只是候选事实，作者逐条裁决、再整场通读确认后，
-   人物状态 / 知识 / 关系 / 时间线才进入后续写作的上下文。
-   核对是可选的（2026-10 起）：不拦批准与导出；没核对的场只是不进入后续章节的事实记忆。
+   正史审核台：AI 从终稿里抽出的只是候选事实，作者逐条裁决、再整场通读确认后才成为正史
+   （硬质检、成稿门只认正史）。核对是可选的（2026-10 起）：不拦批准与导出。
+   故事记忆（2026-10-12）：每场定稿后后台自动抽取，没核对的候选也进后面各场的起草上下文，
+   驳回的不进——核对是纠错，不是放行。
    数据全部来自章节聚合快照的 canonContinuity（WsManuStore），动作写回服务端后重拉同章。
    这里管状态与动作；一场一张卡、一条候选、手工补录的表单在 ws-manuscripts-canon-parts.jsx，叫法在 labels/canon.js。
    ========================================================== */
@@ -117,7 +118,7 @@ function ManuCanon({ projectId, chapterId, canonical, onChanged }) {
         <div className="ms-canon-seal">{canon.complete ? <I.ShieldCheck size={24} /> : <I.Database size={22} />}</div>
         <div>
           <h2 className="text-serif">{canon.complete ? "本章事实已经提交" : "本章还有场的事实没核对（可选）"}</h2>
-          <p>AI 只能从终稿提出候选；你逐条裁决并完成整场确认后，人物状态、知识、关系与时间线才会原子进入后续章节。核对不影响批准与导出：未核对的场不进入后续章节的事实记忆。</p>
+          <p>每场定稿后 AI 自动从终稿里抽出候选事实，没核对的也先进后面各场的起草上下文；抽错的在这里驳回，它就不再被用到。逐条裁决并完成整场确认后，这些事实成为正史（硬质检与成稿门只认正史）。核对不影响批准与导出。</p>
         </div>
         <div className="ms-canon-counts">
           <span><b>{canon.synced_scene_count || 0}</b> / {canon.scene_count || 0} 场已提交</span>

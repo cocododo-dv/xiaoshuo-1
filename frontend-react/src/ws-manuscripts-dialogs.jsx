@@ -85,7 +85,7 @@ function ManuApprovalForm({ titleId, descId, focusRef, picked, canonPending = 0,
         我已从头到尾通读当前正文，并确认它可以成为终稿
       </label>
       {canonPending > 0 && (
-        <p className="ms-dialog-note" data-testid="approve-canon-pending">{canonPending} 场正史未核对，不影响定稿（未核对的场不进入后续章节的事实记忆）。</p>
+        <p className="ms-dialog-note" data-testid="approve-canon-pending">{canonPending} 场正史未核对，不影响定稿（AI 抽出的事实照样用于后面各章的起草，抽错的可以随时在「正史」里驳回）。</p>
       )}
 
       <label className="ms-dialog-field">

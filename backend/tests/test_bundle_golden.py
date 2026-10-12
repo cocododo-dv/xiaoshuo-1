@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 
 from novel_system.db.models import (
+    ChapterDigest,
     ChapterGoal,
     ChapterMemory,
     FinalScene,
@@ -37,7 +38,6 @@ from novel_system.db.models import (
     StyleReferenceInjectionBinding,
     StyleReferenceProfile,
     StyleReferenceRun,
-    VolumeSummary,
 )
 from novel_system.services.bundle_builder import BundleBuilder
 
@@ -218,14 +218,20 @@ def _seed_book(session) -> None:
         )
     )
     session.add(
-        VolumeSummary(
-            row_id="volume_summary_gold_v1",
+        # 故事记忆：第一章的章摘要（第二章各场的「前情」从这里来；取代以前的卷汇总）
+        ChapterDigest(
+            row_id="chapter_digest_gold_ch01",
             project_id=PROJECT_ID,
-            volume_seq=1,
-            chapter_id_start="P_GOLD_CH01",
-            chapter_id_end="P_GOLD_CH01",
-            chapter_count=1,
-            atmosphere_summary="雨一直没停。",
+            chapter_id="P_GOLD_CH01",
+            digest_json={
+                "summary": "林昭在雨城档案馆打开旧柜，找到一封没有署名的旧信。",
+                "ending_state": "雨一直没停，林昭把旧信揣进怀里离开档案馆。",
+                "character_changes": [{"character": "林昭", "change": "拿到了旧信"}],
+                "open_threads": [{"thread": "旧信是谁寄出的", "opened_in": 1}],
+                "resolved_threads": [],
+            },
+            content_hash="gold",
+            source_hash="gold",
             created_at=_at(7),
             updated_at=_at(7),
         )

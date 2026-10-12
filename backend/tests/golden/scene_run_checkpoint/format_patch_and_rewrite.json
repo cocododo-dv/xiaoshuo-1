@@ -74,11 +74,7 @@
      "rolling_note": "<hex#40>",
      "scene_memory": "<hex#41>"
     },
-    "step_key": "archive:effects:0",
-    "volume_aggregate": {
-     "outcome": "not_applicable",
-     "reason": "not_chapter_last"
-    }
+    "step_key": "archive:effects:0"
    },
    "archive_manifest": [
     {
@@ -554,7 +550,7 @@
   },
   "branch": "near_final_ready",
   "budget_resume_parent_execution_id": null,
-  "checkpoint_format": 4,
+  "checkpoint_format": 5,
   "execution_id": "idempotency:checkpoint-format",
   "node_key": "archived",
   "selection_origin_execution_id": null,

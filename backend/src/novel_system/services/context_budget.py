@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from novel_system.services.hash_engine import normalize_string
+from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY, compress_story_so_far
 # 估算器住在叶子 token_estimate（老的 ``context_budget.estimate_tokens`` 导入路径照旧可用）
 from novel_system.services.token_estimate import (
     TOKEN_ESTIMATOR_VERSION,
@@ -62,7 +63,19 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("character_pressure", "Character Pressure Blueprint", ("character_pressure",)),
     ("chapter_story_architecture", "Chapter Story Architecture", ("chapter_story_architecture",)),
     ("character_contract", "Character Continuity Contract", ("character_contract",)),
-    ("narrative_state", "Authoritative Character State (Event Log)", ("narrative_state",)),
+    # 2026-10-12 故事记忆：此前各章的章摘要 + 未收的线（取代卷汇总的原文拼接，卷汇总只许带「氛围」）。事实 section：
+    # 预算紧时先压成最近三章与未收的线，最后才整段省略（装不下就只剩「建议拆场」，而拆场对它没用）。
+    (
+        STORY_SO_FAR_SECTION_KEY,
+        "Story So Far (digests of the earlier chapters — facts already on the page; never contradict them)",
+        (STORY_SO_FAR_SECTION_KEY,),
+    ),
+    # 2026-10-12 故事记忆：读工作记忆（正史 + 各场当前终稿上还没核对完的抽取事实），不再只有作者核对过的正史
+    (
+        "narrative_state",
+        "Character State So Far (event log: reviewed canon plus facts extracted from the finished scenes)",
+        ("narrative_state",),
+    ),
     ("information_asymmetry", "Information Asymmetry (who knows what)", ("information_asymmetry",)),
     ("literary_freshness_budget", "Literary Freshness Budget", ("literary_freshness_budget",)),
     # 2026-09 风格模仿 v2（W5，规格 §1.3）：叙事机制块是 neutral_draft 唯一可见的风格参考块；
@@ -77,7 +90,6 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("scene_memory_digest", "Previous Scene Memory", ("scene_memory",)),
     ("scene_summary", "Scene Summary", ("scene_summary",)),
     ("chapter_summary", "Chapter Summary", ("chapter_summary",)),
-    ("volume_summary", "Volume Summary (atmosphere only)", ("volume_summary",)),
 )
 
 # neutral_draft 只负责事件、因果与连续性骨架。下面这些 section 都会把
@@ -100,9 +112,13 @@ BUDGET_LADDER: tuple[tuple[str, str], ...] = (
     ("scene_design_context", "compress"),
     # 上一场的记忆摘要压成首块。
     ("scene_memory_digest", "compress"),
+    # 前情压成最近三章与未收的线（更早的章已经只有一句）。
+    (STORY_SO_FAR_SECTION_KEY, "compress"),
     # v2：记忆摘要也压过仍超预算 → 整段省略声音锚（软性延续信号）与设计背景，再走拆场建议。
     ("previous_scene_voice_anchor", "omit"),
     ("scene_design_context", "omit"),
+    # 仍超预算 → 前情整段省略，再走拆场建议。
+    (STORY_SO_FAR_SECTION_KEY, "omit"),
 )
 
 # 预算审计里记的策略标签（``token_budget.continuity_policy``）：只写上面真正实现了的动作。
@@ -110,7 +126,9 @@ CONTINUITY_POLICY: list[str] = [
     "compress_previous_scene_voice_anchor",
     "compress_scene_design_context",
     "compress_scene_memory_digest",
+    "compress_story_so_far",
     "drop_voice_anchor_then_design_context",
+    "drop_story_so_far",
     "split_scene_recommendation",
 ]
 
@@ -409,6 +427,7 @@ _SECTION_COMPRESSORS = {
     "previous_scene_voice_anchor": _compress_voice_anchor,
     "scene_design_context": compress_design_context,
     "scene_memory_digest": _compress_continuity_digest,
+    STORY_SO_FAR_SECTION_KEY: compress_story_so_far,
 }
 
 

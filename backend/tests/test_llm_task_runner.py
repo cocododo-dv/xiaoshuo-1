@@ -680,8 +680,8 @@ def test_all_production_run_task_calls_pass_explicit_context() -> None:
             if not any(keyword.arg == "context" for keyword in node.keywords):
                 offenders.append(location)
 
-    # 只剩 prose_event_extractor（check_consistency_llm 随死代码删除，auto_critique 随自动批评删除）
-    assert len(calls) == 1
+    # prose_event_extractor 与故事记忆的章摘要（check_consistency_llm 随死代码删除，auto_critique 随自动批评删除）
+    assert sorted(path for path, _line in calls) == ["services/prose_event_extractor.py", "services/story_memory.py"]
     assert offenders == []
 
 

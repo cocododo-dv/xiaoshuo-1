@@ -234,6 +234,12 @@ SHARED_HELPER_LEAVES: dict[str, set[str]] = {
     "novel_system.services.snowflake_draft_merge": {"novel_system.services.hash_engine"},
     "novel_system.services.snowflake_scene_brief": {"novel_system.services.value_coercion"},
     "novel_system.services.snowflake_step_catalog": set(),
+    # 2026-10-12 故事记忆的读与渲染：bundle_builder 与 context_budget 都引它，它只读 ORM
+    "novel_system.services.story_memory_digest": {
+        "novel_system.db.models",
+        "novel_system.services.catalog_labels",
+        "novel_system.services.hash_engine",
+    },
 }
 
 

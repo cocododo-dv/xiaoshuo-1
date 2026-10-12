@@ -2,7 +2,11 @@
 
 「事件溯源为唯一真相源」（蓝图 §2）：某一场之前的角色 / 地点 / 物品状态，就是把那之前的已认可事件按位置重放一遍。
 重放只认两种事件：不归正史管理的已认可事件，和归正史管理、且带着与终稿哈希绑定的有效提交的事件
-（runtime_authority_clause）——抽取出来还没核对的候选永远进不了重放。
+（runtime_authority_clause）——抽取出来还没核对的候选永远进不了**正史**的重放（硬质检、成稿门）。
+
+起草提示词读的是**工作记忆**（``working=True``，2026-10-12 故事记忆）：正史之外，再认每一场当前终稿上还没核对完的
+抽取候选（``WORKING_SOURCE_KINDS``，见 :meth:`NarrativeEventStore.working_events`）。后台每场定稿之后自动抽取
+（``services/story_memory.py``），作者不必逐场核对，后面的场次也看得到前面写下的事实；作者驳回的候选不认。
 """
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, case, exists, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -25,6 +29,7 @@ from novel_system.services.narrative.taxonomy import (
     SCENE_COMPLETION_COMMIT_KINDS,
 )
 from novel_system.services.narrative_position import NarrativePositionService
+from novel_system.services.planning_queries import current_final_scenes
 
 
 @dataclass(slots=True)
@@ -156,6 +161,11 @@ def runtime_authority_clause():
     )
 
 
+# 工作记忆额外认的事件来源：当前终稿上还没核对完的抽取候选（待核对的 / 作者认可了、本场还没确认的）。
+WORKING_SOURCE_KINDS = ("prose_extraction", "canon_candidate_accepted")
+_WORKING_AUTHORITY = ("pending", "accepted")
+
+
 class NarrativeEventStore:
     """事件账本的存取与按位置重放（追加写入、截到某场之前的已认可事件、逐实体折叠）。"""
 
@@ -187,6 +197,81 @@ class NarrativeEventStore:
             cursor = self.positions.cursor_for_scene(project_id, up_to_scene_id)
             statement = self.positions.before(statement, cursor, inclusive=True)
         return self.positions.ordered_events(statement, descending=descending)
+
+    def working_events(
+        self,
+        project_id: str,
+        *,
+        before_scene_id: str | None = None,
+        up_to_scene_id: str | None = None,
+    ) -> list[NarrativeEvent]:
+        """工作记忆：起草提示词读的事件，按位置排好。
+
+        逐场决定认哪一份：这一场的**当前终稿**已经核对完成（正史里有绑在它上面的事件）→ 只认正史；当前终稿上有还没
+        核对完的抽取候选 → 认这些候选（作者驳回的不认），外加这一场不归正史管理的已认可事件；当前终稿还没有候选
+        （抽取还没跑完）→ 退回这一场以前核对过的正史。
+        """
+        if before_scene_id is not None and up_to_scene_id is not None:
+            raise DomainError(
+                "NARRATIVE_CURSOR_CONFLICT",
+                "叙事边界只能给一个：这一场之前，或截到这一场",
+                status_code=400,
+            )
+        canon_clause = self._runtime_authority_clause()
+        # 一趟查询取齐：正史事件 + 工作记忆的候选，每行带一个「是不是正史」的标记（只有正史时语句数与正史重放一样）
+        statement = (
+            self.positions.event_statement(project_id)
+            .add_columns(case((canon_clause, True), else_=False).label("is_canon"))
+            .where(
+                or_(
+                    and_(
+                        NarrativeEvent.authority_status.in_(_WORKING_AUTHORITY),
+                        NarrativeEvent.source_kind.in_(WORKING_SOURCE_KINDS),
+                        NarrativeEvent.final_scene_row_id.is_not(None),
+                    ),
+                    canon_clause,
+                )
+            )
+        )
+        if before_scene_id is not None:
+            statement = self.positions.before(statement, self.positions.cursor_for_scene(project_id, before_scene_id))
+        elif up_to_scene_id is not None:
+            statement = self.positions.before(
+                statement, self.positions.cursor_for_scene(project_id, up_to_scene_id), inclusive=True
+            )
+        fetched = self.session.execute(self.positions.ordered_events(statement)).all()
+        rows = [row[0] for row in fetched]
+        canon_ids = {row[0].event_id for row in fetched if row[1]}
+        if len(canon_ids) == len(rows):
+            return rows
+        finals = current_final_scenes(self.session, {event.scene_id for event in rows})
+        current = {scene_id: final.row_id for scene_id, final in finals.items()}
+
+        def is_working(event: NarrativeEvent) -> bool:
+            return (
+                event.event_id not in canon_ids
+                and event.source_kind in WORKING_SOURCE_KINDS
+                and event.final_scene_row_id is not None
+                and event.final_scene_row_id == current.get(event.scene_id)
+            )
+
+        verified = {
+            event.scene_id
+            for event in rows
+            if event.event_id in canon_ids and event.final_scene_row_id is not None
+            and event.final_scene_row_id == current.get(event.scene_id)
+        }
+        working_scenes = {event.scene_id for event in rows if is_working(event)} - verified
+        kept: list[NarrativeEvent] = []
+        for event in rows:
+            if event.scene_id in working_scenes:
+                if is_working(event) or (
+                    event.event_id in canon_ids and event.source_kind not in CANON_MANAGED_SOURCE_KINDS
+                ):
+                    kept.append(event)
+            elif event.event_id in canon_ids:
+                kept.append(event)
+        return kept
 
     def events(
         self,
@@ -378,17 +463,24 @@ class ProjectionSnapshot:
         *,
         before_scene_id: str | None = None,
         up_to_scene_id: str | None = None,
+        working: bool = False,
     ) -> None:
         self.store = store
         self.session = store.session
         self.project_id = project_id
         self.before_scene_id = before_scene_id
-        statement = store._event_statement(
-            project_id,
-            before_scene_id=before_scene_id,
-            up_to_scene_id=up_to_scene_id,
-        )
-        self.events: list[NarrativeEvent] = list(self.session.execute(statement).scalars().all())
+        self.working = working
+        if working:
+            self.events: list[NarrativeEvent] = store.working_events(
+                project_id, before_scene_id=before_scene_id, up_to_scene_id=up_to_scene_id
+            )
+        else:
+            statement = store._event_statement(
+                project_id,
+                before_scene_id=before_scene_id,
+                up_to_scene_id=up_to_scene_id,
+            )
+            self.events = list(self.session.execute(statement).scalars().all())
         self._by_entity: dict[str, list[NarrativeEvent]] = {}
         self._by_type_entity: dict[tuple[str, str], list[NarrativeEvent]] = {}
         for event in self.events:
@@ -435,6 +527,11 @@ class ProjectionSnapshot:
         listed = self._listings.get(entity_type)
         if listed is None:
             listed = self.store._entities_of_type_in_project(self.project_id, entity_type)
+            if self.working:
+                # 工作记忆：只在还没核对的候选里出现的实体也算（接在正史清单后面，按首次出现的位置）
+                for event in self.events:
+                    if event.entity_type == entity_type and event.entity_id not in listed:
+                        listed.append(event.entity_id)
             self._listings[entity_type] = listed
         return listed
 
@@ -448,6 +545,8 @@ class ProjectionSnapshot:
         return self._names
 
 
-def snapshot_before(store: NarrativeEventStore, project_id: str, scene_id: str) -> ProjectionSnapshot:
-    """写这一场时能看到的已认可状态：截到这一场之前（不含本场）。"""
-    return ProjectionSnapshot(store, project_id, before_scene_id=scene_id)
+def snapshot_before(
+    store: NarrativeEventStore, project_id: str, scene_id: str, *, working: bool = False
+) -> ProjectionSnapshot:
+    """写这一场时能看到的状态：截到这一场之前（不含本场）。``working`` = 工作记忆（起草提示词），否则只认正史。"""
+    return ProjectionSnapshot(store, project_id, before_scene_id=scene_id, working=working)

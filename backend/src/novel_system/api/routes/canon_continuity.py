@@ -7,12 +7,14 @@ from novel_system.api.deps import actor_ref_of, get_session
 from novel_system.api.mutations import mutate
 from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.canon_continuity import (
+    ChapterDigestSaveRequest,
     FactCandidateDecisionRequest,
     ManualFactCandidateRequest,
     SceneCanonVerificationRequest,
 )
 from novel_system.api.response import respond
 from novel_system.services.canon_continuity import CanonContinuityService
+from novel_system.services.story_memory import generate_chapter_digest, save_author_digest, story_memory_overview
 
 
 router = APIRouter(tags=["canon-continuity"])
@@ -113,3 +115,54 @@ def verify_scene_canon(
             **body,
         ),
     )
+
+
+# 故事记忆（2026-10-12，services/story_memory.py）：各章的章摘要与事实抽取的欠账；作者改摘要、让 AI 重写一章
+@router.get("/api/v1/projects/{project_id}/story-memory")
+def project_story_memory(
+    project_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    return respond(request, story_memory_overview(session, project_id))
+
+
+@router.post("/api/v1/projects/{project_id}/story-memory/chapters/{chapter_id}/digest")
+def save_chapter_digest(
+    project_id: str,
+    chapter_id: str,
+    payload: ChapterDigestSaveRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    return mutate(
+        request,
+        session,
+        payload={"project_id": project_id, "chapter_id": chapter_id, **body},
+        action=lambda: save_author_digest(
+            session,
+            project_id,
+            chapter_id,
+            base_row_id=body["base_row_id"],
+            digest=body["digest"],
+        ),
+    )
+
+
+@router.post("/api/v1/projects/{project_id}/story-memory/chapters/{chapter_id}/digest/regenerate")
+def regenerate_chapter_digest(
+    project_id: str,
+    chapter_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json") if payload is not None else {}
+    return mutate(
+        request,
+        session,
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=lambda: generate_chapter_digest(session, project_id, chapter_id),
+    )
+

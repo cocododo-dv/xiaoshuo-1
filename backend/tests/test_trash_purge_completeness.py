@@ -12,6 +12,7 @@ from sqlalchemy import func, or_, select
 
 from novel_system.db.base import Base
 from novel_system.db.models import (
+    ChapterDigest,
     AttemptTracker,
     AuthorDraft,
     AuthorDraftEvent,
@@ -43,7 +44,6 @@ from novel_system.db.models import (
     StyleReferenceProfile,
     StyleReferenceRun,
     StyleReferenceSceneWindows,
-    VolumeSummary,
     WriterEvaluation,
     utcnow,
 )
@@ -185,7 +185,7 @@ def _seed_full_project(session) -> None:
         event_type="character_state", entity_type="character", entity_id="c1",
         fact_key="k", fact_value="v",
     ))
-    session.add(VolumeSummary(row_id="vs1", project_id=PROJECT_ID, volume_seq=1))
+    session.add(ChapterDigest(row_id="cd1", project_id=PROJECT_ID, chapter_id=CHAPTER_ID, digest_json={"summary": "林昭收下旧信。"}))
     session.add(ReviewItem(
         review_id="ri1", project_id=PROJECT_ID, item_type="fe_card", candidate_text="卡",
     ))
@@ -267,7 +267,7 @@ def test_purge_project_leaves_no_residual_rows(session):
         ),
         "human_review_events": session.query(HumanReviewEvent).filter_by(scene_id=SCENE_ID),
         "narrative_events": session.query(NarrativeEvent).filter_by(project_id=PROJECT_ID),
-        "volume_summaries": session.query(VolumeSummary).filter_by(project_id=PROJECT_ID),
+        "chapter_digests": session.query(ChapterDigest).filter_by(project_id=PROJECT_ID),
         "review_items": session.query(ReviewItem).filter_by(project_id=PROJECT_ID),
         "author_drafts": session.query(AuthorDraft).filter_by(draft_id="d1"),
         "author_draft_events": session.query(AuthorDraftEvent).filter_by(draft_id="d1"),

@@ -66,6 +66,7 @@ from novel_system.db.models.author_drafts import (
 )
 from novel_system.db.models.canon import (
     CanonCommit,
+    ChapterDigest,
     ChapterMemory,
     ChapterRollingNote,
     ContinuitySnapshot,
@@ -73,7 +74,6 @@ from novel_system.db.models.canon import (
     FinalScene,
     NarrativeEvent,
     SceneMemory,
-    VolumeSummary,
 )
 from novel_system.db.models.infra import (
     IdempotencyKey,
@@ -109,6 +109,7 @@ __all__ = [
     "BackgroundRecoveryLease",
     "Base",
     "CanonCommit",
+    "ChapterDigest",
     "ChapterGoal",
     "ChapterMemory",
     "ChapterRollingNote",
@@ -167,7 +168,6 @@ __all__ = [
     "SystemConfigSnapshot",
     "SystemSecret",
     "TimelineEvent",
-    "VolumeSummary",
     "WriterEvaluation",
     "utcnow",
 ]

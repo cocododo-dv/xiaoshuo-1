@@ -118,6 +118,17 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.1,
         max_output_tokens=1200,
     ),
+    # 2026-10-12 故事记忆：每章定稿（或作者已经往后写）之后后台写一份章摘要，起草后面各章时进「前情」
+    # （services/story_memory.py）。与 extraction 同在「提炼整理」这一组。
+    LLMNodeSpec(
+        "chapter_digest",
+        "Chapter digest (story memory)",
+        "reference",
+        template_name="chapter_digest",
+        model="gpt-5-mini",
+        temperature=0.2,
+        max_output_tokens=4000,
+    ),
     # FE-ALIGN P6: 资料库半自动派生（归档正文 → 候选实体/时间线事件 → 待办确认）
     # FE-ALIGN G5: 构思视图的步骤候选生成（3 条不同方向，原型契约形状）
     LLMNodeSpec(
