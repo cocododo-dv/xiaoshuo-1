@@ -1,15 +1,11 @@
-"""场景运行检查点的 golden：旧代码写下的库状态（读端兼容）与检查点写端的规范化形状（写端不漂移）。
+"""场景运行检查点的写端 golden（``tests/golden/scene_run_checkpoint/format_*.json``）。
 
-两种 golden，都在 ``tests/golden/scene_run_checkpoint/``：
+现在的代码把一场跑完，逐次记下每一次检查点保存（节点、子游标、这一步新加的引用 / 哈希键）与归档后的整份检查点
+JSON，规范化后与 golden 比。时间戳、随机 id、哈希值换成按出现顺序编号的占位符，结构、键、确定性的值与「哪两处是
+同一个值」都保留。检查点格式有意变化时用 ``CHECKPOINT_FORMAT_GOLDEN_REGEN=1`` 重生成，并在提交里说明原因。
 
-- **读端（``resume_*.json``）**：重构之前的代码（``refactor/2026-09-29`` @ 60443dc，P01c 开工前）把一场跑到某个
-  检查点停下，把整库的行原样倒出来。测试把这些行灌进空库，用现在的代码按同一个执行 id 续跑——这证明现在的读端
-  认旧代码写下的检查点（部署时正停在半路的运行接得上）。**它们不许重生成**：重生成就变成「新代码写、新代码读」，
-  失去意义。新增一个场景只能从一个已知的旧版本捕获，并在提交里写明版本。
-- **写端（``format_*.json``）**：现在的代码把一场跑完，逐次记下每一次检查点保存（节点、子游标、这一步新加的引用
-  / 哈希键）与归档后的整份检查点 JSON，规范化后与 golden 比。时间戳、随机 id、哈希值换成按出现顺序编号的占位符，
-  结构、键、确定性的值与「哪两处是同一个值」都保留。检查点格式有意变化时用 ``CHECKPOINT_FORMAT_GOLDEN_REGEN=1``
-  重生成，并在提交里说明原因。
+以前这里还有读端的整库转储（``resume_*.json``，重构前的代码 @60443dc 写下、灌回空库续跑）与它的
+``dump_database`` / ``restore_database``：格式 v2 的「双读一版」已过，随旧格式读取器一起删了。
 """
 
 from __future__ import annotations
@@ -19,52 +15,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from novel_system.db.base import Base
-
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "golden" / "scene_run_checkpoint"
 
 
-def dump_database(session: Session) -> dict[str, list[dict[str, Any]]]:
-    """整库非空表的全部行（按主键排序；列值原样——时间戳在本库里是字符串，JSON 列是对象）。"""
-    session.flush()
-    rows: dict[str, list[dict[str, Any]]] = {}
-    for table in Base.metadata.sorted_tables:
-        ordered = list(table.primary_key.columns) or list(table.columns)
-        found = session.execute(select(table).order_by(*ordered)).mappings().all()
-        if found:
-            rows[table.name] = [dict(row) for row in found]
-    return rows
-
-
-def restore_database(session: Session, rows: dict[str, list[dict[str, Any]]]) -> None:
-    """把 :func:`dump_database` 倒出的行灌回空库（一个事务；外键检查推迟到提交）。
-
-    只写现在的表结构里还有的表和列：以后的迁移删掉的列 / 表照样读得回来，新加的列取模型默认值。
-    """
-    for table in Base.metadata.sorted_tables:
-        found = rows.get(table.name)
-        if not found:
-            continue
-        columns = {column.name for column in table.columns}
-        session.execute(
-            table.insert(),
-            [{key: value for key, value in row.items() if key in columns} for row in found],
-        )
-    session.commit()
-
-
-def write_json(path: Path, payload: Any, *, compact: bool = False) -> None:
-    """``compact``：整库转储写成一行（读端 golden 只由机器读、永不重生成）；写端 golden 缩进写，改动时 diff 可读。"""
+def write_json(path: Path, payload: Any) -> None:
+    """缩进写（改动时 diff 可读）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = (
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        if compact
-        else json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True)
-    )
-    path.write_text(text + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def read_json(path: Path) -> Any:

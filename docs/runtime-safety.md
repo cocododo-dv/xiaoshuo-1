@@ -43,6 +43,17 @@
 
 服务启动时会恢复尚未派发的场景/章节任务，并通过数据库租约和任务 CAS 防止同波重复执行；运行中每 60 秒再巡检一次租约过期的孤儿任务。已有活跃 lease 的任务不会被抢占。进程退出（停服、`--reload`）时，本进程持有的运行任务租约就地到期，重启后的恢复立刻接着跑，不必等租约自然过期。场景任务一次最多跑两条管线，章节任务一次一章。风格参考的段落分类、学习文风与对照检查是作业表（`style_reference_jobs`）上的持久作业：工人的每一次写都以作业的 `owner_token` 为条件，心跳超过 60 秒的作业由常驻清扫线程（启动时一次，之后每 30 秒）放回队列、从游标续跑，重启或 `--reload` 不需要人工介入。旧抽取流程留下的「运行中」记录与没有作业可续的「分类中」书由迁移 `20260929_0094` 一次标为失败（`STYLE_REFERENCE_RUN_RETIRED`），对那本书重新「学习文风」即可。
 
+场景运行的检查点带格式标记（`checkpoint_format`，`services/scene_run_checkpoint.py` 的 `CHECKPOINT_FORMAT`）：哪一版改了检查点里
+存的产品形状，就把它加一。升级之后，旧版本留下、停在 bundle 冻结之后的运行不再续跑，回 409 `RUN_CHECKPOINT_FORMAT_OUTDATED`
+「这一场上次的运行是旧版本留下的，请重新起草（会重新调用模型）」，那次执行记为失败，重新起草就从头跑（已经付过的调用要重付）；
+停在预算 / 规划 / bundle 三步的照常续跑。所以部署改了格式的版本之前，停服后先查一遍，结果是 0 才升级：
+
+```sql
+SELECT count(*) FROM scene_run_states
+WHERE run_execution_status IN ('active', 'failed', 'waiting_selection')
+  AND run_checkpoint IS NOT NULL AND run_checkpoint <> 'budget_ready';
+```
+
 数据库结构落后于代码时（`--reload` 先于迁移加载了新代码），后端不拿旧结构跑启动恢复与后台清扫，`/api/*` 统一回 503 `SERVICE_NOT_READY`「数据库结构需要升级：请重启后端（启动脚本会自动升级）」；结构跟上之后的第一个 `/api/*` 请求或 `/ready` 探测补跑被推迟的那一段。
 
 启动恢复还会对超过 `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` 的「没有主人」的 LLM 预留做保守对账（`recover_stale_unowned_reservations`，启动摘要里记作 `llm_unowned_reservations`）：仅处理没有 `scene_id`、没有 `run_job_id` 且不是 scene scope 的调用；未派发预留会释放，已派发但没有持久化结果的预留会标记失败并按估算用量落账。场景与任务所有权链路由各自的 lease/checkpoint 恢复负责，不进入这项扫描。

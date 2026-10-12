@@ -6,10 +6,7 @@ import json
 
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import LLMNodeRunner
-from novel_system.services.near_final import (
-    CHAPTER_ACCEPTANCE_SCORE_KEYS,
-    SCENE_ACCEPTANCE_SCORE_KEYS,
-)
+from novel_system.services.near_final import SCENE_ACCEPTANCE_SCORE_KEYS
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 # 场景运行管线在这些模块里按 `LLMNodeRunner(session)`（无显式 client）取默认运行器。
@@ -273,17 +270,12 @@ class ScenePipelineOnlineFake(AccountedGenerateMixin):
                 "relationship_debt": "an old promise remains unpaid",
                 "current_mask": "measured confidence",
             }
-        elif node_id in {"near_final_acceptance_review", "chapter_near_final_review"}:
-            score_keys = (
-                SCENE_ACCEPTANCE_SCORE_KEYS
-                if node_id == "near_final_acceptance_review"
-                else CHAPTER_ACCEPTANCE_SCORE_KEYS
-            )
+        elif node_id == "near_final_acceptance_review":
             payload = {
                 "near_final_status": "near_final_ready",
                 "pass_flag": True,
                 "overall_score": 0.8,
-                "scores": {key: 0.8 for key in score_keys},
+                "scores": {key: 0.8 for key in SCENE_ACCEPTANCE_SCORE_KEYS},
                 "findings": [],
                 "revision_brief": [],
                 "failure_class": "",

@@ -1,7 +1,7 @@
 """Tests for blueprint enforcement features (batch 1 + batch 2).
 
 Covers: conflict-too-clean detection, adversarial dim promotion,
-auto-critique new dims, cost_requirement blocking, expression spectrum
+cost_requirement blocking, expression spectrum
 frequency tracking, retroactive foreshadow lifecycle, and style-candidates API.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ def test_conflict_too_clean_no_reconciliation():
 
 
 # ---------------------------------------------------------------------------
-# §6/§8: adversarial + critique dim promotion
+# §6: adversarial dim promotion
 # ---------------------------------------------------------------------------
 
 
@@ -73,13 +73,6 @@ def test_painless_scene_in_adversarial_dims():
 
     for dim in ("painless_scene", "no_choice_scene", "choice_pressure", "conflict_too_clean"):
         assert dim in ADVERSARIAL_DIMS, f"{dim} missing from ADVERSARIAL_DIMS"
-
-
-def test_auto_critique_includes_new_dims():
-    from novel_system.services.auto_critique import CRITIQUE_DIMS
-
-    for dim in ("painless_scene", "no_choice_scene", "choice_pressure", "conflict_too_clean"):
-        assert dim in CRITIQUE_DIMS, f"{dim} missing from CRITIQUE_DIMS"
 
 
 def test_dimension_weights_include_conflict_too_clean():

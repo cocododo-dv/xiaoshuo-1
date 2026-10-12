@@ -185,21 +185,6 @@ def test_archive_final_scene_default_reading_slot_writes_no_drift_event(session)
     assert "style_drift_observed" not in kinds
 
 
-def test_archive_final_scene_skips_the_reading_when_the_checkpoint_owns_it(session, monkeypatch) -> None:
-    from novel_system.services import scene_archive_effects
-
-    monkeypatch.setattr(
-        scene_archive_effects.SceneArchiveEffects,
-        "_record_archive_fidelity_reading",
-        lambda self, scene, **_kwargs: (_ for _ in ()).throw(AssertionError("must not be called")),
-    )
-    _seed_archivable_scene(session)
-    result = Archiver(session).archive_final_scene(
-        "scene_drift_1", "final_drift_1", record_fidelity_reading=False
-    )
-    assert result["fidelity_reading"] is None
-
-
 def test_archive_final_scene_never_fails_because_of_the_reading(session, monkeypatch) -> None:
     from novel_system.services import scene_archive_effects
 

@@ -20,7 +20,6 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     SceneCard,
-    SceneMemory,
     SceneRunState,
     utcnow,
 )
@@ -30,6 +29,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_task_runner import begin_llm_execution, end_llm_execution
 from novel_system.services.scene_lookup import get_scene_or_404
+from novel_system.services.scene_run.archive import ARCHIVE_STAGES
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService, checkpoint_corrupt
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,7 +51,11 @@ class RunLifecycleMixin:
 
         effective_execution_id = execution_id or f"direct:{scene_id}:{uuid4().hex}"
         checkpoints = SceneRunCheckpointService(self.session)
-        claim = checkpoints.acquire_execution(scene_id, effective_execution_id)
+        try:
+            claim = checkpoints.acquire_execution(scene_id, effective_execution_id)
+        except DomainError as exc:
+            self._commit_format_refusal(exc)
+            raise
         if claim.last_node == "archived":
             # 已归档的重放：整张清单复验，不调模型
             with self._execution_scope(
@@ -89,6 +93,12 @@ class RunLifecycleMixin:
             return self._run_with_terminal_outcome(
                 scene_id, effective_execution_id, checkpoints, author_note=author_note, run_policy=run_policy
             )
+
+    def _commit_format_refusal(self, exc: DomainError) -> None:
+        """检查点格式关拒绝续跑（``RUN_CHECKPOINT_FORMAT_OUTDATED``）时，还占着这一场的旧执行已记为 failed（只刷新）：
+        提交它，作者重新起草时新的执行才接得过去。别的错误不动会话。"""
+        if exc.code == "RUN_CHECKPOINT_FORMAT_OUTDATED":
+            self.session.commit()
 
     def _ensure_scene_and_state(self, scene_id: str) -> tuple[SceneCard, SceneRunState]:
         """场景（没有 → 404 ``SCENE_NOT_FOUND``）与它的运行状态行：FE 目录直接建的场景没有状态行（scenes POST 才会建），
@@ -485,6 +495,7 @@ class RunLifecycleMixin:
         self.session.flush()
 
     def _load_archived_checkpoint(self, scene_id: str) -> FinalScene:
+        """已归档的重放：读回终稿，归档尾段的两份产品与归档清单复验一遍（与续跑时同一套核对），不调模型。"""
         state = self._active_checkpoint_state()
         scene = self.session.get(SceneCard, scene_id)
         bundle = self._load_checkpoint_bundle(scene_id)
@@ -508,39 +519,24 @@ class RunLifecycleMixin:
             scene_id,
             actor_ref="orchestrator",
         )
-        # 已归档的重放：归档尾段的八份产品逐步复验（与续跑时同一张步骤表）
         self._validate_archive_prefix(
             scene=scene,
             contract=contract,
             final_scene=final_scene,
             carry_notes=carry_notes,
-            through=11,
+            through=ARCHIVE_STAGES[-1].sub_index,
             allow_terminal=True,
         )
         manifest = refs.get("archive_manifest")
-        expected_manifest = self._archive_manifest()
-        if manifest != expected_manifest or self._json_hash(
+        if manifest != self._archive_manifest() or self._json_hash(
             manifest
         ) != self._checkpoint_hash("archive_manifest"):
             raise checkpoint_corrupt("archived product manifest is incomplete or changed")
-        memory_id = self._checkpoint_artifact(
-            "scene_memory_row_id", expected_node_at_least="archived"
-        )
-        memory = self._require_checkpoint_row(SceneMemory, memory_id)
         if (
             state.run_checkpoint != "archived"
-            or state.scene_status != "archived"
-            or state.current_final_scene_row_id != final_scene.row_id
             or state.current_bundle_id != bundle["bundle_id"]
             or state.current_bundle_hash != bundle["bundle_snapshot_hash"]
-            or final_scene.status != "archived"
-            or memory.scene_id != scene_id
-            or memory.chapter_id != scene.chapter_id
-            or memory.final_scene_row_id != final_scene.row_id
-            or memory.source_bundle_id != bundle["bundle_id"]
-            or memory.content != final_scene.content
-            or memory.active_flag != 1
-            or memory.runtime_eligible != 1
+            or final_scene.source_bundle_id != bundle["bundle_id"]
         ):
             raise checkpoint_corrupt("archived checkpoint product graph is inconsistent")
         return final_scene
@@ -588,7 +584,11 @@ class RunLifecycleMixin:
             execution_id or f"direct-selection-resume:{scene_id}:{uuid4().hex}"
         )
         checkpoints = SceneRunCheckpointService(self.session)
-        checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
+        try:
+            checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
+        except DomainError as exc:
+            self._commit_format_refusal(exc)
+            raise
 
         with self._execution_scope(
             effective_execution_id,

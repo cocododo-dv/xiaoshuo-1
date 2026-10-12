@@ -45,7 +45,6 @@ STYLE_PASS_TEMPLATES = (
     "scene_literary_rewrite",
     "soft_qc",
     "style_ref_check_judge",
-    "chapter_near_final_review",
 )
 SAMPLE_BLOCK_NAMES = ("[风格样例]", "【风格样例】")
 
@@ -169,7 +168,6 @@ def test_the_contract_walks_every_known_score_family() -> None:
         "soft_qc",
         "style_ref_check_judge",
         "near_final_acceptance_review",
-        "chapter_near_final_review",
         "writer_deep_review",
     } <= seen
 
@@ -233,11 +231,6 @@ BEHAVIOUR: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "target (what to change), issue (what is wrong), fix_direction (how to fix it)",
             "If no [STYLE_REFERENCE] block is present, do not pass scenes",
         ),
-        (),
-    ),
-    # 章级验收：按参考作者的开合判；0–10；简报三键
-    "chapter_near_final_review": (
-        ("never use a 0–1 or 0–100 scale", "target, issue, fix_direction", "章首 / 章末"),
         (),
     ),
     # 事实 QC：写法从来不是硬违规

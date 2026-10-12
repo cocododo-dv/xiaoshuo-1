@@ -18,7 +18,7 @@ from novel_system.db.models import (
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
-from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
+from novel_system.services.scene_run_checkpoint import CHECKPOINT_FORMAT, SceneRunCheckpointService
 from tests.support.catalog import job_chapter_and_scene as _create_chapter_and_scene
 from tests.support.seed import seed_chapter, seed_scene
 
@@ -542,6 +542,7 @@ def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
     state.run_checkpoint = "hard_qc_ready"
     state.run_checkpoint_json = {
         "execution_id": first_job.job_id,
+        "checkpoint_format": CHECKPOINT_FORMAT,
         "node_key": "hard_qc_ready",
         "artifact_refs": {},
         "artifact_hashes": {},
@@ -592,13 +593,6 @@ def test_author_budget_resume_job_reuses_the_server_owned_failed_execution(
     verifier._run_job_id = resumed_job_id
     assert verifier._checkpoint_execution_owner_matches(first_job.job_id, first_job.job_id)
     assert not verifier._checkpoint_execution_owner_matches(first_job.job_id, "rogue-job")
-    historical_context = verifier._auto_critique_patch_context(
-        "CHJOB_SC01",
-        execution_id=first_job.job_id,
-        run_job_id=first_job.job_id,
-    )
-    assert historical_context.execution_id == first_job.job_id
-    assert historical_context.run_job_id == first_job.job_id
 
 
 def test_budget_resume_job_rejects_when_no_budget_blocked_execution_exists(client) -> None:
@@ -628,6 +622,7 @@ def _create_budget_resume_job(client, session) -> tuple[str, str]:
     state.run_checkpoint = "hard_qc_ready"
     state.run_checkpoint_json = {
         "execution_id": first_job.job_id,
+        "checkpoint_format": CHECKPOINT_FORMAT,
         "node_key": "hard_qc_ready",
         "artifact_refs": {},
         "artifact_hashes": {},

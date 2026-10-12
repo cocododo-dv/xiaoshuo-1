@@ -84,11 +84,9 @@ def test_literary_signals_only_wraps_the_rule_analysis() -> None:
     assert imports == {"novel_system.cache_registry", "novel_system.services.literary_quality"}
 
 
-def test_rule_analysis_runs_once_per_text_across_gate_and_critique(monkeypatch) -> None:
-    """B02-19：同一份稿子被去模板门、规则批判、LLM 批判里的规则一遍各分析一次——现在按正文只算一次，
-    每个调用方拿到的是独立的拷贝（改了也不污染下一个）。"""
-    from novel_system.services.auto_critique import auto_critique, llm_auto_critique
-
+def test_rule_analysis_runs_once_per_text_across_repeated_gates(monkeypatch) -> None:
+    """B02-19：同一份稿子会被去模板门（风格稿、去模板改写的验收）分析好几遍——按正文只算一次，每个调用方拿到的是
+    独立的拷贝（改了也不污染下一个）。（以前还有自动批评的规则一遍与 LLM 批评里的一遍，随自动批评删了，G4 B3-1b.1。）"""
     calls: list[str] = []
     real = literary_signals.analyze_literary_quality
 
@@ -101,11 +99,10 @@ def test_rule_analysis_runs_once_per_text_across_gate_and_critique(monkeypatch) 
     text = "她突然意识到一切都变了。门开了，他站在雨里，没有说话。" * 6
 
     gate = sg._anti_template_quality_gate(text, scene_id="SC_MEMO", chapter_id="CH_MEMO")
-    first = auto_critique(text)
-    second = llm_auto_critique(text, llm_runner=None)
+    again = sg._anti_template_quality_gate(text, scene_id="SC_MEMO", chapter_id="CH_MEMO")
 
     assert len(calls) == 1
-    assert gate["findings"] and first.dimension_scores == second.dimension_scores
+    assert gate["findings"] and again == gate
     signals, findings = literary_signals.rule_analysis(text)
     expected_findings = len(findings)
     signals.clear()

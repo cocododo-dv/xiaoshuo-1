@@ -1,5 +1,5 @@
-"""准定稿验收评审：一场的整稿评审（``evaluate_scene``）与章尾的章级评审（``evaluate_chapter``）（B03-21 从
-near_final 拆出）。评审结果的归一化与房风门在 ``near_final_payload``。
+"""准定稿验收评审：一场的整稿评审（``evaluate_scene``，B03-21 从 near_final 拆出）。评审结果的归一化与房风门在
+``near_final_payload``。章尾的章级评审（付费、结果没人读）已删（G4 B3-1b.2）：要整章意见用「AI 通读本章」。
 
 评审执行失败（且已落模型台账）时降级成一条「验收执行失败」的评估行，正文照常交付；没落台账就被拒的，带真实
 错误码 fail-closed。评审没通过时留一份整场重写的修订候选（``near_final_scene_rewrite``）。
@@ -7,7 +7,6 @@ near_final 拆出）。评审结果的归一化与房风门在 ``near_final_payl
 
 from __future__ import annotations
 
-import json
 import uuid
 from functools import cached_property
 from typing import Any
@@ -17,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AttemptTracker,
-    ChapterGoal,
     LlmCall,
     RevisionCandidate,
     SceneCard,
@@ -25,14 +23,11 @@ from novel_system.db.models import (
 )
 from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
-from novel_system.services.hash_engine import sha256_json_normalized
-from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_fail_closed import is_llm_capability_error
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
-    current_llm_execution_id,
-    current_llm_run_job_id,
 )
 from novel_system.services.near_final_payload import (
     NEAR_FINAL_REWRITE_TYPE,
@@ -40,19 +35,15 @@ from novel_system.services.near_final_payload import (
     _apply_scene_near_final_gates,
     _apply_style_bound_rewrite_policy,
     _bundle_style_bound,
-    _compact_text,
     _default_structure_revision_brief,
     _execution_failure_payload,
     _normalize_acceptance_payload,
     _promotion_blockers_from_acceptance,
     should_rewrite,
 )
-from novel_system.services.planning_queries import current_final_scenes
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.scene_lookup import active_chapter_scenes, require_chapter, require_scene
-from novel_system.services.story_slots import planned_chapter_goal
+from novel_system.services.scene_lookup import require_scene
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 
 def _acceptance_user_prompt(base_prompt: str, *, source_content: str) -> str:
@@ -218,102 +209,6 @@ class NearFinalAcceptanceService:
             "should_rewrite": self._should_rewrite(payload),
         }
 
-    def _chapter_first_scene(self, chapter: Any) -> SceneCard | None:
-        try:
-            return next(iter(active_chapter_scenes(self.session, chapter.chapter_id)), None)
-        except Exception:  # noqa: BLE001 — 只影响前缀注入,不影响评审本身
-            return None
-
-    def evaluate_chapter(
-        self,
-        chapter_id: str,
-        actor_ref: str = "operator",
-        *,
-        execution_step_key: str = "chapter_near_final_review:0",
-    ) -> dict[str, Any]:
-        chapter = require_chapter(self.session, chapter_id)
-        source = self._chapter_source(chapter)
-        bundle = self._chapter_bundle(chapter, source)
-        prompt = self.prompt_builder.build(bundle["snapshot"], "chapter_near_final_review")
-        chapter_user_prompt = _acceptance_user_prompt(
-            prompt["user_prompt"], source_content=source["content"]
-        )
-        # 2026-09-12 结构跟随:章级评审也拿到同一 [STYLE_REFERENCE] 前缀(以本章第一场解析
-        # 绑定;章 bundle 没有冻结契约,按实时绑定渲染);失败按无前缀降级。
-        first_scene = self._chapter_first_scene(chapter)
-        if first_scene is not None:
-            prompt = self._inject_style_reference_prefix(
-                prompt,
-                first_scene,
-                None,
-                context_text=source["content"],
-                final_user_prompt=chapter_user_prompt,
-            )
-        execution_id = current_llm_execution_id()
-        context = LLMCallContext(
-            scope_type="chapter",
-            scope_id=chapter.chapter_id,
-            project_id=chapter.project_id,
-            chapter_id=chapter.chapter_id,
-            node_id="chapter_near_final_review",
-            step="chapter_near_final_review",
-            execution_id=execution_id,
-            execution_step_key=execution_step_key if execution_id is not None else None,
-            run_job_id=current_llm_run_job_id(),
-            provider_execution_mode=self._llm_runner.provider_execution_mode,
-        )
-        try:
-            node_result = self._llm_runner.run(
-                scene_id=None,
-                chapter_id=chapter.chapter_id,
-                bundle_id=bundle["bundle_id"],
-                bundle_hash=bundle["bundle_snapshot_hash"],
-                node_id="chapter_near_final_review",
-                step="chapter_near_final_review",
-                prompt=prompt,
-                user_prompt=chapter_user_prompt,
-                source_draft_row_id=source["source_text_ref"],
-                source_draft_content=source["content"],
-                execution_step_key=execution_step_key,
-                context=context,
-            )
-            payload = _normalize_acceptance_payload(
-                node_result.response.structured_output, schema=prompt.get("structured_schema")
-            )
-            llm_call_id = node_result.llm_call_id
-        except LLMNodeExecutionError as exc:
-            llm_call_id = self._ledgered_failure_llm_call_id(
-                exc,
-                node_id="chapter_near_final_review",
-                operation="章级准定稿评审",
-                target_ref=f"chapter:{chapter.chapter_id}",
-            )
-            payload = _execution_failure_payload(exc.message)
-
-        evaluation = self._persist_evaluation(
-            object_type="chapter",
-            object_id=chapter.chapter_id,
-            chapter_id=chapter.chapter_id,
-            scene_id=None,
-            source=source,
-            payload=payload,
-            llm_call_id=llm_call_id,
-        )
-        self._record_attempt(
-            scene_id=None,
-            chapter_id=chapter.chapter_id,
-            source_bundle_id=bundle["bundle_id"],
-            status=payload["near_final_status"],
-            details={
-                "evaluation_id": evaluation.evaluation_id,
-                "llm_call_id": llm_call_id,
-                "failure_class": payload.get("failure_class"),
-                "actor_ref": actor_ref,
-            },
-        )
-        self.session.flush()
-        return {**payload, "evaluation_id": evaluation.evaluation_id, "should_rewrite": False}
-
     def _ledgered_failure_llm_call_id(
         self,
         exc: LLMNodeExecutionError,
@@ -449,7 +344,7 @@ class NearFinalAcceptanceService:
     def _record_attempt(
         self,
         *,
-        scene_id: str | None,
+        scene_id: str,
         chapter_id: str,
         source_bundle_id: str | None,
         status: str,
@@ -459,60 +354,9 @@ class NearFinalAcceptanceService:
             AttemptTracker(
                 scene_id=scene_id,
                 chapter_id=chapter_id,
-                step="near_final_acceptance_review" if scene_id else "chapter_near_final_review",
+                step="near_final_acceptance_review",
                 status=status,
                 source_bundle_id=source_bundle_id,
                 details_json=details,
             )
         )
-
-    def _chapter_source(self, chapter: ChapterGoal) -> dict[str, Any]:
-        """章级评审读的整章正文：各场当前终稿按场序现拼（重评 R13）。不读存下来的章汇总——流水线只在章末那一场
-        重建它，先归档章末、后归档前面的场时它漏掉前面那场；场序重排、场进了回收站它也不跟着变。"""
-        scene_ids = [scene.scene_id for scene in active_chapter_scenes(self.session, chapter.chapter_id)]
-        # 每场的当前正文（SceneRunState 指针），不是每场最后建的那一行（B03-04）
-        current_finals = current_final_scenes(self.session, scene_ids)
-        parts = [
-            current_finals[scene_id].content
-            for scene_id in scene_ids
-            if scene_id in current_finals and current_finals[scene_id].content
-        ]
-        content = "\n\n".join(parts).strip()
-        if not content:
-            raise DomainError("CHAPTER_NEAR_FINAL_SOURCE_MISSING", "chapter near-final review needs final scene text", status_code=409)
-        return {"content": content, "source_text_ref": f"chapter_assembled:{chapter.chapter_id}", "source_bundle_id": None}
-
-    def _chapter_bundle(self, chapter: ChapterGoal, source: dict[str, Any]) -> dict[str, Any]:
-        snapshot = {
-            "contract_version": "CHAPTER_NEAR_FINAL_SOURCE_v1",
-            "stage_allowlist_name": "chapter_near_final_review",
-            "scene_id": "",
-            "chapter_id": chapter.chapter_id,
-            "source_version_refs": {
-                "chapter_goal": chapter.chapter_id,
-                "chapter_writer_brief": chapter.chapter_id,
-                "source_text_ref": source.get("source_text_ref"),
-            },
-            "resolved_ref_ids": {},
-            "ordered_injections": [
-                {"slot": "chapter_goal", "ref_id": chapter.chapter_id, "digest_key": "chapter_goal"},
-                {"slot": "chapter_writer_brief", "ref_id": chapter.chapter_id, "digest_key": "chapter_writer_brief"},
-                {"slot": "chapter_summary", "ref_id": source.get("source_text_ref"), "digest_key": "chapter_summary"},
-            ],
-            "inline_digests": {
-                # 章目标只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
-                "chapter_goal": planned_chapter_goal(chapter.chapter_goal, chapter),
-                "chapter_writer_brief": json.dumps(
-                    normalize_chapter_writer_brief(chapter.writer_brief_json),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                "chapter_summary": _compact_text(source.get("content") or ""),
-            },
-        }
-        snapshot_hash = sha256_json_normalized(snapshot)
-        return {
-            "bundle_id": f"chapter_near_final_{chapter.chapter_id}_{uuid.uuid4().hex[:10]}",
-            "bundle_snapshot_hash": snapshot_hash,
-            "snapshot": snapshot,
-        }

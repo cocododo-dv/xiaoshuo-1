@@ -2,166 +2,93 @@
  "checkpoint": {
   "artifact_execution_lineage_ids": [],
   "artifact_hashes": {
-   "archive_attempt_snapshot": "<hex#1>",
-   "archive_chapter_evaluation_product": "<hex#2>",
-   "archive_chapter_product": "<hex#3>",
-   "archive_core": "<hex#4>",
-   "archive_drift_product": "<hex#5>",
-   "archive_final_scene_snapshot": "<hex#6>",
-   "archive_manifest": "<hex#7>",
-   "archive_prose_events": "<hex#8>",
-   "archive_prose_product": "<hex#9>",
-   "archive_rolling_note_snapshot": "<hex#10>",
-   "archive_rule_events": "<hex#8>",
-   "archive_rule_product": "<hex#11>",
-   "archive_scene_memory_snapshot": "<hex#12>",
-   "archive_vector_product": "<hex#13>",
-   "archive_volume_product": "<hex#14>",
-   "budget_basis": "<hex#15>",
-   "bundle": "<hex#16>",
-   "carry_notes": "<hex#17>",
-   "draft": "<hex#18>",
-   "final_scene": "<hex#19>",
-   "hard_qc_decision": "<hex#20>",
-   "hard_qc_report": "<hex#21>",
-   "near_completion": "<hex#22>",
-   "near_eval0_candidate": "<hex#23>",
-   "near_eval0_control": "<hex#24>",
-   "near_eval0_evaluation": "<hex#25>",
-   "near_eval0_payload": "<hex#26>",
-   "near_eval1_candidate": "<hex#27>",
-   "near_eval1_evaluation": "<hex#28>",
-   "near_eval1_payload": "<hex#29>",
-   "near_final": "<hex#30>",
-   "near_rewrite_draft": "<hex#19>",
-   "planning": "<hex#31>",
-   "planning_chapter_architecture": "<hex#32>",
-   "planning_chapter_architecture_provenance": "<hex#33>",
-   "planning_character_pressure": "<hex#34>",
-   "planning_character_pressure_provenance": "<hex#35>",
-   "planning_scene_blueprint": "<hex#36>",
-   "planning_scene_blueprint_provenance": "<hex#37>",
-   "scene_blueprint": "<hex#36>",
-   "selected_draft": "<hex#38>",
-   "soft_auto_critique_decision": "<hex#39>",
-   "soft_completion": "<hex#40>",
-   "soft_final_draft": "<hex#38>",
-   "soft_input_draft": "<hex#38>",
-   "soft_input_provider_execution_mode": "<hex#41>",
-   "soft_qc0_control": "<hex#42>",
-   "soft_qc0_decision": "<hex#43>",
-   "soft_qc0_report": "<hex#44>",
-   "soft_qc_decision": "<hex#45>",
-   "soft_qc_report": "<hex#44>",
-   "style_candidate_rankings": "<hex#46>",
-   "style_ready_candidate_0": "<hex#38>",
-   "style_work_items": "<hex#47>"
+   "archive_effects": "<hex#1>",
+   "archive_manifest": "<hex#2>",
+   "archive_prose_events": "<hex#3>",
+   "archive_prose_product": "<hex#4>",
+   "budget_basis": "<hex#5>",
+   "bundle": "<hex#6>",
+   "carry_notes": "<hex#7>",
+   "draft": "<hex#8>",
+   "final_scene": "<hex#9>",
+   "hard_qc_decision": "<hex#10>",
+   "hard_qc_report": "<hex#11>",
+   "near_completion": "<hex#12>",
+   "near_eval0_candidate": "<hex#13>",
+   "near_eval0_control": "<hex#14>",
+   "near_eval0_evaluation": "<hex#15>",
+   "near_eval0_payload": "<hex#16>",
+   "near_eval1_candidate": "<hex#17>",
+   "near_eval1_evaluation": "<hex#18>",
+   "near_eval1_payload": "<hex#19>",
+   "near_final": "<hex#20>",
+   "near_rewrite_draft": "<hex#9>",
+   "planning": "<hex#21>",
+   "planning_chapter_architecture": "<hex#22>",
+   "planning_chapter_architecture_provenance": "<hex#23>",
+   "planning_character_pressure": "<hex#24>",
+   "planning_character_pressure_provenance": "<hex#25>",
+   "planning_scene_blueprint": "<hex#26>",
+   "planning_scene_blueprint_provenance": "<hex#27>",
+   "scene_blueprint": "<hex#26>",
+   "selected_draft": "<hex#28>",
+   "soft_completion": "<hex#29>",
+   "soft_final_draft": "<hex#28>",
+   "soft_input_draft": "<hex#28>",
+   "soft_qc0_control": "<hex#30>",
+   "soft_qc0_decision": "<hex#31>",
+   "soft_qc0_report": "<hex#32>",
+   "soft_qc_decision": "<hex#33>",
+   "soft_qc_report": "<hex#32>",
+   "style_candidate_rankings": "<hex#34>",
+   "style_ready_candidate_0": "<hex#28>",
+   "style_work_items": "<hex#35>"
   },
   "artifact_refs": {
-   "archive_chapter_evaluation_product": {
-    "chapter_id": "CH_RESUME",
-    "evaluation": null,
-    "evaluator_llm_call_id": null,
-    "execution_id": "idempotency:checkpoint-format",
-    "input_hash": "<hex#19>",
-    "kind": "chapter_near_final",
-    "outcome": "not_applicable",
-    "reason": "not_chapter_last",
-    "scene_id": "CH_RESUME_SC01",
-    "schema_version": 1,
-    "step_key": "archive:chapter_near_final:0"
-   },
-   "archive_chapter_product": {
-    "chapter_id": "CH_RESUME",
-    "chapter_memory": null,
-    "execution_id": "idempotency:checkpoint-format",
-    "input_hash": "<hex#19>",
-    "inputs": [],
-    "kind": "chapter_aggregate",
-    "outcome": "not_applicable",
-    "reason": "not_chapter_last",
-    "result": null,
-    "scene_id": "CH_RESUME_SC01",
-    "schema_version": 1,
-    "step_key": "archive:chapter_aggregate:0"
-   },
-   "archive_core": {
+   "archive_effects": {
     "archive_attempt_id": 9,
-    "archive_attempt_snapshot_hash": "<hex#1>",
+    "chapter_aggregate": {
+     "outcome": "not_applicable",
+     "reason": "not_chapter_last"
+    },
     "chapter_id": "CH_RESUME",
     "chapter_rolling_note_row_id": "rolling_CH_RESUME_SC01",
     "execution_id": "idempotency:checkpoint-format",
+    "fidelity_reading": {
+     "outcome": "not_applicable",
+     "reason": "unbound"
+    },
     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
-    "final_scene_snapshot_hash": "<hex#6>",
-    "input_hash": "<hex#19>",
-    "kind": "core_archive",
+    "input_hash": "<hex#9>",
+    "kind": "archive_effects",
     "outcome": "completed",
-    "rolling_note_snapshot_hash": "<hex#10>",
     "scene_id": "CH_RESUME_SC01",
     "scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
-    "scene_memory_snapshot_hash": "<hex#12>",
-    "schema_version": 2,
-    "step_key": "archive:core:0"
-   },
-   "archive_drift_product": {
-    "chapter_id": "CH_RESUME",
-    "execution_id": "idempotency:checkpoint-format",
-    "input_hash": "<hex#19>",
-    "kind": "style_drift",
-    "outcome": "not_applicable",
-    "reason": "unbound",
-    "scene_id": "CH_RESUME_SC01",
-    "schema_version": 1,
-    "step_key": "archive:style_drift:0"
+    "schema_version": 3,
+    "snapshot_hashes": {
+     "archive_attempt": "<hex#36>",
+     "final_scene": "<hex#37>",
+     "rolling_note": "<hex#38>",
+     "scene_memory": "<hex#39>"
+    },
+    "step_key": "archive:effects:0",
+    "volume_aggregate": {
+     "outcome": "not_applicable",
+     "reason": "not_chapter_last"
+    }
    },
    "archive_manifest": [
     {
-     "hash_key": "archive_core",
-     "kind": "core_archive",
-     "product_hash": "<hex#4>",
+     "hash_key": "archive_effects",
+     "kind": "archive_effects",
+     "product_hash": "<hex#1>",
      "sub_index": 4
-    },
-    {
-     "hash_key": "archive_rule_product",
-     "kind": "rule_events",
-     "product_hash": "<hex#11>",
-     "sub_index": 5
     },
     {
      "hash_key": "archive_prose_product",
      "kind": "prose_extraction",
-     "product_hash": "<hex#9>",
-     "sub_index": 6
-    },
-    {
-     "hash_key": "archive_vector_product",
-     "kind": "vector_index",
-     "product_hash": "<hex#13>",
-     "sub_index": 7
-    },
-    {
-     "hash_key": "archive_chapter_product",
-     "kind": "chapter_aggregate",
-     "product_hash": "<hex#3>",
-     "sub_index": 8
-    },
-    {
-     "hash_key": "archive_volume_product",
-     "kind": "volume_aggregate",
-     "product_hash": "<hex#14>",
-     "sub_index": 9
-    },
-    {
-     "hash_key": "archive_chapter_evaluation_product",
-     "kind": "chapter_near_final",
-     "product_hash": "<hex#2>",
-     "sub_index": 10
-    },
-    {
-     "hash_key": "archive_drift_product",
-     "kind": "style_drift",
-     "product_hash": "<hex#5>",
-     "sub_index": 11
+     "product_hash": "<hex#4>",
+     "sub_index": 5
     }
    ],
    "archive_prose_event_ids": [],
@@ -182,51 +109,12 @@
      "run_job_id": null,
      "schema_version": 1
     },
-    "input_hash": "<hex#19>",
+    "input_hash": "<hex#9>",
     "kind": "prose_extraction",
     "outcome": "not_invoked",
     "scene_id": "CH_RESUME_SC01",
     "schema_version": 1,
     "step_key": "archive:prose_event_extract:0"
-   },
-   "archive_rule_event_ids": [],
-   "archive_rule_events": [],
-   "archive_rule_product": {
-    "chapter_id": "CH_RESUME",
-    "event_ids": [],
-    "events": [],
-    "execution_id": "idempotency:checkpoint-format",
-    "input_hash": "<hex#19>",
-    "kind": "rule_events",
-    "outcome": "recorded",
-    "scene_id": "CH_RESUME_SC01",
-    "schema_version": 1,
-    "step_key": "archive:rule_events:0"
-   },
-   "archive_vector_product": {
-    "chapter_id": "CH_RESUME",
-    "execution_id": "idempotency:checkpoint-format",
-    "input_hash": "<hex#19>",
-    "kind": "vector_index",
-    "outcome": "retired",
-    "reason": "vector_index_retired",
-    "scene_id": "CH_RESUME_SC01",
-    "schema_version": 1,
-    "step_key": "archive:vector_index:0"
-   },
-   "archive_volume_product": {
-    "chapter_id": "CH_RESUME",
-    "execution_id": "idempotency:checkpoint-format",
-    "input_hash": "<hex#19>",
-    "inputs": [],
-    "kind": "volume_aggregate",
-    "outcome": "not_applicable",
-    "reason": "not_chapter_last",
-    "result": null,
-    "scene_id": "CH_RESUME_SC01",
-    "schema_version": 1,
-    "step_key": "archive:volume_aggregate:0",
-    "volume_summary": null
    },
    "branch": "continue",
    "bundle_id": "bundle_CH_RESUME_SC01_v1",
@@ -244,21 +132,21 @@
    "execution_step_key": "hard_qc:0",
    "final_generation_artifact_execution_id": "idempotency:checkpoint-format",
    "final_generation_execution_step_key": "near_final_rewrite:0",
-   "final_generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#48>",
+   "final_generation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#40>",
    "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
    "hard_qc_artifact_execution_id": "idempotency:checkpoint-format",
    "hard_qc_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "hard_qc_execution_step_key": "hard_qc:0",
-   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
+   "hard_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#41>",
    "hard_qc_source_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
    "human_review_event_id": null,
-   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
+   "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#41>",
    "llm_call_ids": [
-    "llm_call_CH_RESUME_SC01_<hex#50>"
+    "llm_call_CH_RESUME_SC01_<hex#42>"
    ],
    "near_completion": {
     "branch": "revision_required",
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#43>",
     "final_evaluation_round": 1,
     "final_scene_row_id": "final_scene_CH_RESUME_SC01_v1",
     "rewrite_count": 1,
@@ -266,7 +154,7 @@
     "source_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1"
    },
    "near_eval0_artifact_execution_id": "idempotency:checkpoint-format",
-   "near_eval0_bundle_hash": "<hex#16>",
+   "near_eval0_bundle_hash": "<hex#6>",
    "near_eval0_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "near_eval0_control": {
     "branch": "rewrite",
@@ -274,11 +162,11 @@
     "rewrite_requested": true,
     "skip_reason": null
    },
-   "near_eval0_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+   "near_eval0_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#44>",
    "near_eval0_execution_step_key": "near_final_acceptance:0",
-   "near_eval0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#53>",
+   "near_eval0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#45>",
    "near_eval0_payload": {
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#44>",
     "failure_class": "scene_structure_failure",
     "findings": [
      {
@@ -307,7 +195,7 @@
       "priority": "high"
      }
     ],
-    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#54>",
+    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#46>",
     "scores": {
      "author_voice_match": 0.08,
      "character_pressure": 0.08,
@@ -324,16 +212,16 @@
     },
     "should_rewrite": true
    },
-   "near_eval0_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#54>",
+   "near_eval0_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#46>",
    "near_eval0_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "near_eval1_artifact_execution_id": "idempotency:checkpoint-format",
-   "near_eval1_bundle_hash": "<hex#16>",
+   "near_eval1_bundle_hash": "<hex#6>",
    "near_eval1_bundle_id": "bundle_CH_RESUME_SC01_v1",
-   "near_eval1_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
+   "near_eval1_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#43>",
    "near_eval1_execution_step_key": "near_final_acceptance:1",
-   "near_eval1_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
+   "near_eval1_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#47>",
    "near_eval1_payload": {
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#43>",
     "failure_class": "scene_structure_failure",
     "findings": [
      {
@@ -362,7 +250,7 @@
       "priority": "high"
      }
     ],
-    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#56>",
+    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#48>",
     "scores": {
      "author_voice_match": 0.08,
      "character_pressure": 0.08,
@@ -379,10 +267,10 @@
     },
     "should_rewrite": true
    },
-   "near_eval1_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#56>",
+   "near_eval1_revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#48>",
    "near_eval1_source_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1",
    "near_final": {
-    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
+    "evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#43>",
     "failure_class": "scene_structure_failure",
     "findings": [
      {
@@ -411,37 +299,37 @@
       "priority": "high"
      }
     ],
-    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#56>",
+    "revision_candidate_id": "revision_near_final_CH_RESUME_SC01_<hex#48>",
     "rewrite_count": 1,
     "should_rewrite": true
    },
    "near_final_branch": "revision_required",
    "near_final_evaluation_execution_id": "idempotency:checkpoint-format",
-   "near_final_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#51>",
-   "near_final_evaluation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#55>",
+   "near_final_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#43>",
+   "near_final_evaluation_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#47>",
    "near_final_evaluation_step_key": "near_final_acceptance:1",
    "near_final_rewrite_count": 1,
    "near_final_skip_reason": null,
    "near_final_source_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1",
    "near_rewrite_artifact_execution_id": "idempotency:checkpoint-format",
-   "near_rewrite_bundle_hash": "<hex#16>",
+   "near_rewrite_bundle_hash": "<hex#6>",
    "near_rewrite_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "near_rewrite_draft_row_id": "draft_near_final_rewrite_CH_RESUME_SC01_v1",
    "near_rewrite_execution_step_key": "near_final_rewrite:0",
-   "near_rewrite_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#48>",
+   "near_rewrite_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#40>",
    "near_rewrite_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
-   "near_rewrite_source_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#52>",
+   "near_rewrite_source_evaluation_id": "near_final_eval_scene_CH_RESUME_SC01_<hex#44>",
    "neutral_artifact_execution_id": "idempotency:checkpoint-format",
    "neutral_draft_row_id": "draft_neutral_CH_RESUME_SC01_v1",
    "neutral_execution_step_key": "neutral_draft",
-   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#57>",
+   "neutral_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#49>",
    "next_action": "pass",
    "planning": {
     "chapter_architecture": {
      "artifact_type": "chapter_story_architecture",
      "chapter_id": "CH_RESUME",
      "created_at": "<ts#1>",
-     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
      "object_id": "CH_RESUME",
      "object_type": "chapter",
      "payload": {
@@ -458,9 +346,9 @@
        "the governing constraint is exposed"
       ]
      },
-     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#59>",
+     "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#51>",
      "scene_id": null,
-     "source_bundle_hash": "<hex#60>",
+     "source_bundle_hash": "<hex#52>",
      "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
      "status": "active"
     },
@@ -468,7 +356,7 @@
      "artifact_type": "character_pressure_blueprint",
      "chapter_id": "CH_RESUME",
      "created_at": "<ts#2>",
-     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
+     "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#53>",
      "object_id": "CH_RESUME_SC01",
      "object_type": "scene",
      "payload": {
@@ -480,9 +368,9 @@
       "surface_goal": "finish the immediate task",
       "wrong_belief": "control can prevent every loss"
      },
-     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#62>",
+     "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#54>",
      "scene_id": "CH_RESUME_SC01",
-     "source_bundle_hash": "<hex#63>",
+     "source_bundle_hash": "<hex#55>",
      "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
      "status": "active"
     }
@@ -491,7 +379,7 @@
     "artifact_type": "chapter_story_architecture",
     "chapter_id": "CH_RESUME",
     "created_at": "<ts#1>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
     "object_id": "CH_RESUME",
     "object_type": "chapter",
     "payload": {
@@ -508,22 +396,22 @@
       "the governing constraint is exposed"
      ]
     },
-    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#59>",
+    "row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#51>",
     "scene_id": null,
-    "source_bundle_hash": "<hex#60>",
+    "source_bundle_hash": "<hex#52>",
     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
     "status": "active"
    },
    "planning_chapter_architecture_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_chapter_architecture_execution_step_key": "planning:chapter_architecture",
-   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#58>",
+   "planning_chapter_architecture_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
    "planning_chapter_architecture_reused": false,
-   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#59>",
+   "planning_chapter_architecture_row_id": "planning_chapter_story_architecture_CH_RESUME_<hex#51>",
    "planning_character_pressure": {
     "artifact_type": "character_pressure_blueprint",
     "chapter_id": "CH_RESUME",
     "created_at": "<ts#2>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#53>",
     "object_id": "CH_RESUME_SC01",
     "object_type": "scene",
     "payload": {
@@ -535,23 +423,23 @@
      "surface_goal": "finish the immediate task",
      "wrong_belief": "control can prevent every loss"
     },
-    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#62>",
+    "row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#54>",
     "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#63>",
+    "source_bundle_hash": "<hex#55>",
     "source_bundle_id": "near_final_planning_source_CH_RESUME_SC01",
     "status": "active"
    },
    "planning_character_pressure_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_character_pressure_execution_step_key": "planning:character_pressure",
-   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
+   "planning_character_pressure_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#53>",
    "planning_character_pressure_reused": false,
-   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#62>",
+   "planning_character_pressure_row_id": "planning_character_pressure_blueprint_CH_RESUME_SC01_<hex#54>",
    "planning_scene_blueprint_artifact_execution_id": "idempotency:checkpoint-format",
    "planning_scene_blueprint_execution_step_key": "scene_blueprint",
-   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#64>",
+   "planning_scene_blueprint_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#56>",
    "planning_scene_blueprint_reused": false,
-   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#65>",
-   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#66>",
+   "planning_scene_blueprint_row_id": "scene_blueprint_CH_RESUME_SC01_<hex#57>",
+   "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#3>_<hex#58>",
    "resolution_code": "hard_pass",
    "scene_blueprint": {
     "blueprint_json": {
@@ -567,60 +455,37 @@
     },
     "chapter_id": "CH_RESUME",
     "created_at": "<ts#4>",
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#64>",
-    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#65>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#56>",
+    "row_id": "scene_blueprint_CH_RESUME_SC01_<hex#57>",
     "scene_id": "CH_RESUME_SC01",
-    "source_bundle_hash": "<hex#67>",
+    "source_bundle_hash": "<hex#59>",
     "source_bundle_id": null,
     "status": "accepted"
    },
-   "scene_memory_row_id": "scene_memory_CH_RESUME_SC01_v1",
    "scene_token_budget": 38450,
    "should_continue": true,
-   "soft_auto_critique_decision": {
-    "dimension_scores": {},
-    "directives": [],
-    "error_code": null,
-    "execution_id": "idempotency:checkpoint-format",
-    "execution_step_key": "soft_qc:auto_critique:0",
-    "flagged_dimensions": [],
-    "llm_call_id": null,
-    "llm_contribution": null,
-    "outcome": "not_invoked",
-    "reason": "skip_critique",
-    "rule_dimension_scores": {},
-    "rule_directives": [],
-    "rule_flagged_dimensions": [],
-    "rule_should_rewrite": false,
-    "run_job_id": null,
-    "schema_version": 1,
-    "should_rewrite": false
-   },
-   "soft_auto_critique_outcome": "unchanged",
-   "soft_auto_critique_skip_reason": null,
    "soft_completion": {
     "branch": "continue",
     "draft_row_id": "draft_style_CH_RESUME_SC01_v1",
     "final_qc_round": 0,
-    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
+    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#60>",
     "skip_reason": "no_patch_requested"
    },
    "soft_completion_skip_reason": "no_patch_requested",
    "soft_final_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_final_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_final_execution_step_key": "style_draft:0",
-   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+   "soft_final_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#42>",
    "soft_final_qc_round": 0,
    "soft_input_artifact_execution_id": "idempotency:checkpoint-format",
-   "soft_input_bundle_hash": "<hex#16>",
+   "soft_input_bundle_hash": "<hex#6>",
    "soft_input_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "soft_input_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_input_execution_step_key": "style_draft:0",
-   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
-   "soft_input_provider_execution_mode": "online",
+   "soft_input_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#42>",
    "soft_input_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_qc0_artifact_execution_id": "idempotency:checkpoint-format",
-   "soft_qc0_bundle_hash": "<hex#16>",
+   "soft_qc0_bundle_hash": "<hex#6>",
    "soft_qc0_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "soft_qc0_control": {
     "patch_allowed": false,
@@ -630,25 +495,25 @@
     "branch": "continue",
     "execution_step_key": "soft_qc:0",
     "human_review_event_id": null,
-    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#69>",
+    "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
     "next_action": "pass",
-    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
+    "qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#60>",
     "resolution_code": "soft_pass",
     "should_continue": true,
     "stop_reason": null
    },
    "soft_qc0_execution_step_key": "soft_qc:0",
-   "soft_qc0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#69>",
-   "soft_qc0_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
+   "soft_qc0_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
+   "soft_qc0_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#60>",
    "soft_qc0_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_qc_artifact_execution_id": "idempotency:checkpoint-format",
    "soft_qc_branch": "continue",
    "soft_qc_bundle_id": "bundle_CH_RESUME_SC01_v1",
    "soft_qc_execution_step_key": "soft_qc:0",
    "soft_qc_human_review_event_id": null,
-   "soft_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#69>",
+   "soft_qc_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#61>",
    "soft_qc_next_action": "pass",
-   "soft_qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#68>",
+   "soft_qc_report_id": "qc_report_CH_RESUME_SC01_<ts#5>_<hex#60>",
    "soft_qc_resolution_code": "soft_pass",
    "soft_qc_source_draft_row_id": "draft_style_CH_RESUME_SC01_v1",
    "soft_qc_stop_reason": null,
@@ -661,7 +526,7 @@
     "idempotency:checkpoint-format"
    ],
    "style_candidate_llm_call_ids": [
-    "llm_call_CH_RESUME_SC01_<hex#50>"
+    "llm_call_CH_RESUME_SC01_<hex#42>"
    ],
    "style_candidate_rankings": [
     null
@@ -678,16 +543,16 @@
     "style_draft:0"
    ],
    "style_initial_candidate_count": 1,
-   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+   "style_llm_call_id": "llm_call_CH_RESUME_SC01_<hex#42>",
    "style_work_items": [
     {
      "base": {
       "artifact_execution_id": "idempotency:checkpoint-format",
-      "bundle_hash": "<hex#16>",
+      "bundle_hash": "<hex#6>",
       "bundle_id": "bundle_CH_RESUME_SC01_v1",
-      "content_hash": "<hex#38>",
+      "content_hash": "<hex#28>",
       "execution_step_key": "style_draft:0",
-      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#42>",
       "phase": "base",
       "row_id": "draft_style_CH_RESUME_SC01_v1",
       "source_base_row_id": null,
@@ -699,11 +564,11 @@
      },
      "final": {
       "artifact_execution_id": "idempotency:checkpoint-format",
-      "bundle_hash": "<hex#16>",
+      "bundle_hash": "<hex#6>",
       "bundle_id": "bundle_CH_RESUME_SC01_v1",
-      "content_hash": "<hex#38>",
+      "content_hash": "<hex#28>",
       "execution_step_key": "style_draft:0",
-      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#50>",
+      "llm_call_id": "llm_call_CH_RESUME_SC01_<hex#42>",
       "phase": "final",
       "row_id": "draft_style_CH_RESUME_SC01_v1",
       "source_base_row_id": "draft_style_CH_RESUME_SC01_v1",
@@ -742,6 +607,7 @@
   },
   "branch": "revision_required",
   "budget_resume_parent_execution_id": null,
+  "checkpoint_format": 4,
   "execution_id": "idempotency:checkpoint-format",
   "node_key": "archived",
   "selection_origin_execution_id": null,
@@ -948,24 +814,18 @@
    "sub_index": null
   },
   {
-   "branch": "unchanged",
+   "branch": null,
    "hashes": [
-    "soft_auto_critique_decision",
-    "soft_input_draft",
-    "soft_input_provider_execution_mode"
+    "soft_input_draft"
    ],
    "node_key": "soft_qc_ready",
    "refs": [
-    "soft_auto_critique_decision",
-    "soft_auto_critique_outcome",
-    "soft_auto_critique_skip_reason",
     "soft_input_artifact_execution_id",
     "soft_input_bundle_hash",
     "soft_input_bundle_id",
     "soft_input_draft_row_id",
     "soft_input_execution_step_key",
     "soft_input_llm_call_id",
-    "soft_input_provider_execution_mode",
     "soft_input_source_draft_row_id"
    ],
    "strategy": null,
@@ -1135,34 +995,14 @@
   {
    "branch": null,
    "hashes": [
-    "archive_attempt_snapshot",
-    "archive_core",
-    "archive_final_scene_snapshot",
-    "archive_rolling_note_snapshot",
-    "archive_scene_memory_snapshot"
+    "archive_effects"
    ],
    "node_key": "near_final_ready",
    "refs": [
-    "archive_core",
-    "scene_memory_row_id"
+    "archive_effects"
    ],
    "strategy": null,
    "sub_index": 4
-  },
-  {
-   "branch": null,
-   "hashes": [
-    "archive_rule_events",
-    "archive_rule_product"
-   ],
-   "node_key": "near_final_ready",
-   "refs": [
-    "archive_rule_event_ids",
-    "archive_rule_events",
-    "archive_rule_product"
-   ],
-   "strategy": null,
-   "sub_index": 5
   },
   {
    "branch": null,
@@ -1177,79 +1017,16 @@
     "archive_prose_product"
    ],
    "strategy": null,
-   "sub_index": 6
+   "sub_index": 5
   },
   {
    "branch": null,
    "hashes": [
-    "archive_vector_product"
-   ],
-   "node_key": "near_final_ready",
-   "refs": [
-    "archive_vector_product"
-   ],
-   "strategy": null,
-   "sub_index": 7
-  },
-  {
-   "branch": null,
-   "hashes": [
-    "archive_chapter_product"
-   ],
-   "node_key": "near_final_ready",
-   "refs": [
-    "archive_chapter_product"
-   ],
-   "strategy": null,
-   "sub_index": 8
-  },
-  {
-   "branch": null,
-   "hashes": [
-    "archive_volume_product"
-   ],
-   "node_key": "near_final_ready",
-   "refs": [
-    "archive_volume_product"
-   ],
-   "strategy": null,
-   "sub_index": 9
-  },
-  {
-   "branch": null,
-   "hashes": [
-    "archive_chapter_evaluation_product"
-   ],
-   "node_key": "near_final_ready",
-   "refs": [
-    "archive_chapter_evaluation_product"
-   ],
-   "strategy": null,
-   "sub_index": 10
-  },
-  {
-   "branch": null,
-   "hashes": [
-    "archive_drift_product"
-   ],
-   "node_key": "near_final_ready",
-   "refs": [
-    "archive_drift_product"
-   ],
-   "strategy": null,
-   "sub_index": 11
-  },
-  {
-   "branch": null,
-   "hashes": [
-    "archive_manifest",
-    "final_scene"
+    "archive_manifest"
    ],
    "node_key": "archived",
    "refs": [
-    "archive_manifest",
-    "final_scene_row_id",
-    "scene_memory_row_id"
+    "archive_manifest"
    ],
    "strategy": null,
    "sub_index": null

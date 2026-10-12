@@ -2,9 +2,8 @@
 ``run_checkpoint_json.artifact_hashes``（有的也原样存进 ``artifact_refs``）。
 
 **键名与取值即契约**：库里停在半路的运行续跑时，按这里重算快照、与存下的哈希比对——改一个键、换一种取值
-（如 ``list(...)`` / ``deepcopy``）就是改哈希，旧检查点会被判为损坏。两份评审快照（准终稿评审
-``writer_evaluation_snapshot`` 与章级评审产品里的 ``archive_writer_evaluation_snapshot``）形状不同，是历史
-原样，各自有检查点在用。
+（如 ``list(...)`` / ``deepcopy``）就是改哈希，旧检查点会被判为损坏（真要改，连同检查点格式
+``scene_run_checkpoint.CHECKPOINT_FORMAT`` 一起加一）。
 """
 
 from __future__ import annotations
@@ -15,14 +14,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from novel_system.db.models import (
         AttemptTracker,
-        ChapterMemory,
         ChapterRollingNote,
         FinalScene,
         NarrativeEvent,
         QcReport,
         RevisionCandidate,
         SceneMemory,
-        VolumeSummary,
         WriterEvaluation,
     )
     from novel_system.services.qc_engine import SoftQcDecision
@@ -193,67 +190,4 @@ def narrative_event_snapshot(event: NarrativeEvent) -> dict[str, Any]:
         "source_text_excerpt": event.source_text_excerpt,
         "payload_json": dict(event.payload_json or {}),
         "created_at": event.created_at,
-    }
-
-
-def chapter_memory_snapshot(memory: ChapterMemory) -> dict[str, Any]:
-    return {
-        "row_id": memory.row_id,
-        "chapter_id": memory.chapter_id,
-        "aggregate_stage": memory.aggregate_stage,
-        "content": memory.content,
-        "memory_kind": memory.memory_kind,
-        "source_review_id": memory.source_review_id,
-        "active_flag": memory.active_flag,
-        "runtime_eligible": memory.runtime_eligible,
-        "runtime_eligibility_basis": memory.runtime_eligibility_basis,
-        "effective_at": memory.effective_at,
-        "created_at": memory.created_at,
-    }
-
-
-def volume_snapshot(row: VolumeSummary) -> dict[str, Any]:
-    return {
-        "row_id": row.row_id,
-        "project_id": row.project_id,
-        "volume_seq": row.volume_seq,
-        "chapter_id_start": row.chapter_id_start,
-        "chapter_id_end": row.chapter_id_end,
-        "chapter_count": row.chapter_count,
-        "atmosphere_summary": row.atmosphere_summary,
-        "factual_digest": row.factual_digest,
-        "active_flag": row.active_flag,
-        "runtime_eligible": row.runtime_eligible,
-        "runtime_eligibility_basis": row.runtime_eligibility_basis,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def archive_writer_evaluation_snapshot(row: WriterEvaluation) -> dict[str, Any]:
-    return {
-        "evaluation_id": row.evaluation_id,
-        "object_type": row.object_type,
-        "object_id": row.object_id,
-        "chapter_id": row.chapter_id,
-        "scene_id": row.scene_id,
-        "rubric_id": row.rubric_id,
-        "source_text_ref": row.source_text_ref,
-        "source_bundle_id": row.source_bundle_id,
-        "evaluator_llm_call_id": row.evaluator_llm_call_id,
-        "lens": row.lens,
-        "parent_evaluation_id": row.parent_evaluation_id,
-        "evidence_spans_json": list(row.evidence_spans_json or []),
-        "source_blueprint_row_id": row.source_blueprint_row_id,
-        "failure_class": row.failure_class,
-        "auto_rewrite_eligible": row.auto_rewrite_eligible,
-        "contract_field_refs_json": dict(row.contract_field_refs_json or {}),
-        "promotion_blockers_json": list(row.promotion_blockers_json or []),
-        "overall_score": row.overall_score,
-        "scores_json": dict(row.scores_json or {}),
-        "findings_json": list(row.findings_json or []),
-        "revision_brief_json": list(row.revision_brief_json or []),
-        "requires_human_review": row.requires_human_review,
-        "status": row.status,
-        "created_at": row.created_at,
     }

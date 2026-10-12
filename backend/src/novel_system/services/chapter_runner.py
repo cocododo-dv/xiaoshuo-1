@@ -468,8 +468,8 @@ class ChapterRunnerService:
     def _finalized_scene_ids(self, scene_ids: list[str]) -> set[str]:
         """章任务可以跳过的场景：已归档且有定稿行。
 
-        只有定稿行不算完成——near-final 在归档步之前就写下 FinalScene，归档步（章级准定稿
-        评审等）失败或 worker 在这之间崩溃时，场景仍停在 soft_qc_passed 之类的中间态；
+        只有定稿行不算完成——near-final 在归档步之前就写下 FinalScene，归档步（成稿门拦下
+        等）失败或 worker 在这之间崩溃时，场景仍停在 soft_qc_passed 之类的中间态；
         把它当作完成会让重跑直接跳过归档步、把失败任务推导成 completed。
         """
 
@@ -570,9 +570,9 @@ class ChapterRunnerService:
         # 归属必须在把场景交给 Orchestrator 之前落库，而不是只改 ORM 属性：
         # run_scene → SceneRunCheckpointService.acquire_execution 会 session.refresh(state)，
         # SQLAlchemy 先失效实例再自动 flush，未 flush 的赋值会被数据库里的旧值（None）覆盖。
-        # 场景级节点容忍 active_run_job_id 为 None，所以整条场景管线照常跑完；只有章级节点
-        # （章尾归档步的 chapter_near_final_review）要求它等于本章任务 id，于是在记账台账
-        # 落行之前被拒（LLM_ACCOUNTING_CONTEXT_INVALID），对外表现为 RUN_CHECKPOINT_OUTPUT_MISSING。
+        # 场景级节点容忍 active_run_job_id 为 None；章级记账（chapter scope）要求它等于本章任务 id，
+        # 否则在记账台账落行之前被拒（LLM_ACCOUNTING_CONTEXT_INVALID）——当时章尾归档步的章级准定稿评审
+        # （已删，G4 B3-1b.2）就因此以 RUN_CHECKPOINT_OUTPUT_MISSING 假失败。
         # 与 scene_run_jobs.claim_scene_active_job 同口径：CAS 语句 + flush，再刷新 ORM。
         claimed = self.session.execute(
             update(SceneRunState)
@@ -813,7 +813,7 @@ class ChapterRunnerService:
                     evidence_summary=[f"场景：{scene_id}", "错误：CONTINUITY_BUDGET_EXCEEDED"],
                 ),
             }
-        if scene_status in {"hard_qc_partial_rewrite_required", "hard_qc_full_rewrite_required", "near_final_revision_required"}:
+        if scene_status in {"hard_qc_partial_rewrite_required", "hard_qc_full_rewrite_required"}:
             return {
                 "code": "CHAPTER_RUN_SCENE_NEEDS_REWRITE",
                 "message": "当前场景停在硬质检返修，还没有形成可审阅终稿。",

@@ -64,6 +64,20 @@ def test_retired_quota_env_vars_log_one_startup_warning_and_block_nothing(monkey
     assert "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT" not in warnings[0]
 
 
+def test_retired_auto_critique_switch_logs_the_startup_warning_and_has_no_setting(monkeypatch, caplog) -> None:
+    """G4 B3-1b.1：自动批评删了，它的开关 NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED 设着也没有效果——与退役的额度变量
+    一样只记一条启动警告，设置里也不再有这一项。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", "true")
+
+    with caplog.at_level(logging.WARNING, logger="novel_system.env_config"):
+        settings = get_settings(include_runtime_config=False)
+
+    warnings = [record.getMessage() for record in caplog.records if "no longer have any effect" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED" in warnings[0]
+    assert not hasattr(settings, "llm_auto_critique_enabled")
+
+
 @pytest.mark.parametrize("value", ["0", "-60", "an-hour"])
 def test_invalid_reservation_recovery_ttl_still_stops_startup(monkeypatch, value: str) -> None:
     """NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS 没有退役(重评 R3 只退役那八个):写错了照旧起不来。

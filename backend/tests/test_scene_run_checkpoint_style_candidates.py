@@ -162,6 +162,53 @@ def test_style_base_checkpoint_resumes_only_de_template_after_interruption(sessi
     ) == 1
 
 
+def test_a_crash_after_the_last_style_product_resumes_from_that_product(session) -> None:
+    """单稿：成稿已存进子检查点（``hard_qc_ready`` 子游标 1）、``style_ready`` 还没存时进程断了——续跑直接用存下的
+    成稿，不再调模型。以前单稿这一支不读已完成的成稿，回头去对账风格步：账本上那次调用已结算、产物「缺失」，续跑被判
+    检查点损坏，作者只能重新起草、再付一次（多稿那一支本来就读）。"""
+    _seed_resume_scene(session)
+    generation_client = _CountingGenerationClient()
+    execution_id = "idempotency:style-final-product-resume"
+    first = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+        soft_qc_engine=_FailAfterStyle(),
+    )
+    original_save = first._save_style_product_checkpoint
+
+    def crash_after_final_product(work_items, slot_key, phase, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        original_save(work_items, slot_key, phase, *args, **kwargs)
+        if phase == "final":
+            raise RuntimeError("crash after the final style product")
+
+    first._save_style_product_checkpoint = crash_after_final_product
+    with pytest.raises(RuntimeError, match="crash after the final style product"):
+        first.run_scene("CH_RESUME_SC01", execution_id=execution_id)
+    session.rollback()
+    session.expire_all()
+
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    assert (state.run_checkpoint, state.run_checkpoint_json["sub_index"]) == ("hard_qc_ready", 1)
+    final = state.run_checkpoint_json["artifact_refs"]["style_work_items"][0]["final"]
+    assert [request.node_id for request in generation_client.requests].count("style_draft") == 1
+
+    with pytest.raises(RuntimeError, match="fail after style checkpoint"):
+        Orchestrator(
+            session,
+            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+            soft_qc_engine=_FailAfterStyle(),
+        ).run_scene("CH_RESUME_SC01", execution_id=execution_id)
+
+    session.expire_all()
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    # 走过了 style_ready，停在软质检（_FailAfterStyle）；选中的风格稿就是断之前存下的那份成稿
+    assert state.run_checkpoint == "soft_qc_ready"
+    assert state.run_checkpoint_json["artifact_refs"]["style_draft_row_id"] == final["row_id"]
+    assert [request.node_id for request in generation_client.requests].count("style_draft") == 1
+
+
 def test_failed_de_template_is_a_durable_final_outcome_and_is_not_replayed(session, monkeypatch) -> None:
     _seed_resume_scene(session)
     monkeypatch.setattr(

@@ -47,7 +47,6 @@ export const LLM_NODE_LABELS = {
   hard_qc: "硬质检",
   soft_qc: "软质检",
   near_final_acceptance_review: "准定稿评审",
-  chapter_near_final_review: "章节准定稿评审",
   writer_passage_patch: "写作台 · 段落修补",
   writer_deep_review: "写作台 · 深度审读",
   author_proposal_generate: "写作台 · 修改提案",

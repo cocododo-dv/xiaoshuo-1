@@ -35,7 +35,6 @@ class Archiver:
         finalize_scene_status: bool = True,
         author_confirmed_final: bool = False,
         accepted_warning_codes: list[str] | None = None,
-        record_fidelity_reading: bool = True,
         fidelity_source: str = "archive",
     ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
@@ -211,14 +210,11 @@ class Archiver:
             self.session.add(archive_attempt)
         self.session.flush()
 
-        # 风格参考 v3:每一条归档路径(起草台「采用」/ 重确认 source=adopt、成稿中心 source=archive、编排器)都在
-        # 这里记归档终稿的「像不像」读数(漂移驾驶已删)。编排器的归档检查点在自己的 archive:style_drift:0 槽位里
-        # 记(source=pipeline),传 False 免得记两遍。
-        fidelity_reading: dict[str, Any] | None = None
-        if record_fidelity_reading:
-            fidelity_reading = self._record_fidelity_reading(
-                scene_id, execution_id=execution_id, source=fidelity_source
-            )
+        # 风格参考 v3:每一条归档路径(起草台「采用」/ 重确认 source=adopt、成稿中心 source=archive、编排器归档第 4 步
+        # source=pipeline)都在这里记归档终稿的「像不像」读数(漂移驾驶已删),与归档在同一个事务里。
+        fidelity_reading = self._record_fidelity_reading(
+            scene_id, execution_id=execution_id, source=fidelity_source
+        )
 
         return {
             "fidelity_reading": fidelity_reading,

@@ -169,7 +169,7 @@ def _soft_pass() -> dict:
     }
 
 
-# 评审模板（near_final_acceptance_review / chapter_near_final_review）声明分数是 0–10（schema maximum 10），
+# 评审模板（near_final_acceptance_review）声明分数是 0–10（schema maximum 10），
 # 分数按声明的刻度换算到 0–1（review_scores）：替身回答也按模板的刻度给分。
 def _near_final_pass() -> dict:
     return {
@@ -600,73 +600,6 @@ def test_strict_policy_stops_on_a_gate_rejected_near_final_rewrite_instead_of_ar
     assert drafts[1].content == first_draft and len(scene_client.requests) == 2
 
 
-def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
-    _seed_scene(session, is_chapter_last=1)
-    # 章级评审读各场当前终稿现拼（R13），不读存下来的章汇总
-    session.add(
-        FinalScene(
-            row_id=f"final_scene_{SCENE_ID}_v1",
-            scene_id=SCENE_ID,
-            chapter_id=CHAPTER_ID,
-            content="林岑公开了录音。没有回收第二枚盐钟，也没有回答阿砚为什么被追踪。",
-            status="archived",
-            source_bundle_id="b",
-            source_bundle_hash="h",
-        )
-    )
-    session.get(SceneRunState, SCENE_ID).current_final_scene_row_id = f"final_scene_{SCENE_ID}_v1"
-    session.commit()
-    chapter_client = SequencedClient(
-        [
-            {
-                "near_final_status": "revision_required",
-                "pass_flag": False,
-                "overall_score": 6.0,
-                "scores": {
-                    "chapter_promise": 5.2,
-                    "escalation": 6.5,
-                    "payoff_integrity": 4.0,
-                    "character_shift": 6.2,
-                    "ending_drive": 5.5,
-                    "continuity": 9.0,
-                },
-                "findings": [
-                    {
-                        "dimension": "payoff_integrity",
-                        "severity": "revision",
-                        "issue": "第二枚盐钟没有回收或转化。",
-                        "recommendation": "在章末给出新的行动钩子或明确延宕理由。",
-                        "evidence_excerpt": "没有回收第二枚盐钟",
-                        "evidence_location": "chapter ending",
-                        "why_it_matters": "章节准定稿不能只让单场成立，还要兑现本章承诺。",
-                    }
-                ],
-                "revision_brief": [
-                    {"dimension": "payoff_integrity", "action": "补写第二枚盐钟的回收或延宕契约。", "priority": "high"}
-                ],
-                "failure_class": "chapter_payoff_gap",
-                "requires_human_review": False,
-            }
-        ]
-    )
-
-    result = NearFinalAcceptanceService(session, llm_client=chapter_client).evaluate_chapter(CHAPTER_ID)
-    session.commit()
-
-    evaluation = session.execute(select(WriterEvaluation).where(WriterEvaluation.object_type == "chapter")).scalars().one()
-    assert result["near_final_status"] == "revision_required"
-    assert result["failure_class"] == "chapter_payoff_gap"
-    assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
-    assert evaluation.findings_json[0]["dimension"] == "payoff_integrity"
-    assert evaluation.source_text_ref == f"chapter_assembled:{CHAPTER_ID}"
-    llm_call = session.get(LlmCall, evaluation.evaluator_llm_call_id)
-    assert llm_call.scope_type == "chapter"
-    assert llm_call.scope_id == CHAPTER_ID
-    assert llm_call.project_id == PROJECT_ID
-    assert llm_call.chapter_id == CHAPTER_ID
-    assert llm_call.scene_id is None
-
-
 # ---------------------------------------------------------------------------
 # 2026-09-13 阶段 D：成稿后的场景三问（坩埚可辨 / 三拍落地 / Yes-No-Maybe），随评审记录持久化、非阻断
 # ---------------------------------------------------------------------------
@@ -842,7 +775,7 @@ def test_near_final_guard_rejects_a_rewrite_that_moves_away_from_the_author(sess
         scene=SimpleNamespace(scene_id=SCENE_ID), bundle={}, source_generation=source, rewrite_generation=rewrite, gate=styled_gate
     )
     assert gate["rejected"] is False and gate["fidelity"]["moved_away"] is False
-    # 旧检查点里的抄袭拒绝没有 rejected_reason：按抄袭读
+    # styled-draft 门的抄袭拒绝不带 rejected_reason：按抄袭读
     assert orchestrator_module._near_final_rejection_skip_reason({"rejected": True}) == NEAR_FINAL_REWRITE_REJECTED_SKIP_REASON
 
 
@@ -860,39 +793,3 @@ def test_paragraph_collapse_is_a_text_integrity_marker() -> None:
     assert regressed["regressed"] and "text_integrity_regressed" in regressed["reasons"]
     kept = assess_rewrite_regressions(scene, None, source_content=styled, rewritten_content=styled)
     assert kept == {"regressed": False, "reasons": [], "rewritten_integrity_markers": []}
-
-
-def test_chapter_near_final_review_reads_each_scenes_current_text(session) -> None:
-    """B03-04：章级准定稿评审拼的是每一场的当前正文（SceneRunState 指针），不是每场最后建的那一行。"""
-    _seed_scene(session, is_chapter_last=1)
-    session.add_all(
-        [
-            FinalScene(
-                row_id="final_nf_current",
-                scene_id=SCENE_ID,
-                chapter_id=CHAPTER_ID,
-                content="当前正文：林岑把录音带分成两份。",
-                status="archived",
-                source_bundle_id="b",
-                source_bundle_hash="h",
-                created_at="2026-09-01T00:00:00+00:00",
-            ),
-            FinalScene(
-                row_id="final_nf_abandoned",
-                scene_id=SCENE_ID,
-                chapter_id=CHAPTER_ID,
-                content="作废的重跑稿。",
-                status="near_final_ready",
-                source_bundle_id="b",
-                source_bundle_hash="h",
-                created_at="2026-09-03T00:00:00+00:00",
-            ),
-        ]
-    )
-    session.get(SceneRunState, SCENE_ID).current_final_scene_row_id = "final_nf_current"
-    session.flush()
-
-    source = NearFinalAcceptanceService(session)._chapter_source(session.get(ChapterGoal, CHAPTER_ID))
-
-    assert source["content"] == "当前正文：林岑把录音带分成两份。"
-    assert source["source_text_ref"] == f"chapter_assembled:{CHAPTER_ID}"

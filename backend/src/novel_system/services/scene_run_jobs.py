@@ -73,7 +73,6 @@ _SCENE_JOB_STEP_BY_STATUS = {
     "awaiting_candidate_selection": "awaiting_candidate_selection",
     "quality_warning_pending_acceptance": "awaiting_author_acceptance",
     "human_review_required": "blocked",
-    "near_final_revision_required": "acceptance_review_running",
 }
 
 

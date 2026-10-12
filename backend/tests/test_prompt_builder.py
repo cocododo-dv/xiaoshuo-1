@@ -315,7 +315,7 @@ def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
     hard_qc = builder.build(_bundle_snapshot(), "hard_qc", max_input_tokens=120)
     drafting = builder.build(_bundle_snapshot(), "style_draft", max_input_tokens=120)
     chapter_review = builder.build(
-        _bundle_snapshot(), "chapter_near_final_review", max_input_tokens=120
+        _bundle_snapshot(), "writer_deep_review", max_input_tokens=120
     )
 
     assert hard_qc["token_budget"]["task_kind"] == "hard_qc"

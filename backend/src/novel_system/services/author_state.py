@@ -37,7 +37,6 @@ _HARD_BLOCKED_STATUSES = frozenset(
 _QUALITY_WARNING_STATUSES = frozenset(
     {
         "soft_qc_patch_required",
-        "near_final_revision_required",
         "soft_qc_passed_with_notes",
         "quality_warning_pending_acceptance",
     }

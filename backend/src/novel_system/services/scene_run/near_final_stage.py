@@ -328,7 +328,7 @@ class NearFinalCheckpointMixin:
             if len(rows) != 1 or rows[0].revision_id != candidate_id:
                 raise checkpoint_corrupt("near-final evaluation candidate reference is not unique")
             snapshot = revision_candidate_snapshot(candidate)
-        # 检查点格式 v2：修订候选的快照（带整份来源稿）只记哈希；v1 还把快照本身存在 {prefix}_candidate_snapshot
+        # 修订候选的快照（带整份来源稿）只记哈希（检查点格式 v2）
         return (
             {f"{prefix}_revision_candidate_id": candidate_id},
             {f"{prefix}_candidate": self._json_hash(snapshot)},
@@ -472,9 +472,6 @@ class NearFinalCheckpointMixin:
             raise checkpoint_corrupt(f"near-final evaluation {round_index} identity/source mismatch")
         candidate_id = refs.get(f"{prefix}_revision_candidate_id")
         expected_candidate_id = normalized.get("revision_candidate_id")
-        # v1（格式 v2 上线前写下的检查点）还存着快照本身，逐字段比；v2 只有哈希
-        snapshot_stored = f"{prefix}_candidate_snapshot" in refs
-        candidate_snapshot = refs.get(f"{prefix}_candidate_snapshot")
         live_snapshot = None
         candidates = (
             self.session.execute(
@@ -486,7 +483,7 @@ class NearFinalCheckpointMixin:
             .all()
         )
         if expected_candidate_id is None:
-            if candidate_id is not None or candidate_snapshot is not None or candidates:
+            if candidate_id is not None or candidates:
                 raise checkpoint_corrupt(
                     f"near-final evaluation {round_index} has a forged candidate reference",
                 )
@@ -505,14 +502,10 @@ class NearFinalCheckpointMixin:
                 != f"source_draft:{source_generation.row_id}"
                 or candidate.proposed_text != source_generation.content
                 or candidate.status not in {"candidate", "superseded"}
-                or (
-                    snapshot_stored
-                    and revision_candidate_snapshot(candidate) != candidate_snapshot
-                )
             ):
                 raise checkpoint_corrupt(f"near-final evaluation {round_index} candidate is misbound")
             live_snapshot = revision_candidate_snapshot(candidate)
-        if self._json_hash(candidate_snapshot if snapshot_stored else live_snapshot) != self._checkpoint_hash(
+        if self._json_hash(live_snapshot) != self._checkpoint_hash(
             f"{prefix}_candidate"
         ):
             raise checkpoint_corrupt(f"near-final evaluation {round_index} candidate hash mismatch")

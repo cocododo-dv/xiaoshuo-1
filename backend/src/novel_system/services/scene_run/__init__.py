@@ -14,7 +14,6 @@
 ``Orchestrator`` 直接继承的 mixin（彼此只经 ``self`` 互调，不互相导入，也不导入门面）：
 
 - :mod:`.kernel` 检查点内核（执行归属四字段、守卫、读写、哈希）；
-- :mod:`.critique` 软 QC 前的自动批评产品（装配、复验、被拒产品的恢复）；
 - :mod:`.planning` 规划检查点（``planning_ready`` 子游标 0..3）的读回与复验；
 - :mod:`.drafts` bundle、首稿与硬 QC 的读回，生成产品的账本父调用核对；
 - :mod:`.style_candidates` 风格稿候选的工作项、读回与复验、Best-of-N 份数、匿名终选门；

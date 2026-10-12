@@ -1,6 +1,7 @@
 """bundle、首稿与硬 QC 的检查点读回，以及生成产品的账本父调用核对（续跑时用）。
 
-``Orchestrator`` 直接继承 ``DraftCheckpointMixin``。历史上离线确定性执行模式写下的父调用照旧拒绝（``_parent_execution_mode``）。
+``Orchestrator`` 直接继承 ``DraftCheckpointMixin``。历史上离线确定性执行模式写下的父调用照旧拒绝
+（``_validate_generation_parent_identity`` 只认 online）。
 """
 
 from __future__ import annotations
@@ -410,18 +411,3 @@ class DraftCheckpointMixin:
                 "generation product is detached from its exact durable owner",
                 details={"llm_call_id": parent.llm_call_id, "draft_stage": draft_stage},
             )
-
-    @staticmethod
-    def _parent_execution_mode(parent: LlmCall) -> str:
-        mode = (
-            parent.request_payload_summary.get(ACCOUNTING_EXECUTION_MODE_KEY)
-            if isinstance(parent.request_payload_summary, dict)
-            else None
-        )
-        if mode != "online":
-            raise LLMAccountingError(
-                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                "durable parent has no valid provider execution mode marker",
-                details={"llm_call_id": parent.llm_call_id},
-            )
-        return mode

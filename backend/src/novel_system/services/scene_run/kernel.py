@@ -5,8 +5,9 @@
 方法之间一律 ``self.X`` 互调，测试在编排器实例上的覆盖（``_reconcile_execution_step`` 等）照样拦得住。
 
 内核自己的持久化契约（检查点节点键、步骤键、``sub_index``、``RUN_CHECKPOINT_CORRUPT`` 的校验语义、``_json_hash``
-编码）没变；各阶段存进 ``artifact_refs`` / ``artifact_hashes`` 的键由各阶段定——检查点格式 v2 拿掉了归档第 4 步与
-准终稿修订候选的整份行快照，只留哈希（见 :mod:`.archive` 与 :mod:`.near_final_stage`，两处都保留 v1 读取器）。
+编码）没变；各阶段存进 ``artifact_refs`` / ``artifact_hashes`` 的键由各阶段定——归档第 4 步与准终稿修订候选的整份
+行快照只记哈希（见 :mod:`.archive` 与 :mod:`.near_final_stage`）。只读现在的格式：格式 v2 之前与子游标之前写下的
+检查点的读取器随「只留一版」的约定删了。
 
 续租时长每次调用时经模块属性 ``idempotency.owner_lease_ttl_seconds`` 取（测试打桩那里）。
 """
@@ -124,12 +125,7 @@ class RunCheckpointKernelMixin:
         # observing cancellation.  Cancellation therefore fences only the next node.
         self._raise_if_run_cancelled()
 
-    def _reconcile_execution_step(
-        self,
-        execution_step_key: str,
-        *,
-        chapter_scope: bool = False,
-    ) -> None:
+    def _reconcile_execution_step(self, execution_step_key: str) -> None:
         if self._checkpoint_service is None or self._execution_id is None:
             return
         self._checkpoint_service.reconcile_step_output(
@@ -137,7 +133,6 @@ class RunCheckpointKernelMixin:
             execution_id=self._execution_id,
             execution_step_key=execution_step_key,
             output_exists=False,
-            ledger_scope="chapter" if chapter_scope else "scene",
         )
 
     def _validate_checkpoint_llm_output(
@@ -311,13 +306,10 @@ class RunCheckpointKernelMixin:
         node_key: str,
         *,
         last_sub_index: int,
-        legacy_complete: Callable[[dict[str, Any]], bool],
-        legacy_sub_index: int,
         invalid_message: str,
     ) -> int:
         """一个带子游标的节点走到了哪一步：还没到 → -1；已经过了 → ``last_sub_index``；正停在这个节点上 → 它的
-        ``sub_index``。子游标上线之前写下的完整检查点没有 ``sub_index``：``legacy_complete(refs)`` 成立时按
-        ``legacy_sub_index`` 读；别的一律 ``RUN_CHECKPOINT_CORRUPT``（``invalid_message``）。"""
+        ``sub_index``（没有或越界 → ``RUN_CHECKPOINT_CORRUPT``，``invalid_message``）。"""
         state = self._active_checkpoint_state()
         current = state.run_checkpoint
         if current not in RUN_CHECKPOINT_ORDER:
@@ -336,9 +328,6 @@ class RunCheckpointKernelMixin:
             and 0 <= sub_index <= last_sub_index
         ):
             return sub_index
-        refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if sub_index is None and isinstance(refs, dict) and legacy_complete(refs):
-            return legacy_sub_index
         raise checkpoint_corrupt(invalid_message)
 
     def _require_checkpoint_row(self, model: Any, row_id: Any) -> Any:

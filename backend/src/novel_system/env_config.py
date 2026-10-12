@@ -90,8 +90,9 @@ def reservation_recovery_ttl_seconds() -> int:
 # ---------------------------------------------------------------- 退役变量
 
 
-# 2026-09-30 重评 R3（批准#3a）：这些环境变量曾经打开六道全局额度闸、给金额闸提供单价。闸删了，设着也没有效果——
-# 启动时（第一次读设置）记一条警告，不报错（以前只设金额上限不设单价会让后端起不来）。
+# 2026-09-30 重评 R3（批准#3a）：前八个环境变量曾经打开六道全局额度闸、给金额闸提供单价；2026-10 第二轮（G4 B3-1b.1）
+# 删了软 QC 之前的自动批评，它的 LLM 编辑批评开关也在这里。功能删了，设着也没有效果——启动时（第一次读设置）记一条
+# 警告，不报错（以前只设金额上限不设单价会让后端起不来）。
 RETIRED_ENV_VARS = (
     "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT",
     "NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT",
@@ -101,6 +102,7 @@ RETIRED_ENV_VARS = (
     "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD",
     "NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD",
     "NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD",
+    "NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED",
 )
 _retired_env_warning: dict[str, bool] = {"logged": False}
 register_cache_reset("env_config.retired_env_warning", lambda: _retired_env_warning.update(logged=False))
@@ -112,8 +114,8 @@ def warn_retired_env_vars() -> list[str]:
     if in_use and not _retired_env_warning["logged"]:
         _retired_env_warning["logged"] = True
         _LOGGER.warning(
-            "environment variables %s no longer have any effect: the global LLM quota fences and the "
-            "env cost prices were removed (usage readings stay on the cost dashboard); unset them",
+            "environment variables %s no longer have any effect: the global LLM quota fences, the env cost "
+            "prices (usage readings stay on the cost dashboard) and the auto-critique pass were removed; unset them",
             ", ".join(in_use),
         )
     return in_use
@@ -135,8 +137,6 @@ class Settings:
     # worker indefinitely. ``0`` remains an explicit operator opt-out.
     llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     llm_enabled: bool = False
-    # §8 opt-in: layer an independent LLM "editor" critic on top of the rule-based pass.
-    llm_auto_critique_enabled: bool = False
     # §2 opt-in: extract narrative events from finished prose (not just the spec).
     llm_event_extraction_enabled: bool = False
     # 2026-09-14 opt-in: multi-candidate style drafts on standard / critical scenes
@@ -211,7 +211,6 @@ def load_env_settings() -> Settings:
     llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
     llm_timeout_seconds = non_negative_float_env("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", DEFAULT_LLM_TIMEOUT_SECONDS)
     llm_enabled = bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
-    llm_auto_critique_enabled = bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
     scene_best_of_n_enabled = bool_env("NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED", False)
     scene_structure_brief_enabled = bool_env("NOVEL_SYSTEM_SCENE_STRUCTURE_BRIEF", True)
@@ -262,7 +261,6 @@ def load_env_settings() -> Settings:
         llm_api_key=llm_api_key,
         llm_timeout_seconds=llm_timeout_seconds,
         llm_enabled=llm_enabled,
-        llm_auto_critique_enabled=llm_auto_critique_enabled,
         llm_event_extraction_enabled=llm_event_extraction_enabled,
         scene_best_of_n_enabled=scene_best_of_n_enabled,
         scene_structure_brief_enabled=scene_structure_brief_enabled,

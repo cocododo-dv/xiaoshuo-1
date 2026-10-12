@@ -149,7 +149,7 @@ class StepKeys:
 
     @staticmethod
     def soft_patch(source: str) -> str:
-        """某一轮评审（``soft_qc`` / ``auto_critique``）之后的软补丁。"""
+        """某一轮评审之后的软补丁（现在只有 ``soft_qc``；``auto_critique`` 那一路随自动批评删了）。"""
         return f"soft_patch:{source}:0"
 
     @staticmethod

@@ -1,8 +1,9 @@
 """Scene criticality classification — blueprint §13 cost differentiation.
 
 Classifies scenes as critical / standard / transition based on structural
-signals. Critical scenes get full pipeline (Best-of-N N=3, critique pass, human gate);
-transition scenes skip multi-path and critique for cost savings.
+signals. Critical scenes get the full pipeline (Best-of-N N=3, human gate);
+transition scenes skip multi-path for cost savings. (The auto-critique pass that
+transition scenes also skipped was deleted in G4 B3-1b.1.)
 """
 from __future__ import annotations
 
@@ -23,7 +24,6 @@ GOLDEN_CHAPTER_COUNT = 3
 class SceneCriticality:
     level: str  # "critical" | "standard" | "transition"
     reasons: list[str]
-    skip_critique: bool  # advisory: transition scenes may skip proactive editor passes
     human_gate: bool  # critical scenes pause for author terminal selection (Wave 3 §5.5)
     # Wave 3（治理 §5.5 成本分配）：Best-of-N 的候选数——关键 3、标准 2、过渡恒 1（只有作者手笔直起才出多稿，
     # 且要开 NOVEL_SYSTEM_SCENE_BEST_OF_N_ENABLED）。2026-09-30 [批准#2] 删了低分散补候选，旧的候选上限
@@ -73,7 +73,7 @@ def classify_scene(
         score += 1
         reasons.append("substantial_crucible")
 
-    # 只认显式声明的形态（简报 scene_form、场景卡 scene_type），不按三拍推断：关键度还决定过渡场跳不跳批判，
+    # 只认显式声明的形态（简报 scene_form、场景卡 scene_type），不按三拍推断：关键度还决定候选份数与终选门，
     # 推断会把只填了三拍的手写场升一档。
     declared_form = text(writer_brief.get("scene_form")) or text(scene.scene_type)
     if declared_form == "proactive":
@@ -86,7 +86,6 @@ def classify_scene(
             return SceneCriticality(
                 level="transition",
                 reasons=reasons + ["constraint_intensity_free_flow"],
-                skip_critique=True,
                 human_gate=False,
                 initial_best_of_n=1,
             )
@@ -94,7 +93,6 @@ def classify_scene(
             return SceneCriticality(
                 level="critical",
                 reasons=reasons + ["constraint_intensity_full_rigor"],
-                skip_critique=False,
                 human_gate=True,
                 initial_best_of_n=3,
             )
@@ -102,7 +100,6 @@ def classify_scene(
             return SceneCriticality(
                 level="standard",
                 reasons=reasons + [f"constraint_intensity={constraint_intensity:.1f}"],
-                skip_critique=False,
                 human_gate=False,
                 initial_best_of_n=2,
             )
@@ -111,7 +108,6 @@ def classify_scene(
         return SceneCriticality(
             level="critical",
             reasons=reasons,
-            skip_critique=False,
             human_gate=True,
             initial_best_of_n=3,
         )
@@ -119,7 +115,6 @@ def classify_scene(
         return SceneCriticality(
             level="standard",
             reasons=reasons,
-            skip_critique=False,
             human_gate=False,
             initial_best_of_n=2,
         )
@@ -130,14 +125,12 @@ def classify_scene(
             return SceneCriticality(
                 level="standard",
                 reasons=reasons + ["promoted_after_3_consecutive_transitions"],
-                skip_critique=False,
                 human_gate=False,
                 initial_best_of_n=2,
             )
         return SceneCriticality(
             level="transition",
             reasons=reasons or ["default_transition"],
-            skip_critique=True,
             human_gate=False,
             initial_best_of_n=1,
         )

@@ -55,16 +55,6 @@ SCENE_ACCEPTANCE_SCORE_KEYS = frozenset(
         "reference_safety",
     }
 )
-CHAPTER_ACCEPTANCE_SCORE_KEYS = frozenset(
-    {
-        "chapter_promise",
-        "escalation",
-        "payoff_integrity",
-        "character_shift",
-        "ending_drive",
-        "continuity",
-    }
-)
 
 
 def should_rewrite(payload: dict[str, Any]) -> bool:

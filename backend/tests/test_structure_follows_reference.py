@@ -624,8 +624,6 @@ def test_templates_say_how_structure_and_temperament_follow_the_reference() -> N
     review = templates["near_final_acceptance_review"]
     assert "the Reader should feel line names the effect, not the register" in review.task_prompt
     assert "opens or closes its chapter" in review.task_prompt and "章首 / 章末" in review.task_prompt
-    chapter_review = templates["chapter_near_final_review"]
-    assert "[STYLE_REFERENCE]" in chapter_review.system_prompt and "[风格样例]" in chapter_review.task_prompt
     titles = templates["snowflake_chapter_titles_suggest"]
     assert "`reference_titles`" in titles.task_prompt
     assert "Never return one of those sample titles" in titles.task_prompt
