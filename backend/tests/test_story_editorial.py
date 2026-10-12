@@ -207,6 +207,7 @@ def _fresh_attempt_counters(monkeypatch):
     monkeypatch.setattr(story_memory, "_EXTRACTION_ATTEMPTS", {})
     monkeypatch.setattr(story_memory, "_DIGEST_ATTEMPTS", {})
     monkeypatch.setattr(story_memory, "_REVIEW_ATTEMPTS", {})
+    monkeypatch.setattr(story_memory, "_PROVIDER_BACKOFF", {"delay": 0.0, "until": 0.0})
 
 
 def _install(monkeypatch, runner) -> None:

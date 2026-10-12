@@ -193,6 +193,7 @@ def _fresh_attempt_counters(monkeypatch):
     monkeypatch.setattr(story_memory, "_EXTRACTION_ATTEMPTS", {})
     monkeypatch.setattr(story_memory, "_DIGEST_ATTEMPTS", {})
     monkeypatch.setattr(story_memory, "_REVIEW_ATTEMPTS", {})
+    monkeypatch.setattr(story_memory, "_PROVIDER_BACKOFF", {"delay": 0.0, "until": 0.0})
 
 
 # ------------------------------------------------------------------ 工作记忆（事件日志）
@@ -475,8 +476,57 @@ def test_a_failed_extraction_is_reported_as_a_failure_not_as_extracted(session, 
     summary = run_story_memory_pass(session_factory=lambda: _same_session(session))
 
     assert summary["extracted"] == []
-    assert summary["failed"] == [{"scene_id": _scene(1, 1), "code": "EXTRACTION_DEGRADED"}]
+    assert summary["failed"] == [{"scene_id": _scene(1, 1), "code": "LLM_UPSTREAM_ERROR"}]
     assert session.get(SceneRunState, _scene(1, 1)).narrative_sync_status == "degraded"
+    # 模型自己出的错照旧占重试次数，工人不退避
+    assert story_memory._EXTRACTION_ATTEMPTS == {f"final_{_scene(1, 1)}_v1": 1}
+    assert story_memory._PROVIDER_BACKOFF["until"] == 0.0
+
+
+def test_an_unreachable_provider_backs_off_without_using_up_the_retries(session, monkeypatch, llm_on) -> None:
+    """中转断了：这一场不算失败、不占重试次数，这一轮停下、工人退避；退避期里不派新的一轮；恢复后接着抽、退避清零。"""
+    _seed_book(session)
+    _write_final(session, _scene(1, 1), "林昭在档案馆找到旧信。")
+    session.commit()
+    final_id = f"final_{_scene(1, 1)}_v1"
+    runner = ScriptedTaskRunner(session, [{"__fail__": "LLM_HTTP_REQUEST_FAILED"}], call_prefix="llmcall_memory")
+    _install(monkeypatch, runner)
+
+    summary = run_story_memory_pass(session_factory=lambda: _same_session(session))
+
+    assert summary["stopped"] == "provider_unavailable"
+    assert summary["failed"] == [{"scene_id": _scene(1, 1), "code": "LLM_HTTP_REQUEST_FAILED"}]
+    assert story_memory._EXTRACTION_ATTEMPTS.get(final_id, 0) == 0
+    assert story_memory._PROVIDER_BACKOFF["delay"] == story_memory.PROVIDER_BACKOFF_MIN_SECONDS
+    assert story_memory.story_memory_tick() is False  # 退避期里不派新的一轮
+
+    # 断了很久：退避翻倍、封顶
+    delays = []
+    for _ in range(6):
+        story_memory._back_off()
+        delays.append(story_memory._PROVIDER_BACKOFF["delay"])
+    assert delays == [120.0, 240.0, 480.0, 960.0, 1800.0, 1800.0]
+
+    # 恢复了：失败过的那一场接着抽（不受三次上限的影响），退避清零
+    runner = ScriptedTaskRunner(session, [{"events": []}], call_prefix="llmcall_memory_back")
+    _install(monkeypatch, runner)
+    again = run_story_memory_pass(session_factory=lambda: _same_session(session))
+    assert again["extracted"] == [_scene(1, 1)] and again["stopped"] is None
+    assert story_memory._PROVIDER_BACKOFF == {"delay": 0.0, "until": 0.0}
+
+
+def test_an_unreachable_provider_during_a_digest_does_not_use_up_its_retries(session, monkeypatch, llm_on) -> None:
+    _seed_written_first_chapter(session)
+    runner = ScriptedTaskRunner(session, [{"__fail__": "LLM_REQUEST_TIMEOUT"}], call_prefix="llmcall_memory")
+    _install(monkeypatch, runner)
+    monkeypatch.setattr(story_memory, "_extraction_backlog", lambda session, project_id: ([], []))
+
+    summary = run_story_memory_pass(session_factory=lambda: _same_session(session))
+
+    assert summary["stopped"] == "provider_unavailable"
+    assert summary["failed"] == [{"chapter_id": _chapter(1), "code": "CHAPTER_DIGEST_LLM_FAILED"}]
+    assert set(story_memory._DIGEST_ATTEMPTS.values()) <= {0}
+    assert story_memory._PROVIDER_BACKOFF["delay"] == story_memory.PROVIDER_BACKOFF_MIN_SECONDS
 
 
 def test_the_next_chapter_carries_the_open_threads_and_an_edit_upstream_cascades(session, monkeypatch, llm_on) -> None:

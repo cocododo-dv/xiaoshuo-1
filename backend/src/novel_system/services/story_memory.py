@@ -19,6 +19,10 @@
 （:func:`run_story_memory_pass`）派到单线程守护车道里跑，不占巡检线程。没有可用的模型 → 什么也不做；一轮最多调
 ``MAX_LLM_CALLS_PER_PASS`` 次；进程要退出（工人代变了）就在两次调用之间停下。抽取失败的场每个进程最多自动重试
 ``MAX_EXTRACTION_ATTEMPTS`` 次（之后等作者在成稿中心按「提取」），同一章同一份来源的摘要也一样（之后等作者按「重写」）。
+
+模型服务暂时够不着（连不上、超时、限流、服务端 5xx：``PROVIDER_UNAVAILABLE_CODES``）不算这一场 / 这一章的失败，不占上面
+的重试次数：这一轮就此停下，整个工人退避（``PROVIDER_BACKOFF_MIN_SECONDS`` 起翻倍，最多 ``PROVIDER_BACKOFF_MAX_SECONDS``）
+再试；任何一次调用成功就清掉退避。于是中转断了几个小时，恢复之后最迟半小时，欠着的抽取、摘要与通读会自己接上。
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -82,6 +87,13 @@ STORY_MEMORY_LANE = "story_memory"
 STORY_MEMORY_INTERVAL_SECONDS = 60.0
 MAX_LLM_CALLS_PER_PASS = 12
 MAX_EXTRACTION_ATTEMPTS = 3
+
+# 模型服务暂时够不着（llm_client 的传输层 / 限流 / 5xx 错误码）：不占重试次数，整个工人退避
+PROVIDER_UNAVAILABLE_CODES: frozenset[str] = frozenset(
+    {"LLM_HTTP_REQUEST_FAILED", "LLM_REQUEST_TIMEOUT", "LLM_RATE_LIMITED", "LLM_HTTP_RETRYABLE_FAILURE"}
+)
+PROVIDER_BACKOFF_MIN_SECONDS = 60.0
+PROVIDER_BACKOFF_MAX_SECONDS = 1800.0
 
 # 抽取状态：归档时由 CanonContinuityService.mark_archive_pending 记下；抽取失败（服务报错 / 输出不合格）是 degraded
 _EXTRACTION_PENDING = "pending_extraction"
@@ -439,6 +451,26 @@ _EXTRACTION_ATTEMPTS: dict[str, int] = {}
 _DIGEST_ATTEMPTS: dict[tuple[str, str], int] = {}
 # 编辑通读同理：同一部作品同一份输入（ReviewScope.source_hash）
 _REVIEW_ATTEMPTS: dict[tuple[str, str], int] = {}
+# 模型服务够不着时的退避：{"delay": 上一次退避的秒数, "until": time.monotonic() 到这个时刻之前不派新的一轮}
+_PROVIDER_BACKOFF: dict[str, float] = {"delay": 0.0, "until": 0.0}
+
+
+def _provider_unavailable(code: Any) -> bool:
+    return str(code or "") in PROVIDER_UNAVAILABLE_CODES
+
+
+def _back_off() -> None:
+    delay = min(max(_PROVIDER_BACKOFF["delay"] * 2, PROVIDER_BACKOFF_MIN_SECONDS), PROVIDER_BACKOFF_MAX_SECONDS)
+    _PROVIDER_BACKOFF.update(delay=delay, until=time.monotonic() + delay)
+    logger.warning("story memory: the model provider is unreachable, next pass in %.0f s", delay)
+
+
+def _provider_reachable() -> None:
+    _PROVIDER_BACKOFF.update(delay=0.0, until=0.0)
+
+
+def _undo_attempt(counter: dict[Any, int], key: Any) -> None:
+    counter[key] = max(0, counter.get(key, 1) - 1)
 
 
 def _extraction_backlog(session: Session, project_id: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -524,8 +556,15 @@ def run_story_memory_pass(
                         session.commit()
                         # 抽取失败（供应商 / 解析）不抛错，只把场记成 degraded：照实记进 failed，不算「抽完了」
                         if (result.get("scene") or {}).get("status") == _EXTRACTION_DEGRADED:
-                            summary["failed"].append({"scene_id": scene_id, "code": "EXTRACTION_DEGRADED"})
+                            error_code = (result.get("product") or {}).get("error_code")
+                            summary["failed"].append({"scene_id": scene_id, "code": error_code or "EXTRACTION_DEGRADED"})
+                            if _provider_unavailable(error_code):
+                                _undo_attempt(_EXTRACTION_ATTEMPTS, final_id)
+                                _back_off()
+                                summary["stopped"] = "provider_unavailable"
+                                return summary
                         else:
+                            _provider_reachable()
                             summary["extracted"].append(scene_id)
                     except DomainError as exc:
                         session.rollback()
@@ -563,12 +602,18 @@ def run_story_memory_pass(
                     try:
                         generate_chapter_digest(session, project_id, target.chapter.chapter_id)
                         session.commit()
+                        _provider_reachable()
                         summary["digested"].append(target.chapter.chapter_id)
                     except DomainError as exc:
                         session.rollback()
                         summary["failed"].append({"chapter_id": target.chapter.chapter_id, "code": exc.code})
                         if _capability_missing(exc):
                             summary["stopped"] = exc.code
+                            return summary
+                        if _provider_unavailable((exc.details or {}).get("error_code")):
+                            _undo_attempt(_DIGEST_ATTEMPTS, attempt_key)
+                            _back_off()
+                            summary["stopped"] = "provider_unavailable"
                             return summary
                         # 一章没写成：后面的章拿不到它的线索清单，这一轮先不往后写
                         digests_caught_up = False
@@ -596,12 +641,18 @@ def run_story_memory_pass(
                 try:
                     generate_editorial_review(session, project_id, origin="auto")
                     session.commit()
+                    _provider_reachable()
                     summary["reviewed"].append(project_id)
                 except DomainError as exc:
                     session.rollback()
                     summary["failed"].append({"project_id": project_id, "code": exc.code})
                     if _capability_missing(exc):
                         summary["stopped"] = exc.code
+                        return summary
+                    if _provider_unavailable((exc.details or {}).get("error_code")):
+                        _undo_attempt(_REVIEW_ATTEMPTS, review_key)
+                        _back_off()
+                        summary["stopped"] = "provider_unavailable"
                         return summary
                 except Exception:  # noqa: BLE001 — 通读做不成不带走工人
                     session.rollback()
@@ -613,7 +664,8 @@ def run_story_memory_pass(
 
 
 def story_memory_tick() -> bool:
-    """维护任务的一拍：有可用的模型、上一轮已经跑完 → 往故事记忆车道派一轮（不在巡检线程里调模型）。"""
+    """维护任务的一拍：有可用的模型、上一轮已经跑完、不在模型服务够不着的退避期里 → 往故事记忆车道派一轮（不在巡检线程里
+    调模型）。"""
     from novel_system.settings import get_settings
 
     try:
@@ -622,7 +674,7 @@ def story_memory_tick() -> bool:
     except Exception:  # noqa: BLE001 — 读设置失败（库忙）下一拍再看
         logger.warning("story memory: settings unavailable, skipping this tick", exc_info=True)
         return False
-    if _PASS_LOCK.locked():
+    if _PASS_LOCK.locked() or time.monotonic() < _PROVIDER_BACKOFF["until"]:
         return False
     lane = daemon_lane(STORY_MEMORY_LANE, max_workers=1)
     if lane.pending():
