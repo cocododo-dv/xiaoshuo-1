@@ -51,5 +51,7 @@ $PYTHON -m alembic upgrade head
 
 echo "http://127.0.0.1:${PORT}" > "$URL_FILE"
 echo $$ > "$PID_FILE"
-exec "$PYTHON" -m uvicorn novel_system.api.app:create_app --factory --reload \
+# Without watchfiles uvicorn's reloader re-resolves every *.py under the reload dirs on each poll: the
+# default (backend/ incl. .venv, every 0.25 s) kept it at ~half a core around the clock. src only, every 2 s.
+exec "$PYTHON" -m uvicorn novel_system.api.app:create_app --factory --reload --reload-dir src --reload-delay 2 \
   --host 127.0.0.1 --port "$PORT" --app-dir src

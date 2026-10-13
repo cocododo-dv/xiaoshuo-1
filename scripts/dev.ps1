@@ -384,7 +384,7 @@ function Start-TrackedServices {
         Write-Step -Message "Starting backend on $script:BackendUrl"
         $configSecretLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value (Resolve-DevConfigSecret)
         $pythonLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value $script:PythonExe
-        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; & {1} -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {2} --app-dir src' -f $configSecretLiteral, $pythonLiteral, $script:BackendPort
+        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; & {1} -m uvicorn novel_system.api.app:create_app --factory --reload --reload-dir src --reload-delay 2 --host 127.0.0.1 --port {2} --app-dir src' -f $configSecretLiteral, $pythonLiteral, $script:BackendPort
         $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $script:BackendDir -RedirectStandardOutput $script:BackendOutLog -RedirectStandardError $script:BackendErrLog -PassThru
         Set-Content -Path $script:BackendPidFile -Value $backendProcess.Id
         Set-Content -Path $script:BackendUrlFile -Value $script:BackendUrl
