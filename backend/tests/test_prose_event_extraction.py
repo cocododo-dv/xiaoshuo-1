@@ -22,8 +22,10 @@ class _Runner:
         self._text = text
         self.calls: list[dict] = []
 
-    def run_task(self, *, task_name, prompt_text, system_prompt, context):
-        self.calls.append({"task_name": task_name, "prompt_text": prompt_text, "context": context})
+    def run_task(self, *, task_name, prompt_text, system_prompt, context, template=None):
+        self.calls.append(
+            {"task_name": task_name, "prompt_text": prompt_text, "context": context, "template": template}
+        )
         return _Resp(self._text)
 
 
@@ -32,10 +34,12 @@ class _AccountedRunner(_Runner):
         super().__init__(text)
         self.session = session
 
-    def run_task(self, *, task_name, prompt_text, system_prompt, context):
+    def run_task(self, *, task_name, prompt_text, system_prompt, context, template=None):
         from novel_system.db.models import LlmCall, LlmCallAttempt
 
-        self.calls.append({"task_name": task_name, "prompt_text": prompt_text, "context": context})
+        self.calls.append(
+            {"task_name": task_name, "prompt_text": prompt_text, "context": context, "template": template}
+        )
         call_id = "llmcall_prose_orchestrator"
         self.session.add(
             LlmCall(
@@ -290,6 +294,22 @@ def test_called_prose_extractor_is_always_online(session) -> None:
 
     assert result.outcome == "completed_empty"
     assert runner.calls[0]["context"].provider_execution_mode == "online"
+
+
+def test_extractor_sends_its_template_schema_to_the_runner(session) -> None:
+    """2026-10-13：抽取不带模板时请求里是空 schema，按 schema 约束解码的中转回 {"events": [null]} 之类的退化 JSON，
+    五场成稿一条事实都没抽到。抽取必须把 narrative_event_extract 的 structured_schema 带进请求。"""
+    from novel_system.services.prose_event_extractor import extract_events_from_prose
+
+    runner = _Runner('{"events": []}')
+    supplied = _llm_context()
+    _seed_success_ledger(session, context=supplied)
+    extract_events_from_prose("some prose", session=session, llm_runner=runner, llm_context=supplied)
+
+    template = runner.calls[0]["template"]
+    assert template is not None and template.name == "narrative_event_extract"
+    event_item = template.structured_schema["properties"]["events"]["items"]
+    assert set(event_item["required"]) == {"event_type", "entity_id", "fact_key", "fact_value", "evidence"}
 
 
 def test_extract_rejects_mixed_valid_and_invalid_event_items(session) -> None:

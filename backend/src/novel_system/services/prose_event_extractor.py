@@ -183,6 +183,7 @@ def extract_events_from_prose(
             prompt_text=_task_prompt(template, content[:max_chars], part=part),
             system_prompt=template.system_prompt,
             context=called_context,
+            template=template,
         )
     except Exception as exc:
         outcome, call_id, error_code = classify_advisory_failure(

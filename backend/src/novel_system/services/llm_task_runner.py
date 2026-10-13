@@ -1087,8 +1087,14 @@ def _requires_scene_split(continuity_warning: Any) -> bool:
     return isinstance(continuity_warning, dict) and bool(continuity_warning.get("requires_scene_split"))
 
 
-def _response_schema(prompt: dict[str, Any], *, node_id: str) -> dict[str, Any]:
-    return {"name": _template_name(prompt, node_id), "schema": prompt.get("structured_schema", {})}
+def _response_schema(prompt: dict[str, Any], *, node_id: str) -> dict[str, Any] | None:
+    # 没有模板 schema 就不带 schema（适配器回落 json_object）。曾经照样包成 {"name", "schema": {}}：
+    # 非空的外壳让适配器发出 json_schema + 空 schema，按 schema 约束解码的中转据此吐出
+    # {"events": ["events"]} / {"events": [null]} 这类退化 JSON（2026-10-13 成稿抽取全军覆没）。
+    schema = prompt.get("structured_schema")
+    if not isinstance(schema, dict) or not schema:
+        return None
+    return {"name": _template_name(prompt, node_id), "schema": schema}
 
 
 def _template_name(prompt: dict[str, Any], fallback: str) -> str:

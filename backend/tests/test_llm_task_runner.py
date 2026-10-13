@@ -819,6 +819,49 @@ def test_online_run_task_uses_parent_and_physical_attempt_ledger(session) -> Non
     assert attempt.accounting_status == "settled"
 
 
+class _RequestRecordingClient(_AccountedRecordingClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: list[LLMRequest] = []
+
+    def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:  # noqa: ANN001
+        self.requests.append(request)
+        return super().generate_accounted(request, accounting_hook=accounting_hook)
+
+
+def test_run_task_without_a_template_schema_sends_json_object_not_an_empty_json_schema(session) -> None:
+    """2026-10-13: a template-less call used to go out as json_schema with ``schema: {}``; the
+    schema-enforcing relay then decoded degenerate objects (``{"events": [null]}``)."""
+    from types import SimpleNamespace
+
+    from novel_system.services.llm_providers.openai_common import openai_text_format
+
+    _seed_durable_runner_scene(session)
+    client = _RequestRecordingClient()
+    runner = LLMNodeRunner(session, llm_client=client, routing_config=_routing_config(), settings=_live_settings())
+    context = LLMCallContext(
+        scope_type="scene",
+        scope_id="CH_RUNNER_SC01",
+        project_id="PROJECT_RUNNER",
+        chapter_id="CH_RUNNER",
+        scene_id="CH_RUNNER_SC01",
+        node_id="neutral_draft",
+        step="advisory:test",
+    )
+    schema = {"type": "object", "required": ["scene_text"], "properties": {"scene_text": {"type": "string"}}}
+    template = SimpleNamespace(name="probe_template", version="2026-10-14.v1", structured_schema=schema)
+
+    runner.run_task(task_name="neutral_draft", prompt_text="Return JSON.", system_prompt="s", context=context)
+    runner.run_task(
+        task_name="neutral_draft", prompt_text="Return JSON.", system_prompt="s", context=context, template=template
+    )
+
+    bare, templated = client.requests
+    assert bare.response_schema is None
+    assert openai_text_format(bare) == {"type": "json_object"}
+    assert openai_text_format(templated) == {"type": "json_schema", "name": "probe_template", "schema": schema}
+
+
 @pytest.mark.parametrize(
     ("kind", "node_id", "payload"),
     [
