@@ -12,6 +12,15 @@
 #   3. ~/.local/node/bin        a plain tarball install (the Ubuntu dev host)
 #   4. whatever `node` is already on PATH
 # The frontend needs Node >= 20.19 (package.json "engines"); Node 22 is what CI tests.
+#
+# Serving mode ($NOVEL_SYSTEM_FRONTEND_MODE):
+#   preview (default)  `vite build` into .codex-run/frontend-dist, then `vite preview` on the port:
+#                      gzip, content-hashed /assets/ cached for good (preview-cache.js). The author
+#                      reaches this host over a ~200 ms SSH tunnel; the dev server ships every module
+#                      unbundled with inline source maps (opening 写作 = 48 requests, ~3 MB) and
+#                      revalidates each on every reload, the build ships ~90 KB gzip. Frontend code
+#                      changes reach the page only after this script runs again.
+#   dev                the Vite dev server with HMR, for frontend work on this host.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,17 +33,36 @@ mkdir -p "$RUN_DIR"
 PID_FILE="$RUN_DIR/frontend-react.pid"
 URL_FILE="$RUN_DIR/frontend-react.url"
 PORT="${NOVEL_SYSTEM_FRONTEND_PORT:-5174}"
+MODE="${NOVEL_SYSTEM_FRONTEND_MODE:-preview}"
+DIST_DIR="$RUN_DIR/frontend-dist"
+
+case "$MODE" in
+  preview|dev) ;;
+  *) echo "NOVEL_SYSTEM_FRONTEND_MODE must be preview or dev, got: $MODE" >&2; exit 2 ;;
+esac
 
 dev_use_frontend_node
 dev_check_frontend_toolchain "$REPO_ROOT/frontend-react" || exit 1
-
-dev_stop_pidfile "$PID_FILE"
-dev_stop_port "$PORT"
 
 cd "$REPO_ROOT/frontend-react"
 
 echo "==> node $(node --version) at $(command -v node)"
 
+if [ "$MODE" = preview ]; then
+  # Build next to the served copy first: a failed build leaves the running frontend alone.
+  echo "==> building frontend into $DIST_DIR"
+  rm -rf "$DIST_DIR.next"
+  npm run build -- --outDir "$DIST_DIR.next" --emptyOutDir
+fi
+
+dev_stop_pidfile "$PID_FILE"
+dev_stop_port "$PORT"
+
 echo "http://127.0.0.1:${PORT}" > "$URL_FILE"
 echo $$ > "$PID_FILE"
-exec npm run dev -- --host 127.0.0.1 --port "$PORT"
+if [ "$MODE" = dev ]; then
+  exec npm run dev -- --host 127.0.0.1 --port "$PORT"
+fi
+rm -rf "$DIST_DIR"
+mv "$DIST_DIR.next" "$DIST_DIR"
+exec npm run preview -- --host 127.0.0.1 --port "$PORT" --strictPort --outDir "$DIST_DIR"

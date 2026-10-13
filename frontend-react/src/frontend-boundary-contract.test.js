@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { apiConnectOrigin, withApiConnectSrc } from "../build-csp.js";
+import { IMMUTABLE_ASSET_CACHE, immutablePreviewAssets, markImmutableAsset } from "../preview-cache.js";
 
 
 const srcRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -79,5 +80,53 @@ describe("CSP connect-src 跟着构建时的后端地址走", () => {
     expect(transformWith(undefined)).toBe(html);
     expect(transformWith("http://127.0.0.1:8009")).toBe(html);
     expect(connectSrc(transformWith("http://10.0.0.5:8000"))).toContain("http://10.0.0.5:8000");
+  });
+});
+
+describe("vite preview 的缓存头（preview-cache.js）", () => {
+  // 仿 sirv：Cache-Control 放在 writeHead 的 headers 参数里，会盖过先前 setHeader 的值
+  const fakeResponse = () => {
+    const sent = {};
+    const res = {
+      setHeader(name, value) { sent[name.toLowerCase()] = value; },
+      getHeader(name) { return sent[name.toLowerCase()]; },
+      writeHead(status, headers) {
+        sent.status = status;
+        for (const [name, value] of Object.entries(headers || {})) sent[name.toLowerCase()] = value;
+      },
+    };
+    return { res, sent };
+  };
+  const serve = (url, status, contentType = "text/javascript") => {
+    const { res, sent } = fakeResponse();
+    markImmutableAsset({ url }, res);
+    res.writeHead(status, { "Content-Type": contentType, "Cache-Control": "no-cache", ETag: "W/\"1\"" });
+    return sent;
+  };
+
+  it("带哈希的 /assets/ 文件长期缓存，index.html 与 404 照旧每次确认", () => {
+    expect(serve("/assets/ws-writer-C65d7YCP.js", 200)["cache-control"]).toBe(IMMUTABLE_ASSET_CACHE);
+    expect(serve("/assets/ws-writer-C65d7YCP.js", 200).etag).toBe('W/"1"');
+    expect(serve("/", 200)["cache-control"]).toBe("no-cache");
+    expect(serve("/index.html", 200)["cache-control"]).toBe("no-cache");
+    expect(serve("/assets/ws-writer-OLDHASH0.js", 404)["cache-control"]).toBe("no-cache");
+    // 缺失的旧块落到 SPA 兜底：200 + index.html，不能被长期缓存
+    expect(serve("/assets/ws-writer-OLDHASH0.js", 200, "text/html; charset=utf-8")["cache-control"]).toBe("no-cache");
+    // compression 之类先把 headers 参数转成 setHeader 再调下去：类型从已设的头里读
+    const { res, sent } = fakeResponse();
+    markImmutableAsset({ url: "/assets/index-OLDHASH0.js" }, res);
+    res.setHeader("Content-Type", "text/html");
+    res.setHeader("Cache-Control", "no-cache");
+    res.writeHead(200);
+    expect(sent["cache-control"]).toBe("no-cache");
+  });
+
+  it("vite.config.js 装上了这个插件，且它只挂在 preview 上", async () => {
+    const { default: config } = await import("../vite.config.js");
+    const resolved = config({ mode: "production", command: "build" });
+    const plugin = resolved.plugins.flat().find((p) => p && p.name === immutablePreviewAssets().name);
+    expect(plugin).toBeTruthy();
+    expect(typeof plugin.configurePreviewServer).toBe("function");
+    expect(plugin.configureServer).toBeUndefined();
   });
 });

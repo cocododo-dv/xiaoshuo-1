@@ -70,7 +70,7 @@ disown
 
 echo "==> waiting for frontend (${FRONTEND_URL})"
 rc=0
-dev_wait_http_ok "$FRONTEND_URL" 60 "$FRONTEND_LEG_PID" || rc=$?
+dev_wait_http_ok "$FRONTEND_URL" 180 "$FRONTEND_LEG_PID" || rc=$?
 [ "$rc" = 0 ] || leg_failed frontend "$LOG_DIR/frontend-react.log" "$rc"
 
 echo "==> backend:  $BACKEND_URL"

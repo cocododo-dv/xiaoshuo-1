@@ -37,9 +37,10 @@ publication arbiter.
 - Linux (the dev host): `scripts/start-all-linux.sh` / `scripts/stop-all-linux.sh` (logs and pids in `.codex-run/`;
   waits for `/ready`, fails fast with the log tail). Per leg, each stopping its previous instance:
   `scripts/start-backend-linux.sh` (prunes old `.codex-run` logs, exports `PYTHONPATH=backend/src`, `alembic upgrade
-  head` with `backend/.venv/bin/python`, uvicorn `--reload`) and `scripts/start-frontend-linux.sh` (Node from
-  `NOVEL_SYSTEM_NODE_BIN` → nvm → `~/.local/node/bin` → `PATH`). Both it and `start-all-linux.sh` refuse a missing
-  node / `node_modules` or a Node below the `engines` floor ≥ 18.18 before stopping anything — use Node 22.
+  head` with `backend/.venv/bin/python`, uvicorn `--reload`) and `scripts/start-frontend-linux.sh` (Node lookup and
+  why it serves a build via `vite preview`: its header; frontend edits need a relaunch, `NOVEL_SYSTEM_FRONTEND_MODE=dev`
+  = dev server). Both it and `start-all-linux.sh` refuse a missing node / `node_modules` or a Node below `engines`
+  (20.19) before stopping anything — use Node 22.
 - Windows: `.\start-dev.cmd` / `.\stop-dev.cmd` / `.\restart-dev.cmd` (→ `scripts/dev.ps1`: migrate, start both, open
   the browser; a busy port scans upward and the chosen URLs go to `.codex-run/backend.url` / `frontend-react.url`);
   `.\reset-runtime-keep-llm.cmd` resets the runtime DB / artifacts but keeps the LLM config.
@@ -189,10 +190,9 @@ Frontend (fail `npm test`): `tooling-independence.test.js` (Playwright pinned, n
 | `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS` | — | server-path book import disabled until set |
 | `NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON` | — | extra protected terms for the copy gate (warn only) |
 
-Retired and ignored except for one startup warning: the six `NOVEL_SYSTEM_LLM_*_LIMIT` / `…_MAX_CONCURRENT_REQUESTS`
-quota vars, `NOVEL_SYSTEM_LLM_{INPUT,OUTPUT}_COST_PER_MILLION_USD` and `…_LLM_AUTO_CRITIQUE_ENABLED` (auto-critique deleted;
-`env_config.RETIRED_ENV_VARS`). Launcher / lane / test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT`
-(5174), `…_NODE_BIN`, `…_ARTIFACT_RETENTION_DAYS` (14), `NOVEL_SYSTEM_PYTHON`, `PLAYWRIGHT_*_PORT`,
+Retired and ignored except for one startup warning: the LLM quota / cost / auto-critique vars in
+`env_config.RETIRED_ENV_VARS`. Launcher / lane / test only: `NOVEL_SYSTEM_BACKEND_PORT` (8000), `…_FRONTEND_PORT`
+(5174), `…_FRONTEND_MODE` (`preview`), `…_NODE_BIN`, `…_ARTIFACT_RETENTION_DAYS` (14), `NOVEL_SYSTEM_PYTHON`, `PLAYWRIGHT_*_PORT`,
 `STYLE_REFERENCE_REPO_ROOT` (migration 0036 test override), `NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS`,
 `VITE_NOVEL_SYSTEM_API_BASE`, `VITE_NOVEL_SYSTEM_ACCESS_TOKEN`.
 
