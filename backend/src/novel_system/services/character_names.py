@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -35,11 +36,24 @@ ALIAS_KEYS = frozenset(
 # 正文匹配只用两个字以上的名字：单字的名字 / 别名在中文正文里几乎处处命中。
 MIN_MATCH_NAME_CHARS = 2
 
+# 名字末尾括号里的注解：雪花人物表常把显示名写成「林昭（档案员）」，正文与模型却只写「林昭」。
+_TRAILING_ANNOTATION_RE = re.compile(r"^(?P<head>.+?)\s*[（(【\[][^（()）【】\[\]]+[)）】\]]$")
+
 
 def normalized_name(value: Any) -> str:
     """比较名字用的形式：NFKC、去首尾空白、大小写折叠、去掉中间空白。"""
     normalized = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
     return "".join(normalized.split())
+
+
+def name_variants(value: Any) -> tuple[str, ...]:
+    """一个名字的写法：原样，再加去掉末尾括号注解的本名（「林昭（档案员）」→「林昭」）；空名字没有写法。"""
+    clean = str(value or "").strip()
+    if not clean:
+        return ()
+    match = _TRAILING_ANNOTATION_RE.match(clean)
+    head = match.group("head").strip() if match else ""
+    return (clean, head) if head else (clean,)
 
 
 def _collect_scalar_values(value: Any, output: list[str]) -> None:
@@ -79,9 +93,9 @@ class EntityNames:
         """正文里指这个实体的写法：显示名 + 别名（够长的、去重）。角色 id 本身由调用方兜底加上。"""
         names: list[str] = []
         for name in (self.display_name, *self.aliases):
-            clean = str(name or "").strip()
-            if len(clean) >= MIN_MATCH_NAME_CHARS and clean not in names:
-                names.append(clean)
+            for clean in name_variants(name):
+                if len(clean) >= MIN_MATCH_NAME_CHARS and clean not in names:
+                    names.append(clean)
         return tuple(names)
 
 

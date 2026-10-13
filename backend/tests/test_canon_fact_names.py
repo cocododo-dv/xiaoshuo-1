@@ -37,6 +37,19 @@ def test_canon_fact_is_checked_against_the_characters_name_in_prose(session) -> 
     assert _violations(session, "顾舟抬起右手握紧刀柄。") == []
 
 
+def test_display_name_with_a_bracketed_epithet_still_finds_the_character_in_prose(session) -> None:
+    """雪花人物表把显示名写成「林远（钟楼守夜人）」，正文只写「林远」：去掉末尾括号注解的本名也算这个人的写法
+    （2026-10-14：以前整串显示名在正文里永远找不到，这类人物的正史事实一条矛盾也查不出）。"""
+    seed_narrative_world(session)
+    session.get(StoryCharacter, LINYUAN).display_name = "林远（钟楼守夜人）"
+    session.commit()
+
+    report = NarrativeEventLog(session).check_consistency(
+        "林远抬起右手握紧刀柄。", WORLD_PROJECT, WORLD_TARGET_SCENE, character_ids=CAST
+    )
+    assert [(v.entity_id, v.fact_key) for v in report.violations] == [(LINYUAN, "missing_limb")]
+
+
 def test_location_entity_names_count_as_known_places(session) -> None:
     """苏晚已经去了北境；「还在钟楼」的钟楼是资料库里的地点（账本里按 id 记），也算已知地名。"""
     seed_narrative_world(session)

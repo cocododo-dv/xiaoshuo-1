@@ -443,6 +443,27 @@ def test_actual_final_text_hash_invalidates_stale_completion_and_evidence(sessio
     assert projected.get("injury") == "右臂完好无损"
 
 
+def test_extracted_name_matches_a_display_name_with_a_bracketed_epithet(session) -> None:
+    """人物显示名「林远（钟楼守夜人）」，抽取写「林远」：候选认得出是谁，暂存事件按角色 id 记，工作记忆与
+    POV 投影才能按 id 找到这个人（2026-10-14：以前全记成 unresolved，事件挂在原文名字下）。"""
+    seeded = _seed_scene(session, "EPITHET")
+    session.get(StoryCharacter, "CHAR_LINYUAN").display_name = "林远（钟楼守夜人）"
+    service = CanonContinuityService(session)
+    service.mark_archive_pending(seeded["final_scene_row_id"])
+    event = _pending_event(session, seeded, raw_entity="林远")
+
+    staged = service.stage_extraction(
+        seeded["final_scene_row_id"], outcome="completed_events", event_ids=[event.event_id]
+    )
+
+    candidate = session.get(FactCandidate, staged["candidate_ids"][0])
+    assert (candidate.entity_resolution_status, candidate.resolved_entity_id) == ("exact", "CHAR_LINYUAN")
+    assert candidate.raw_entity_ref == "林远"
+    assert session.get(NarrativeEvent, event.event_id).entity_id == "CHAR_LINYUAN"
+    working = NarrativeEventLog(session).working_events(seeded["project_id"], before_scene_id=seeded["next_scene_id"])
+    assert [item.entity_id for item in working] == ["CHAR_LINYUAN"]
+
+
 def test_ambiguous_alias_requires_explicit_author_resolution(session) -> None:
     seeded = _seed_scene(session, "AMBIG")
     session.add(

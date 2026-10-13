@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import FactCandidate, FinalScene, NarrativeEvent
 from novel_system.services.canon.common import COMPLETED_EXTRACTION_OUTCOMES, DEGRADED_EXTRACTION_OUTCOMES
+from novel_system.services.canon.entities import RESOLVED_ENTITY_STATUSES
 from novel_system.services.errors import DomainError
 from novel_system.services.narrative_event_log import NarrativeEventLog
 
@@ -107,6 +108,9 @@ class CanonLifecycleMixin:
             if candidate.status == "pending":
                 event.authority_status = "pending"
                 event.source_kind = "prose_extraction"
+                # 认出了是谁就按实体 id 记：工作记忆与 POV 投影按 id 找人（原文写法留在候选的 raw_entity_ref）
+                if candidate.resolved_entity_id and candidate.entity_resolution_status in RESOLVED_ENTITY_STATUSES:
+                    event.entity_id = candidate.resolved_entity_id
             elif candidate.status == "accepted":
                 # A resumed archive checkpoint must preserve the author's prior
                 # decision without publishing it before scene verification.

@@ -6,8 +6,11 @@ from typing import Any
 from sqlalchemy import select
 
 from novel_system.db.models import FactCandidate, LibraryEntity, StoryCharacter
-from novel_system.services.character_names import character_alias_values, normalized_name
+from novel_system.services.character_names import character_alias_values, name_variants, normalized_name
 from novel_system.services.errors import DomainError
+
+# 候选认出了是谁（名字 / 别名唯一命中，或作者选定）：按这个实体 id 记事件
+RESOLVED_ENTITY_STATUSES = frozenset({"exact", "alias", "manual"})
 
 
 class CanonEntitiesMixin:
@@ -24,7 +27,7 @@ class CanonEntitiesMixin:
             for row in rows:
                 if normalized in {
                     self._normalized_name(row.character_id),
-                    self._normalized_name(row.display_name),
+                    *(self._normalized_name(name) for name in name_variants(row.display_name)),
                     self._normalized_name(f"character:{row.character_id}"),
                 }:
                     exact_ids.append(row.character_id)
@@ -41,12 +44,12 @@ class CanonEntitiesMixin:
                     continue
                 if normalized in {
                     self._normalized_name(row.entity_id),
-                    self._normalized_name(row.name),
+                    *(self._normalized_name(name) for name in name_variants(row.name)),
                     self._normalized_name(f"entity:{row.entity_id}"),
                 }:
                     exact_ids.append(row.entity_id)
                 elif normalized in {
-                    self._normalized_name(value) for value in (row.aliases_json or [])
+                    self._normalized_name(name) for value in (row.aliases_json or []) for name in name_variants(value)
                 }:
                     alias_ids.append(row.entity_id)
 
@@ -94,7 +97,7 @@ class CanonEntitiesMixin:
             return selected_entity_id
         if (
             candidate.resolved_entity_id
-            and candidate.entity_resolution_status in {"exact", "alias", "manual"}
+            and candidate.entity_resolution_status in RESOLVED_ENTITY_STATUSES
         ):
             return candidate.resolved_entity_id
         raise DomainError(
@@ -118,7 +121,12 @@ class CanonEntitiesMixin:
 
     @staticmethod
     def _character_aliases(row: StoryCharacter) -> set[str]:
-        return {normalized_name(value) for value in character_alias_values(row) if normalized_name(value)}
+        return {
+            normalized_name(name)
+            for value in character_alias_values(row)
+            for name in name_variants(value)
+            if normalized_name(name)
+        }
 
     @staticmethod
     def _normalized_name(value: Any) -> str:

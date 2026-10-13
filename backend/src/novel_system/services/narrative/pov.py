@@ -9,7 +9,8 @@
 6 个知识级别（§5.6）由现有事件结构派生，无需 schema 迁移：
 
 - ``public``       —— 非信息不对称键的事实（在场角色可观察），照旧注入
-- ``secret_owner`` —— ``secret_held_by`` 事实：持有者知道、他人不知
+- ``secret_owner`` —— ``secret_held_by`` 事实：持有者知道、他人不知；别人的 ``character_learns``（他得知的事，
+                       成稿抽取的键名是自由的，进不了上面的固定键）同样只算他的认知（2026-10-14）
 - ``known``        —— POV 自身事实 ∪ POV 的 ``character_learns`` ∪ POV 持有/已被揭示的秘密
                        ∪ POV 在场场景断言的公共事实（回填启发式）
 - ``believed_false``—— POV 的 ``believes_false``（POV 据此行动，注入）
@@ -149,14 +150,24 @@ def format_pov_state(
         state = snapshot.character_state(char_id)
         if not state.facts:
             continue
+        learned_event_ids = (
+            set() if char_id == pov_character_id else {event.event_id for event in snapshot.learns_events(char_id)}
+        )
         visible: list[tuple[str, str]] = []
-        for key, value in sorted(state.as_dict().items()):
+        for key, fact in sorted(state.facts.items()):
+            value = fact.fact_value
             if key in INFORMATION_ASYMMETRY_FACT_KEYS:
                 if char_id == pov_character_id or secret_known_to_pov(snapshot, value, char_id, pov_character_id):
                     visible.append((key, value))
                 elif key in SECRET_CONTENT_KEYS and char_id not in suppressed_owners:
                     suppressed_owners.append(char_id)
                 # 非 POV 秘密内容：抑制（不注入）
+            elif fact.event_id in learned_event_ids:
+                # 别人得知的事是他的认知，不是在场可见的公共事实：POV 也知道才印，否则只给内容无关的约束
+                if secret_known_to_pov(snapshot, value, char_id, pov_character_id):
+                    visible.append((key, value))
+                elif char_id not in suppressed_owners:
+                    suppressed_owners.append(char_id)
             else:
                 visible.append((key, value))  # 公共事实
         if not visible:

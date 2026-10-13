@@ -98,6 +98,31 @@ def test_projection_keeps_secret_revealed_to_pov(session) -> None:
     assert "地图在钟楼" in out
 
 
+def test_projection_hides_what_another_character_learned(session) -> None:
+    """别人的 character_learns 是他的认知：成稿抽取的键名是自由的（不在信息不对称固定键里），以前照公共事实
+    印进 POV 提示词（2026-10-14）。POV 不知道的只给内容无关的约束；POV 也得知了同样内容的照印；状态照旧。"""
+    _seed(session)
+    _state(session, 1, "X", "suspect_identified", "凶手是看门人", event_type="character_learns")
+    _state(session, 1, "X", "cause_of_death", "钝器击打后脑", event_type="character_learns")
+    _state(session, 1, "X", "item_gained", "旧信")
+    _state(session, 1, "Y", "heard_cause", "钝器击打后脑", event_type="character_learns")
+    session.commit()
+
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
+    out = proj.format_state_for_prompt(
+        PROJECT, scene_id=f"{CHAPTER}_SC02", pov_character_id="Y", onstage_character_ids=["X", "Y"],
+    )
+    assert "凶手是看门人" not in out                  # Y 不知道的：不注入内容
+    assert "勿在" in out and "泄漏" in out            # 只留内容无关的写作约束
+    assert "cause_of_death: 钝器击打后脑" in out       # Y 也得知了同样内容：照印
+    assert "item_gained: 旧信" in out                 # 状态是公共事实
+
+    full = NarrativeEventLog(session).format_state_for_prompt(
+        PROJECT, scene_id=f"{CHAPTER}_SC02", onstage_character_ids=["X", "Y"],
+    )
+    assert "凶手是看门人" in full                     # 全知视角不变
+
+
 def test_projection_pov_false_belief_injected_others_suppressed(session) -> None:
     """believed_false：POV 的错误信念注入；他人的错误信念内容抑制。"""
     _seed(session)
