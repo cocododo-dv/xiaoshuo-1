@@ -53,10 +53,83 @@ class AuthorDraftStoreMixin:
         self._require_target(object_type, object_id)
         current = self._current_row(object_type, object_id)
         if current is not None:
+            self._seed_untouched_blank(current, actor_ref=actor_ref)
             return self._draft_response(current)
         source = self._scene_source(object_id) or self._blank_scene_source(object_id)
-        draft = self._create_draft_row(object_type, object_id, source=source, actor_ref=actor_ref)
+        # 已归档的场从权威正文起步：这一稿就是权威正文，提升指针随之指向它——过去写作台第一次打开 AI 起草台
+        # 自己归档的场，顶栏照样提示「提升为权威正文」，点了只是把同一段字再晋升一遍（还要再对一次故事事实）
+        archived = self._archived_final(object_id)
+        promoted = archived.row_id if archived is not None and source["source_text_ref"] == f"final_scene:{archived.row_id}" else None
+        draft = self._create_draft_row(
+            object_type, object_id, source=source, actor_ref=actor_ref, promoted_final_row_id=promoted
+        )
         return self._draft_response(draft)
+
+    def _archived_final(self, scene_id: str) -> FinalScene | None:
+        """这一场已归档的权威正文；还没归档就是 None——停在「待复核」的准终稿（``near_final_ready``）也挂在
+        ``current_final_scene_row_id`` 上，但作者还没采纳，不算。"""
+        state = self.session.get(SceneRunState, scene_id)
+        if state is None or state.scene_status != "archived" or not state.current_final_scene_row_id:
+            return None
+        return self.session.get(FinalScene, state.current_final_scene_row_id)
+
+    def _seed_untouched_blank(self, draft: AuthorDraft, *, actor_ref: str) -> None:
+        """空白稿建好之后这一场才有了权威正文（AI 起草台的管线自己归档、没经过「采纳并归档」）：把正文接进来。
+
+        写作台在一场还没有正文时就会 ensure（打开它、目录装载后预热「当前在写那一场」），建下一份空白稿；管线归档只写
+        终稿、不碰作者稿，于是写作台打开的是那份空白稿——起草台说「已写入写作台正文」，写作台一片空白。只接
+        「从没动过」的空白稿（空白起步、修订号 1、没提升过）：作者写过、清空过、提升过的稿一概不碰。修订号照常 +1，
+        还拿着修订号 1 的页面再存就是 409（冲突照常处理），不会悄悄盖掉接进来的正文。
+
+        只认已归档的场（``_archived_final``）：待复核的准终稿接进来的话，起草台「采纳并归档」会把它当成作者自己写的稿
+        去比差异。接进来的这一版就是权威正文，提升指针随之指向它（写作台显示「已是权威正文」，不提示再提升一次）。
+        """
+        if not (
+            draft.object_type == "scene"
+            and int(draft.revision_no) == 1
+            and draft.last_promoted_revision_no is None
+            and str(draft.source_text_ref or "").endswith(":blank")
+            and not (draft.content or "").strip()
+        ):
+            return
+        final_row = self._archived_final(draft.object_id)
+        content = sanitize_manuscript_html(final_row.content) if final_row is not None else ""
+        if not content.strip():
+            return
+        source_ref = f"final_scene:{final_row.row_id}"
+        updated = self.session.execute(
+            update(AuthorDraft)
+            .where(
+                AuthorDraft.draft_id == draft.draft_id,
+                AuthorDraft.revision_no == 1,
+                AuthorDraft.status == "current",
+            )
+            .values(
+                content=content,
+                revision_no=2,
+                source_text_ref=source_ref,
+                last_promoted_revision_no=2,
+                last_promoted_final_scene_row_id=final_row.row_id,
+                updated_by=actor_ref or draft.updated_by,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        self.session.expire(draft)
+        self.session.refresh(draft)
+        if updated.rowcount != 1:
+            return  # 同一时刻别处先存了一稿：那一稿为准
+        scene = self.session.get(SceneCard, draft.object_id)
+        if scene is not None:
+            scene.words_current = count_words(content)
+        self._add_event(
+            draft,
+            event_type="edited",
+            actor_ref=actor_ref,
+            note="seeded from final scene",
+            payload={"base_revision_no": 1, "revision_no": draft.revision_no, "source_text_ref": source_ref},
+        )
+        self._snapshot_revision(draft, actor_ref=actor_ref, origin="seeded")
+        self.session.flush()
 
     def _create_draft_row(
         self,
@@ -66,6 +139,7 @@ class AuthorDraftStoreMixin:
         source: dict[str, str],
         actor_ref: str,
         event_payload: dict[str, Any] | None = None,
+        promoted_final_row_id: str | None = None,
     ) -> AuthorDraft:
         draft = AuthorDraft(
             draft_id=f"author_draft_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
@@ -74,6 +148,8 @@ class AuthorDraftStoreMixin:
             source_text_ref=source["source_text_ref"],
             content=sanitize_manuscript_html(source["content"]),
             revision_no=1,
+            last_promoted_revision_no=1 if promoted_final_row_id else None,
+            last_promoted_final_scene_row_id=promoted_final_row_id,
             status="current",
             created_by=actor_ref or "author_draft",
             updated_by=actor_ref or "author_draft",

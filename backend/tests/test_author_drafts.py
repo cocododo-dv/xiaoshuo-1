@@ -243,13 +243,10 @@ def test_scene_draft_is_dirty_when_runtime_final_pointer_moves_after_promotion(c
     ensured = client.post("/api/v1/author-drafts/scene/AD_POINTER_SC01/ensure")
     assert ensured.status_code == 200
     draft_data = ensured.json()["data"]["draft"]
-    assert draft_data["canonical_dirty"] is True
-
-    draft = session.get(AuthorDraft, draft_data["draft_id"])
-    assert draft is not None
-    draft.last_promoted_revision_no = draft.revision_no
-    draft.last_promoted_final_scene_row_id = first_final_id
-    session.commit()
+    # 已归档的场从权威正文起步：这一稿就是权威正文，不提示再提升一次
+    assert draft_data["last_promoted_revision_no"] == 1
+    assert draft_data["last_promoted_final_scene_row_id"] == first_final_id
+    assert draft_data["canonical_dirty"] is False
 
     clean = client.get("/api/v1/author-drafts/scene/AD_POINTER_SC01/current")
     assert clean.status_code == 200
@@ -270,6 +267,81 @@ def test_scene_draft_is_dirty_when_runtime_final_pointer_moves_after_promotion(c
     assert payload["draft"]["revision_no"] == 1
     assert payload["draft"]["last_promoted_final_scene_row_id"] == first_final_id
     assert payload["draft"]["canonical_dirty"] is True
+
+
+def test_untouched_blank_draft_takes_the_final_archived_after_it(client, session) -> None:
+    """写作台先建下空白稿（打开 / 预热），管线随后自己归档：再打开时空白稿接上权威正文，不再一片空白。"""
+    _create_chapter("AD_SEED", planned_scene_count=4)
+    for seq in (1, 2, 3, 4):
+        _create_scene(f"AD_SEED_SC0{seq}", chapter_id="AD_SEED", scene_seq=seq, is_chapter_last=int(seq == 4))
+    blank = client.post("/api/v1/author-drafts/scene/AD_SEED_SC01/ensure").json()["data"]["draft"]
+    assert blank["content"] == "" and blank["revision_no"] == 1
+
+    final_id = _finalize_scene(session, "AD_SEED_SC01", "AD_SEED", "林昭把旧信压在案卷底下。\n\n雨城的雨一直没停。")
+    seeded = client.post("/api/v1/author-drafts/scene/AD_SEED_SC01/ensure").json()["data"]
+    draft = seeded["draft"]
+    assert draft["draft_id"] == blank["draft_id"]
+    assert draft["revision_no"] == 2
+    assert "林昭把旧信压在案卷底下。" in draft["content"]
+    assert draft["source_text_ref"] == f"final_scene:{final_id}"
+    assert seeded["runtime_final_ref"] == f"final_scene:{final_id}"
+    assert draft["last_promoted_final_scene_row_id"] == final_id
+    assert draft["canonical_dirty"] is False
+    session.expire_all()
+    assert session.get(SceneCard, "AD_SEED_SC01").words_current > 0
+    revisions = client.get(f"/api/v1/author-drafts/{blank['draft_id']}/revisions").json()["data"]["items"]
+    assert [(r["revision_no"], r["origin"]) for r in revisions] == [(2, "seeded"), (1, "created")]
+    # 只接一次：之后再 ensure 原样返回
+    again = client.post("/api/v1/author-drafts/scene/AD_SEED_SC01/ensure").json()["data"]["draft"]
+    assert again["revision_no"] == 2
+    # 还拿着修订号 1 的页面再存：409，不会盖掉接进来的正文
+    stale = client.patch(
+        f"/api/v1/author-drafts/{blank['draft_id']}",
+        json={"content": "<p>旧页面里敲的字</p>", "base_revision_no": 1},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "AUTHOR_DRAFT_CONFLICT"
+
+    # 作者动过的稿一概不碰：清空过的（修订号 > 1）、写过字的
+    cleared = client.post("/api/v1/author-drafts/scene/AD_SEED_SC02/ensure").json()["data"]["draft"]
+    typed = client.patch(
+        f"/api/v1/author-drafts/{cleared['draft_id']}",
+        json={"content": "<p>先写一句</p>", "base_revision_no": 1},
+    ).json()["data"]["draft"]
+    client.patch(f"/api/v1/author-drafts/{cleared['draft_id']}", json={"content": "", "base_revision_no": typed["revision_no"]})
+    written = client.post("/api/v1/author-drafts/scene/AD_SEED_SC03/ensure").json()["data"]["draft"]
+    client.patch(f"/api/v1/author-drafts/{written['draft_id']}", json={"content": "<p>作者自己的开头</p>", "base_revision_no": 1})
+    _finalize_scene(session, "AD_SEED_SC02", "AD_SEED", "管线写的另一场。")
+    _finalize_scene(session, "AD_SEED_SC03", "AD_SEED", "管线写的第三场。")
+    left_empty = client.post("/api/v1/author-drafts/scene/AD_SEED_SC02/ensure").json()["data"]["draft"]
+    assert left_empty["content"] == "" and left_empty["revision_no"] == 3
+    kept = client.post("/api/v1/author-drafts/scene/AD_SEED_SC03/ensure").json()["data"]["draft"]
+    assert kept["content"] == "<p>作者自己的开头</p>" and kept["revision_no"] == 2
+
+    # 停在「待复核」的准终稿作者还没采纳：空白稿不接它
+    client.post("/api/v1/author-drafts/scene/AD_SEED_SC04/ensure")
+    _finalize_scene(session, "AD_SEED_SC04", "AD_SEED", "等作者裁决的准终稿。")
+    state = session.get(SceneRunState, "AD_SEED_SC04")
+    state.scene_status = "soft_qc_passed_with_notes"
+    session.get(FinalScene, state.current_final_scene_row_id).status = "near_final_ready"
+    session.commit()
+    pending = client.post("/api/v1/author-drafts/scene/AD_SEED_SC04/ensure").json()["data"]["draft"]
+    assert pending["content"] == "" and pending["revision_no"] == 1
+
+
+def test_draft_started_from_a_near_final_is_not_claimed_canonical(client, session) -> None:
+    """待复核的准终稿作者还没采纳：从它起步的作者稿不算权威正文（只有已归档的场才算）。"""
+    _create_chapter("AD_NEAR", planned_scene_count=1)
+    _create_scene("AD_NEAR_SC01", chapter_id="AD_NEAR", scene_seq=1, is_chapter_last=1)
+    near_id = _finalize_scene(session, "AD_NEAR_SC01", "AD_NEAR", "林昭在雨城车站等那封旧信。")
+    state = session.get(SceneRunState, "AD_NEAR_SC01")
+    state.scene_status = "soft_qc_passed_with_notes"
+    session.get(FinalScene, near_id).status = "near_final_ready"
+    session.commit()
+    draft = client.post("/api/v1/author-drafts/scene/AD_NEAR_SC01/ensure").json()["data"]["draft"]
+    assert draft["source_text_ref"] == f"final_scene:{near_id}"
+    assert draft["last_promoted_revision_no"] is None
+    assert draft["canonical_dirty"] is True
 
 
 def test_author_draft_save_uses_optimistic_locking(client, session) -> None:
