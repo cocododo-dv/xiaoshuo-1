@@ -241,7 +241,10 @@
    （§7a；执行步键 `style_draft:0:compare:ab` / `…:ba`）：评审两次都说首稿更像 → 仍保留首稿（`pairwise_first_draft_closer`）。
 5. 软 QC = **参考评审**（统一评审模板 `style_reference_judge`，不带场景上下文；样例 4 窗 + 文风卡；16 维各 0–10 分，按校准折算，§7a）→
    **放行由代码定**：作数的维里低于阈值的（重点维在前，至多 4 维）各出一条补丁说明（评审给这一维的改法），没有就放行；评审不可用时
-   不据它补丁（waive 并留说明）。补丁的去留问**成对比较**（补丁前 vs 补丁稿，执行步键 `style_patch_keep:compare:ab` / `…:ba`，在补丁的
+   不据它补丁（waive 并留说明）。评审判出了不像的维时，补丁是**按维整场修改**（`style_first.dimension_patch_plan`，2026-10-14 第 2 项：
+   这几维的评审分、说明与改法、读数在这几维的差异、文风卡句，样例窗换成示范这几维的窗，正常温度；已经像作者的句子原样留下）——口吻、
+   气质、对白写法这类贯穿全篇的差距，「只动点名的句子」的局部补丁改不动；只有确定性问题时照旧局部补丁、低温（0.3）。补丁尝试记
+   `patch_mode`（`dimension_revision` / `local_patch`），去留记录带 `revised_dimensions`。补丁的去留问**成对比较**（补丁前 vs 补丁稿，执行步键 `style_patch_keep:compare:ab` / `…:ba`，在补丁的
    检查点之后、`soft_qc:1` 之前）：两次都说补丁前更像 → 退回（`pairwise_original_closer`）；都说补丁更像 → 留下；没有明确结论 →
    `distance` 变大超过 `patch_max_distance_increase` 才退回（`distance_worse`）。退回时 `STYLE_PATCH_REVERTED`。
 6. 准定稿评审（按参考判，分数带范围）。评审要改写时，定稿改写稿进第二轮评审之前先过两道确定性门：相对来源稿的基础安全回退

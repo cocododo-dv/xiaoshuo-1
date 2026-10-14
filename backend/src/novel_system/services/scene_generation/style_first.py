@@ -12,7 +12,7 @@ import logging
 import time
 import uuid
 from copy import deepcopy
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
 
@@ -79,6 +79,64 @@ def _policy_card(policy: Any) -> tuple[Any, dict[str, str]]:
     profile = layer.get("profile") if isinstance(layer.get("profile"), Mapping) else {}
     profile_json = profile.get("profile_json") if isinstance(profile.get("profile_json"), Mapping) else {}
     return card_from_profile_json(profile_json), line_states_from_profile_json(profile_json)
+
+
+# 2026-10-14 评审统一第 2 项：软 QC 的评审判出不像的维时，补丁改成按维整场修改（不再是「只动点名的句子」的局部补丁）
+DIMENSION_PATCH_INSTRUCTION = (
+    "This is a voice revision across the whole scene, not a local patch. The reference judge found the dimensions listed "
+    "below far from the reference author: wherever the scene does what a line below describes, rewrite that passage the "
+    "way the [风格样例] passages handle the same kind of moment, following the judge's 改法 and the style card lines. "
+    "Every sentence that already sounds like the author stays exactly as it is. Keep every fact, event, character, the "
+    "point of view, the meaning of every line of dialogue, the order of beats and roughly the same length."
+)
+PATCH_MODE_DIMENSION = "dimension_revision"
+PATCH_MODE_LOCAL = "local_patch"
+
+
+def reference_judge_dimensions(report: Any) -> list[str]:
+    """软 QC 报告里评审判为不像、要补的维（报告问题的 ``style_reference.<维>``，按出现顺序 = 代码定的补丁顺序）。"""
+    out: list[str] = []
+    for issue in getattr(report, "issues_json", None) or []:
+        key = str(issue.get("issue_key") or "") if isinstance(issue, Mapping) else ""
+        if key.startswith("style_reference."):
+            dim = key[len("style_reference."):]
+            if dim and dim not in out:
+                out.append(dim)
+    return out
+
+
+def dimension_patch_plan(
+    session: Any,
+    *,
+    policy: Any,
+    report: Any,
+    source_content: str,
+    rewrite_brief: Sequence[str],
+    scene_id: str,
+) -> dict[str, Any] | None:
+    """作者手笔直起、且软 QC 的评审判出了不像的维 → 按维整场修改的计划：
+    ``{dimensions, sections, other_brief}``（``sections`` 接在稿子后面，``other_brief`` 是简报里评审之外的条目——确定性
+    问题照旧逐条给）。不适用 → None（照旧局部补丁）。"""
+    if not getattr(policy, "style_first", False) or report is None:
+        return None
+    dimensions = reference_judge_dimensions(report)
+    if not dimensions:
+        return None
+    judge = style_step.report_reference_judge(report) or {}
+    judged = judge.get("dimensions") if isinstance(judge.get("dimensions"), Mapping) else {}
+    card, line_states = _policy_card(policy)
+    card_lines = style_step.card_lines_for(card, dimensions, line_states=line_states)
+    reading, _error = fidelity_probe.observe(session, policy, source_content, ref=scene_id, what="dimension-patch")
+    differences = style_step.revision_differences(reading, dimensions) if reading is not None else []
+    sections = style_step.judge_revision_brief_sections(
+        dimensions=dimensions, judged=judged, differences=differences, card_lines=card_lines
+    )
+    other_brief = [
+        line
+        for line in rewrite_brief
+        if not any(str(line).startswith(f"{dim}（") or str(line).startswith(f"{dim}:") for dim in dimensions)
+    ]
+    return {"dimensions": dimensions, "sections": sections, "other_brief": other_brief}
 
 
 def style_first_step(

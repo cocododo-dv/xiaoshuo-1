@@ -147,6 +147,9 @@ describe("起草台：风格步与补丁的决定", () => {
     expect(fidPatchView({ decision: "kept", reason: "pairwise_patch_closer" })).toMatchObject({ tone: "ok" });
     expect(fidPatchView({ decision: "kept", reason: "pairwise_patch_closer" }).text).toContain("补丁更像作者");
     expect(fidStyleStepView({ decision: "revision_rejected", reason: "pairwise_first_draft_closer" }).text).toContain("首稿更像作者");
+    // 按维整场修改：说改了哪几维
+    expect(fidPatchView({ decision: "kept", reason: "pairwise_patch_closer", revised_dimensions: ["scene.dialogue", "theme.emotional_tone"] }).text)
+      .toBe("按 2 个维度（对话写法、情感基调）整场改过：软质检的补丁保留（评审两次比较都认为补丁更像作者）");
   });
 });
 

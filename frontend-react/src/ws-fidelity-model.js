@@ -291,9 +291,15 @@ const PATCH_REVERT_TEXT = {
   distance_worse_without_judge_gain: "补丁没有更像（离作者更远、评审分也没提高），已退回补丁前的稿子",
 };
 
-/* 软质检的补丁留没留：{ tone, text } 或 null */
+/* 软质检的补丁留没留：{ tone, text } 或 null。按维整场修改（2026-10-14：评审判出不像的维时）在前面说改了哪几维 */
 export function fidPatchView(patch) {
   if (!patch || !patch.decision) return null;
+  const view = fidPatchDecision(patch);
+  const dims = (patch.revised_dimensions || []).map(styleDimensionLabel).filter(Boolean);
+  return dims.length ? { ...view, text: `按 ${dims.length} 个维度（${dims.join("、")}）整场改过：${view.text}` } : view;
+}
+
+function fidPatchDecision(patch) {
   if (patch.decision === "reverted") {
     return { tone: "warn", text: PATCH_REVERT_TEXT[patch.reason] || "补丁没有更像，已退回补丁前的稿子" };
   }

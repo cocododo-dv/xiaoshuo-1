@@ -259,6 +259,7 @@
  "test_story_editorial.py": 3.9,
  "test_story_memory.py": 6.2,
  "test_structure_follows_reference.py": 1.12,
+ "test_style_dimension_patch.py": 3.0,
  "test_style_fidelity.py": 20.54,
  "test_style_fidelity_pipeline.py": 22.08,
  "test_style_fidelity_summary_queries.py": 7.31,

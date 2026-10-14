@@ -361,6 +361,43 @@ def revision_brief_sections(
     return "\n".join(parts)
 
 
+def judge_revision_brief_sections(
+    *,
+    dimensions: Sequence[str],
+    judged: Mapping[str, Mapping[str, Any]],
+    differences: Sequence[Mapping[str, Any]],
+    card_lines: Mapping[str, Sequence[str]],
+) -> str:
+    """软 QC 评审判出不像的维 → 按维整场修改的提示段（2026-10-14 评审统一第 2 项）：每一维带评审的分、说明与改法；
+    读数在这几维有越界的量就列出来；再给这几维的文风卡句。``judged`` = 评审记录的 ``dimensions``（作数的分、说明、改法）。"""
+    parts = ["## Dimensions To Move Toward The Author"]
+    for dim in dimensions:
+        entry = judged.get(dim) or {}
+        score = entry.get("score")
+        head = f"- {dimension_label(dim)}（{dim}）"
+        if isinstance(score, (int, float)):
+            head += f"：评审 {float(score):.1f} / 10"
+        note = str(entry.get("note") or "").strip()
+        if note:
+            head += f"——{note}"
+        parts.append(head)
+        fix = str(entry.get("fix") or "").strip()
+        if fix:
+            parts.append(f"  改法：{fix}")
+    if differences:
+        parts.append("")
+        parts.append("## Measured Differences (this draft against the author's own passages)")
+        parts.extend(f"- {item.get('text') or item.get('phrase')}" for item in differences)
+    lines = [(dim, card_lines.get(dim) or []) for dim in dimensions]
+    if any(texts for _dim, texts in lines):
+        parts.append("")
+        parts.append("## Style Card Lines For These Dimensions")
+        for dim, texts in lines:
+            for text in texts:
+                parts.append(f"- {dimension_label(dim)}：{text}")
+    return "\n".join(parts)
+
+
 def revision_keep_decision(
     first: FidelityReading | None,
     revision: FidelityReading | None,
@@ -495,6 +532,7 @@ __all__ = [
     "card_lines_for",
     "dimension_label",
     "fidelity_thresholds",
+    "judge_revision_brief_sections",
     "level_words",
     "patch_keep_decision",
     "reading_brief",

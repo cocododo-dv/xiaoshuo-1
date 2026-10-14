@@ -20,7 +20,7 @@ from typing import Any, Sequence
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneCard, SceneRunState
+from novel_system.db.models import QcReport, SceneCard, SceneRunState
 from novel_system.services import qc_engine
 from novel_system.services.llm_task_runner import LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
@@ -322,7 +322,39 @@ class SceneGenerationService:
         state = self.session.get(SceneRunState, scene_id)
         # 2026-09-14 风格保真修补:有绑定时软补丁低温、未点名的句子逐字保留——补丁的 schema 仍要求
         # 返回整篇 scene_text,温度 0.8 会把整场措辞重掷一遍。neutral_first 不变。
-        style_first = style_policy_for_bundle(bundle).defers_house_taste()
+        # 子模块 style_first 在这个方法里被同名的布尔量遮住，按别名取
+        from novel_system.services.scene_generation import style_first as style_first_mod
+
+        policy = style_policy_for_bundle(bundle)
+        style_first = policy.defers_house_taste()
+        # 2026-10-14 评审统一第 2 项：评审判出不像的维（多是贯穿全篇的口吻、气质、对白写法）时，局部补丁改不动——
+        # 改成按维整场修改：这几维的评审说明与改法、读数差异、文风卡句，样例窗换成示范这几维的窗，正常温度。
+        # 只剩确定性问题的补丁照旧局部、低温。留不留由成对比较定（scene_run.soft_qc）。
+        plan = (
+            style_first_mod.dimension_patch_plan(
+                self.session,
+                policy=policy,
+                report=self.session.get(QcReport, source_qc_report_id) if source_qc_report_id else None,
+                source_content=source_style_content,
+                rewrite_brief=rewrite_brief,
+                scene_id=scene_id,
+            )
+            if style_first
+            else None
+        )
+        if plan is not None:
+            extra_instruction = style_first_mod.DIMENSION_PATCH_INSTRUCTION + "\n\n" + plan["sections"]
+            patch_brief: list[str] | None = list(plan["other_brief"]) or None
+            temperature_override: float | None = None
+        else:
+            extra_instruction = "Apply only the controlled patch brief; do not rewrite the full scene." + (
+                " Keep every sentence the brief does not name verbatim; for the sentences you do change, "
+                "the [STYLE_REFERENCE] block is the style authority."
+                if style_first
+                else ""
+            )
+            patch_brief = rewrite_brief
+            temperature_override = 0.3 if style_first else None
         result = neutral_style.run_style_generation(
             self,
             scene=scene,
@@ -334,17 +366,9 @@ class SceneGenerationService:
             neutral_content=source_style_content,
             source_label="Current Style Draft",
             source_row_id=source_style_draft_row_id,
-            extra_instruction=(
-                "Apply only the controlled patch brief; do not rewrite the full scene."
-                + (
-                    " Keep every sentence the brief does not name verbatim; for the sentences you do change, "
-                    "the [STYLE_REFERENCE] block is the style authority."
-                    if style_first
-                    else ""
-                )
-            ),
-            temperature_override=0.3 if style_first else None,
-            patch_brief=rewrite_brief,
+            extra_instruction=extra_instruction,
+            temperature_override=temperature_override,
+            patch_brief=patch_brief,
             source_draft_row_id=source_style_draft_row_id,
             source_draft_content=source_style_content,
             client_kind="patch",
@@ -353,9 +377,14 @@ class SceneGenerationService:
                 "source_qc_report_id": source_qc_report_id,
                 "source_style_draft_row_id": source_style_draft_row_id,
                 "rewrite_brief": rewrite_brief,
+                "patch_mode": (
+                    style_first_mod.PATCH_MODE_DIMENSION if plan is not None else style_first_mod.PATCH_MODE_LOCAL
+                ),
+                **({"revise_dimensions": list(plan["dimensions"])} if plan is not None else {}),
             },
             # 风格参考 v3（P5b）：作者手笔直起时软补丁按改稿口径渲染（「只改不像的地方，已经像的原样留下」）
             render_role=ROLE_REVISE if style_first else None,
+            revise_dimensions=plan["dimensions"] if plan is not None else None,
         )
         state.soft_patch_count += 1
         return result

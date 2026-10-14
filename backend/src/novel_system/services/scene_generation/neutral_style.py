@@ -11,6 +11,7 @@ import hashlib
 import time
 import uuid
 from copy import deepcopy
+from collections.abc import Sequence
 from typing import Any
 
 import novel_system.services.scene_generation.fidelity_probe as fidelity_probe
@@ -118,6 +119,7 @@ def run_style_generation(
     product_callback: ProductCallback | None = None,
     step_reconciler: StepReconciler | None = None,
     render_role: str | None = None,
+    revise_dimensions: Sequence[str] | None = None,
 ) -> StyleGenerationResult:
     # 长度带按 bundle 的 StylePolicy（与场景的呈现方式）放宽，这一遍里的验收、指引与补丁都用它
     lengths = LengthPolicy.for_scene(bundle, scene)
@@ -176,6 +178,8 @@ def run_style_generation(
         final_user_prompt=user_prompt,
         placement=PLACEMENT_USER_TAIL,
         role=render_role,
+        # 按维整场修改（软补丁的评审判出不像的维）：选窗换进示范这几维的样例窗
+        revise_dimensions=list(revise_dimensions) if revise_dimensions else None,
         node_id=("style_patch" if llm_step == "soft_patch" else llm_step),
     )
     user_prompt = apply_style_user_tail(prompt, user_prompt)

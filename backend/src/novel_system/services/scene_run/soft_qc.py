@@ -410,8 +410,13 @@ class SoftQcCheckpointMixin:
                     restored_row_id=before.row_id,
                 )
             )
+        from novel_system.services.scene_generation.style_first import reference_judge_dimensions
+
+        # 按维整场修改（第 2 项）改的是补丁前那一轮评审判出的维；局部补丁为空
+        revised_dimensions = reference_judge_dimensions(self.session.get(QcReport, qc0.qc_report_id))
         details = {
             "version": "style_patch_keep_v2",
+            "revised_dimensions": revised_dimensions,
             "decision": decision,
             "reason": reason,
             "source_draft_row_id": after.row_id,

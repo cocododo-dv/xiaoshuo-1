@@ -202,6 +202,9 @@ def _patch_decision(attempt: AttemptTracker) -> dict[str, Any]:
         "reading_id": after.get("reading_id"),
         "before_qc_report_id": details.get("before_qc_report_id"),
         "after_qc_report_id": details.get("after_qc_report_id"),
+        # 2026-10-14：补丁是按维整场修改时改了哪几维（局部补丁为空）；成对比较的结论
+        "revised_dimensions": list(details.get("revised_dimensions") or []),
+        "comparison": (details.get("comparison") or {}).get("verdict") if isinstance(details.get("comparison"), Mapping) else None,
         "created_at": attempt.created_at,
     }
 
