@@ -745,8 +745,10 @@ def test_soft_qc_template_drops_seven_dimension_scoring() -> None:
     builder = PromptBuilder()
     payload = builder.build(_v2_style_snapshot(), "soft_qc")
     assert "Score style adherence from 0 to 1" not in payload["user_prompt"]
-    assert "[声音特征]" in payload["system_prompt"]
-    assert "[正向风格特征]" in payload["user_prompt"]
+    # 2026-10-14 评审统一：soft_qc 模板只剩润色口径，对照 [声音特征] / 文风卡的参考评审在 style_reference_judge 里
+    assert "[声音特征]" not in payload["system_prompt"] and "[STYLE_REFERENCE]" not in payload["system_prompt"]
+    assert "[声音特征]" in builder.build(_v2_style_snapshot(), "style_reference_judge")["system_prompt"]
+    assert "[正向风格特征]" not in payload["user_prompt"]
     # outcome 元组与 literary risks 项保留
     assert "soft_block_human / false / human_review_required" in payload["user_prompt"]
     assert "model_voice, image_homogeneity, expository_dialogue" in payload["user_prompt"]

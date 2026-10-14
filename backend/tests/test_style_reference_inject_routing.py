@@ -177,7 +177,9 @@ def test_template_names_map_to_the_nodes_that_dispatch_them() -> None:
     assert nodes_for_template("style_targeted_revision") == ("style_draft",)
     assert nodes_for_template("style_draft") == ("style_draft", "style_patch")
     assert nodes_for_template("scene_blueprint_facts") == ("scene_blueprint",)
-    assert nodes_for_template("style_ref_check_judge") == ("soft_qc",)
+    assert nodes_for_template("style_reference_judge") == ("soft_qc",)
+    assert nodes_for_template("style_reference_compare") == ("soft_qc",)
+    assert nodes_for_template("style_ref_check_judge") == (), "旧的对照检查模板已删"
     assert nodes_for_template("writer_passage_review") == ("writer_deep_review",)
     assert nodes_for_template("soft_qc") == ("soft_qc",)
     assert nodes_for_template("no_such_template") == ()

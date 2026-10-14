@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import (
     AttemptTracker,
+    LlmCall,
     QcReport,
     SceneDraft,
     SceneRunState,
@@ -34,6 +35,7 @@ from tests.real_llm_fakes import install_online_pipeline
 from tests.style_reference_inject_helpers import bind, seed_reference
 from tests.support.checkpoint_fakes import (
     _CountingGenerationClient,
+    _response,
     _FailNearFinal,
     _HardPassClient,
     _PassNearFinal,
@@ -214,7 +216,10 @@ def test_targeted_revision_runs_through_the_orchestrator_and_resumes_without_rep
             SCENE_ID, execution_id=f"idempotency:fid-revise-{expected_decision}"
         )
 
-    assert len(generation_client.requests) == 2, "首稿 + 定向修改"
+    # 读数说修改稿更近时再做两次成对比较（这个替身答不出 → 比不成，按读数采用）；不够近的不比
+    expected_calls = 4 if expected_decision == S.DECISION_REVISION_KEPT else 2
+    assert len(generation_client.requests) == expected_calls, "首稿 + 定向修改（+ 两次成对比较）"
+    assert [r.node_id for r in generation_client.requests[2:]] == ["soft_qc"] * (expected_calls - 2)
     revision_request = generation_client.requests[1]
     assert revision_request.node_id == "style_draft"
     assert "## Dimensions To Move Toward The Author" in revision_request.messages[-1]["content"]
@@ -246,7 +251,7 @@ def test_targeted_revision_runs_through_the_orchestrator_and_resumes_without_rep
         _orchestrator(session, generation_client, soft_qc, near_final).run_scene(
             SCENE_ID, execution_id=f"idempotency:fid-revise-{expected_decision}"
         )
-    assert len(generation_client.requests) == 2
+    assert len(generation_client.requests) == expected_calls
     assert soft_qc.calls == ["soft_qc:0"]
     assert near_final.calls == 2
 
@@ -281,14 +286,16 @@ def test_patch_that_moves_away_is_reverted_and_the_checkpoint_resumes(session, m
         select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID, AttemptTracker.step == S.STYLE_PATCH_KEEP_STEP)
     ).scalars().one()
     assert keep.details_json["decision"] == S.PATCH_DECISION_REVERTED
-    assert keep.details_json["reason"] == S.PATCH_REASON_JUDGE_WORSE
+    # 成对比较这个替身答不出（比不成）→ 退回读数规则：补丁后读数变远 0.2 > 0.05
+    assert keep.details_json["reason"] == S.PATCH_REASON_DISTANCE_WORSE
+    assert keep.details_json["comparison"]["verdict"] == "unavailable"
     assert keep.details_json["restored_row_id"] == style_row_id
     patched = next(r for r in _readings(session) if r.stage == "patched")
     assert patched.draft_ref == refs["soft_patch_draft_row_id"] and patched.judge_json["overall"] == 5.0
     codes = [item["code"] for item in sg.latest_style_notices(session, SCENE_ID, bundle_id=state.current_bundle_id)]
     assert sg.STYLE_NOTICE_PATCH_REVERTED in codes and sg.STYLE_NOTICE_FIRST_DRAFT_ACCEPTED in codes
     provider_calls = len(generation_client.requests)
-    assert provider_calls == 2, "首稿 + 补丁（风格步没有调用）"
+    assert provider_calls == 4, "首稿 + 补丁 + 两次成对比较（风格步没有调用）"
     # L7：补丁退回了，这一场留下的是补丁前的稿子——工作台 / 场景接口给的评审分是补丁前那一轮（7.5），
     # 不是评了没采用那一稿的补丁后那一轮（5.0）
     from novel_system.db.models import SceneCard
@@ -307,6 +314,43 @@ def test_patch_that_moves_away_is_reverted_and_the_checkpoint_resumes(session, m
     assert soft_qc.calls == ["soft_qc:0", "soft_qc:1"]
     assert len(generation_client.requests) == provider_calls
     assert near_final.calls == 2
+
+
+class _PrefersPatchClient(_CountingGenerationClient):
+    """成对比较（soft_qc 节点上的比较请求）答「补丁更像」：ab 次序 B = 补丁稿，ba 次序 A = 补丁稿。"""
+
+    def generate(self, request):  # noqa: ANN001
+        if request.node_id == "soft_qc" and "## Version A" in request.messages[-1]["content"]:
+            self.requests.append(request)
+            compares = sum(1 for item in self.requests if item.node_id == "soft_qc")
+            payload = {"closer": "B" if compares % 2 == 1 else "A", "reason": "补丁的口吻更近"}
+            return _response(payload, f"compare-{len(self.requests)}")
+        return super().generate(request)
+
+
+def test_patch_the_judge_prefers_is_kept_even_when_the_reading_moves_away(session, monkeypatch) -> None:
+    """读数只量表层：评审两个次序都说补丁更像，读数变远也留下补丁。"""
+    _bind_resume_project(session)
+    _install_readings(monkeypatch, {"门轴在雨声里轻响": _reading(0.80, 35.0), "她没有立刻回答": _reading(1.00, 70.0)})
+    soft_qc = _JudgedSoftQc(
+        session, {"soft_qc:0": "patch", "soft_qc:1": "continue"}, {"soft_qc:0": 7.5, "soft_qc:1": 5.0}
+    )
+    client = _PrefersPatchClient()
+    with pytest.raises(RuntimeError, match="fail after soft checkpoint"):
+        _orchestrator(session, client, soft_qc, _FailNearFinal()).run_scene(
+            SCENE_ID, execution_id="idempotency:fid-pairwise-keep"
+        )
+    state = session.get(SceneRunState, SCENE_ID)
+    refs = state.run_checkpoint_json["artifact_refs"]
+    assert refs["soft_final_draft_row_id"] == refs["soft_patch_draft_row_id"]
+    keep = session.execute(
+        select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID, AttemptTracker.step == S.STYLE_PATCH_KEEP_STEP)
+    ).scalars().one()
+    assert keep.details_json["decision"] == S.PATCH_DECISION_KEPT
+    assert keep.details_json["reason"] == S.PATCH_REASON_PAIRWISE_PATCH
+    assert keep.details_json["comparison"]["answers"] == ["B", "A"]
+    keys = [c.execution_step_key for c in session.execute(select(LlmCall).where(LlmCall.step == "style_reference_compare")).scalars()]
+    assert sorted(keys) == ["style_patch_keep:compare:ab", "style_patch_keep:compare:ba"]
 
 
 def test_patch_that_holds_or_improves_is_kept(session, monkeypatch) -> None:
@@ -499,10 +543,13 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
         assert job.state == "succeeded", job.error_json
         reading = db.get(StyleFidelityReading, job.result_json["reading_id"])
         assert (reading.source, reading.stage) == ("manual_check", "manual")
+        # 总分由代码算（作数各维的平均：6.0 与 8.5）；没校准 → 作数的分就是原始分，读数里写明口径
         assert reading.judge_json["overall"] == 7.2 and reading.judge_json["dimensions"]["scene.dialogue"] == {
             "score": 6.0,
+            "raw": 6.0,
             "note": "对白偏正式",
         }
+        assert reading.judge_json["calibration"]["state"] == "missing"
         assert reading.copy_check_json["blocked"] is False
     request = fake.requests[0]
     assert request.node_id == "soft_qc", "评审走现有的 soft_qc 节点路由"
@@ -568,14 +615,15 @@ def test_scene_check_reads_the_scene_final_text(client, session, monkeypatch) ->
         "resolve_check_client",
         lambda: (_JudgeLLM({"overall": 9, "dimensions": {"scene.dialogue": {"score": 8, "note": "好多了"}}}), True),
     )
+    # 模型自报的 overall（9）不算数：总分是作数各维的平均（只有对白一维 = 8）
     again = _post_check(client, {"scene_id": scene.scene_id}, "fid-check-scene-again")
     run_job_inline(again.json()["data"]["job_id"])
     with SessionLocal() as db:
         second = db.get(StyleReferenceJob, again.json()["data"]["job_id"])
         assert second.state == "succeeded", second.error_json
         assert second.result_json["reading_id"] != job.result_json["reading_id"]
-        assert db.get(StyleFidelityReading, second.result_json["reading_id"]).judge_json["overall"] == 9.0
-    assert client.get(f"/api/v1/scenes/{scene.scene_id}/style-fidelity").json()["data"]["judge"]["overall"] == 9.0
+        assert db.get(StyleFidelityReading, second.result_json["reading_id"]).judge_json["overall"] == 8.0
+    assert client.get(f"/api/v1/scenes/{scene.scene_id}/style-fidelity").json()["data"]["judge"]["overall"] == 8.0
 
 
 def test_check_job_fails_loudly_when_the_judge_fails(client, session, monkeypatch) -> None:
@@ -632,21 +680,31 @@ def test_check_job_keeps_control_plane_failures_distinct(client, session, monkey
         assert db.scalars(select(StyleFidelityReading).where(StyleFidelityReading.source == "manual_check")).first() is None
 
 
-def test_judge_output_is_rescaled_and_drops_excluded_dimensions() -> None:
-    """没给模板 schema(旧提示词快照的兜底路径):按一次回答推断量级;声明了刻度的路径见
-    ``test_style_reference_check_job.py``(2026-09-24 §8 C3)。「不学」维两条路都丢。"""
-    judge = check_job.normalize_judge_output(
+def test_judge_output_reads_the_ten_point_scale_and_drops_excluded_dimensions() -> None:
+    """评审分按 0–10 读（模板声明的刻度；全在 1 以下的回答是十分之几，不是 0–1 刻度），「不学」维与未知维丢掉，
+    总分由代码按作数的维算（2026-10-14 评审统一，取代按一次回答推断量级的旧兜底）。"""
+    from novel_system.services.style_reference import judge as J
+
+    scores = J.parse_judge_output(
         {
-            "overall": 0.8,
             "dimensions": {
-                "scene.dialogue": {"score": 0.6, "note": "n"},
-                "theme.values": {"score": 0.9},
+                "scene.dialogue": {"score": 6, "note": "n"},
+                "theme.values": {"score": 9},
                 "bogus": {"score": 1},
-            },
-        },
-        {"theme.values": "exclude"},
+            }
+        }
     )
-    assert judge["overall"] == 8.0 and judge["dimensions"] == {"scene.dialogue": {"score": 6.0, "note": "n"}}
+    verdict = J.apply_calibration(
+        scores,
+        calibration=None,
+        state=J.STATE_MISSING,
+        dimension_states={"theme.values": "exclude"},
+        thresholds=J.JudgeThresholds(),
+    )
+    record = J.judge_record(verdict, source="manual_check")
+    assert record["overall"] == 6.0 and set(record["dimensions"]) == {"scene.dialogue"}
+    tenth = J.parse_judge_output({"dimensions": {"scene.dialogue": {"score": 0.6}}})
+    assert tenth.dimensions["scene.dialogue"].score == 0.6
 
 
 # ---------------------------------------------------------------------------

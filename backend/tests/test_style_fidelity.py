@@ -172,10 +172,15 @@ def test_targeted_revision_is_kept_when_it_moves_closer(session, monkeypatch) ->
     )
     session.commit()
 
-    call = runner.calls[-1]
+    call = [item for item in runner.calls if item["step"] == "style_draft"][-1]
     assert call["node_id"] == "style_draft" and call["step"] == "style_draft"
     assert call["execution_step_key"] == "style_draft:0"
     assert call["prompt"]["template_name"] == "style_targeted_revision"
+    # 读数说更近 → 再问一次成对比较（两个次序各一次，走 soft_qc 路由）；这个替身答不出 → 比不成，按读数采用
+    compares = [item for item in runner.calls if item["step"] == "style_reference_compare"]
+    assert [item["execution_step_key"] for item in compares] == ["style_draft:0:compare:ab", "style_draft:0:compare:ba"]
+    assert all(item["node_id"] == "soft_qc" for item in compares)
+    assert compares[0]["prompt"]["system_prompt"].startswith("[STYLE_REFERENCE]")
     user = call["user_prompt"]
     assert f"## {sg.FIRST_DRAFT_SOURCE_LABEL}" in user and LONG_FIRST[:20] in user
     assert "## Dimensions To Move Toward The Author" in user and "节奏控制（narrative.pacing）" in user
@@ -189,9 +194,46 @@ def test_targeted_revision_is_kept_when_it_moves_closer(session, monkeypatch) ->
     assert details["content_source"] == S.CONTENT_SOURCE_TARGETED_REVISION
     assert details["style_step"]["decision"] == S.DECISION_REVISION_KEPT
     assert details["style_step"]["reason"] == S.REASON_CLOSER and details["style_step"]["dimensions"] == ["narrative.pacing"]
+    assert details["style_step"]["comparison"]["verdict"] == "unavailable"
     assert sg.STYLE_NOTICE_REVISION_REJECTED not in [item["code"] for item in details["notices"]]
     stages = [(r.stage, r.distance) for r in _readings(session, scene.scene_id)]
     assert stages == [("first_draft", 1.40), ("revision", 1.20)]
+
+
+class _CompareRunner(_Runner):
+    """成对比较答「首稿更像」（两个次序一致）：ab 次序 A = 首稿，ba 次序 B = 首稿。"""
+
+    def run(self, **kwargs):  # noqa: ANN003
+        if kwargs.get("step") != "style_reference_compare":
+            return super().run(**kwargs)
+        self.calls.append(kwargs)
+        closer = "A" if str(kwargs["execution_step_key"]).endswith(":ab") else "B"
+        return SimpleNamespace(
+            llm_call_id=f"llm_call_cmp_{len(self.calls)}",
+            response=SimpleNamespace(structured_output={"closer": closer, "reason": "首稿的口吻更近"}),
+        )
+
+
+def test_targeted_revision_closer_by_reading_is_still_rejected_when_the_judge_prefers_the_first_draft(
+    session, monkeypatch
+) -> None:
+    scene, bundle, _book, _profile = _bound_scene(session, "fid_cmp")
+    runner = _CompareRunner(outputs={"style_draft": REVISED}, default=LONG_FIRST)
+    service = SceneGenerationService(session, llm_runner=runner)
+    first = service.generate_neutral_draft(scene.scene_id, bundle)
+    session.commit()
+    _install_readings(
+        monkeypatch,
+        {"窗外的雨": _reading(1.40, 97.0, out_of_band=PACING_OUT), "雨下了一夜": _reading(1.20, 71.0)},
+    )
+    result = service.generate_style_draft(
+        scene.scene_id, bundle, neutral_draft_row_id=first.row_id, neutral_content=first.content
+    )
+    session.commit()
+    assert result.content == first.content, "读数只量表层：评审两次都说首稿更像，保留首稿"
+    step = _style_attempt(session, scene.scene_id).details_json["style_step"]
+    assert step["decision"] == S.DECISION_REVISION_REJECTED and step["reason"] == S.REASON_PAIRWISE_FIRST_DRAFT
+    assert step["comparison"]["verdict"] == "base" and step["comparison"]["answers"] == ["A", "B"]
 
 
 def test_targeted_revision_that_is_not_closer_keeps_the_first_draft(session, monkeypatch) -> None:
@@ -375,37 +417,32 @@ def test_level_words_speak_in_words_not_numbers() -> None:
 
 
 def test_patch_keep_decision_reverts_only_when_the_patch_moved_away() -> None:
+    """2026-10-14：补丁的去留先看成对比较（两次一致才算数），没有明确结论再看读数；不再拿两次绝对评审分相减。"""
     t = S.DEFAULT_THRESHOLDS
-    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.55, before_distance=1.0, after_distance=0.9, thresholds=t) == (
+    assert S.patch_keep_decision(comparison="base", before_distance=1.0, after_distance=0.9, thresholds=t) == (
         S.PATCH_DECISION_REVERTED,
-        S.PATCH_REASON_JUDGE_WORSE,
-    )
-    # M3：两次独立评审差不到一分（10 分制上 7.0 → 6.2）是评审自己的噪声，不算变差——容差 0.1（= 1 分），不是 0.02
-    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.62, before_distance=1.0, after_distance=1.0, thresholds=t) == (
+        S.PATCH_REASON_PAIRWISE_ORIGINAL,
+    ), "评审两次都说补丁前更像：读数变近也退回"
+    assert S.patch_keep_decision(comparison="candidate", before_distance=1.0, after_distance=1.2, thresholds=t) == (
         S.PATCH_DECISION_KEPT,
-        S.PATCH_REASON_NOT_WORSE,
-    )
-    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.70, before_distance=1.0, after_distance=1.2, thresholds=t) == (
+        S.PATCH_REASON_PAIRWISE_PATCH,
+    ), "评审两次都说补丁更像：读数变远也留下"
+    assert S.patch_keep_decision(comparison="tie", before_distance=1.0, after_distance=1.2, thresholds=t) == (
         S.PATCH_DECISION_REVERTED,
         S.PATCH_REASON_DISTANCE_WORSE,
     )
-    # 读数变远但评审分明显提高：留下补丁
-    assert S.patch_keep_decision(before_judge=0.60, after_judge=0.75, before_distance=1.0, after_distance=1.2, thresholds=t)[0] == (
-        S.PATCH_DECISION_KEPT
+    assert S.patch_keep_decision(comparison="unavailable", before_distance=1.0, after_distance=1.02, thresholds=t) == (
+        S.PATCH_DECISION_KEPT,
+        S.PATCH_REASON_NOT_WORSE,
     )
-    # 评审分在容差内的小波动、读数没变远：留下
-    assert S.patch_keep_decision(before_judge=0.70, after_judge=0.69, before_distance=1.0, after_distance=1.02, thresholds=t)[0] == (
-        S.PATCH_DECISION_KEPT
-    )
-    assert S.patch_keep_decision(before_judge=None, after_judge=None, before_distance=None, after_distance=None, thresholds=t) == (
+    assert S.patch_keep_decision(comparison=None, before_distance=None, after_distance=None, thresholds=t) == (
         S.PATCH_DECISION_KEPT,
         S.PATCH_REASON_NO_EVIDENCE,
     )
 
 
 def test_the_reference_judge_is_read_from_the_soft_qc_brief_in_one_place() -> None:
-    """软补丁去留、归档读数与像不像视图取参考评审的同一个口径（B01-16）：改稿意见里第一条 reference_judge 的拷贝；
-    总分 10 分制换成 0–1，越界夹到两端，读不出分给 None。"""
+    """归档读数与像不像视图取参考评审的同一个口径（B01-16）：改稿意见里第一条 reference_judge 的拷贝。"""
     judge = {"kind": "reference_judge", "style_score": 7.5, "dimensions": {"voice": 8}}
     report = SimpleNamespace(rewrite_brief_json=[{"kind": "patch", "text": "x"}, judge, {"kind": "reference_judge", "style_score": 1}])
     picked = S.report_reference_judge(report)
@@ -413,9 +450,6 @@ def test_the_reference_judge_is_read_from_the_soft_qc_brief_in_one_place() -> No
     assert S.report_reference_judge(SimpleNamespace(rewrite_brief_json=[{"kind": "patch"}])) is None
     assert S.report_reference_judge(SimpleNamespace(rewrite_brief_json=None)) is None
     assert S.report_reference_judge(None) is None
-    assert S.judge_unit(judge) == 0.75
-    assert S.judge_unit({"style_score": 12}) == 1.0 and S.judge_unit({"style_score": -3}) == 0.0
-    assert S.judge_unit({"style_score": "n/a"}) is None and S.judge_unit({}) is None and S.judge_unit(None) is None
 
 
 def test_fidelity_thresholds_come_from_the_budget_file() -> None:
@@ -424,9 +458,14 @@ def test_fidelity_thresholds_come_from_the_budget_file() -> None:
         "style_step_max_percentile": 90.0,
         "revision_min_improvement": 0.03,
         "patch_max_distance_increase": 0.05,
-        "judge_tolerance": 0.1,
+        "judge_pass_score": 6.0,
+        "judge_raw_pass_score": 7.0,
+        "judge_min_separation": 2.0,
+        "judge_min_dimension_separation": 1.0,
+        "judge_calibration_anchors": 3.0,
     }
-    assert S.DEFAULT_THRESHOLDS.judge_tolerance == 0.1, "默认值与预算文件一致"
+    assert thresholds == S.DEFAULT_THRESHOLDS, "默认值与预算文件一致"
+    assert thresholds.judge().pass_score == 6.0 and thresholds.judge().calibration_anchors == 3
 
 
 def test_render_audit_notices_become_style_notices() -> None:

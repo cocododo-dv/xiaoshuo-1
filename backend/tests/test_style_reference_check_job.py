@@ -80,7 +80,7 @@ class _FakeJudge(AccountedGenerateMixin):
 
 def test_check_judge_sends_nothing_for_a_local_only_book_on_a_cloud_soft_qc_route(session, monkeypatch) -> None:
     _book, profile_id = seed_reference(session, "h1_check", cloud_policy="local_only")
-    policy = check_job._profile_policy(session, profile_id)
+    policy = check_job.profile_policy(session, profile_id)
     fake = _FakeJudge()
     _global_model(monkeypatch, local=True)
     _routes(monkeypatch, set())
@@ -88,7 +88,7 @@ def test_check_judge_sends_nothing_for_a_local_only_book_on_a_cloud_soft_qc_rout
         check_job.run_reference_judge(
             session,
             policy=policy,
-            scope=check_job._scope(None),
+            scope=check_job.scope_for(None),
             text="他把灯芯拨小了些，屋里的影子便大了一圈。" * 30,
             llm_client=fake,
             context_scope_id="h1_check",
@@ -99,14 +99,14 @@ def test_check_judge_sends_nothing_for_a_local_only_book_on_a_cloud_soft_qc_rout
 
 def test_check_judge_prompt_is_fitted_to_the_input_budget(session, monkeypatch) -> None:
     _book, profile_id = seed_reference(session, "l7")
-    policy = check_job._profile_policy(session, profile_id)
+    policy = check_job.profile_policy(session, profile_id)
     text = "他把灯芯拨小了些，屋里的影子便大了一圈。" * 30
 
     def _judge(fake):
         check_job.run_reference_judge(
             session,
             policy=policy,
-            scope=check_job._scope(None),
+            scope=check_job.scope_for(None),
             text=text,
             llm_client=fake,
             context_scope_id="l7",
@@ -408,57 +408,42 @@ def _judge_schema() -> dict:
     from novel_system.services.prompt_builder import load_prompt_templates
 
     schema = load_prompt_templates()[check_job.CHECK_TEMPLATE].structured_schema
-    assert schema["properties"]["overall"]["maximum"] == 10
+    dims = schema["properties"]["dimensions"]["properties"]
+    assert all(member["properties"]["score"]["maximum"] == 10 for member in dims.values())
+    assert "overall" not in schema["properties"], "总分由代码算"
     return schema
 
 
+def _record(structured: dict, states: dict | None = None) -> dict:
+    from novel_system.services.style_reference import judge as J
+
+    scores = J.parse_judge_output(structured, schema=_judge_schema())
+    if scores is None:
+        return {"overall": None, "dimensions": {}}
+    verdict = J.apply_calibration(
+        scores, calibration=None, state=J.STATE_MISSING, dimension_states=states or {}, thresholds=J.JudgeThresholds()
+    )
+    return J.judge_record(verdict, source="manual_check")
+
+
 def test_judge_scores_follow_the_declared_zero_to_ten_scale() -> None:
-    schema = _judge_schema()
+    """评审分按模板声明的 0–10 读（统一评审 style_reference_judge）；总分由代码按作数的维算，模型自报的 overall 不算。"""
     # 一个误写的 85 不再把整份回答按 0–100 除：它被丢掉，其余按 0–10 读
-    judge = check_job.normalize_judge_output(
-        {"overall": 7, "dimensions": {"scene.dialogue": {"score": 85, "note": "n"}, "theme.values": {"score": 6}}},
-        {},
-        schema=schema,
-    )
-    assert judge["overall"] == 7.0
-    assert judge["dimensions"] == {"theme.values": {"score": 6.0, "note": ""}}
-    # 越界的总分丢掉 → 由按维分均值补；越界的 12 那一维丢掉
-    judge = check_job.normalize_judge_output(
-        {"overall": 12, "dimensions": {"scene.dialogue": {"score": 6}, "theme.values": {"score": 12}}},
-        {},
-        schema=schema,
-    )
+    judge = _record({"overall": 7, "dimensions": {"scene.dialogue": {"score": 85, "note": "n"}, "theme.values": {"score": 6}}})
+    assert judge["overall"] == 6.0 and set(judge["dimensions"]) == {"theme.values"}
+    assert judge["dimensions"]["theme.values"]["score"] == 6.0 and judge["dimensions"]["theme.values"]["raw"] == 6.0
+    # 越界的 12 那一维丢掉
+    judge = _record({"overall": 12, "dimensions": {"scene.dialogue": {"score": 6}, "theme.values": {"score": 12}}})
     assert judge["overall"] == 6.0 and set(judge["dimensions"]) == {"scene.dialogue"}
-    # 全在 1 以下的回答也按 0–10 读：0.9 就是 0.9 分，不是 9 分
-    judge = check_job.normalize_judge_output(
-        {"overall": 0.9, "dimensions": {"scene.dialogue": {"score": 0.6}}}, {}, schema=schema
-    )
-    assert judge["overall"] == 0.9 and judge["dimensions"]["scene.dialogue"]["score"] == 0.6
+    # 全在 1 以下的回答也按 0–10 读：0.6 就是 0.6 分，不是 6 分
+    judge = _record({"dimensions": {"scene.dialogue": {"score": 0.6}}})
+    assert judge["overall"] == 0.6 and judge["dimensions"]["scene.dialogue"]["score"] == 0.6
     # 边界与「不学」维照旧
-    judge = check_job.normalize_judge_output(
-        {"overall": 10, "dimensions": {"scene.dialogue": {"score": 0}, "theme.values": {"score": 9}}},
-        {"theme.values": "exclude"},
-        schema=schema,
-    )
-    assert judge["overall"] == 10.0 and judge["dimensions"] == {"scene.dialogue": {"score": 0.0, "note": ""}}
+    judge = _record({"dimensions": {"scene.dialogue": {"score": 0}, "theme.values": {"score": 9}}}, {"theme.values": "exclude"})
+    assert judge["overall"] == 0.0 and set(judge["dimensions"]) == {"scene.dialogue"}
     # 整份回答都答错了刻度 → 没有分数（作业据此失败，不会把 60 分记成 6 分）
-    judge = check_job.normalize_judge_output(
-        {"overall": 72, "dimensions": {"scene.dialogue": {"score": 60}}}, {}, schema=schema
-    )
+    judge = _record({"overall": 72, "dimensions": {"scene.dialogue": {"score": 60}}})
     assert judge["overall"] is None and judge["dimensions"] == {}
-
-
-def test_judge_scores_fall_back_to_inference_only_without_a_declared_scale() -> None:
-    """旧提示词快照（模板没写 maximum）：才按一次回答推断量级并夹到边界（旧口径）。"""
-    for schema in (None, {"type": "object", "properties": {"overall": {"type": "number"}}}):
-        judge = check_job.normalize_judge_output(
-            {"overall": 72, "dimensions": {"scene.dialogue": {"score": 60}}}, {}, schema=schema
-        )
-        assert judge["overall"] == 7.2 and judge["dimensions"]["scene.dialogue"]["score"] == 6.0
-        judge = check_job.normalize_judge_output(
-            {"overall": 0.8, "dimensions": {"scene.dialogue": {"score": 0.6}}}, {}, schema=schema
-        )
-        assert judge["overall"] == 8.0 and judge["dimensions"]["scene.dialogue"]["score"] == 6.0
 
 
 class _HundredScaleJudge(_FakeJudge):
@@ -481,12 +466,13 @@ class _HundredScaleJudge(_FakeJudge):
 
 
 def test_check_job_reads_the_judge_on_the_template_scale(session, monkeypatch) -> None:
-    """作业里评审按模板刻度读：答 7 / 6 记 7.0 / 6.0；答 72 / 60（0–100）没有一个分在刻度内 → 作业失败，不记读数。"""
+    """作业里评审按模板刻度读：答 6 记 6.0；答 60（0–100）没有一个分在刻度内 → 作业失败，不记读数。"""
     good_id = _start_check(session, "c3_good")
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
     run_job_inline(good_id)
     reading = _reading_of(good_id)
-    assert reading.judge_json["overall"] == 7.0 and reading.judge_json["dimensions"]["scene.dialogue"]["score"] == 6.0
+    # 只有对白一维有分：总分 = 6.0（模型自报的 7 不算）
+    assert reading.judge_json["overall"] == 6.0 and reading.judge_json["dimensions"]["scene.dialogue"]["score"] == 6.0
 
     bad_id = _start_check(session, "c3_bad")
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_HundredScaleJudge(), True))

@@ -1,4 +1,4 @@
-"""风格参考 · 模型节点的运行时与记账调用（段落分类 / 学习文风 / 对照检查三种作业共用）。
+"""风格参考 · 模型节点的运行时与记账调用（段落分类 / 学习文风 / 对照检查 / 校准评审四种作业共用）。
 
 - :class:`NodeRuntime`：一个节点在一个作业里的路由与提示词模板——**每个作业载一次**，不在每次调用时重新解析
   （旧实现每一批重新解析一次路由与模板，实测 447 ms / 批）；
@@ -91,7 +91,7 @@ def load_node_runtimes(
     template_names: Mapping[str, str] | None = None,
 ) -> NodeLoad:
     """载入这些节点的路由与模板。``template_names`` 给「节点用别的名字的模板」（对照检查走 soft_qc 的路由、用
-    ``style_ref_check_judge`` 模板）。缺路由的节点不再看模板。"""
+    ``style_reference_judge`` 模板）。缺路由的节点不再看模板。"""
     try:
         routing = load_model_routing_config()
         templates = load_prompt_templates()

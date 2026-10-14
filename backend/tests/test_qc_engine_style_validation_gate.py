@@ -480,24 +480,35 @@ def test_styled_gate_accepts_near_final_rewrite_stage_and_records_it(session) ->
 
 
 class _SoftPassRunner:
-    """假 LLMNodeRunner：记录收到的 prompt，返回合法的 soft_pass payload。"""
+    """假 LLMNodeRunner：记录收到的 prompt，返回「放行」的回答——有绑定时软 QC 走统一参考评审（2026-10-14），
+    回 16 维都 8 分的评审；没绑定的润色口径回合法的 soft_pass payload。"""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
     def run(self, **kwargs):  # noqa: ANN003
+        from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
+        from novel_system.services.style_reference.judge import JUDGE_TEMPLATE
+
         self.calls.append(kwargs)
+        if kwargs["prompt"].get("template_name") == JUDGE_TEMPLATE:
+            structured = {
+                "dimensions": {
+                    dim: {"score": 8, "applicable": True, "note": "像", "fix": ""} for dim in ALL_DIMENSIONS
+                },
+                "summary": "合成",
+            }
+        else:
+            structured = {
+                "resolution_code": "soft_pass",
+                "pass_flag": True,
+                "next_action": "pass",
+                "issues": [],
+                "rewrite_brief": [],
+            }
         return SimpleNamespace(
             llm_call_id=f"llm_call_soft_{len(self.calls)}",
-            response=SimpleNamespace(
-                structured_output={
-                    "resolution_code": "soft_pass",
-                    "pass_flag": True,
-                    "next_action": "pass",
-                    "issues": [],
-                    "rewrite_brief": [],
-                }
-            ),
+            response=SimpleNamespace(structured_output=structured),
         )
 
 
@@ -536,6 +547,9 @@ def test_soft_qc_prompt_receives_same_style_reference_prefix(session) -> None:
     # 模板文案：不再是七维打分，而是对照文风卡 / 声音特征
     assert "[声音特征]" in system_prompt and "[文风卡]" in system_prompt
     assert "Score style adherence from 0 to 1" not in runner.calls[0]["user_prompt"]
+    # 2026-10-14：有绑定的软 QC 是统一参考评审（与对照检查同一份模板），不带场景上下文
+    assert runner.calls[0]["prompt"]["template_name"] == "style_reference_judge"
+    assert "Every dimension key must appear in dimensions" in runner.calls[0]["user_prompt"]
     attempt = session.execute(
         select(AttemptTracker).where(AttemptTracker.step == "soft_qc")
     ).scalars().one()

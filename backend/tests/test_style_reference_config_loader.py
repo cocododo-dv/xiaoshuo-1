@@ -72,7 +72,11 @@ def test_injection_budget_reads_the_repo_file() -> None:
             "style_step_max_percentile": 90,
             "revision_min_improvement": 0.03,
             "patch_max_distance_increase": 0.05,
-            "judge_tolerance": 0.1,
+            "judge_pass_score": 6.0,
+            "judge_raw_pass_score": 7.0,
+            "judge_min_separation": 2.0,
+            "judge_min_dimension_separation": 1.0,
+            "judge_calibration_anchors": 3,
         },
     )
 

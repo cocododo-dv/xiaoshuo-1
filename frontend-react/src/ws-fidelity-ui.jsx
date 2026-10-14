@@ -118,7 +118,9 @@ export function FidelityDimensionTable({ reading, judge, states = null, testId }
                       {state && <Tag tone={state.tone} outline>{state.label}</Tag>}
                     </th>
                     <td><FidelityMeter score={row.measured} label={`${row.label} · 测得`} /></td>
-                    <td><FidelityMeter score={row.judged} label={`${row.label} · 评审`} /></td>
+                    <td title={row.judged == null && row.judgedRaw != null ? `模型原始打分 ${fidScoreText(row.judgedRaw)}（这一维的分不作数）` : undefined}>
+                      <FidelityMeter score={row.judged} label={`${row.label} · 评审`} />
+                    </td>
                     <td className="fid-table-note">{row.note || ""}</td>
                   </tr>
                 );
@@ -127,19 +129,32 @@ export function FidelityDimensionTable({ reading, judge, states = null, testId }
           ))}
         </table>
       </div>
-      <p className="fid-foot">测得：只有句子、词汇、标点、视角、节奏、信息密度、对白这几维能按字数统计，其余维「—」；评审：模型对着原文样例打的分。分数 7 以上算像，5 以下差得远。</p>
+      <p className="fid-foot">
+        测得：只有句子、词汇、标点、视角、节奏、信息密度、对白这几维能按字数统计，其余维「—」；评审：模型对着原文样例打的分
+        {judged && judged.state === "calibrated" ? "，已按评审校准折算（0 = 普通文字，10 = 作者原文）" : judged && judged.stateView ? `（${judged.stateView.label}：${judged.stateView.hint}）` : ""}。
+        分数 7 以上算像，5 以下差得远；「—」的评审格是这一维评审分不清，悬停看模型原始打分。
+      </p>
     </div>
   );
+}
+
+/* 评审分的口径小标签（已校准 / 未校准 / 校准已过期 / 评审不可用），悬停看说明 */
+export function FidelityJudgeState({ view, testId }) {
+  if (!view || !view.stateView) return null;
+  return <Tag tone={view.stateView.tone} outline title={view.stateView.hint} testId={testId}>{view.stateView.label}</Tag>;
 }
 
 /* 评审总分一行 */
 export function FidelityJudgeLine({ judge, testId }) {
   const view = fidJudgeView(judge);
-  if (!view || view.overall == null) return null;
+  if (!view || (view.overall == null && view.rawOverall == null)) return null;
   return (
     <p className="fid-judge" data-testid={testId}>
       <span className="fid-judge-label">参考评审</span>
-      <FidelityMeter score={view.overall} label="参考评审总分" />
+      {view.overall != null
+        ? <FidelityMeter score={view.overall} label="参考评审总分" />
+        : <span title="评审不可用，这是模型原始打分">原始 {fidScoreText(view.rawOverall)}</span>}
+      <FidelityJudgeState view={view} testId={testId ? `${testId}-state` : undefined} />
       {view.summary && <span className="fid-judge-summary">{view.summary}</span>}
     </p>
   );

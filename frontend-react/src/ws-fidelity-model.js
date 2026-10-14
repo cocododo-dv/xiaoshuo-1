@@ -167,18 +167,44 @@ export function fidScoreText(score) {
   return s == null ? "—" : (Math.round(s * 10) / 10).toFixed(1);
 }
 
-/* 评审（软质检的参考评审 / 对照检查）：{ overall, summary, dims: { dim: { score, note } } } 或 null */
+/* 评审分的口径（2026-10-14 评审统一：后端 judge_record 的 calibration.state）。旧记录没写口径 = 模型原始分 */
+export const FID_JUDGE_STATES = {
+  calibrated: { tone: "ok", label: "已校准", hint: "按这份画像的评审校准折算：0 = 普通文字，10 = 作者原文。" },
+  missing: { tone: "warn", label: "未校准", hint: "模型的原始打分，还没和作者原文、普通改写对过表；到文风画像页「校准评审」。" },
+  stale: { tone: "warn", label: "校准已过期", hint: "评审模型或这份画像换过，分数暂按模型原始打分算；到文风画像页重新校准。" },
+  unusable: { tone: "danger", label: "评审不可用", hint: "校准显示这个评审模型分不清作者原文与普通改写，它的分不作数（只列出原始打分）。" },
+};
+
+export function fidJudgeState(judge) {
+  const state = judge && judge.calibration && judge.calibration.state;
+  return FID_JUDGE_STATES[state] ? state : "missing";
+}
+
+/* 评审（软质检的参考评审 / 对照检查）：
+   { overall, rawOverall, summary, state, stateView, dims: { dim: { score, raw, note, fix } } } 或 null。
+   score = 作数的分（校准后的；这一维分不清 / 评审不可用时为 null），raw = 模型原始分 */
 export function fidJudgeView(judge) {
   if (!judge || typeof judge !== "object") return null;
   const dims = {};
   Object.entries(judge.dimensions || {}).forEach(([dim, entry]) => {
-    const score = num(entry && typeof entry === "object" ? entry.score : entry);
-    if (score == null) return;
-    dims[dim] = { score, note: entry && typeof entry === "object" ? String(entry.note || "") : "" };
+    const obj = entry && typeof entry === "object" ? entry : null;
+    const score = num(obj ? obj.score : entry);
+    const raw = num(obj ? obj.raw : null);
+    if (score == null && raw == null) return;
+    dims[dim] = {
+      score,
+      raw,
+      note: obj ? String(obj.note || "") : "",
+      fix: obj ? String(obj.fix || "") : "",
+    };
   });
   const overall = num(judge.overall);
-  if (overall == null && !Object.keys(dims).length) return null;
-  return { overall, summary: String(judge.summary || ""), dims };
+  const rawOverall = num(judge.raw_overall);
+  if (overall == null && rawOverall == null && !Object.keys(dims).length) return null;
+  const state = fidJudgeState(judge);
+  return {
+    overall, rawOverall, summary: String(judge.summary || ""), dims, state, stateView: FID_JUDGE_STATES[state],
+  };
 }
 
 /* 评审里分最低的几维（起草台上的简表） */
@@ -186,13 +212,15 @@ export function fidWeakestDims(judge, limit = 3) {
   const view = fidJudgeView(judge);
   if (!view) return [];
   return Object.entries(view.dims)
+    .filter(([, entry]) => entry.score != null)
     .map(([dimension, entry]) => ({ dimension, label: styleDimensionLabel(dimension), ...entry }))
     .sort((a, b) => a.score - b.score || STYLE_DIMENSIONS.indexOf(a.dimension) - STYLE_DIMENSIONS.indexOf(b.dimension))
     .slice(0, limit);
 }
 
-/* 16 维按层：[{ layer, label, rows: [{ dimension, label, measured, judged, note, state }] }]
-   measured：确定性读数（只有能按字数统计的几维有）；judged：评审分；state：给这部作品设的维度状态 */
+/* 16 维按层：[{ layer, label, rows: [{ dimension, label, measured, judged, judgedRaw, note, state }] }]
+   measured：确定性读数（只有能按字数统计的几维有）；judged：作数的评审分（校准后的；不作数时 null）；judgedRaw：
+   模型原始分；state：给这部作品设的维度状态 */
 export function fidDimensionGroups(reading, judge, { states = null } = {}) {
   const measured = (reading && reading.dimension_scores) || {};
   const view = fidJudgeView(judge);
@@ -204,6 +232,7 @@ export function fidDimensionGroups(reading, judge, { states = null } = {}) {
       label: styleDimensionLabel(dim),
       measured: num(measured[dim]),
       judged: view && view.dims[dim] ? view.dims[dim].score : null,
+      judgedRaw: view && view.dims[dim] ? view.dims[dim].raw : null,
       note: view && view.dims[dim] ? view.dims[dim].note : "",
       state: (states && states[dim]) || "normal",
     })),
@@ -224,6 +253,7 @@ const REJECT_TEXT = {
   copy_gate_blocked: "改出来的那一版新添了与参考书原文连续相同的地方，已丢掉，保留首稿",
   base_safety_failed: "改出来的那一版丢了必写的内容或长度不对，保留首稿",
   revision_reading_unavailable: "改出来的那一版量不出像不像，保留首稿",
+  pairwise_first_draft_closer: "读数说改过的那一版更近，但评审两次比较都认为首稿更像作者，保留首稿",
 };
 
 function dimsText(step) {
@@ -253,17 +283,21 @@ export function fidStyleStepView(step) {
   return null;
 }
 
+/* 补丁退回的原因（judge_worse / distance_worse_without_judge_gain 是 2026-10-14 之前的记录） */
+const PATCH_REVERT_TEXT = {
+  pairwise_original_closer: "补丁没有更像（评审两次比较都认为补丁前的稿子更像），已退回补丁前的稿子",
+  distance_worse: "补丁让稿子离作者更远（评审比较没有分出高下），已退回补丁前的稿子",
+  judge_worse: "补丁没有更像（参考评审分降了），已退回补丁前的稿子",
+  distance_worse_without_judge_gain: "补丁没有更像（离作者更远、评审分也没提高），已退回补丁前的稿子",
+};
+
 /* 软质检的补丁留没留：{ tone, text } 或 null */
 export function fidPatchView(patch) {
   if (!patch || !patch.decision) return null;
   if (patch.decision === "reverted") {
-    return {
-      tone: "warn",
-      text: patch.reason === "judge_worse"
-        ? "补丁没有更像（参考评审分降了），已退回补丁前的稿子"
-        : "补丁没有更像（离作者更远、评审分也没提高），已退回补丁前的稿子",
-    };
+    return { tone: "warn", text: PATCH_REVERT_TEXT[patch.reason] || "补丁没有更像，已退回补丁前的稿子" };
   }
+  if (patch.reason === "pairwise_patch_closer") return { tone: "ok", text: "软质检的补丁保留（评审两次比较都认为补丁更像作者）" };
   if (patch.reason === "no_comparable_evidence") return { tone: "neutral", text: "软质检的补丁保留（没有可比的读数）" };
   return { tone: "ok", text: "软质检的补丁保留（没有离作者更远）" };
 }

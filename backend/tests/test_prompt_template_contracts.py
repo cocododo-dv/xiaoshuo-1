@@ -43,8 +43,8 @@ STYLE_PASS_TEMPLATES = (
     "style_length_patch",
     "style_salvage_patch",
     "scene_literary_rewrite",
-    "soft_qc",
-    "style_ref_check_judge",
+    "style_reference_judge",
+    "style_reference_compare",
 )
 SAMPLE_BLOCK_NAMES = ("[风格样例]", "【风格样例】")
 
@@ -165,8 +165,7 @@ def test_the_contract_walks_every_known_score_family() -> None:
         if (_types(node) & {"number", "integer"}) and _is_score_field(path)
     }
     assert {
-        "soft_qc",
-        "style_ref_check_judge",
+        "style_reference_judge",
         "near_final_acceptance_review",
         "writer_deep_review",
     } <= seen
@@ -208,20 +207,33 @@ BEHAVIOUR: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ),
         ("never imitate their length", "[禁止复刻]"),
     ),
-    # 软 QC = 参考评审：不带房风规则，16 维 0–10
+    # 软 QC 只剩没有绑定时的润色口径：不再有参考评审模式与分数（有绑定的场景走 style_reference_judge）
     "soft_qc": (
+        ("Emotional clarity is a goal", "scene_shape"),
+        ("[STYLE_REFERENCE]", "dimension_scores", "style_score", "[禁止复刻]"),
+    ),
+    # 参考评审（软 QC 有绑定时与对照检查共用）：只打分、16 维必填、只判写法不判故事、用满刻度、不带房风规则
+    "style_reference_judge": (
         (
             "Do not bring a house rubric of your own",
-            "dimension_scores",
+            "Every dimension key must appear in dimensions",
+            "The story is given",
+            "Use the whole scale",
             "from 0 to 10",
-            "Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present",
+            "never use a 0–1 or 0–100 scale",
+            "never quote the samples",
         ),
-        ("[禁止复刻]",),
+        ("overall", "soft_pass", "[禁止复刻]"),
     ),
-    # 对照检查的参考评审：0–10、不引用样例
-    "style_ref_check_judge": (
-        ("from 0 to 10", "never use a 0–1 or 0–100 scale", "never quote the samples"),
+    # 成对比较：只看写法、不偏爱更长更精致的版本
+    "style_reference_compare": (
+        ("never prefer a version for its plot, facts, length, polish", "answer same", "never quote the samples"),
         (),
+    ),
+    # 校准的普通改写：保留事件与对白意思，去掉作者口吻，不照抄原句
+    "style_reference_neutralize": (
+        ("Keep every event", "Remove the author's characteristic manner", "Do not copy any sentence"),
+        ("[STYLE_REFERENCE]",),
     ),
     # 场景验收：场景三问、0–10、简报三键；无风格块时才守房风
     "near_final_acceptance_review": (

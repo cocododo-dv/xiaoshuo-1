@@ -7,7 +7,7 @@
 
 - :data:`TEMPLATE_NODE_IDS`：按调用点逐一核对过的「模板 → 派发它的节点」表。有的模板借别的节点的路由派发
   （``style_first_draft`` / ``style_targeted_revision`` 走 ``style_draft``；``scene_blueprint_facts`` 走
-  ``scene_blueprint``；``style_ref_check_judge`` 与对照检查走 ``soft_qc``；``writer_passage_review`` 走
+  ``scene_blueprint``；参考评审 ``style_reference_judge`` 与成对比较 ``style_reference_compare`` 走 ``soft_qc``；``writer_passage_review`` 走
   ``writer_deep_review``）；有的模板会在几个节点下派发（``style_draft`` 模板既是风格稿 ``style_draft``，也是
   软补丁 / 去模板 / 安全修复的 ``style_patch``）——这时列出全部候选，判定要求**每一个**都满足；
 - 表里没有的模板：模板名本身就是一个注册节点（``llm_node_registry``）时用它；
@@ -22,7 +22,7 @@ from typing import Any
 from novel_system.services.style_reference.policy import normalize_node_ids
 
 # 模板 → 派发它的节点（调用点：scene_generation / qc_engine / near_final / writer_deep_review / author_drafts /
-# scene_blueprint / check_job；改了派发节点要回来改这张表）
+# scene_blueprint / check_job / scene_generation.style_compare；改了派发节点要回来改这张表）
 TEMPLATE_NODE_IDS: dict[str, tuple[str, ...]] = {
     # 起草 / 改稿（风格通道）
     "style_first_draft": ("style_draft",),
@@ -36,7 +36,8 @@ TEMPLATE_NODE_IDS: dict[str, tuple[str, ...]] = {
     "neutral_draft": ("neutral_draft",),
     # 评审
     "soft_qc": ("soft_qc",),
-    "style_ref_check_judge": ("soft_qc",),
+    "style_reference_judge": ("soft_qc",),
+    "style_reference_compare": ("soft_qc",),
     "near_final_acceptance_review": ("near_final_acceptance_review",),
     # 规划
     "scene_blueprint": ("scene_blueprint",),

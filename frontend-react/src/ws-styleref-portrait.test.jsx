@@ -220,3 +220,59 @@ describe("文风画像 · 当前作品像不像", () => {
     expect(client.apiGet.mock.calls.some(([url]) => url === "/api/v1/projects/w1/style-fidelity")).toBe(false);
   });
 });
+
+describe("文风画像 · 评审校准（2026-10-14 评审统一）", () => {
+  async function openWith(calibration) {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.profile = { ...state.profile, judge_calibration: calibration };
+    await mountView();
+    await openStage("learn");
+    await settle();
+  }
+  const MISSING = { state: "missing", judge: { provider: "relay", model: "flash-judge" }, job: null };
+
+  it("还没校准：说清分数没有参照，「校准评审」发起作业并记进活动清单", async () => {
+    await openWith(MISSING);
+    expect(byTestId("sr-calibration-state").textContent).toBe("还没校准");
+    expect(byTestId("sr-calibration").textContent).toContain("评审模型 flash-judge");
+    expect(byTestId("sr-calibration-text").textContent).toContain("没有参照");
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/judge-calibration")
+      ? { job_id: "job-cal", state: "queued", job: { job_id: "job-cal", kind: "calibrate", book_id: "bk-a", status: "queued" } }
+      : {}));
+    await click(byTestId("sr-calibration-start"));
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/profiles/pf-a/judge-calibration`, {});
+    expect(store.srActivityFor("bk-a", "calibrate")).toMatchObject({ job_id: "job-cal", kind: "calibrate" });
+  });
+
+  it("已校准：给出原文与普通改写的平均分，列出分不清的维，按钮是「重新校准」", async () => {
+    await openWith({
+      ...MISSING, state: "calibrated", positive_mean: 8.5, negative_mean: 3.5, separation: 5,
+      undistinguished: ["language.punctuation"],
+    });
+    expect(byTestId("sr-calibration-state").textContent).toBe("已校准");
+    const text = byTestId("sr-calibration-text").textContent;
+    expect(text).toContain("作者原文平均 8.5 分、普通改写 3.5 分（相差 5.0）");
+    expect(text).toContain("0 = 普通文字，10 = 作者原文");
+    expect(text).toContain("这几维评审分不清");
+    expect(byTestId("sr-calibration-start").textContent).toContain("重新校准");
+  });
+
+  it("评审分不清这位作者：红色提示，说清不据它补丁、去换评审模型", async () => {
+    await openWith({ ...MISSING, state: "unusable", positive_mean: 8.4, negative_mean: 7.9, separation: 0.5 });
+    expect(byTestId("sr-calibration-state").textContent).toBe("评审分不清");
+    expect(byTestId("sr-calibration-text").textContent).toContain("不据以补丁");
+    expect(byTestId("sr-calibration-text").textContent).toContain("文学质检");
+  });
+
+  it("在跑：显示进度、可以取消", async () => {
+    await openWith({
+      ...MISSING,
+      job: { job_id: "job-run", kind: "calibrate", book_id: "bk-a", profile_id: "pf-a", status: "running", phase_label: "评审给两类文字打分", percent: 40, steps: { done: 4, total: 10 } },
+    });
+    expect(byTestId("sr-calibration-progress")).toBeTruthy();
+    expect(byTestId("sr-calibration").textContent).toContain("评审给两类文字打分");
+    client.apiPost.mockImplementation(() => Promise.resolve({ job_id: "job-run", state: "cancelled", finished: true }));
+    await click(byTestId("sr-calibration-cancel"));
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/profiles/pf-a/judge-calibration/cancel`, {});
+  });
+});

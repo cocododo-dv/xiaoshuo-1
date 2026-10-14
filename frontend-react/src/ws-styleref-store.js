@@ -3,8 +3,8 @@ import { srNormalizeConfig } from "./ws-styleref-model.js";
 import { randomSuffix } from "./lib/ids.js";
 import {
   SR_API, srActiveWorkId, srBookTitle, srBooks, srCacheDelete, srCacheEntries, srCacheGet, srCacheKeys, srCachePut,
-  srCacheSet, srEmit, srLoadLearn, srLoadProfileBindings, srLoadProjectBinding, srMarkBookDeleted, srResetCoreForTests,
-  srSetBooks, srSyncBooks,
+  srCacheSet, srEmit, srLoadLearn, srLoadProfile as srReloadProfile, srLoadProfileBindings, srLoadProjectBinding,
+  srMarkBookDeleted, srResetCoreForTests, srSetBooks, srSyncBooks,
 } from "./ws-styleref-store-core.js";
 import { srActivityForgetBook, srActivityPoke, srActivityTrack, srResetActivityForTests } from "./ws-styleref-store-activity.js";
 
@@ -374,6 +374,23 @@ export async function srCancelLearn(bookId) {
   const data = await apiPost(`${API}/books/${encodeURIComponent(bookId)}/learn/cancel`, {});
   srActivityPoke();
   srLoadLearn(bookId, { force: true });
+  return data;
+}
+
+/* 校准参考评审（2026-10-14）：同一个评审模型给这本书几段原文和它们的普通改写各打一次分，之后的评审分按这两点折算。
+   学习文风成功后后端会自动排一次；评审模型换过 / 校准失败时在文风画像页手动再来。结果随画像详情的 judge_calibration 给出 */
+export async function srCalibrateJudge(profileId, { bookId = null } = {}) {
+  const data = await apiPost(`${API}/profiles/${encodeURIComponent(profileId)}/judge-calibration`, {});
+  const book = bookId || (data && data.job && data.job.book_id) || null;
+  if (data && data.job_id) srActivityTrack(data.job_id, { kind: "calibrate", book_id: book, title: book ? srBookTitle(book) : null });
+  srReloadProfile(profileId, { force: true });
+  return data;
+}
+
+export async function srCancelCalibration(profileId) {
+  const data = await apiPost(`${API}/profiles/${encodeURIComponent(profileId)}/judge-calibration/cancel`, {});
+  srActivityPoke();
+  srReloadProfile(profileId, { force: true });
   return data;
 }
 

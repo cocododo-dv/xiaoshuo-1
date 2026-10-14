@@ -644,8 +644,8 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
         assert "[禁止复刻]" not in templates[name]["system_prompt"] + templates[name]["task_prompt"]
         assert "even when the reference author uses another" not in templates[name]["task_prompt"]
     assert "[禁止复刻]" not in templates["soft_qc"]["task_prompt"]
-    # 风格参考 v3（V7）：分数一律 0–10，代码统一换算
-    assert "numbers from 0 to 10" in templates["soft_qc"]["task_prompt"]
+    # 风格参考 v3（V7）→ 2026-10-14 评审统一：参考评审只在 style_reference_judge 里，分数一律 0–10，代码统一换算
+    assert "from 0 to 10" in templates["style_reference_judge"]["task_prompt"]
     assert "First Draft already in the reference author's hand" in templates["style_draft"]["task_prompt"]
     # 2026-09-14 保真修补:系统提示不再与长度指导矛盾(作者尺度优先),偏好画像只在不冲突时服从
     assert "never imitate their length" not in templates["style_draft"]["system_prompt"]
@@ -654,10 +654,11 @@ def test_prompts_gate_house_taste_behind_the_style_block() -> None:
     assert "Never wash the voice back toward a neutral register" in templates["style_draft"]["task_prompt"]
     assert "never a hard violation" in templates["hard_qc"]["task_prompt"]
     assert "restate paragraph 3" not in templates["hard_qc"]["task_prompt"]
-    # 风格参考 v3（L2）：有风格块时软 QC 是参考评审，不带房风规则；按 16 维打分
-    assert "Do not bring a house rubric of your own" in templates["soft_qc"]["system_prompt"]
-    assert "dimension_scores" in templates["soft_qc"]["task_prompt"]
-    assert "Emotional clarity is a goal only when no [STYLE_REFERENCE] block is present" in templates["soft_qc"]["system_prompt"]
+    # 风格参考 v3（L2）→ 2026-10-14：有绑定时软 QC 走统一评审（不带房风规则、16 维必填）；soft_qc 模板只剩润色口径
+    assert "Do not bring a house rubric of your own" in templates["style_reference_judge"]["system_prompt"]
+    assert "Every dimension key must appear in dimensions" in templates["style_reference_judge"]["task_prompt"]
+    assert "Emotional clarity is a goal" in templates["soft_qc"]["system_prompt"]
+    assert "[STYLE_REFERENCE]" not in templates["soft_qc"]["system_prompt"] + templates["soft_qc"]["task_prompt"]
     assert "If no [STYLE_REFERENCE] block is present, do not pass scenes" in templates["near_final_acceptance_review"]["task_prompt"]
 
 

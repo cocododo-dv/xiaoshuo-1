@@ -371,6 +371,38 @@ def accept_first_draft(
     return product
 
 
+def _compare_revision(
+    svc: GenerationHost,
+    *,
+    scene: SceneCard,
+    bundle: dict[str, Any],
+    policy: Any,
+    first_content: str,
+    revision_content: str,
+    execution_step_key: str,
+) -> dict[str, Any]:
+    """首稿 vs 定向修改稿的成对比较；比不成只记原因（去留按读数），云策略的 409 原样抛。"""
+    from novel_system.services.scene_generation.style_compare import compare_versions
+    from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
+
+    try:
+        return compare_versions(
+            svc.session,
+            svc._llm_runner,
+            scene=scene,
+            bundle=bundle,
+            policy=policy,
+            base_text=first_content,
+            candidate_text=revision_content,
+            execution_step_key=execution_step_key,
+        )
+    except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+        raise
+    except Exception:  # noqa: BLE001 — 比不成不阻断起草
+        _LOGGER.warning("revision comparison failed for scene %s", scene.scene_id, exc_info=True)
+        return {"verdict": "unavailable", "reason": "error"}
+
+
 def run_targeted_revision(
     svc: GenerationHost,
     *,
@@ -508,6 +540,7 @@ def run_targeted_revision(
     revision_reading, _revision_error = fidelity_probe.observe(
         svc.session, policy, revision_content, ref=scene.scene_id, what="revision"
     )
+    comparison: dict[str, Any] | None = None
     if candidate_mode:
         keep = bool(base_safety["accepted"]) and not copy_blocked and revision_reading is not None
         keep_reason = (
@@ -520,12 +553,31 @@ def run_targeted_revision(
             else style_step.REASON_CANDIDATE_SLOT
         )
     else:
+        # 2026-10-14 评审统一：读数说修改稿更近时，再问评审「首稿与修改稿哪一个更像」（两个次序各一次）——读数只量得到
+        # 表层，明确说首稿更像就保留首稿；读数已经说不采用的不花这两次调用
+        if style_step.revision_needs_comparison(
+            first_reading,
+            revision_reading,
+            copy_blocked=copy_blocked,
+            base_safe=bool(base_safety["accepted"]),
+            thresholds=thresholds,
+        ):
+            comparison = _compare_revision(
+                svc,
+                scene=scene,
+                bundle=bundle,
+                policy=policy,
+                first_content=first_content,
+                revision_content=revision_content,
+                execution_step_key=execution_step_key,
+            )
         keep, keep_reason = style_step.revision_keep_decision(
             first_reading,
             revision_reading,
             copy_blocked=copy_blocked,
             base_safe=bool(base_safety["accepted"]),
             thresholds=thresholds,
+            comparison=(comparison or {}).get("verdict"),
         )
     if copy_unchecked and keep_reason == style_step.REASON_COPY_BLOCKED:
         # 没查成不是查出了重合：原因与提示如实说「没能检查」
@@ -554,6 +606,7 @@ def run_targeted_revision(
                     REASON_COPY_UNCHECKED: "抄袭门这次没能检查定向修改稿（参考书已不在书库或风格策略降级），为免带进没核对过的原文，保留首稿。",
                     style_step.REASON_BASE_UNSAFE: "定向修改稿没过确定性安全门（长度 / 必写项 / 禁写内容 / 文本完整性），保留首稿。",
                     style_step.REASON_REVISION_UNREADABLE: "定向修改稿读不出读数，无法确认更像，保留首稿。",
+                    style_step.REASON_PAIRWISE_FIRST_DRAFT: "读数说定向修改稿更近，但成对比较两次都认为首稿更像参考作者，保留了首稿。",
                 }.get(keep_reason, "定向修改没有采用，保留首稿。"),
                 severity="info",
                 reason=keep_reason,
@@ -607,6 +660,7 @@ def run_targeted_revision(
         "copy_check": style_readings.copy_check_summary(copy_check),
         # 去留只看修改稿新带进来的重合（首稿里本来就有的不算这次修改的）
         "copy_check_introduced": style_readings.copy_check_summary(introduced),
+        "comparison": dict(comparison) if comparison else None,
         "base_safety_accepted": bool(base_safety["accepted"]),
         "thresholds": thresholds.audit() if hasattr(thresholds, "audit") else None,
         "candidate_mode": bool(candidate_mode),

@@ -40,8 +40,8 @@ from novel_system.services.style_policy import style_policy_for_bundle
 from novel_system.services.style_reference import readings as style_readings
 from novel_system.services.style_reference.style_step import (
     PATCH_DECISION_REVERTED,
+    PATCH_REASON_PAIRWISE_ORIGINAL,
     fidelity_thresholds,
-    judge_unit,
     patch_keep_decision,
     reading_brief,
     report_reference_judge,
@@ -184,6 +184,11 @@ class SoftQcCheckpointMixin:
                     expected_source_qc_report_id=soft_qc0.qc_report_id,
                 )
 
+            # 2026-10-14 评审统一：补丁留不留先问成对比较（补丁前 vs 补丁稿，两个次序各一次）。放在补丁的检查点
+            # 之后、soft_qc:1 之前：模型调用会先提交会话，这里提交的只是已经落了检查点的东西
+            patch_comparison = self._compare_patch(
+                scene=scene, bundle=bundle, before=style_generation, after=final_generation
+            )
             self._reconcile_execution_step("soft_qc:1")
             soft_qc = self.soft_qc_engine.evaluate(
                 scene_id=scene_id,
@@ -203,6 +208,7 @@ class SoftQcCheckpointMixin:
                 after=final_generation,
                 qc0=soft_qc0,
                 qc1=soft_qc,
+                comparison=patch_comparison,
             )
             if patch_keep is not None and patch_keep.get("decision") == PATCH_DECISION_REVERTED:
                 reverted = self._reverted_patch_decision(soft_qc0)
@@ -273,6 +279,39 @@ class SoftQcCheckpointMixin:
         """软 QC 报告里的参考评审分（10 分制的 ``reference_judge`` 条目，``style_step.report_reference_judge``）；没有 → None。"""
         return report_reference_judge(self.session.get(QcReport, qc_report_id) if qc_report_id else None)
 
+    def _compare_patch(
+        self,
+        *,
+        scene: SceneCard,
+        bundle: dict[str, Any],
+        before: StyleGenerationResult,
+        after: StyleGenerationResult,
+    ) -> dict[str, Any] | None:
+        """补丁前 vs 补丁稿的成对比较（``scene_generation.style_compare``）；不是作者手笔直起 → None（去留规则不适用）。
+        比不成只记原因、退回读数规则；云策略的 409 原样抛（软 QC 第二轮同样会拦）。"""
+        policy = style_policy_for_bundle(bundle)
+        if not getattr(policy, "style_first", False):
+            return None
+        from novel_system.services.scene_generation.style_compare import compare_versions
+        from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
+
+        try:
+            return compare_versions(
+                self.session,
+                self.scene_generation_service._llm_runner,
+                scene=scene,
+                bundle=bundle,
+                policy=policy,
+                base_text=before.content,
+                candidate_text=after.content,
+                execution_step_key=STYLE_PATCH_KEEP_STEP,
+            )
+        except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+            raise
+        except Exception:  # noqa: BLE001 — 比不成不阻断起草，去留退回读数规则
+            _LOGGER.warning("patch comparison failed for scene %s", scene.scene_id, exc_info=True)
+            return {"verdict": "unavailable", "reason": "error"}
+
     def _observe_patch_keep(
         self,
         *,
@@ -282,6 +321,7 @@ class SoftQcCheckpointMixin:
         after: StyleGenerationResult,
         qc0: SoftQcDecision,
         qc1: SoftQcDecision,
+        comparison: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """:meth:`_style_patch_keep_decision` 的安全外壳（风格参考 v3 L3）：它夹在 ``soft_qc:1`` 的调用与检查点之间，
         只做观察（读数、记读数、记决定的尝试行）。整段在保存点里跑，任何失败只回滚这个保存点、记日志、返回 ``None``
@@ -289,7 +329,7 @@ class SoftQcCheckpointMixin:
         try:
             with self.session.begin_nested():
                 return self._style_patch_keep_decision(
-                    scene=scene, bundle=bundle, before=before, after=after, qc0=qc0, qc1=qc1
+                    scene=scene, bundle=bundle, before=before, after=after, qc0=qc0, qc1=qc1, comparison=comparison
                 )
         except Exception:  # noqa: BLE001 — 观察失败不能让已派发的调用落不下检查点
             _LOGGER.warning("style patch keep decision failed for scene %s; keeping the patch", scene.scene_id, exc_info=True)
@@ -304,11 +344,14 @@ class SoftQcCheckpointMixin:
         after: StyleGenerationResult,
         qc0: SoftQcDecision,
         qc1: SoftQcDecision,
+        comparison: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """作者手笔直起时补丁的去留（风格参考 v3 N6 / V7）；不适用（未让位 / 补丁后要人工复核）→ None。
+        """作者手笔直起时补丁的去留（风格参考 v3 N6 / V7；2026-10-14 改成成对比较）；不适用（未让位 / 补丁后要人工
+        复核）→ None。
 
-        比较补丁前后参考评审的总分（软 QC 两轮）与确定性读数的 distance；记一条 ``patched`` 读数（带补丁后那轮的
-        评审分）与一条 ``style_patch_keep`` 尝试（决定、读数、评审分；退回时带 STYLE_PATCH_REVERTED 提示）。
+        先看成对比较（``comparison``：两次都说补丁前更像 → 退回，都说补丁更像 → 留下）；没有明确结论再看确定性读数的
+        distance。记一条 ``patched`` 读数（带补丁后那轮的评审）与一条 ``style_patch_keep`` 尝试（决定、比较、读数、两轮
+        评审；退回时带 STYLE_PATCH_REVERTED 提示）。
         """
         policy = style_policy_for_bundle(bundle)
         if not policy.style_first or qc1.branch == "human_review_required":
@@ -330,8 +373,7 @@ class SoftQcCheckpointMixin:
             and reading_after.reliable
         )
         decision, reason = patch_keep_decision(
-            before_judge=judge_unit(judge_before),
-            after_judge=judge_unit(judge_after),
+            comparison=(comparison or {}).get("verdict"),
             before_distance=reading_before.distance if comparable else None,
             after_distance=reading_after.distance if comparable else None,
             thresholds=thresholds,
@@ -355,28 +397,28 @@ class SoftQcCheckpointMixin:
                 style_notice(
                     STYLE_NOTICE_PATCH_REVERTED,
                     (
-                        "软 QC 的补丁让稿子离参考作者更远（参考评审分下降）"
-                        if reason == "judge_worse"
-                        else "软 QC 的补丁让稿子离参考作者更远（读数变远、评审分没有提高）"
+                        "软 QC 的补丁没有让稿子更像参考作者（成对比较两次都认为补丁前的稿子更像）"
+                        if reason == PATCH_REASON_PAIRWISE_ORIGINAL
+                        else "软 QC 的补丁让稿子离参考作者更远（读数变远，成对比较没有分出高下）"
                     )
                     + "，已退回补丁前的稿子；评审的改稿意见随稿留痕。",
                     severity="info",
                     reason=reason,
-                    before_judge=(judge_before or {}).get("style_score"),
-                    after_judge=(judge_after or {}).get("style_score"),
+                    comparison=(comparison or {}).get("verdict"),
                     before_distance=reading_before.distance if reading_before is not None else None,
                     after_distance=reading_after.distance if reading_after is not None else None,
                     restored_row_id=before.row_id,
                 )
             )
         details = {
-            "version": "style_patch_keep_v1",
+            "version": "style_patch_keep_v2",
             "decision": decision,
             "reason": reason,
             "source_draft_row_id": after.row_id,
             "restored_row_id": before.row_id if decision == PATCH_DECISION_REVERTED else None,
             "before_qc_report_id": qc0.qc_report_id,
             "after_qc_report_id": qc1.qc_report_id,
+            "comparison": dict(comparison) if comparison else None,
             "before_judge": judge_before,
             "after_judge": judge_after,
             "before_reading": reading_brief(reading_before),

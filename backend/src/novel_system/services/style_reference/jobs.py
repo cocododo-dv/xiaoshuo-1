@@ -1,4 +1,4 @@
-"""风格参考 v3（2026-09-23）— 统一的持久作业：分类 / 学习文风 / 对照检查。
+"""风格参考 v3（2026-09-23）— 统一的持久作业：分类 / 学习文风 / 对照检查 / 校准评审。
 
 一个作业一行（``style_reference_jobs``；进度、游标、心跳都在这一行上，没有别的进程内状态），生命周期：
 
@@ -26,7 +26,7 @@ cancelled，运行中的由工人在下一个检查点（``check_continue``）�
 **互斥**：同一本书的分类与学习互斥（各自也只能有一个活动作业）。建作业是「先插入、再查」：这条 INSERT 已拿到
 SQLite 的写锁，两个几乎同时的请求在这里串行化，后到的一定看得见先到的那一行（先查后插时两个都查不到）。
 
-处理器约定（``register_job_handler(kind, handler)``，三种作业由 ``workers.install_workers`` 显式登记）：
+处理器约定（``register_job_handler(kind, handler)``，四种作业由 ``workers.install_workers`` 显式登记）：
 ``handler(session, claimed, service)`` 在工人线程里运行，自己负责周期性调用 ``service.check_continue(claimed)``
 （取消 → ``JobCancelled``，丢了所有权 → ``JobLost``，进程要退出 → ``JobInterrupted``）、``service.progress`` /
 ``service.save_cursor``，最后 ``service.succeed``；抛出的异常由框架按 :func:`job_failure` 记为失败（``DomainError``
@@ -76,7 +76,9 @@ logger = logging.getLogger(__name__)
 JOB_KIND_CLASSIFY = "classify"
 JOB_KIND_LEARN = "learn"
 JOB_KIND_CHECK = "check"
-JOB_KINDS = (JOB_KIND_CLASSIFY, JOB_KIND_LEARN, JOB_KIND_CHECK)
+# 2026-10-14：校准参考评审（judge_calibration）——学习文风成功后自动排一个，评审模型换过后可手动再跑
+JOB_KIND_CALIBRATE = "calibrate"
+JOB_KINDS = (JOB_KIND_CLASSIFY, JOB_KIND_LEARN, JOB_KIND_CHECK, JOB_KIND_CALIBRATE)
 
 STATE_QUEUED = "queued"
 STATE_RUNNING = "running"
@@ -92,7 +94,7 @@ STALE_AFTER_SECONDS = 60.0
 RECENT_FINISHED_SECONDS = 600.0
 SWEEP_INTERVAL_SECONDS = 30.0
 EXECUTOR_MAX_WORKERS = 2
-# 对照检查一次一个评审调用：单独一条车道，不在几十分钟的分类 / 学习后面排队
+# 对照检查一次一个评审调用、校准评审十来个：单独一条车道，不在几十分钟的分类 / 学习后面排队
 CHECK_EXECUTOR_MAX_WORKERS = 2
 # 同一本书上互斥的作业种类（分类改段落类型、学习读段落类型）
 BOOK_EXCLUSIVE_KINDS = (JOB_KIND_CLASSIFY, JOB_KIND_LEARN)
@@ -652,7 +654,12 @@ class StyleJobService:
 
 
 # ---------------------------------------------------------------------- 活动条目
-_KIND_LABELS = {JOB_KIND_CLASSIFY: "段落分类", JOB_KIND_LEARN: "学习文风", JOB_KIND_CHECK: "对照检查"}
+_KIND_LABELS = {
+    JOB_KIND_CLASSIFY: "段落分类",
+    JOB_KIND_LEARN: "学习文风",
+    JOB_KIND_CHECK: "对照检查",
+    JOB_KIND_CALIBRATE: "校准评审",
+}
 
 
 def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -> dict[str, Any]:
@@ -819,7 +826,7 @@ def _session_factory():
 
 
 def _lane_for(kind: str | None) -> str:
-    return _LANE_CHECK if kind == JOB_KIND_CHECK else _LANE_LONG
+    return _LANE_CHECK if kind in (JOB_KIND_CHECK, JOB_KIND_CALIBRATE) else _LANE_LONG
 
 
 def dispatch_job(job_id: str, *, kind: str | None = None) -> bool:
@@ -1019,6 +1026,7 @@ __all__ = [
     "JOB_CANCELLED_CODE",
     "JOB_FAILED_CODE",
     "JOB_KINDS",
+    "JOB_KIND_CALIBRATE",
     "JOB_KIND_CHECK",
     "JOB_KIND_CLASSIFY",
     "JOB_KIND_LEARN",

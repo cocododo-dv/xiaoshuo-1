@@ -105,8 +105,9 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "style_length_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "style_salvage_patch": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "soft_qc": STYLE_PASS_INPUT_TOKEN_BUDGET,
-    # 风格参考 v3：对照检查的参考评审走 soft_qc 路由、拿 soft_qc 形状的参考，同一档
-    "style_ref_check_judge": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    # 参考评审（软 QC 有绑定时与对照检查共用）与成对比较：走 soft_qc 路由、拿评审口径的参考，同一档
+    "style_reference_judge": STYLE_PASS_INPUT_TOKEN_BUDGET,
+    "style_reference_compare": STYLE_PASS_INPUT_TOKEN_BUDGET,
     "near_final_acceptance_review": STYLE_PASS_INPUT_TOKEN_BUDGET,
     # 规划族 + 局部改写（载荷有界）+ 2026-09-14 WP6 的参考块余量
     "scene_blueprint": PLANNING_STYLE_INPUT_TOKEN_BUDGET,

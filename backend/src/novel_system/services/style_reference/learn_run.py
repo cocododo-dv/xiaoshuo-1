@@ -1034,6 +1034,11 @@ class _LearnRun(JobRun):
             .execution_options(synchronize_session=False)
         )
         self.session.commit()
+        # 2026-10-14：学完排一次评审校准（画像版本变了，旧的校准已过期）；排不上（没有模型、节点没配好、云策略
+        # 不许）不影响学习的结果，画像页照样可以手动校准
+        from novel_system.services.style_reference.judge_calibration import start_after_learn
+
+        start_after_learn(self.session, written.profile.profile_id)
 
 
 def run_learn_job(session: Session, claimed: ClaimedJob, service: StyleJobService) -> None:

@@ -33,7 +33,7 @@ export function srActivityEntries() {
   return Array.from(SR_ACTIVITY.values()).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
 }
 
-/* 某本书正在排队 / 运行的某类作业（kind：classify / learn / check；不给就任意一类） */
+/* 某本书正在排队 / 运行的某类作业（kind：classify / learn / check / calibrate；不给就任意一类） */
 export function srActivityFor(bookId, kind = null) {
   if (!bookId) return null;
   for (const e of SR_ACTIVITY.values()) {
@@ -117,7 +117,7 @@ async function srActivityFinished(entry) {
       srLoadBookDetail(bookId, { force: true });
       srLoadLearn(bookId, { force: true });
     }
-    if (entry.kind === "learn") {
+    if (entry.kind === "learn" || entry.kind === "calibrate") {
       const profileId = entry.profile_id || (entry.result && entry.result.profile_id);
       if (profileId) srLoadProfile(profileId, { force: true });
     }

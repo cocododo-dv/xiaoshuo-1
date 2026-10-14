@@ -102,6 +102,8 @@ STYLE_USER_TAIL_KEY = "_style_reference_user_tail"
 STYLE_RUNTIME_AUDIT_KEY = "_style_reference_runtime_audit"
 
 __all__ = [
+    "prompt_carries_reference",
+    "resolve_scene_style_policy",
     "LIVE_CONTRACT_STATUS",
     "PLACEMENT_SYSTEM",
     "PLACEMENT_USER_TAIL",
@@ -285,6 +287,15 @@ def _resolve_policy(
     return policy, LIVE_CONTRACT_STATUS, policy.mode if policy.mode != MODE_NONE else MODE_LIVE
 
 
+def resolve_scene_style_policy(
+    session: Session, scene: Any, bundle: Mapping[str, Any] | None, *, task_type: str = "scene_generation"
+) -> StylePolicy:
+    """这一场此刻的风格策略，与注入器同一个解析次序（bundle 冻结的契约优先；没有 bundle / 旧 bundle 没冻结任何契约
+    记录 → 按当前活动绑定现解析）。软 QC 用它决定这一遍是参考评审还是润色口径。"""
+    policy, _status, _mode = _resolve_policy(session, scene, bundle, None, task_type=task_type)
+    return policy
+
+
 def _degraded(
     prompt: dict[str, Any],
     *,
@@ -302,6 +313,17 @@ def _degraded(
         "error_code": error_code,
     }
     return degraded
+
+
+def prompt_carries_reference(prompt: Mapping[str, Any] | None) -> bool:
+    """这一次评审的提示里真的带着参考（注入器把 ``[STYLE_REFERENCE]`` 块接在 system 提示最前面）——降级、未命中、
+    未绑定都不算。软 QC 模板的正文自己就提到「[STYLE_REFERENCE] 块」，所以只认开头，不认包含。"""
+    if not isinstance(prompt, Mapping):
+        return False
+    audit = prompt.get("_style_reference_runtime_audit")
+    if not isinstance(audit, Mapping) or str(audit.get("outcome") or "") != "hit":
+        return False
+    return str(prompt.get("system_prompt") or "").lstrip().startswith("[STYLE_REFERENCE]")
 
 
 def inject_style_reference_prefix(

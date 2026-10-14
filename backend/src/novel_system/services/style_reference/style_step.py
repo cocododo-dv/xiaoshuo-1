@@ -10,11 +10,15 @@ token 的调用）。v3 的风格步（``policy.style_first`` 时）：
    水平）与这几维的文风卡句；改完再读——``distance`` 至少比首稿小 ``revision_min_improvement``、且过了唯一抄袭门
    与确定性安全门才采用，否则保留首稿。
 
-软补丁同理：补丁后软 QC 再评一次，评审总分（0–1）比补丁前低 ``judge_tolerance`` 以上、或确定性 ``distance``
-变大超过 ``patch_max_distance_increase`` 而评审分没有提高 → 退回补丁前的稿子。
+3. 读数说修改稿更近时，再问一次参考评审「首稿与修改稿哪一个更像」（成对比较，两个次序各问一次、一致才算数，
+   ``judge.compare_verdict``）：明确说首稿更像 → 仍保留首稿（读数只量得到表层，不能让表层数字盖过读者的判断）。
 
-阈值在 ``config/style_reference/injection_budget.yaml`` 的 ``fidelity:`` 段，都是**临时值**，上线前用真实模型
-小规模 A/B 定（契约 §6 第 5 步）。本模块只依赖读数 / 文风卡 / 配置，不碰管线。
+软补丁（2026-10-14 评审统一）：补丁稿与补丁前的稿子做同样的成对比较——明确说补丁前更像 → 退回；明确说补丁更像
+→ 留下；打平 / 比不成 → 看确定性 ``distance``，变大超过 ``patch_max_distance_increase`` 就退回。不再拿补丁前后两次
+绝对评审分相减（评审半分到一分的噪声就能翻转结论，旧的 ``judge_tolerance`` 已退役）。
+
+阈值在 ``config/style_reference/injection_budget.yaml`` 的 ``fidelity:`` 段（评审放行与校准的几项也在那里，
+:meth:`FidelityThresholds.judge` 交给 ``judge`` 模块）。本模块只依赖读数 / 文风卡 / 配置，不碰管线。
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from novel_system.services.style_reference.cn_phrases import (
     rate_phrase,
     tenths_phrase,
 )
+from novel_system.services.style_reference.judge import COMPARE_BASE, COMPARE_CANDIDATE, JudgeThresholds
 from novel_system.services.style_reference.fidelity import (
     DEFAULT_MAX_PERCENTILE,
     MEASURABLE_DIMENSIONS,
@@ -80,11 +85,14 @@ REASON_NOT_CLOSER = "not_closer"
 REASON_COPY_BLOCKED = "copy_gate_blocked"
 REASON_BASE_UNSAFE = "base_safety_failed"
 REASON_REVISION_UNREADABLE = "revision_reading_unavailable"
+# 读数说更近、成对比较却明确说首稿更像
+REASON_PAIRWISE_FIRST_DRAFT = "pairwise_first_draft_closer"
 # 补丁的去留
 PATCH_DECISION_KEPT = "kept"
 PATCH_DECISION_REVERTED = "reverted"
-PATCH_REASON_JUDGE_WORSE = "judge_worse"
-PATCH_REASON_DISTANCE_WORSE = "distance_worse_without_judge_gain"
+PATCH_REASON_PAIRWISE_ORIGINAL = "pairwise_original_closer"
+PATCH_REASON_PAIRWISE_PATCH = "pairwise_patch_closer"
+PATCH_REASON_DISTANCE_WORSE = "distance_worse"
 PATCH_REASON_NOT_WORSE = "not_worse"
 PATCH_REASON_NO_EVIDENCE = "no_comparable_evidence"
 
@@ -94,12 +102,24 @@ class FidelityThresholds:
     style_step_max_percentile: float = DEFAULT_MAX_PERCENTILE
     revision_min_improvement: float = 0.03
     patch_max_distance_increase: float = 0.05
-    # 参考评审总分（0–1）的波动容差：0.1 = 评审 10 分制上的 1 分。评审按整数 / 半分给分，两次独立评审的噪声常有
-    # 半分到一分；0.02（0.2 分）比评审的粒度还细，会把没变差的补丁当成变差退回（M3）
-    judge_tolerance: float = 0.1
+    # 评审放行与校准（2026-10-14 评审统一；含义见 judge.JudgeThresholds 与 injection_budget.yaml 的说明）
+    judge_pass_score: float = JudgeThresholds.pass_score
+    judge_raw_pass_score: float = JudgeThresholds.raw_pass_score
+    judge_min_separation: float = JudgeThresholds.min_separation
+    judge_min_dimension_separation: float = JudgeThresholds.min_dimension_separation
+    judge_calibration_anchors: int = JudgeThresholds.calibration_anchors
 
     def audit(self) -> dict[str, float]:
         return {key: float(value) for key, value in asdict(self).items()}
+
+    def judge(self) -> JudgeThresholds:
+        return JudgeThresholds(
+            pass_score=float(self.judge_pass_score),
+            raw_pass_score=float(self.judge_raw_pass_score),
+            min_separation=float(self.judge_min_separation),
+            min_dimension_separation=float(self.judge_min_dimension_separation),
+            calibration_anchors=int(self.judge_calibration_anchors),
+        )
 
 
 DEFAULT_THRESHOLDS = FidelityThresholds()
@@ -128,7 +148,19 @@ def fidelity_thresholds() -> FidelityThresholds:
         patch_max_distance_increase=_number(
             section.get("patch_max_distance_increase"), DEFAULT_THRESHOLDS.patch_max_distance_increase
         ),
-        judge_tolerance=_number(section.get("judge_tolerance"), DEFAULT_THRESHOLDS.judge_tolerance, high=1.0),
+        judge_pass_score=_number(section.get("judge_pass_score"), DEFAULT_THRESHOLDS.judge_pass_score, high=10.0),
+        judge_raw_pass_score=_number(
+            section.get("judge_raw_pass_score"), DEFAULT_THRESHOLDS.judge_raw_pass_score, high=10.0
+        ),
+        judge_min_separation=_number(
+            section.get("judge_min_separation"), DEFAULT_THRESHOLDS.judge_min_separation, high=10.0
+        ),
+        judge_min_dimension_separation=_number(
+            section.get("judge_min_dimension_separation"), DEFAULT_THRESHOLDS.judge_min_dimension_separation, high=10.0
+        ),
+        judge_calibration_anchors=int(
+            _number(section.get("judge_calibration_anchors"), DEFAULT_THRESHOLDS.judge_calibration_anchors, low=1.0, high=8.0)
+        ),
     )
 
 
@@ -336,8 +368,10 @@ def revision_keep_decision(
     copy_blocked: bool,
     base_safe: bool,
     thresholds: FidelityThresholds = DEFAULT_THRESHOLDS,
+    comparison: str | None = None,
 ) -> tuple[bool, str]:
-    """(采用修改稿?, 原因)：过安全门、过抄袭门、读得出、且比首稿近至少 ``revision_min_improvement``。"""
+    """(采用修改稿?, 原因)：过安全门、过抄袭门、读得出、比首稿近至少 ``revision_min_improvement``，且成对比较
+    （``comparison``，``judge.compare_verdict`` 的结论；没比就是 None）没有明确说首稿更像。"""
     if not base_safe:
         return False, REASON_BASE_UNSAFE
     if copy_blocked:
@@ -345,37 +379,48 @@ def revision_keep_decision(
     if first is None or revision is None:
         return False, REASON_REVISION_UNREADABLE
     if float(revision.distance) <= float(first.distance) - float(thresholds.revision_min_improvement):
+        if comparison == COMPARE_BASE:
+            return False, REASON_PAIRWISE_FIRST_DRAFT
         return True, REASON_CLOSER
     return False, REASON_NOT_CLOSER
 
 
+def revision_needs_comparison(
+    first: FidelityReading | None,
+    revision: FidelityReading | None,
+    *,
+    copy_blocked: bool,
+    base_safe: bool,
+    thresholds: FidelityThresholds = DEFAULT_THRESHOLDS,
+) -> bool:
+    """只有读数会采用修改稿时才值得花两次成对比较（读数已经说不采用，比较改变不了结论）。"""
+    keep, _reason = revision_keep_decision(
+        first, revision, copy_blocked=copy_blocked, base_safe=base_safe, thresholds=thresholds
+    )
+    return keep
+
+
 def patch_keep_decision(
     *,
-    before_judge: float | None,
-    after_judge: float | None,
+    comparison: str | None,
     before_distance: float | None,
     after_distance: float | None,
     thresholds: FidelityThresholds = DEFAULT_THRESHOLDS,
 ) -> tuple[str, str]:
-    """软补丁的去留 → (kept | reverted, 原因)。评审分在 0–1（``review_scores`` 的契约尺度）。
+    """软补丁的去留 → (kept | reverted, 原因)。``comparison`` 是成对比较的结论（``judge.compare_verdict``：
+    base = 补丁前的稿子更像，candidate = 补丁稿更像，tie / unavailable / None = 没有明确结论）。
 
-    - 评审总分比补丁前低 ``judge_tolerance`` 以上 → 退回；
-    - 确定性 distance 变大超过 ``patch_max_distance_increase``、而评审分没有提高（高出 ``judge_tolerance`` 以上）→ 退回；
-    - 否则留下补丁。两边都没有可比的证据 → 留下（与旧行为一致，不凭空退回）。
+    - 明确说补丁前更像 → 退回；明确说补丁更像 → 留下；
+    - 没有明确结论：确定性 distance 变大超过 ``patch_max_distance_increase`` → 退回，否则留下；
+    - 两边都没有证据 → 留下（不凭空退回）。
     """
-    judge_comparable = before_judge is not None and after_judge is not None
-    distance_comparable = before_distance is not None and after_distance is not None
-    if not judge_comparable and not distance_comparable:
+    if comparison == COMPARE_BASE:
+        return PATCH_DECISION_REVERTED, PATCH_REASON_PAIRWISE_ORIGINAL
+    if comparison == COMPARE_CANDIDATE:
+        return PATCH_DECISION_KEPT, PATCH_REASON_PAIRWISE_PATCH
+    if before_distance is None or after_distance is None:
         return PATCH_DECISION_KEPT, PATCH_REASON_NO_EVIDENCE
-    tolerance = float(thresholds.judge_tolerance)
-    if judge_comparable and float(after_judge) < float(before_judge) - tolerance:
-        return PATCH_DECISION_REVERTED, PATCH_REASON_JUDGE_WORSE
-    judge_gain = judge_comparable and float(after_judge) > float(before_judge) + tolerance
-    if (
-        distance_comparable
-        and float(after_distance) > float(before_distance) + float(thresholds.patch_max_distance_increase)
-        and not judge_gain
-    ):
+    if float(after_distance) > float(before_distance) + float(thresholds.patch_max_distance_increase):
         return PATCH_DECISION_REVERTED, PATCH_REASON_DISTANCE_WORSE
     return PATCH_DECISION_KEPT, PATCH_REASON_NOT_WORSE
 
@@ -392,17 +437,6 @@ def report_reference_judge(report: Any) -> dict[str, Any] | None:
         if isinstance(entry, dict) and entry.get("kind") == REFERENCE_JUDGE_KIND:
             return dict(entry)
     return None
-
-
-def judge_unit(judge: Mapping[str, Any] | None) -> float | None:
-    """参考评审的总分换到 0–1（``style_score`` 是 10 分制；越界的夹到两端）；没有可用的分 → None。"""
-    if not isinstance(judge, Mapping):
-        return None
-    try:
-        value = float(judge.get("style_score"))
-    except (TypeError, ValueError):
-        return None
-    return max(0.0, min(1.0, value / 10.0))
 
 
 def reading_brief(reading: FidelityReading | None, *, reading_id: str | None = None) -> dict[str, Any] | None:
@@ -440,9 +474,10 @@ __all__ = [
     "PATCH_DECISION_KEPT",
     "PATCH_DECISION_REVERTED",
     "PATCH_REASON_DISTANCE_WORSE",
-    "PATCH_REASON_JUDGE_WORSE",
     "PATCH_REASON_NOT_WORSE",
     "PATCH_REASON_NO_EVIDENCE",
+    "PATCH_REASON_PAIRWISE_ORIGINAL",
+    "PATCH_REASON_PAIRWISE_PATCH",
     "REASON_BASE_UNSAFE",
     "REFERENCE_JUDGE_KIND",
     "REASON_CANDIDATE_SLOT",
@@ -450,6 +485,7 @@ __all__ = [
     "REASON_COPY_BLOCKED",
     "REASON_NOT_CLOSER",
     "REASON_OUT_OF_RANGE",
+    "REASON_PAIRWISE_FIRST_DRAFT",
     "REASON_READING_FAILED",
     "REASON_READING_UNAVAILABLE",
     "REASON_READING_UNRELIABLE",
@@ -459,7 +495,6 @@ __all__ = [
     "card_lines_for",
     "dimension_label",
     "fidelity_thresholds",
-    "judge_unit",
     "level_words",
     "patch_keep_decision",
     "reading_brief",
@@ -468,5 +503,6 @@ __all__ = [
     "revision_differences",
     "revision_dimensions",
     "revision_keep_decision",
+    "revision_needs_comparison",
     "style_step_gate",
 ]

@@ -152,51 +152,79 @@ def copy_check_summary(copy_check: Any) -> dict[str, Any] | None:
     }
 
 
-def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] | None:
-    """评审分 → ``{overall, dimensions: {dim: {score, note}}, source, summary}``（10 分制，一位小数）。
+def _judge_number(value: Any) -> float | None:
+    number = finite_or_none(value)
+    return None if number is None else round(max(0.0, min(10.0, number)), 1)
 
-    接受：对照检查的评审输出（``{overall, dimensions: {dim: {score, note}}}``）、软 QC 的参考评审记录
-    （``{kind: reference_judge, style_score, dimension_scores: {dim: score}}``），或已规整过的本形状。分数必须
-    已经是 10 分制（量级换算在调用方用 ``review_scores`` 做，这里只截到 0–10，不再猜量级）。没有任何分数 → ``None``。
-    """
+
+def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] | None:
+    """评审分 → ``{overall, dimensions: {dim: {score, note, raw?, fix?}}, source, summary?, raw_overall?, calibration?}``
+    （10 分制，一位小数）。
+
+    接受：``judge.judge_record`` 的评审记录（2026-10-14 起软 QC 与对照检查同一形状：``score`` 是按校准折算后作数的分，
+    这一维不作数时为 None，``raw`` 是模型原始分，``calibration.state`` 说口径）；旧的对照检查输出
+    （``{overall, dimensions: {dim: {score, note}}}``）与旧的软 QC 记录（``{kind: reference_judge, style_score,
+    dimension_scores}``，没有口径 = 未校准的原始分）。分数必须已经是 10 分制（这里只截到 0–10，不再猜量级）。没有任何
+    分数 → None。"""
     if not isinstance(judge, Mapping):
         return None
-    raw_dims: dict[str, tuple[Any, str]] = {}
+    dimensions: dict[str, dict[str, Any]] = {}
     dims = judge.get("dimensions")
     if isinstance(dims, Mapping):
         for key, value in dims.items():
-            if str(key) not in DIMENSION_LABELS:
+            dim = str(key)
+            if dim not in DIMENSION_LABELS:
                 continue
-            if isinstance(value, Mapping):
-                raw_dims[str(key)] = (value.get("score"), str(value.get("note") or "").strip())
-            else:
-                raw_dims[str(key)] = (value, "")
+            entry = value if isinstance(value, Mapping) else {"score": value}
+            score = _judge_number(entry.get("score"))
+            raw = _judge_number(entry.get("raw"))
+            if score is None and raw is None:
+                continue
+            item: dict[str, Any] = {"score": score, "note": str(entry.get("note") or "").strip()[:200]}
+            if raw is not None:
+                item["raw"] = raw
+            fix = str(entry.get("fix") or "").strip()
+            if fix:
+                item["fix"] = fix[:300]
+            if entry.get("applicable") is False:
+                item["applicable"] = False
+            dimensions[dim] = item
     scores = judge.get("dimension_scores")
     if isinstance(scores, Mapping):
         for key, value in scores.items():
-            if str(key) in DIMENSION_LABELS and str(key) not in raw_dims:
-                raw_dims[str(key)] = (value, "")
-    overall_raw = judge.get("overall", judge.get("style_score"))
-    dimensions: dict[str, dict[str, Any]] = {}
-    for dim, (score, note) in raw_dims.items():
-        number = finite_or_none(score)
-        if number is None:
-            continue
-        dimensions[dim] = {"score": round(max(0.0, min(10.0, number)), 1), "note": note[:200]}
-    overall_number = finite_or_none(overall_raw)
-    if overall_number is None and dimensions:
-        overall_number = sum(item["score"] for item in dimensions.values()) / len(dimensions)
-    if overall_number is None and not dimensions:
+            score = _judge_number(value)
+            if str(key) in DIMENSION_LABELS and str(key) not in dimensions and score is not None:
+                dimensions[str(key)] = {"score": score, "note": ""}
+    overall = _judge_number(judge["overall"] if "overall" in judge else judge.get("style_score"))
+    counted = [item["score"] for item in dimensions.values() if item.get("score") is not None]
+    if overall is None and counted and "overall" not in judge:
+        overall = round(sum(counted) / len(counted), 1)
+    if overall is None and not dimensions:
         return None
     payload: dict[str, Any] = {
-        "overall": round(max(0.0, min(10.0, overall_number)), 1) if overall_number is not None else None,
+        "overall": overall,
         "dimensions": dimensions,
         "source": str(source or judge.get("source") or judge.get("kind") or "judge"),
     }
+    raw_overall = _judge_number(judge.get("raw_overall"))
+    if raw_overall is not None:
+        payload["raw_overall"] = raw_overall
+    calibration = judge.get("calibration")
+    if isinstance(calibration, Mapping) and calibration.get("state"):
+        payload["calibration"] = dict(calibration)
+    pass_score = _judge_number(judge.get("pass_score"))
+    if pass_score is not None:
+        payload["pass_score"] = pass_score
     summary = str(judge.get("summary") or "").strip()
     if summary:
         payload["summary"] = summary[:500]
     return payload
+
+
+def judge_state(judge: Any) -> str | None:
+    """一条评审记录的口径（``judge.STATE_*``）；旧记录（没写口径）→ None，按未校准的原始分对待。"""
+    calibration = judge.get("calibration") if isinstance(judge, Mapping) else None
+    return str(calibration.get("state")) if isinstance(calibration, Mapping) and calibration.get("state") else None
 
 
 # ---------------------------------------------------------------------------
@@ -696,10 +724,14 @@ def project_fidelity_summary(
             .order_by(*_OLDEST_FIRST)
         )
     )
+    # 评审分只平均同一种口径（2026-10-14）：有按校准折算的评审就只数这些，否则数原始分（未校准 / 旧记录）；
+    # 「不可用」口径的评审没有作数的分，自然不计
+    judged_rows = [row for row in [*latest_judged, *unscoped_judged] if isinstance(row.judge_json, Mapping)]
+    calibrated_rows = [row for row in judged_rows if judge_state(row.judge_json) == "calibrated"]
+    judge_scale = "calibrated" if calibrated_rows else "raw"
     judged: dict[str, list[float]] = {}
-    for row in [*latest_judged, *unscoped_judged]:
-        judge = row.judge_json if isinstance(row.judge_json, Mapping) else None
-        for dim, entry in dict((judge or {}).get("dimensions") or {}).items():
+    for row in calibrated_rows or [row for row in judged_rows if judge_state(row.judge_json) != "unusable"]:
+        for dim, entry in dict(row.judge_json.get("dimensions") or {}).items():
             number = finite_or_none(entry.get("score") if isinstance(entry, Mapping) else entry)
             if number is not None:
                 judged.setdefault(str(dim), []).append(number)
@@ -721,6 +753,8 @@ def project_fidelity_summary(
             }
             for dim in dims
         },
+        # 按维平均里评审分的口径：calibrated = 校准后（0 = 普通文字，10 = 作者原文），raw = 模型原始分
+        "judge_scale": judge_scale,
         "reading_count": reading_count,
         "final_scene_count": len(latest_final),
     }
@@ -744,6 +778,7 @@ __all__ = [
     "STAGE_REVISION",
     "copy_check_summary",
     "latest_scene_readings",
+    "judge_state",
     "normalize_judge",
     "policy_essentials",
     "project_fidelity_summary",

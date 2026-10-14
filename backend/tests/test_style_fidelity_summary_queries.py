@@ -65,8 +65,12 @@ def _oracle_summary(session: Session, project_id: str, *, profile_id: str | None
             latest_judged[str(row.scene_id)] = row
         else:
             unscoped_judged.append(row)
+    # 评审分只平均同一种口径：有校准后的就只数它们，否则数原始分；「不可用」的不计（2026-10-14）
+    judged_rows = [*latest_judged.values(), *unscoped_judged]
+    calibrated = [row for row in judged_rows if R.judge_state(row.judge_json) == "calibrated"]
+    counted_rows = calibrated or [row for row in judged_rows if R.judge_state(row.judge_json) != "unusable"]
     judged: dict[str, list[float]] = {}
-    for row in [*latest_judged.values(), *unscoped_judged]:
+    for row in counted_rows:
         judge = row.judge_json if isinstance(row.judge_json, Mapping) else None
         for dim, entry in dict((judge or {}).get("dimensions") or {}).items():
             number = finite_or_none(entry.get("score") if isinstance(entry, Mapping) else entry)
@@ -90,6 +94,7 @@ def _oracle_summary(session: Session, project_id: str, *, profile_id: str | None
             }
             for dim in dims
         },
+        "judge_scale": "calibrated" if calibrated else "raw",
         "reading_count": len(rows),
         "final_scene_count": len(latest_final),
     }
@@ -109,12 +114,20 @@ def _judge(rng: random.Random) -> Any:
     if roll < 0.55:
         return {}
     dims = rng.sample(_DIMS, rng.randint(1, 3))
-    return {
+    judge: dict[str, Any] = {
         "dimensions": {
             dim: ({"score": round(rng.uniform(0, 10), 3)} if rng.random() < 0.8 else round(rng.uniform(0, 10), 3))
             for dim in dims
         }
     }
+    state = rng.random()
+    if state < 0.15:
+        judge["calibration"] = {"state": "calibrated"}
+    elif state < 0.25:
+        judge["calibration"] = {"state": "unusable"}
+    elif state < 0.35:
+        judge["calibration"] = {"state": "missing"}
+    return judge
 
 
 def _reading(rng: random.Random, index: int) -> StyleFidelityReading:

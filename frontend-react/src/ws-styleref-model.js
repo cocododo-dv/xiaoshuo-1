@@ -13,6 +13,7 @@ import {
   STYLE_DIMENSIONS,
   STYLE_LAYER_LABELS,
   STYLE_LAYER_ORDER,
+  styleDimensionLabel,
   styleJobKindLabel,
   styleLayerOf,
 } from "./labels/style-reference.js";
@@ -515,6 +516,45 @@ export function srDimensionGroups(dimensions) {
 /* ---------- 参考书活动 ---------- */
 
 /* 条目的叫法：作业表条目按 kind（段落分类区分导入 / 重新分类 / 重标类型），其余用后端给的 kind_label */
+/* 评审校准卡（2026-10-14 评审统一；后端 GET /profiles/{id} 的 judge_calibration）：
+   { tone, label, title, text, undistinguished: [维度名], buttonLabel } 或 null。
+   state：calibrated（分数按作者原文 / 普通改写两点折算）· missing（还没校准）· stale（评审模型或画像换过）·
+   unusable（评审分不清这位作者，它的分不作数） */
+export function srCalibrationView(cal) {
+  if (!cal || typeof cal !== "object") return null;
+  const fmt = (v) => (v == null || !Number.isFinite(Number(v)) ? "—" : (Math.round(Number(v) * 10) / 10).toFixed(1));
+  const model = cal.judge && cal.judge.model ? `评审模型 ${cal.judge.model}` : "评审模型（文学质检）还没配路由";
+  const undistinguished = (cal.undistinguished || []).map(styleDimensionLabel).filter(Boolean);
+  const numbers = `作者原文平均 ${fmt(cal.positive_mean)} 分、普通改写 ${fmt(cal.negative_mean)} 分（相差 ${fmt(cal.separation)}）`;
+  const cost = "同一个评审给这本书几段原文和它们的普通改写各打一次分，约 9 次模型调用、几分钟。";
+  if (cal.state === "calibrated") {
+    return {
+      tone: "ok", label: "已校准", title: model,
+      text: `${numbers}：之后的评审分按这两点折算，0 = 普通文字，10 = 作者原文。`,
+      undistinguished, buttonLabel: "重新校准",
+    };
+  }
+  if (cal.state === "unusable") {
+    return {
+      tone: "danger", label: "评审分不清", title: model,
+      text: `${numbers}，拉不开：这个评审模型分不清这位作者的原文与普通文字，它的分不据以补丁、不据以退回。到系统配置给「文学质检」换一个模型，再重新校准。`,
+      undistinguished, buttonLabel: "重新校准",
+    };
+  }
+  if (cal.state === "stale") {
+    return {
+      tone: "warn", label: "校准已过期", title: model,
+      text: `评审模型或这份画像换过，上次的校准不再适用，评审暂按模型原始打分算。重新校准一次：${cost}`,
+      undistinguished: [], buttonLabel: "重新校准",
+    };
+  }
+  return {
+    tone: "warn", label: "还没校准", title: model,
+    text: `评审的分是模型原始打分，没有参照（同一份稿子可能这次 8 分、那次 3 分）。校准一次：${cost}`,
+    undistinguished: [], buttonLabel: "校准评审",
+  };
+}
+
 export function srActivityKindLabel(entry) {
   if (!entry) return "";
   if (entry.kind === "classify") {

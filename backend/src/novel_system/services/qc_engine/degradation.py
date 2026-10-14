@@ -232,6 +232,8 @@ def _qc_run_node_with_degradation(
     degraded_payload_factory: Callable[..., dict[str, Any]],
     prompt_decorator: Callable[[dict[str, Any], str], dict[str, Any] | None]
     | None = None,
+    prompt_factory: Callable[[], tuple[dict[str, Any], str]] | None = None,
+    payload_adapter: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> tuple[str | None, str | None, dict[str, Any]]:
     """QC 节点执行 + 三级受控降级（continuity 预拒 / 已派发失败 / payload 非法）。
 
@@ -242,21 +244,29 @@ def _qc_run_node_with_degradation(
     ``prompt_decorator(prompt, final_user_prompt)`` 在模板构建之后、派发之前对 prompt
     做一次可选改写（v2：soft_qc 阶段前置 ``[STYLE_REFERENCE]`` 前缀）；返回 ``None``
     视为不改写。
+
+    2026-10-14 评审统一：``prompt_factory()`` 给了就由它出 ``(prompt, final_user_prompt)``（软 QC 在有风格绑定时用
+    不带场景上下文的参考评审提示），不再走模板构建与 ``prompt_decorator``；``payload_adapter(structured)`` 把模型回答
+    换成报告载荷（参考评审 → 由代码定放行的软 QC 载荷，分数已是 0–1，不再换算），返回 ``None`` 表示这一回答不是
+    参考评审（工厂退回了润色提示），照常换算、校验；它抛 ``QCValidationError`` 按非法载荷降级。
     """
     llm_call_id: str | None = None
     degraded_reason: str | None = None
     score_schema: Any = None
     try:
-        prompt = prompt_builder.build(bundle["snapshot"], step)
+        if prompt_factory is not None:
+            prompt, final_user_prompt = prompt_factory()
+        else:
+            prompt = prompt_builder.build(bundle["snapshot"], step)
+            final_user_prompt = _qc_build_user_prompt(
+                prompt["user_prompt"], source_draft_content
+            )
+            if prompt_decorator is not None:
+                decorated = prompt_decorator(prompt, final_user_prompt)
+                if isinstance(decorated, dict):
+                    prompt = decorated
         # 分数的刻度以这一次调用的模板声明为准（review_scores.declared_score_scale）
         score_schema = prompt.get("structured_schema")
-        final_user_prompt = _qc_build_user_prompt(
-            prompt["user_prompt"], source_draft_content
-        )
-        if prompt_decorator is not None:
-            decorated = prompt_decorator(prompt, final_user_prompt)
-            if isinstance(decorated, dict):
-                prompt = decorated
         node_result = llm_runner.run(
             scene_id=scene_id,
             chapter_id=scene.chapter_id,
@@ -312,7 +322,10 @@ def _qc_run_node_with_degradation(
             # 不得再经 validate→dump 往返，否则分级契约被剥掉。
             # 风格参考 v3：软 QC 的分数先按模板声明的刻度换算再校验——此前 9.3 这类回答在这里就被 le=1 拒掉，
             # 整遍软 QC 被判 invalid 豁免（2026-09-22 的换算只在落库时做，从没轮上）。只在这里换算一次。
-            if step == "soft_qc":
+            adapted = payload_adapter(payload) if payload_adapter is not None else None
+            if adapted is not None:
+                payload = adapted
+            elif step == "soft_qc":
                 payload = _normalize_soft_qc_scores(payload, schema=score_schema)
             report = validate_qc_report(step, payload)
             payload = report.model_dump()

@@ -1,7 +1,7 @@
 """风格参考作业的处理器与维护任务：显式登记（不靠模块导入的副作用）。
 
-:func:`install_workers` 把三种作业的处理器（段落分类 ``classify_run``、学习文风 ``learn_run``、对照检查
-``check_job``，各带取消收尾钩子 / 能否续跑 / 结束时参数的规则）与风格作业的维护任务（``cleanup`` 的遥测留存与
+:func:`install_workers` 把四种作业的处理器（段落分类 ``classify_run``、学习文风 ``learn_run``、对照检查
+``check_job``、校准评审 ``judge_calibration``，各带取消收尾钩子 / 能否续跑 / 结束时参数的规则）与风格作业的维护任务（``cleanup`` 的遥测留存与
 作业表保留期）登记到 ``jobs`` 的登记簿上。FastAPI lifespan 在启动清扫线程之前调用它；不经过应用、直接跑作业的
 地方（工具、测试）同样先调用它。可以重复调用：同名登记覆盖。
 
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from novel_system.services.style_reference.jobs import (
+    JOB_KIND_CALIBRATE,
     JOB_KIND_CHECK,
     JOB_KIND_CLASSIFY,
     JOB_KIND_LEARN,
@@ -23,7 +24,14 @@ from novel_system.services.style_reference.jobs import (
 
 def install_workers() -> None:
     """登记处理器与维护任务（见模块说明）。"""
-    from novel_system.services.style_reference import check_job, classify_run, cleanup, learn_job, learn_run
+    from novel_system.services.style_reference import (
+        check_job,
+        classify_run,
+        cleanup,
+        judge_calibration,
+        learn_job,
+        learn_run,
+    )
 
     register_job_handler(
         JOB_KIND_CLASSIFY,
@@ -41,6 +49,11 @@ def install_workers() -> None:
         check_job.run_check_job,
         resumable=check_job.check_never_resumes,
         finished_params=check_job.finished_check_params,
+    )
+    register_job_handler(
+        JOB_KIND_CALIBRATE,
+        judge_calibration.run_calibration_job,
+        resumable=judge_calibration.calibration_never_resumes,
     )
     # 清扫线程启动时跑一次、之后每 24 小时一次；登记的是模块里的函数，它们在调用时才取 cleanup_metric_events /
     # prune_style_jobs（测试在 cleanup 上打桩）

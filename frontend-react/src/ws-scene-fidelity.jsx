@@ -2,11 +2,13 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Spinner, Tag } from "./ws-ui.jsx";
 import {
-  fidErrorInfo, fidJobView, fidJudgeView, fidPatchView, fidRankText, fidReadingStates, fidStyleStepView, fidVerdict,
-  fidWeakestDims,
+  fidErrorInfo, fidJobView, fidJudgeView, fidPatchView, fidRankText, fidReadingStates, fidScoreText, fidStyleStepView,
+  fidVerdict, fidWeakestDims,
 } from "./ws-fidelity-model.js";
 import { fidCheck, fidLoadScene, fidResumeCheck, fidScene, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
-import { FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityMeter } from "./ws-fidelity-ui.jsx";
+import {
+  FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityJudgeState, FidelityMeter,
+} from "./ws-fidelity-ui.jsx";
 
 const { useEffect } = React;
 
@@ -113,8 +115,14 @@ function CheckBlock({ sceneId, bound, manual, go }) {
       {manual ? (
         <div className="scn2-fid-manual" data-testid="scene-fidelity-manual">
           <ReadingRow label="结果" reading={manual} />
-          {judge && judge.overall != null && (
-            <div className="scn2-fid-row"><dt>评审</dt><dd><FidelityMeter score={judge.overall} label="参考评审总分" /></dd></div>
+          {judge && (judge.overall != null || judge.rawOverall != null) && (
+            <div className="scn2-fid-row">
+              <dt>评审</dt>
+              <dd>
+                {judge.overall != null ? <FidelityMeter score={judge.overall} label="参考评审总分" /> : `原始 ${fidScoreText(judge.rawOverall)}`}
+                <FidelityJudgeState view={judge} testId="scene-fidelity-manual-judge-state" />
+              </dd>
+            </div>
           )}
           {judge && judge.summary && <p className="scn2-fid-note">{judge.summary}</p>}
         </div>
@@ -168,7 +176,13 @@ export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null }) {
       )}
       {judge && (
         <div className="scn2-fid-judge" data-testid="scene-fidelity-judge">
-          <div className="scn2-fid-row"><dt>评审</dt><dd>{judge.overall != null ? <FidelityMeter score={judge.overall} label="参考评审总分" /> : "—"}</dd></div>
+          <div className="scn2-fid-row">
+            <dt>评审</dt>
+            <dd>
+              {judge.overall != null ? <FidelityMeter score={judge.overall} label="参考评审总分" /> : "—"}
+              <FidelityJudgeState view={judge} testId="scene-fidelity-judge-state" />
+            </dd>
+          </div>
           {weakest.length > 0 && (
             <ul className="scn2-fid-weak" aria-label="评审分最低的几维">
               {weakest.map((dim) => (

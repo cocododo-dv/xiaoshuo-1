@@ -108,6 +108,7 @@ const STYLE_JOB_KIND_LABELS = {
   classify: "段落分类",
   learn: "学习文风",
   check: "对照检查",
+  calibrate: "校准评审",
 };
 
 export function styleJobKindLabel(kind) {

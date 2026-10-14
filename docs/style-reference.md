@@ -1,6 +1,7 @@
 # 风格参考（现行说明）
 
-> 风格参考模块的**现行说明**，对应 2026-09-23 风格参考 v3、2026-09-24 清理与优化以及 2026-09-29 全系统重构之后的代码（迁移见[数据库迁移](migrations.md)）。
+> 风格参考模块的**现行说明**，对应 2026-09-23 风格参考 v3、2026-09-24 清理与优化、2026-09-29 全系统重构以及 2026-10-14 评审统一
+> （§4.5、§6、§7a）之后的代码（迁移见[数据库迁移](migrations.md)）。
 > 本轮重构的设计、问题台账与完成日志见 [风格参考 v3 变更记录](style-reference-v3-2026-09-23.md)；更早的设计、评估与实施账本归档在
 > [history/style/](history/style/)，只描述当时的实现。本文与代码冲突时以代码为准，并回头改本文。
 
@@ -23,7 +24,7 @@
 3. **用于作品**：参考方式、样例窗数、起草方式，直接写绑定（一个目标只有一条生效绑定）；「本场预览」与起草同一套选窗。
 4. **对照检查**：随时可用的第四步（§4.4）——贴一段文字或选本作品的一场，看它像不像这位作者。
 
-左栏「参考书活动」列出在跑与刚结束的作业（段落分类、学习文风、对照检查）：在跑的都可取消（对照检查也可以），失败或取消的可继续；
+左栏「参考书活动」列出在跑与刚结束的作业（段落分类、学习文风、对照检查、校准评审）：在跑的都可取消（对照检查也可以），失败或取消的可继续；
 不可续跑的失败（如正文太短）只给「重新学习」，正文太短另可「仍然学习」。
 
 ## 3. 数据模型
@@ -140,8 +141,9 @@
 
 `POST /api/v2/style-reference/checks`：`text`（≤6 万字）与 `scene_id` 恰好给一个，并说明对照哪份参考（`profile_id` 或 `project_id`）。
 给 `scene_id` 时作品一律取这一场所属的作品（建作业与跑作业时都按场景取，不信客户端给的 `project_id`），读数记在那部作品下。
-作业做三件事：确定性读数 → 参考评审（模板 `style_ref_check_judge`，走 `soft_qc` 节点路由；冻结选窗前 4 窗 + 文风卡 + 声音 + 红线；
-16 维各 0–10 分 + 总分，按模板声明的刻度换算、越界的分丢掉）→ 抄袭门（只记计数），写一条 `source=manual_check` 的读数。评审失败作业就失败，
+作业做三件事：确定性读数 → 参考评审（模板 `style_reference_judge`，与起草流程里的软 QC 参考评审同一份，走 `soft_qc` 节点路由；冻结选窗
+前 4 窗 + 文风卡 + 声音 + 红线；16 维各 0–10 分，按模板声明的刻度换算、越界的分丢掉；总分由代码算，按画像的评审校准折算，§7a）→ 抄袭门
+（只记计数），写一条 `source=manual_check` 的读数。评审失败作业就失败，
 不降级成只有读数。`POST /checks/{job_id}/cancel` 取消（排队中立即收尾，运行中在评审回来的检查点收尾；已结束 → 409 `…_CHECK_NOT_ACTIVE`）。
 
 - 评审的参考块按 `soft_qc` 的**实际路由**判云策略（§11）：「仅本机」的书遇云端路由 → 作业以 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`
@@ -149,6 +151,25 @@
   长到一窗参考都装不下 → 409 `…_CHECK_REFERENCE_EMPTY`，`details.reason = "input_budget"`）。
 - 所有权：每个进度写之后立刻提交（不带着写锁去建窗口索引、跑抄袭门）；评审回来先确认作业还是自己的（没被取消、没被清扫重排给别的
   工人、书没被删）再记读数；进度写或「完成」写落空 → `JobLost`，读数随事务一起回滚。
+
+### 4.5 校准评审（`judge_calibration.py`，kind=calibrate）
+
+评审给「像不像」打的分本身没有零点（实库 2026-10-13：同一份稿子流程内评审 8.6、对照检查 2.7）。校准给它一个参照：同一个评审模型、
+同一份评审口径的参考块，给两类文字打分——这本书里 N 段**不在评审样例里**的原文（作者本人写的），以及同一段原文让起草模型改写成通用
+现代中文叙述的「普通改写」（模板 `style_reference_neutralize`，走 `style_draft` 路由——要比的正是起草模型不带参考时的默认写法；改写稿
+只用来校准，不落库、不进正文）。
+
+- 一次 = N 次改写 + 2N 次评审（`judge_calibration_anchors`，缺省 N = 3，共 9 次调用），顺序跑，每次调用后一个检查点；走对照检查那条
+  短车道。锚点：评审样例之外、≥600 字、典型度高、一章至多一段，按画像版本定种；截到约 2400 字（按段）。
+- 结果存在画像 `profile_json.judge_calibration`（不进冻结契约）：两类的平均分与差、每一维的两个锚点、分得清的维、评审的「身份」
+  （soft_qc 路由的 provider / model、评审模板版本、画像版本）。两类平均分差 ≥ `judge_min_separation`（2）且至少一维差
+  ≥ `judge_min_dimension_separation`（1）→ 可用，否则「评审不可用」。
+- 口径（`judge.calibration_state`）：已校准 / 不可用 / 没校准（missing）/ 过期（stale：身份任何一项变了——换了评审模型、改了评审
+  模板、重新学过画像）。过期与没校准都按模型原始分走（界面标「未校准」）。
+- 学习文风成功后自动排一个（`start_after_learn`；没有模型 / 节点没配好 / 云策略不许 / 已在校准 → 不排，记日志）；画像页「评审校准」卡
+  可手动启动 / 取消：`POST /api/v2/style-reference/profiles/{id}/judge-calibration`、`…/judge-calibration/cancel`；结果随
+  `GET /profiles/{id}` 的 `judge_calibration` 给出。失败不续跑（重新校准从头来）。错误码 `STYLE_REFERENCE_CALIBRATION_*`
+  （`CONFIG_MISSING` / `BOOK_NOT_READY` / `ALREADY_ACTIVE` / `NOT_ACTIVE` / `NO_REFERENCE` / `NO_WINDOWS` / `CALL_FAILED`）。
 
 ## 5. 注入：参考怎样进每一个提示
 
@@ -215,9 +236,13 @@
    只改越界特征所在的维（至多 4 维，重点维在前），带测得的差异与这几维的卡句；改完再读，`distance` 至少小 `revision_min_improvement`
    且过了抄袭门与安全门才采用，否则保留首稿。抄袭门只算修改稿**新带进来**的重合（`introduced_copy`）——首稿里本来就有、
    修改稿照旧留着的不算这次修改的错（首稿自己的重合由硬 QC / 成稿门对全文把关）。读数出错（不是「书没有尺子」）另记原因
-   `reading_failed`、提示说实话；读数在保存点里读，出错不弄坏会话、不耽误检查点。
-5. 软 QC = **参考评审**（样例 4 窗 + 文风卡，16 维各 0–10 分）→ 有不像的维才补丁；补丁后评分变差、或 `distance` 变大而评分没提高 →
-   退回补丁前的稿子（`STYLE_PATCH_REVERTED`）。
+   `reading_failed`、提示说实话；读数在保存点里读，出错不弄坏会话、不耽误检查点。读数说修改稿更近时，再做一次**成对比较**
+   （§7a；执行步键 `style_draft:0:compare:ab` / `…:ba`）：评审两次都说首稿更像 → 仍保留首稿（`pairwise_first_draft_closer`）。
+5. 软 QC = **参考评审**（统一评审模板 `style_reference_judge`，不带场景上下文；样例 4 窗 + 文风卡；16 维各 0–10 分，按校准折算，§7a）→
+   **放行由代码定**：作数的维里低于阈值的（重点维在前，至多 4 维）各出一条补丁说明（评审给这一维的改法），没有就放行；评审不可用时
+   不据它补丁（waive 并留说明）。补丁的去留问**成对比较**（补丁前 vs 补丁稿，执行步键 `style_patch_keep:compare:ab` / `…:ba`，在补丁的
+   检查点之后、`soft_qc:1` 之前）：两次都说补丁前更像 → 退回（`pairwise_original_closer`）；都说补丁更像 → 留下；没有明确结论 →
+   `distance` 变大超过 `patch_max_distance_increase` 才退回（`distance_worse`）。退回时 `STYLE_PATCH_REVERTED`。
 6. 准定稿评审（按参考判，分数带范围）。评审要改写时，定稿改写稿进第二轮评审之前先过两道确定性门：相对来源稿的基础安全回退
    （必写事实、禁用内容、文本完整性——含「整场挤成一段」、长度；`scene_generation.assess_rewrite_regressions`，只算改写稿新添的问题），
    以及作者手笔直起时读数比来源稿远出 `patch_max_distance_increase` 以上。没过就丢掉改写稿，终稿保留来源稿，评审意见随稿留痕
@@ -249,6 +274,23 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 - 接口：`GET /api/v1/scenes/{id}/style-fidelity`（各阶段最新读数、风格步与补丁的决定、评审分）、`GET /api/v1/projects/{id}/style-fidelity`
   （走势、近期偏差、按维平均，每场一票）、`GET /api/v2/style-reference/readings/{id}`、起草台工作台的 `style_fidelity`。
 
+## 7a. 参考评审：一份评审、校准、代码定放行、成对比较（2026-10-14）
+
+`style_reference/judge.py`（纯函数）+ `judge_calibration.py`（调用与作业）：
+
+- **一份模板**：`style_reference_judge`，起草流程的软 QC（有绑定且参考带上了；带不上 → 退回 `soft_qc` 模板的润色口径）与对照检查共用，
+  走 `soft_qc` 路由，提示由 `judge.bare_prompt` 拼（只有评审口径的参考块 + 待评文字，不带场景设计——同一份文字在两处拿到同一份提示）。
+  16 维必填（`score` / `applicable` / `note` / `fix`），模型不给总分、不给放行结论；只判「怎么写」，故事本身（题材、事件、人物）不判。
+- **折算**：校准可用时，每一维按它的两个锚点折成 0–10（普通改写 = 0，作者原文 = 10，截在两端）；分不清的维不作数（分为空，只留原始分）。
+  没校准 / 过期 → 作数的分就是原始分。评审不可用 → 没有作数的分。总分 = 作数各维的平均；「不学」的维整维不出现。
+- **放行线**：校准后的分低于 `judge_pass_score`（6）、或没校准时原始分低于 `judge_raw_pass_score`（7）的维要补。
+- **成对比较**（模板 `style_reference_compare`，同一套参考块）：「两个版本哪一个更像」，A / B 两个次序各问一次，两次指向同一边才算数
+  （`judge.compare_verdict`：base / candidate / tie / unavailable）。评审不可用或参考带不上时不比（unavailable），去留退回读数规则。
+- **落库**：评审记录（`judge.judge_record`：`overall` / `dimensions.*.score` 是作数的分，`raw_overall` / `dimensions.*.raw` 是模型原始分，
+  `calibration.state` 说口径；旧读者认的 `style_score` / `dimension_scores` 一并给出）进软 QC 报告的 `reference_judge` 条目、尝试记录与读数的
+  `judge_json`。作品汇总的按维评审平均只数同一种口径（有校准后的就只数它们，`judge_scale`）。界面在每处评审分旁标口径
+  （已校准 / 未校准 / 校准已过期 / 评审不可用）。
+
 ## 8. 唯一抄袭门与受保护专名（只有原文重合会拦）
 
 `services/reference_copy_gate.py` 是**唯一**的抄袭门，凡是进正文的文字都过它：成稿门（归档）、起草台「采用」/ 再确认、成稿中心、写作台
@@ -278,7 +320,7 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 |---|---|
 | `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`，还要 `X-Admin-Token`；没配 `NOVEL_SYSTEM_ADMIN_TOKEN` 时只放行回环客户端）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
 | `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` |
-| `profiles.py` | `GET /profiles/{id}`（文风画像页；画像摘要在书库载荷里）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
+| `profiles.py` | `GET /profiles/{id}`（文风画像页，含 `judge_calibration` 校准卡；画像摘要在书库载荷里）· `POST /profiles/{id}/judge-calibration` · `POST /profiles/{id}/judge-calibration/cancel`（§4.5）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
 | `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` |
 | `checks.py` | `POST /checks` · `GET /checks/{job_id}` · `POST /checks/{job_id}/cancel`（§4.4、§7） |
 | `activity.py` | `GET /activity` |
@@ -302,13 +344,14 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
 | `anti_plagiarism_template.txt` | 红线段 |
 
 `fidelity:` 阈值（`style_step.fidelity_thresholds`；2026-09-24 用作者的真实路由在 3 场 × 3 臂上核过，见变更记录 §7）：`style_step_max_percentile` 90、
-`revision_min_improvement` 0.03、`patch_max_distance_increase` 0.05、`judge_tolerance` 0.1（评审总分 0–1 尺度，= 10 分制上的 1 分：
-两次独立评审的噪声常有半分到一分，更细的容差会把好补丁当成变差退回）。评审节点的分数按模板 `structured_schema` 声明的刻度
-（`maximum`）逐个换算，越界的分丢掉（`review_scores`）；模板没声明刻度（旧提示词快照）时才按一次回答推断量级。
+`revision_min_improvement` 0.03、`patch_max_distance_increase` 0.05；评审（2026-10-14，§7a）：`judge_pass_score` 6、`judge_raw_pass_score` 7、
+`judge_min_separation` 2、`judge_min_dimension_separation` 1、`judge_calibration_anchors` 3。旧的 `judge_tolerance`（两次绝对评审分相减的容差）
+已退役——补丁的去留改由成对比较定。评审节点的分数按模板 `structured_schema` 声明的刻度（`maximum`）逐个换算，越界的分丢掉。
 
 模型节点（默认值只写在 `llm_node_registry.py` 的 spec 里）：分类两节点关推理、输出 8192；四个抽取节点与文风卡合成 16384；
 `style_ref_protected_terms` 8192；`style_ref_tag_windows` 4096、关推理。起草与评审复用现有路由：`style_first_draft` / `style_targeted_revision`
-走 `style_draft`，`style_ref_check_judge` 走 `soft_qc`（5000），`scene_blueprint_facts` 走 `scene_blueprint`。
+走 `style_draft`，参考评审 `style_reference_judge` 与成对比较 `style_reference_compare` 走 `soft_qc`（5000），校准的普通改写
+`style_reference_neutralize` 走 `style_draft`，`scene_blueprint_facts` 走 `scene_blueprint`。
 
 ## 11. 部署与运维
 
@@ -328,8 +371,8 @@ n-gram、长度带放宽）；事实、必含、禁止、抄袭、禁用词这�
   - 节点从哪来：调用方给 `inject_style_reference_prefix(..., node_id=...)`；不给就按 `prompt["template_name"]` 推
     （`inject/routing.TEMPLATE_NODE_IDS`：`style_first_draft` / `style_targeted_revision` → `style_draft`；`style_draft` 模板 → `style_draft`
     + `style_patch`（软补丁、去模板、安全修复借这份提示在 `style_patch` 下派发）；`style_length_patch` / `style_salvage_patch` →
-    `style_patch`；`scene_literary_rewrite` → 它自己 + `style_patch`；`scene_blueprint_facts` → `scene_blueprint`；`style_ref_check_judge` →
-    `soft_qc`；`writer_passage_review` → `writer_deep_review`；其余模板名本身就是注册节点的用它）。有几个候选节点时每一个都要满足；
+    `style_patch`；`scene_literary_rewrite` → 它自己 + `style_patch`；`scene_blueprint_facts` → `scene_blueprint`；`style_reference_judge` /
+    `style_reference_compare` → `soft_qc`；`writer_passage_review` → `writer_deep_review`；其余模板名本身就是注册节点的用它）。有几个候选节点时每一个都要满足；
     说不出节点 → 「仅本机」的书按不许送处理。
   - 规划参考块（`planning_context`）不说节点时按全部消费节点判：项目级（雪花 09 / 10、起章名、章规划四节点）、场景级（场景蓝图、
     章架构、人物压力）、起章名；「仅本机」的书有一个消费节点走云端就不给参考块（规划照常，不报错）。

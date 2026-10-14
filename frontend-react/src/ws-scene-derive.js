@@ -138,6 +138,7 @@ const STYLE_NOTICE_REASON_LABELS = {
     copy_gate_blocked: "修改稿照搬了参考书，已丢掉",
     base_safety_failed: "修改稿没过安全检查，保留首稿",
     revision_reading_unavailable: "修改稿量不出像不像，保留首稿",
+    pairwise_first_draft_closer: "评审比较认为首稿更像，保留首稿",
   },
 };
 const STYLE_NOTICE_REASON_DETAILS = {
@@ -153,8 +154,11 @@ const STYLE_NOTICE_REASON_DETAILS = {
     copy_gate_blocked: "改出来的那一版新添了与参考书原文连续相同的地方，已丢掉，保留首稿。",
     base_safety_failed: "改出来的那一版丢了必写的内容、长度不对或文本不完整，保留首稿。",
     revision_reading_unavailable: "改出来的那一版量不出像不像，没法确认更像，保留首稿。",
+    pairwise_first_draft_closer: "读数说改过的那一版更近，但评审两个次序各比较一次，都认为首稿更像这位作者，保留了首稿。",
   },
   STYLE_PATCH_REVERTED: {
+    pairwise_original_closer: "评审两个次序各比较一次，都认为补丁前的稿子更像这位作者，已退回补丁前的稿子；评审的改稿意见留在记录里。",
+    distance_worse: "软质检的补丁让稿子离作者更远，评审的比较也没分出高下，已退回补丁前的稿子；评审的改稿意见留在记录里。",
     judge_worse: "软质检的补丁让参考评审分降了，已退回补丁前的稿子；评审的改稿意见留在记录里。",
     distance_worse_without_judge_gain: "软质检的补丁让稿子离作者更远、评审分也没提高，已退回补丁前的稿子；评审的改稿意见留在记录里。",
   },

@@ -330,7 +330,7 @@ Retired and ignored except for one startup warning: the LLM quota / cost / auto-
 - One diagnosis record (`scene_diagnosis`, stable `signal_id`); ignore lists hold signal ids and are honoured by 文学质量
   and the final gate; writes that change findings return `diagnosis_rollup`.
 - Style reference: jobs are owner-token fenced and a process exit requeues them; `StylePolicy` is the only binding
-  decision, `binding_config.normalize_binding_config` the only config interpreter,
+  decision, `binding_config.normalize_binding_config` the only config interpreter, `judge.py` the only judge,
   `readings.record_fidelity_reading` the only readings writer, `reference_copy_gate.py` the only copy gate (≥ 12 shared
   chars → 409 `SOURCE_SAFETY_BLOCKED`; protected terms warn). A `local_only` book needs a local model on the receiving
   node's route (else 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`). Details: `docs/style-reference.md`.

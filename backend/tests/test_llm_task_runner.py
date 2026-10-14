@@ -716,6 +716,8 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         # 2026-09-23 风格参考 v3（P5b）：style_first 下风格步越界时的定向修改（style_targeted_revision，
         # 走 style_draft 节点路由），与风格稿同一条场景运行记账路径。
         ("services/scene_generation/style_first.py", "", "run_targeted_revision"),
+        # 2026-10-14 评审统一：补丁 / 定向修改去留的成对比较（style_reference_compare，走 soft_qc 路由），同一条场景运行记账路径。
+        ("services/scene_generation/style_compare.py", "", "compare_versions"),
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
         # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
         ("services/qc_engine/degradation.py", "", "_qc_run_node_with_degradation"),
@@ -778,7 +780,8 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
     # 2026-09-29 B03-21：准定稿规划的两个生成函数合成一个，少一个调用点。
     # 2026-09-29 重构（B05-10）：写作台的整场深评 / 局部深评 / 局部改写三处合成一个 _run_writer_node（带 context）。
     # 2026-10 G4 B3-1b.2：章级准终稿评审（near_final_review.evaluate_chapter，带 chapter 作用域的 context）删了，少一个。
-    assert len(calls) == 12
+    # 2026-10-14 评审统一：scene_generation.style_compare.compare_versions（成对比较）加一个（场景运行派生 context）。
+    assert len(calls) == 13
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 

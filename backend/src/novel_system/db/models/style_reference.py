@@ -317,7 +317,7 @@ class StyleReferenceMetricEvent(Base):
 class StyleReferenceJob(Base):
     """风格参考 v3（2026-09-23）— 统一的持久作业表（迁移 0090）。
 
-    ``kind`` ∈ classify / learn / check。一个作业一行；工人认领时 ``attempt`` +1 并换一枚新的
+    ``kind`` ∈ classify / learn / check / calibrate。一个作业一行；工人认领时 ``attempt`` +1 并换一枚新的
     ``owner_token``，此后的每一次写（心跳 / 进度 / 游标 / 结束）都以「owner_token 仍是自己」为条件——
     被清扫重排、被取消、被删书的作业，旧工人的写全部落空，自然停下。心跳过期的 running 作业由常驻
     清扫线程放回 queued，重启或 ``--reload`` 之后不需要人工介入。

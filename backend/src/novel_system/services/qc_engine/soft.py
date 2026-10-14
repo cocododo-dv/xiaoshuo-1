@@ -1,5 +1,9 @@
-"""软质检引擎：可读性 / 参考评审（带与风格稿相同的 [STYLE_REFERENCE] 前缀）、风格稿的原文重合门、受控补丁、
-软风险接受与人工复核。"""
+"""软质检引擎：可读性 / 参考评审、风格稿的原文重合门、受控补丁、软风险接受与人工复核。
+
+参考评审（2026-10-14 评审统一）：场景有风格绑定时，软 QC 不再用 ``soft_qc`` 模板，而是与「对照检查」同一份
+``style_reference_judge``——不带场景上下文的纯评审提示（``judge.bare_prompt``）+ 评审口径的 ``[STYLE_REFERENCE]``
+块，走 ``soft_qc`` 节点路由；模型只打分，按这份画像的评审校准折算（``judge_calibration.verdict_for``），放行与补哪
+几维由代码定（``judge.soft_qc_payload``）。参考没带上（降级 / 未命中）时退回 ``soft_qc`` 模板的润色口径。"""
 
 from __future__ import annotations
 
@@ -17,14 +21,14 @@ from novel_system.services.qc_engine.base import (
     _qc_clear_downstream_outputs,
     _qc_record_attempt,
 )
-from novel_system.services.qc_engine.degradation import _qc_run_node_with_degradation
+from novel_system.services.qc_engine.degradation import _qc_build_user_prompt, _qc_run_node_with_degradation
 from novel_system.services.qc_engine.issues import (
     _append_unique_rewrite_briefs,
     _dedupe_issues,
     _qc_apply_deterministic_quality_gates,
     _rewrite_briefs_for_deterministic_issues,
 )
-from novel_system.services.qc_engine.scores import _prompt_carries_reference, _reference_judge_record
+from novel_system.services.style_prompt_injection import prompt_carries_reference
 from novel_system.services.qc_engine.styled_gate import (
     STYLE_BANNED_TERM_ISSUE_KEY,
     STYLE_GATE_UNAVAILABLE_ISSUE_KEY,
@@ -34,13 +38,22 @@ from novel_system.services.qc_engine.styled_gate import (
     _STYLED_GATE_MAX_HITS,
     run_styled_draft_style_gate,
 )
-from novel_system.services.qc_validator import validate_qc_report
+from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.quality_classifier import (
     classify_issue,
     classify_issues,
     has_blocking,
 )
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
+from novel_system.services.style_reference.judge import (
+    JUDGE_NODE_ID,
+    JUDGE_TEMPLATE,
+    bare_prompt,
+    judge_record,
+    judge_user_prompt,
+    parse_judge_output,
+    soft_qc_payload,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,17 +118,17 @@ class SoftQcEngine(QcEngineBase):
     ) -> SoftQcDecision:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
-        # v2（规格 §2.W5.4）：soft_qc 评审看到的是与 style_draft **相同**的 [STYLE_REFERENCE]
-        # 前缀（同一冻结契约、同一 task_type），这样才谈得上「对照 [声音特征] /
-        # [正向风格特征] 检查偏离」。注入审计随 attempt 落库。
+        # 参考评审的注入审计随 attempt 落库
         style_runtime_audit: dict[str, Any] | None = None
-        # 风格参考 v3（L6）：这一遍是不是参考评审（提示里真的带着参考）——决定分数记不记成「参考评审总分」
-        reference_carried = False
+        # 2026-10-14 评审统一：有风格绑定 → 参考评审（style_reference_judge，代码定放行）；judge 里记这一遍是不是
+        # 真的按参考评审跑了（参考带上了）、以及折算后的评审结论
+        policy = self._style_policy(scene, bundle)
+        judge: dict[str, Any] = {}
 
         def _decorate_soft_qc_prompt(
             prompt: dict[str, Any], final_user_prompt: str
         ) -> dict[str, Any] | None:
-            nonlocal style_runtime_audit, reference_carried
+            nonlocal style_runtime_audit
             injected = self._inject_style_reference_prefix(
                 prompt,
                 scene,
@@ -130,9 +143,40 @@ class SoftQcEngine(QcEngineBase):
             )
             if isinstance(audit, dict):
                 style_runtime_audit = dict(audit)
-            reference_carried = _prompt_carries_reference(injected)
             return injected
 
+        def _reference_or_polish_prompt() -> tuple[dict[str, Any], str]:
+            nonlocal style_runtime_audit
+            prompt, user_prompt, audit = self._reference_judge_prompt(scene, bundle, source_draft_content)
+            if isinstance(audit, dict):
+                style_runtime_audit = dict(audit)
+            if prompt is not None:
+                judge["active"] = True
+                return prompt, user_prompt
+            # 参考没带上（策略降级 / 渲染失败 / 未命中）：润色口径，不冒充参考评审
+            polish = self.prompt_builder.build(bundle["snapshot"], "soft_qc")
+            return polish, _qc_build_user_prompt(polish["user_prompt"], source_draft_content)
+
+        def _adapt_reference_judge(structured: dict[str, Any]) -> dict[str, Any] | None:
+            if not judge.get("active"):
+                return None
+            from novel_system.services.style_reference.card import DIMENSION_LABELS
+            from novel_system.services.style_reference.judge_calibration import verdict_for
+
+            scores = parse_judge_output(structured, schema=judge.get("schema"))
+            if scores is None:
+                raise QCValidationError("reference judge returned no usable dimension scores")
+            verdict = verdict_for(self.session, policy, scores)
+            judge["verdict"] = verdict
+            return soft_qc_payload(
+                verdict,
+                dimension_states=getattr(policy, "dimension_states", None),
+                dimension_labels=DIMENSION_LABELS,
+            )
+
+        bound = bool(getattr(policy, "bound", False))
+        if bound:
+            judge["schema"] = self._judge_template().structured_schema
         # Wave 2（§5.4/§7.7）：软 QC 执行失败不再断头——降级为 waive + Q2 警告
         # 继续交付；确定性 gates 照跑，verified Q0/Q1 仍能阻断。
         llm_call_id, degraded_reason, payload = _qc_run_node_with_degradation(
@@ -149,7 +193,9 @@ class SoftQcEngine(QcEngineBase):
             step="soft_qc",
             message_prefix="soft QC",
             degraded_payload_factory=self._degraded_waive_payload,
-            prompt_decorator=_decorate_soft_qc_prompt,
+            prompt_decorator=None if bound else _decorate_soft_qc_prompt,
+            prompt_factory=_reference_or_polish_prompt if bound else None,
+            payload_adapter=_adapt_reference_judge if bound else None,
         )
 
         payload = _qc_apply_deterministic_quality_gates(
@@ -186,10 +232,11 @@ class SoftQcEngine(QcEngineBase):
         attempt_details_extra: dict[str, Any] = {}
         if style_runtime_audit is not None:
             attempt_details_extra["style_reference_runtime"] = style_runtime_audit
-        # 分数在 _qc_run_node_with_degradation 里已按模板声明的刻度换算成 0–1（只换一次）
-        judge_record = _reference_judge_record(payload, carried=reference_carried)
-        if judge_record is not None:
-            attempt_details_extra["reference_judge"] = judge_record
+        # 参考评审（折算后的分、原始分、口径）随 attempt 与报告落库；降级成 waive 的这一遍没有评审
+        verdict = judge.get("verdict") if degraded_reason is None else None
+        judge_entry = judge_record(verdict, source="soft_qc") if verdict is not None else None
+        if judge_entry is not None:
+            attempt_details_extra["reference_judge"] = judge_entry
         if styled_gate is not None:
             attempt_details_extra["styled_draft_gate"] = styled_gate
         validate_qc_report("soft_qc", payload)  # 组合合法性校验（不回写 dump）
@@ -212,7 +259,7 @@ class SoftQcEngine(QcEngineBase):
             bundle=bundle,
             source_draft_row_id=source_draft_row_id,
             payload=payload,
-            reference_carried=reference_carried,
+            judge_entry=judge_entry,
         )
 
         if branch == "human_review_required" and styled_gate_trigger is not None:
@@ -344,6 +391,60 @@ class SoftQcEngine(QcEngineBase):
             "pass_with_notes": "waive",
             "human_review_required": "human_review_required",
         }[next_action]
+
+    def _style_policy(self, scene: SceneCard, bundle: dict[str, Any]) -> Any:
+        """这一场的风格策略（与注入器同一个解析次序：冻结契约优先，没有就按活动绑定现解析）；读不出 → None（按没有
+        绑定的润色口径评）。"""
+        try:
+            from novel_system.services.style_prompt_injection import resolve_scene_style_policy
+
+            return resolve_scene_style_policy(self.session, scene, bundle)
+        except Exception:  # noqa: BLE001 — 策略读不出不阻断软 QC
+            _LOGGER.warning("soft_qc style policy unavailable for bundle %s", bundle.get("bundle_id"), exc_info=True)
+            return None
+
+    @staticmethod
+    def _judge_template() -> Any:
+        from novel_system.services.prompt_builder import load_prompt_templates
+
+        return load_prompt_templates()[JUDGE_TEMPLATE]
+
+    def _reference_judge_prompt(
+        self, scene: SceneCard, bundle: dict[str, Any], draft: str
+    ) -> tuple[dict[str, Any] | None, str, dict[str, Any] | None]:
+        """参考评审的提示：不带场景上下文（与对照检查同一份），system 前面接评审口径的 ``[STYLE_REFERENCE]`` 块。
+
+        返回 (提示, user 提示, 注入审计)；参考没带上 → 提示为 None（调用方退回润色口径）。云策略不许 → 原样抛 409。"""
+        from novel_system.services.prompt_builder import default_input_token_budget
+        from novel_system.services.style_prompt_injection import ROLE_REVIEW, inject_style_reference_prefix
+
+        template = self._judge_template()
+        user_prompt = judge_user_prompt(template.task_prompt, draft)
+        prompt = bare_prompt(
+            template, user_prompt=user_prompt, target_input_tokens=default_input_token_budget(template)
+        )
+        try:
+            injected = inject_style_reference_prefix(
+                self.session,
+                prompt,
+                scene,
+                bundle,
+                task_type="scene_generation",
+                final_user_prompt=user_prompt,
+                role=ROLE_REVIEW,
+                node_id=JUDGE_NODE_ID,
+            )
+        except STYLE_REFERENCE_FAIL_CLOSED_ERRORS:
+            raise
+        except Exception:  # noqa: BLE001 — 参考渲染失败：退回润色口径，不阻断软 QC
+            _LOGGER.warning(
+                "soft_qc reference judge prompt skipped for scene %s", getattr(scene, "scene_id", None), exc_info=True
+            )
+            return None, user_prompt, None
+        audit = injected.get("_style_reference_runtime_audit") if isinstance(injected, dict) else None
+        if not prompt_carries_reference(injected):
+            return None, user_prompt, audit if isinstance(audit, dict) else None
+        return injected, user_prompt, audit if isinstance(audit, dict) else None
 
     def _inject_style_reference_prefix(
         self,
@@ -662,7 +763,7 @@ class SoftQcEngine(QcEngineBase):
         }
 
     @staticmethod
-    def _serialize_rewrite_brief(report: Any, *, reference_carried: bool = True) -> list[dict[str, Any]]:
+    def _serialize_rewrite_brief(report: Any, *, judge_entry: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         entries = [{"instruction": item} for item in report.rewrite_brief]
         if report.resolution_code == "soft_patch":
             # 批准#13b（B04-20）：评审按维给的定位改法（style_deviations 的 patch_brief：哪一段、照样例的哪种手法改）
@@ -689,15 +790,10 @@ class SoftQcEngine(QcEngineBase):
                     "carry_note_text": report.carry_note_text,
                 }
             )
-        # 风格参考 v3（V7）：参考评审的按维分与总分随报告落库（此前 style_score 校验完就丢了）。
-        # 读简报的地方只认 instruction / carry_forward_note，这一条对它们不可见。
-        # L6：只有参考评审才记（提示带着参考，或回答给了按维分）——没绑定的润色口径顺手给的 style_score 不算。
-        judge = _reference_judge_record(
-            {"style_score": report.style_score, "dimension_scores": dict(report.dimension_scores or {})},
-            carried=reference_carried,
-        )
-        if judge is not None:
-            entries.append(judge)
+        # 参考评审（judge.judge_record：作数的分、原始分、口径）随报告落库；读简报的地方只认 instruction /
+        # carry_forward_note，这一条对它们不可见。没绑定的润色口径没有评审。
+        if judge_entry is not None:
+            entries.append(dict(judge_entry))
         return entries
 
     def _persist_qc_report(
@@ -708,7 +804,7 @@ class SoftQcEngine(QcEngineBase):
         bundle: dict[str, Any],
         source_draft_row_id: str,
         payload: dict[str, Any],
-        reference_carried: bool = False,
+        judge_entry: dict[str, Any] | None = None,
     ) -> QcReport:
         # 分数已在 _qc_run_node_with_degradation 里按模板声明的刻度换算成 0–1（只换一次；再换会被除两遍）
         report = SoftQCOutput.model_validate(
@@ -734,7 +830,7 @@ class SoftQcEngine(QcEngineBase):
             pass_flag=1 if payload["pass_flag"] else 0,
             next_action=payload["next_action"],
             issues_json=payload["issues"],
-            rewrite_brief_json=self._serialize_rewrite_brief(report=report, reference_carried=reference_carried),
+            rewrite_brief_json=self._serialize_rewrite_brief(report=report, judge_entry=judge_entry),
         )
         self.session.add(qc_report)
         self.session.flush()

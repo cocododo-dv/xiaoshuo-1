@@ -124,6 +124,21 @@ describe("参考书活动", () => {
     expect(client.apiPost).toHaveBeenCalledWith(`${API}/checks/jc1/cancel`, {});
   });
 
+  it("校准评审（2026-10-14）：叫「校准评审」，在跑的可以取消——按画像取消 POST …/profiles/{id}/judge-calibration/cancel", async () => {
+    state.books = [bookRow({ profile: PROFILE_SUMMARY })];
+    state.activity = [
+      { key: "job:jcal", job_id: "jcal", kind: "calibrate", status: "running", book_id: "bk-a", profile_id: "pf-a", title: "甲书", percent: 30, cancellable: true },
+    ];
+    await mountView();
+    await settle(20);
+    const item = $('[data-activity-key="job:jcal"]');
+    expect(item.textContent).toContain("校准评审");
+    client.apiPost.mockImplementation(() => Promise.resolve({ job_id: "jcal", state: "cancelled", finished: true }));
+    await click($('[data-testid="sr-activity-cancel"]', item));
+    await settle();
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/profiles/pf-a/judge-calibration/cancel`, {});
+  });
+
   it("做完的对照检查「打开」：落在这本书的「对照检查」并按作业 id 取那次的结果（在起草台发起的也能看到）", async () => {
     state.books = [bookRow({ profile: PROFILE_SUMMARY })];
     state.activity = [{ key: "job:jc", job_id: "jc", kind: "check", status: "succeeded", book_id: "bk-a", title: "甲书", percent: 100 }];

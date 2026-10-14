@@ -12,6 +12,7 @@ import {
   srRemoveBannedTerm, srSetCardLineState, srSetDimensionState, srSubscribe,
 } from "./ws-styleref-store.js";
 import { SrErrorLine, srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
+import { SrJudgeCalibrationCard } from "./ws-styleref-calibration.jsx";
 import { SrDimensionFidelityBody, SrDimensionFidelityChip, SrWorkFidelityCard, useSrWorkFidelity } from "./ws-styleref-fidelity.jsx";
 
 /* ==========================================================
@@ -116,6 +117,8 @@ export function SrPortrait({ book, go, onAction }) {
               {profile.qualitative_summary && <p className="sr-temperament-summary">{profile.qualitative_summary}</p>}
             </div>
           )}
+
+          <SrJudgeCalibrationCard profileId={profileId} bookId={book.id} calibration={profile.judge_calibration} />
 
           {(appliedBinding || legacyBinding) && workFid.data && (
             <SrWorkFidelityCard data={workFid.data} workTitle={work.title || "当前作品"} go={go} />

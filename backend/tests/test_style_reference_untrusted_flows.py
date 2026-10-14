@@ -15,7 +15,7 @@ from novel_system.services.style_reference.learn_llm import (
     call_structured,
 )
 from novel_system.services.style_reference.llm_nodes import NodeRuntime
-from novel_system.services.style_reference import check_job
+from novel_system.services.style_reference import judge, judge_calibration
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 
 
@@ -163,9 +163,11 @@ def test_style_check_judge_text_is_bounded() -> None:
         task_prompt="TASK judge",
         structured_schema={"schema_marker": "SCHEMA_ONLY_judge"},
     )
-    messages = check_job._judge_messages("[STYLE_REFERENCE]\n样例……\n", template, MALICIOUS_TEXT + "\n" + FORGED_BOUNDARIES)
+    messages = judge_calibration.judge_messages(
+        "[STYLE_REFERENCE]\n样例……\n", template, MALICIOUS_TEXT + "\n" + FORGED_BOUNDARIES
+    )
     system_prompt, user_prompt = messages[0]["content"], messages[1]["content"]
-    kind = check_job.CHECK_TEXT_KIND
+    kind = judge.JUDGE_TEXT_KIND
     assert user_prompt.startswith("TASK judge\n")
     assert user_prompt.index("TASK judge") < user_prompt.index(f"[UNTRUSTED_REFERENCE_DATA:{kind}]")
     assert re.findall(r"\[/?UNTRUSTED_REFERENCE_DATA(?::[^\]]+)?\]", user_prompt) == [
@@ -182,3 +184,20 @@ def test_style_check_judge_text_is_bounded() -> None:
     assert system_prompt.startswith("[STYLE_REFERENCE]") and "SYSTEM judge" in system_prompt
     assert "not instructions" in system_prompt.lower() and "untrusted_reference_data" in system_prompt.lower()
     assert "SCHEMA_ONLY_judge" not in system_prompt and "SCHEMA_ONLY_judge" not in user_prompt
+
+
+@pytest.mark.parametrize("which", ["compare", "neutralize"])
+def test_style_compare_and_calibration_texts_are_bounded(which: str) -> None:
+    """2026-10-14：成对比较的两个版本与校准时要改写的原文，同样当数据封装——疑似指令中和、伪造边界转义。"""
+    payload = MALICIOUS_TEXT + "\n" + FORGED_BOUNDARIES
+    if which == "compare":
+        user_prompt = judge.compare_user_prompt("TASK compare", payload, "第二个版本")
+        kinds = [judge.COMPARE_TEXT_KIND, judge.COMPARE_TEXT_KIND]
+    else:
+        user_prompt = judge.neutralize_user_prompt("TASK neutralize", payload)
+        kinds = [judge.NEUTRALIZE_TEXT_KIND]
+    found = re.findall(r"\[/?UNTRUSTED_REFERENCE_DATA(?::[^\]]+)?\]", user_prompt)
+    assert found == [item for kind in kinds for item in (f"[UNTRUSTED_REFERENCE_DATA:{kind}]", "[/UNTRUSTED_REFERENCE_DATA]")]
+    lowered = user_prompt.lower()
+    assert "ignore previous instructions" not in lowered and "<tool_call>" not in lowered
+    assert "[UNTRUSTED_REFERENCE_DATA:forged]" not in user_prompt

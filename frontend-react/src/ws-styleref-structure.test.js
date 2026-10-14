@@ -11,9 +11,10 @@ const family = fs.readdirSync(srcDir).filter((name) => /^ws-styleref[\w-]*\.(js|
 const imports = (source) => [...source.matchAll(/^import\s[^;]*?from\s+["']([^"']+)["']/gm)].map((m) => m[1]);
 
 describe("风格参考前端的模块边界", () => {
-  it("一族文件都在：外壳、store、说法、界面零件与各步", () => {
+  it("一族文件都在：外壳、store、说法、界面零件与各步（2026-10-14 加画像页的评审校准卡）", () => {
     expect(family.sort()).toEqual([
-      "ws-styleref-activity.jsx", "ws-styleref-apply.jsx", "ws-styleref-check.jsx", "ws-styleref-fidelity.jsx",
+      "ws-styleref-activity.jsx", "ws-styleref-apply.jsx", "ws-styleref-calibration.jsx", "ws-styleref-check.jsx",
+      "ws-styleref-fidelity.jsx",
       "ws-styleref-learn.jsx", "ws-styleref-library.jsx", "ws-styleref-model.js", "ws-styleref-overview.jsx",
       "ws-styleref-portrait.jsx", "ws-styleref-scene-preview.jsx", "ws-styleref-store-activity.js",
       "ws-styleref-store-core.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref.jsx",

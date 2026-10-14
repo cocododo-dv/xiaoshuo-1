@@ -4,7 +4,7 @@ import { ProgressBar, Spinner } from "./ws-ui.jsx";
 import { srActivityActive, srActivityKindLabel, srActivityView, srInputTooSmall } from "./ws-styleref-model.js";
 import {
   srActivityClearFinished, srActivityDismiss, srActivityEntries, srActivityFor, srActivityPoke, srActivityTrack,
-  srCancelClassification, srCancelLearn, srResumeClassification, srStartLearn, srSubscribe,
+  srCancelCalibration, srCancelClassification, srCancelLearn, srResumeClassification, srStartLearn, srSubscribe,
 } from "./ws-styleref-store.js";
 import { fidCancelCheckJob, fidCheckByJob, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
 import { srNotifyError, srProgressTone, useSrStore } from "./ws-styleref-ui.jsx";
@@ -68,6 +68,10 @@ export function SrActivityPanel({ onOpenBook }) {
       srActivityPoke();
       return;
     }
+    if (e.kind === "calibrate") {
+      await srCancelCalibration(e.profile_id);
+      return;
+    }
     await (e.kind === "learn" ? srCancelLearn(e.book_id) : srCancelClassification(e.book_id));
   });
   /* 正文太短而失败的学习：仍然学（force）。新作业是另一个 id 时把旧的这条收起 */
@@ -107,7 +111,7 @@ export function SrActivityPanel({ onOpenBook }) {
     const active = srActivityActive(e);
     const isBookJob = e.kind === "learn" || e.kind === "classify";
     const canCancel = active && e.cancellable !== false && !e.cancel_requested
-      && (e.kind === "check" ? !!e.job_id : (isBookJob && !!e.book_id));
+      && (e.kind === "check" ? !!e.job_id : e.kind === "calibrate" ? !!e.profile_id : (isBookJob && !!e.book_id));
     const canResume = !active && !!e.book_id && !!e.resumable && isBookJob;
     const canForceLearn = !active && e.kind === "learn" && e.status === "failed" && !!e.book_id && srInputTooSmall(e.error);
     const localCheck = e.kind === "check" && !active ? fidCheckByJob(e.job_id) : null;

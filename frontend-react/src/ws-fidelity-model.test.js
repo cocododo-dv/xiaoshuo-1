@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   fidBadgeView, fidCopyView, fidDimensionGroups, fidErrorInfo, fidExplain, fidFinalsSummary, fidGaps, fidGapsByDimension,
   fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingStates, fidReadingView, fidSceneFinals, fidScoreTone,
-  fidStyleStepView, fidTrendPoints, fidUnreliableText, fidVerdict, fidWeakestDims,
+  fidStyleStepView, fidTrendPoints, fidUnreliableText, fidVerdict, fidWeakestDims, fidJudgeState, FID_JUDGE_STATES,
 } from "./ws-fidelity-model.js";
 
 function reading(over = {}) {
@@ -96,7 +96,30 @@ describe("分数与维度", () => {
   it("评审：没有任何分数就当没有；分最低的几维", () => {
     expect(fidJudgeView({ overall: null, dimensions: {} })).toBeNull();
     expect(fidJudgeView(reading().judge)).toMatchObject({ overall: 7.2, summary: "对白再松一点就更像" });
-    expect(fidWeakestDims(reading().judge, 1)).toEqual([{ dimension: "scene.dialogue", label: "对话写法", score: 6, note: "对白偏正式" }]);
+    expect(fidWeakestDims(reading().judge, 1)).toEqual([
+      { dimension: "scene.dialogue", label: "对话写法", score: 6, raw: null, note: "对白偏正式", fix: "" },
+    ]);
+  });
+
+  it("评审的口径（2026-10-14 评审统一）：已校准 / 未校准 / 不可用；不作数的维只有原始分、不进最弱几维", () => {
+    const calibrated = fidJudgeView({
+      overall: 5, raw_overall: 6.5, calibration: { state: "calibrated" },
+      dimensions: {
+        "scene.dialogue": { score: 2, raw: 4.5, note: "对白太正式", fix: "第二段改成拆台" },
+        "language.punctuation": { score: null, raw: 7, note: "分不清" },
+      },
+    });
+    expect(calibrated).toMatchObject({ overall: 5, rawOverall: 6.5, state: "calibrated" });
+    expect(calibrated.stateView.label).toBe("已校准");
+    expect(calibrated.dims["language.punctuation"]).toEqual({ score: null, raw: 7, note: "分不清", fix: "" });
+    expect(fidWeakestDims({ overall: 5, calibration: { state: "calibrated" }, dimensions: calibrated.dims }, 3).map((d) => d.dimension))
+      .toEqual(["scene.dialogue"]);
+    const unusable = fidJudgeView({ overall: null, raw_overall: 8, calibration: { state: "unusable" }, dimensions: { "scene.dialogue": { score: null, raw: 8 } } });
+    expect(unusable).toMatchObject({ overall: null, rawOverall: 8, state: "unusable" });
+    expect(unusable.stateView.tone).toBe("danger");
+    expect(fidJudgeView({ overall: 7, dimensions: {} }).state).toBe("missing");
+    expect(fidJudgeState({ calibration: { state: "stale" } })).toBe("stale");
+    expect(FID_JUDGE_STATES.missing.hint).toContain("校准评审");
   });
 });
 
@@ -118,6 +141,12 @@ describe("起草台：风格步与补丁的决定", () => {
     expect(fidPatchView({ decision: "reverted", reason: "judge_worse" })).toEqual({ tone: "warn", text: "补丁没有更像（参考评审分降了），已退回补丁前的稿子" });
     expect(fidPatchView({ decision: "reverted", reason: "distance_worse_without_judge_gain" }).text).toContain("离作者更远");
     expect(fidPatchView({ decision: "kept", reason: "not_worse" }).tone).toBe("ok");
+    // 2026-10-14 成对比较
+    expect(fidPatchView({ decision: "reverted", reason: "pairwise_original_closer" }).text).toContain("两次比较都认为补丁前的稿子更像");
+    expect(fidPatchView({ decision: "reverted", reason: "distance_worse" }).text).toContain("没有分出高下");
+    expect(fidPatchView({ decision: "kept", reason: "pairwise_patch_closer" })).toMatchObject({ tone: "ok" });
+    expect(fidPatchView({ decision: "kept", reason: "pairwise_patch_closer" }).text).toContain("补丁更像作者");
+    expect(fidStyleStepView({ decision: "revision_rejected", reason: "pairwise_first_draft_closer" }).text).toContain("首稿更像作者");
   });
 });
 
