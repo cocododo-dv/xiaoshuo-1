@@ -251,7 +251,10 @@ function WsHomeFull({ work: p, go, mode, chapters, remote }) {
 
   /* —— 「上次写到这里」：优先读写作器落盘的真实正文（取末两段），服务端 dashboard 作兜底；
      两边都先去掉旧草稿开头的空白页占位（规则见 hmResumeModel）。「暂停于」只配服务端的句子 —— */
-  const resume = hmResumeModel(hmReadCachedDraft(hero.sid), home.resume, hero.scene ? hero.scene.words : undefined);
+  /* 服务端那几行按当前章算；焦点场不是那一场（当前章写完、焦点挪到下一章）时不拿来顶 */
+  const serverResume = home.resume && home.resume.sceneId && hero.scene && hero.scene.backendId
+    && home.resume.sceneId !== hero.scene.backendId ? null : home.resume;
+  const resume = hmResumeModel(hmReadCachedDraft(hero.sid), serverResume, hero.scene ? hero.scene.words : undefined);
   const resumeLines = resume.lines;
 
   const allChapters = mode === "advanced"

@@ -317,6 +317,17 @@ describe("WsHome · 焦点卡的版面稳定", () => {
     expect(container.querySelector(".hm-resume-tab")).toBeNull();
   });
 
+  it("当前章写完、焦点挪到下一章时，不拿服务端那几行（上一场的句子）顶在新焦点场下面", async () => {
+    fx.chapters = [
+      CH(1, "review", [SC("ch01s1", "done", { backendId: "s1" }), SC("ch01s2", "done", { backendId: "s2" })], { current: true }),
+      CH(2, "planned", [SC("ch02s1", "todo", { backendId: "s3" })]),
+    ];
+    fx.work = { ...fx.work, home: { resume: { sceneId: "s2", lines: ["上一场的结尾。"], pausedAgo: "昨天", sceneWords: 7 } } };
+    await mount(vi.fn());
+    expect(container.querySelector(".hm-resume").textContent).not.toContain("上一场的结尾");
+    expect(container.querySelector(".hm-resume").textContent).toContain("这一场还没有正文");
+  });
+
   it("有上次写下的句子时才显示「暂停于」", async () => {
     fx.work = { ...fx.work, home: { resume: { lines: ["她把门推开一条缝。"], pausedAgo: "昨天", sceneWords: 12 } } };
     await mount(vi.fn());

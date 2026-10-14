@@ -102,6 +102,8 @@ function wsAdaptHome(d) {
     snowNow: act ? wsSnowShort(act.step_key, act.label) : "",
     gos,
     resume: {
+      // 这几行是哪一场的（scene_slug = scene_id）：主页的焦点场换了一场时不拿别的场的句子顶上
+      sceneId: resume.scene_slug || "",
       ch: resume.chapter_no || "01",
       lines: resume.last_lines || [],
       sceneWords: resume.scene_words || 0,

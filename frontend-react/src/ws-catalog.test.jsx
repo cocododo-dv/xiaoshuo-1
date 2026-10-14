@@ -750,6 +750,18 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     expect(mod.WsCatalog.focusScene().scene.sid).toBe("B2");
   });
 
+  it("focusScene：当前章各场都写完了（还没在成稿中心批准）就往后找没写完的场；全书写完才停在当前章末场", async () => {
+    const scene = (slug, id, state) => ({ ...DEFAULT_CHAP.scenes[0], slug, scene_id: id, state });
+    const written = { ...DEFAULT_CHAP, current: true, scenes: [scene("A1", "a1", "done"), scene("A2", "a2", "done")] };
+    const next = { ...DEFAULT_CHAP, slug: "ch02", chapter_id: "c2", no: "02", current: false, scenes: [scene("B1", "b1", "todo")] };
+    let { mod } = await loadCatalog({ catalog: [written, next] });
+    expect(mod.WsCatalog.focusScene().scene.sid).toBe("B1");
+
+    vi.resetModules();
+    ({ mod } = await loadCatalog({ catalog: [written, { ...next, scenes: [scene("B1", "b1", "done")] }] }));
+    expect(mod.WsCatalog.focusScene().scene.sid).toBe("A2");
+  });
+
   it("focusScene：全书都写完时停在当前章之前最近的那一场上", async () => {
     const scene = (slug, id) => ({ ...DEFAULT_CHAP.scenes[0], slug, scene_id: id, state: "done" });
     const first = { ...DEFAULT_CHAP, current: false, scenes: [scene("A1", "a1")] };

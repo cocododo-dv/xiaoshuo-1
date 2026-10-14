@@ -13,8 +13,9 @@ export function catalogCurrentChapter(chapters) {
 /* 当前章里在写的那一场 → 第一场没写完的 → 末场。
    过去三处各有各的规则——写作台会取全书任何一场「在写」的场，
    于是雪花刚整理完，它开在一张手建的空白占位场上，而主页指着雪花的第一场。
-   当前章还没铺场时：从当前章往后找第一场没写完的（找到书尾再从头绕回来），而不是从全书第一章找起——
-   那样会落回前面早已写完的章。全书都写完了，就停在当前章之前最近的那一场上（作者刚写完的地方）。
+   当前章还没铺场、或者各场都写完了（当前章要等成稿中心批准了才往后挪，写完与批准之间作者照样往下写，2026-10-14）：
+   从当前章往后找第一场没写完的（找到书尾再从头绕回来），而不是从全书第一章找起——那样会落回前面早已写完的章。
+   全书都写完了，就停在当前章的末场；当前章没铺场时停在它之前最近的那一场上（作者刚写完的地方）。
    返回 { chapter, scene, index } 或 null。 */
 export function catalogFocusScene(chapters) {
   const pick = (c) => {
@@ -26,13 +27,14 @@ export function catalogFocusScene(chapters) {
   const all = chapters || [];
   const current = catalogCurrentChapter(all);
   const hit = pick(current);
-  if (hit) return hit;
+  if (hit && hit.scene.state !== "done") return hit;
   const at = Math.max(0, all.indexOf(current));
   const forward = [...all.slice(at + 1), ...all.slice(0, at)];
   for (const c of forward) {
     const next = pick(c);
     if (next && next.scene.state !== "done") return next;
   }
+  if (hit) return hit;
   const backward = [...all.slice(0, at).reverse(), ...all.slice(at + 1)];
   for (const c of backward) { const next = pick(c); if (next) return next; }
   return null;
