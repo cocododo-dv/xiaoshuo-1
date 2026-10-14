@@ -195,6 +195,41 @@ def test_narrative_state_digest_uses_scene_project_id(session):
     assert "左臂骨折" in digest
 
 
+def test_narrative_digests_count_the_pov_character_as_onstage(session):
+    """2026-10-14：构思的场景表里同场角色只列 POV 以外的人。人物状态摘要与信息差以前只按同场角色算：POV 人物自己的
+    状态进不了提示词，POV 加一个人的对手戏凑不够两个人、信息差一次都没印过。"""
+    scene = _seed_catalog_style_scene(session)
+    scene.pov_character_id = "char_pov"
+    scene.onstage_chars_json = ["char_b"]
+    session.add(
+        SceneCard(
+            scene_id="earlier_scene",
+            chapter_id=scene.chapter_id,
+            project_id=scene.project_id,
+            scene_seq=1,
+            scene_goal="earlier",
+        )
+    )
+    session.flush()
+    log = NarrativeEventLog(session)
+    for event_type, entity_id, key, value in (
+        ("character_state", "char_pov", "legal_status", "接到传票"),
+        ("character_state", "char_b", "injury", "左臂骨折"),
+        ("character_learns", "char_pov", "learned_letter", "旧信藏在钟楼"),
+    ):
+        log.log_event(
+            project_id=scene.project_id, scene_id="earlier_scene", chapter_id=scene.chapter_id,
+            event_type=event_type, entity_type="character", entity_id=entity_id,
+            fact_key=key, fact_value=value, authority_status="accepted", source_kind="test_fixture",
+        )
+
+    builder = BundleBuilder(session)
+    state = builder._narrative_state_digest(scene)
+    assert state is not None and "接到传票" in state and "左臂骨折" in state
+    asymmetry = builder._information_asymmetry_digest(scene)
+    assert asymmetry is not None and "旧信藏在钟楼" in asymmetry
+
+
 # ---------------------------------------------------------------------------
 # 风格模仿 v2（W6）：漂移校准进 bundle、新鲜度预算豁免
 # ---------------------------------------------------------------------------

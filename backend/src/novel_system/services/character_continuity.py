@@ -21,7 +21,7 @@ def build_character_contract_digest(
     声线卡 / 关系卡已退役（批准 #15，重评 R8）：产品里没有任何地方能写它们，实库两张表都是空的；契约不再读它们，
     没有卡的场（所有真实作品）契约逐字节与以前相同。
     """
-    character_ids = _ordered_character_ids(pov_character_id, onstage_character_ids)
+    character_ids = scene_cast_ids(pov_character_id, onstage_character_ids)
     if not character_ids:
         return ""
 
@@ -89,7 +89,11 @@ def detect_mechanical_required_beat_listing(
     }
 
 
-def _ordered_character_ids(pov_character_id: str | None, onstage_character_ids: Iterable[str] | None) -> list[str]:
+def scene_cast_ids(pov_character_id: str | None, onstage_character_ids: Iterable[str] | None) -> list[str]:
+    """一场戏的全部在场人物：POV 在前，同场角色依次，去重。
+
+    构思的场景表里 ``onstage_chars_json`` 只列 POV 以外的人（POV 独自在场就是 []，见 prompts.yaml 的场景细化
+    模板）；要「这一场有谁」的地方——人物状态摘要、信息差、硬质检——都用这一份，不然 POV 人物会被漏掉。"""
     values: list[str] = []
     if isinstance(pov_character_id, str) and pov_character_id.strip():
         values.append(pov_character_id.strip())

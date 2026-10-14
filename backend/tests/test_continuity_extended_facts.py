@@ -444,3 +444,17 @@ def test_event_log_violation_carries_a_chinese_reason_for_the_author(session) ->
     classified = classify_issues([issue])[0]
     assert classified["blocking"] is True
     assert classified["human_readable_reason"] == issue["human_readable_reason"]
+
+
+def test_hard_qc_checks_the_pov_character_too(session) -> None:
+    """2026-10-14：同场角色只列 POV 以外的人，硬质检以前只核对同场角色——场场都在的 POV 人物从不被核对。"""
+    from novel_system.services.quality_checks.continuity import deterministic_continuity_issues
+
+    _log(session, entity="顾舟", key="has_item:盐钟", value="lost")
+    scene = session.get(SceneCard, TARGET_ID)
+    scene.pov_character_id = "顾舟"
+    scene.onstage_chars_json = ["苏晚"]
+
+    check = deterministic_continuity_issues(session, scene, "顾舟拿出盐钟摇了摇，苏晚没有说话。")
+
+    assert [item["details"]["entity_id"] for item in check.issues if item["issue_key"] == "event_log_consistency_violation"] == ["顾舟"]

@@ -52,6 +52,7 @@ from novel_system.services.story_memory_digest import STORY_SO_FAR_SECTION_KEY, 
 from novel_system.services.character_continuity import (
     CHARACTER_CONTRACT_VERSION,
     build_character_contract_digest,
+    scene_cast_ids,
 )
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
@@ -627,11 +628,12 @@ class BundleBuilder:
             project_id = require_scene_project_id(self.session, scene)
             # Wave 4（§5.6）：传 pov_character_id → format_state_for_prompt 委派
             # PovKnowledgeProjection 做减法投影，隐藏非 POV 秘密内容（硬 QC 仍读全量）。
+            # 在场人物含 POV（场景表的同场角色只列 POV 以外的人，2026-10-14）
             text = log.format_state_for_prompt(
                 project_id,
                 scene_id=scene.scene_id,
                 pov_character_id=scene.pov_character_id,
-                onstage_character_ids=scene.onstage_chars_json,
+                onstage_character_ids=scene_cast_ids(scene.pov_character_id, scene.onstage_chars_json),
             )
             checkpoint = CanonContinuityService(
                 self.session
@@ -687,7 +689,8 @@ class BundleBuilder:
 
             log = NarrativeEventLog(self.session)
             project_id = require_scene_project_id(self.session, scene)
-            onstage = scene.onstage_chars_json or []
+            # POV 也在场：以前只数同场角色，POV 加一个人的对手戏永远凑不够两个人，信息差一次都没印过（2026-10-14）
+            onstage = scene_cast_ids(scene.pov_character_id, scene.onstage_chars_json)
             if len(onstage) < 2:
                 return None
             # Wave 4（§5.6）：写作提示词走 POV 减法投影——传 pov 后，他人秘密/错误信念

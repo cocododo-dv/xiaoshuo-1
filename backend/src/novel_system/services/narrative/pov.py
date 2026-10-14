@@ -150,12 +150,14 @@ def format_pov_state(
         state = snapshot.character_state(char_id)
         if not state.facts:
             continue
-        learned_event_ids = (
-            set() if char_id == pov_character_id else {event.event_id for event in snapshot.learns_events(char_id)}
-        )
+        learned_event_ids = {event.event_id for event in snapshot.learns_events(char_id)}
         visible: list[tuple[str, str]] = []
         for key, fact in sorted(state.facts.items()):
             value = fact.fact_value
+            if char_id == pov_character_id and fact.event_id in learned_event_ids:
+                # POV 自己得知的事印在下面的「POV知识边界 / POV怀疑」里（怀疑的带「尚未确证」）；这里再印一遍
+                # 就成了两份，怀疑的那份还像既定事实（2026-10-14）
+                continue
             if key in INFORMATION_ASYMMETRY_FACT_KEYS:
                 if char_id == pov_character_id or secret_known_to_pov(snapshot, value, char_id, pov_character_id):
                     visible.append((key, value))

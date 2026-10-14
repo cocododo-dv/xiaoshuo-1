@@ -419,3 +419,30 @@ def test_same_revision_replay_does_not_require_an_exact_chapter_aggregate(client
             event_type="author_draft_promoted_canonical", object_ref=seeded["scene_id"]
         ).count(),
     } == counts_before
+
+
+def test_every_archive_path_marks_the_catalog_scene_done(client, session) -> None:
+    """2026-10-14：目录里的「完成」以前只有写作台「采用」由前端标上；AI 起草台归档（finalize_scene_status=False 的
+    流水线那一步）的场一直显示「待写」，主页与写作台的落点停在写完的场上。归档就标完成。"""
+    project_id, _chapter_id, (first, second) = _seed_chapter(session, "DONE_ON_ARCHIVE", 2)
+    scene = session.get(SceneCard, first)
+    final_id = f"final_{first}_v1"
+    session.add(SceneRunState(scene_id=first, scene_status="near_final_ready", current_final_scene_row_id=final_id))
+    session.add(
+        FinalScene(
+            row_id=final_id, scene_id=first, chapter_id=scene.chapter_id, content="林昭把旧信塞回案卷。",
+            status="near_final_ready", source_bundle_id=f"bundle_{first}", source_bundle_hash=f"hash_{first}",
+        )
+    )
+    session.flush()
+    assert scene.state in (None, "todo")
+
+    Archiver(session).archive_final_scene(
+        first, final_id, carry_notes_json=[], finalize_scene_status=False, fidelity_source="pipeline"
+    )
+    session.commit()
+
+    assert session.get(SceneCard, first).state == "done"
+    catalog = client.get(f"/api/v2/projects/{project_id}/catalog").json()["data"]
+    states = {item["scene_id"]: item["state"] for item in catalog["chapters"][0]["scenes"]}
+    assert states == {first: "done", second: "todo"}

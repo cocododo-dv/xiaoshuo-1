@@ -364,6 +364,18 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
     ]
 
 
+def test_workbench_preflight_accepts_a_pov_character_alone_on_stage(client) -> None:
+    """2026-10-14：同场角色只列 POV 以外的人，POV 独自在场时本来就是空的——有 POV 就不再提醒「同场角色列表为空」。"""
+    create_chapter("CH914")
+    create_scene(chapter_id="CH914", scene_id="CH914_SC01", pov_character_id="char_a", onstage_chars_json=[])
+
+    response = client.get("/api/v1/scenes/CH914_SC01/workbench?include=diagnostics")
+
+    codes = [item["code"] for item in response.json()["data"]["run_preflight"]["warning_items"]]
+    assert "SCENE_ONSTAGE_CHARACTERS_MISSING" not in codes
+    assert "SCENE_POV_MISSING" not in codes
+
+
 def test_workbench_preflight_surfaces_constraint_conflicts(client, session: Session) -> None:
     create_chapter("CH919")
     create_scene(chapter_id="CH919", scene_id="CH919_SC01")

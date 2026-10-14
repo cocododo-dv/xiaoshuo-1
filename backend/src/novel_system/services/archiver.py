@@ -10,6 +10,7 @@ from novel_system.db.models import (
     AttemptTracker,
     ChapterRollingNote,
     FinalScene,
+    SceneCard,
     SceneMemory,
     SceneRunState,
 )
@@ -146,6 +147,11 @@ class Archiver:
         state.current_final_scene_row_id = final_scene.row_id
         if finalize_scene_status:
             state.scene_status = "archived"
+        # 目录里这一场算写完了：每条归档路径都在这里标（以前只有写作台「采用」由前端标，AI 起草台自动归档的场
+        # 一直显示「待写」，主页与写作台的落点停在写完的场上，成稿中心的「完成 n/m 场」也少算，2026-10-14）
+        scene_card = self.session.get(SceneCard, scene_id)
+        if scene_card is not None and scene_card.state != "done":
+            scene_card.state = "done"
         # 正文归档与正史完成是两个不同的状态。新终稿先进入待抽取，只有
         # FactCandidate 经裁决并形成 CanonCommit 后才恢复 narrative_sync=synced。
         # 无 project 所属的历史单元数据保留兼容，但正式作品必须进入该闭环。
@@ -241,7 +247,6 @@ class Archiver:
         """归档终稿的「像不像」读数(见 SceneArchiveEffects._record_archive_fidelity_reading);
         任何异常吞掉记 warning,绝不阻断归档。"""
         try:
-            from novel_system.db.models import SceneCard
             from novel_system.services.scene_archive_effects import SceneArchiveEffects
 
             scene = self.session.get(SceneCard, scene_id)

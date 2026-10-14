@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard
-from novel_system.services.character_continuity import detect_mechanical_required_beat_listing
+from novel_system.services.character_continuity import detect_mechanical_required_beat_listing, scene_cast_ids
 from novel_system.services.narrative_event_log import NarrativeEventLog
 from novel_system.services.scene_ownership import require_scene_project_id
 
@@ -72,7 +72,8 @@ def deterministic_continuity_issues(session: Session, scene: SceneCard, content:
             content,
             project_id,
             scene.scene_id,
-            character_ids=scene.onstage_chars_json or [],
+            # 核对这一场的全部在场人物，POV 在内（同场角色只列 POV 以外的人；以前 POV 人物从不被核对）
+            character_ids=scene_cast_ids(scene.pov_character_id, scene.onstage_chars_json),
         )
     except Exception as exc:  # noqa: BLE001 — 没有确定性证据就不下 Q1 结论；原因只记类型名
         return ContinuityCheck(issues=issues, unavailable_error=type(exc).__name__)

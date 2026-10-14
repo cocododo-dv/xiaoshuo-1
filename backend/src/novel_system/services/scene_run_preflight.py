@@ -171,7 +171,8 @@ class SceneRunPreflightService:
                     "technical_hint": "scene_card.pov_character_id is blank",
                 }
             )
-        if not list(scene.onstage_chars_json or []):
+        # 同场角色只列 POV 以外的人，POV 独自在场时本来就是空的：有 POV 就不提醒（2026-10-14）
+        if not list(scene.onstage_chars_json or []) and not (scene.pov_character_id or "").strip():
             items.append(
                 {
                     "code": "SCENE_ONSTAGE_CHARACTERS_MISSING",
