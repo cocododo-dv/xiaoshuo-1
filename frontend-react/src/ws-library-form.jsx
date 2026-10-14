@@ -76,8 +76,9 @@ function DossierEdit({ entry: e, allEntries, byId, chapters, onSave, onCancel, o
     setAddId("");
   };
   /* 可关联的档案：排除自身、已关联的，以及大事记——关系的两端只能是人物或世界；
-     大事记要关联人物，在大事记自己的「相关档案」里加。 */
-  const linkOptions = ents.filter(x => x.id !== e.id && x.cat !== "events" && !links.some(l => l.id === x.id));
+     大事记要关联人物，在大事记自己的「相关档案」里加。从故事里推出来的条目也不行（只读，后端不收 story: 端点），
+     要连它先「收进资料」。 */
+  const linkOptions = ents.filter(x => x.id !== e.id && x.cat !== "events" && !x.derived && !links.some(l => l.id === x.id));
   const facts = form.facts;
   const setFacts = (fn) => setForm(f => ({ ...f, facts: fn(f.facts) }));
   const setFactK = (i, k) => setFacts(prev => prev.map((f, j) => j === i ? { ...f, k } : f));

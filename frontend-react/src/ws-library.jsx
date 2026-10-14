@@ -15,7 +15,7 @@ import { LibOverview } from "./ws-library-overview.jsx";
 import { LibEntryRow, libCatLabel } from "./ws-library-parts.jsx";
 import { DossierCreate, DossierEdit } from "./ws-library-form.jsx";
 import { useActiveWorkIdentity } from "./ws-works.jsx";
-import { setViewIntentTargetReady } from "./ws-view-intents.js";
+import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
 import { useWindowEvents } from "./lib/events.js";
 import { wsConfirm } from "./ws-notify.jsx";
 import { isImeComposing } from "./lib/keyboard.js";
@@ -71,6 +71,8 @@ function WsLibrary({ go }) {
   const byId       = useLbMemo(() => entries.reduce((m, e) => { m[e.id] = e; return m; }, {}), [entries]);
   const backlinks  = useLbMemo(() => LIB_buildBacklinks(entries), [entries]);
   const facts      = useLbMemo(() => LIB_overviewFacts(entries, byId, backlinks), [entries, byId, backlinks]);
+  /* 从故事来的两样：各章摘要（时间线按章附在章上）与构思里还没确认的角色步（人物档案、总览提醒） */
+  const { chapters: storyChapters, pending } = libLive();
 
   /* counts per category, respecting the live query */
   const matches = useLbMemo(() => {
@@ -182,6 +184,14 @@ function WsLibrary({ go }) {
     return id;
   };
 
+  /* 派生的地点 / 物品「收进资料」：新建一份同名的世界档案并打开编辑；后端随即按名字把这一条归到它下面 */
+  const adoptEntry = (entry) => doCreate("world", entry.name, { kind: entry.entityKind });
+  /* 跨视图：构思某一步、写作台某一场（与别处同一套 go(view, intents)） */
+  const goView = (view, intents) => {
+    if (go) go(view, intents);
+    else navigateWithViewIntent(view, (intents[0] || {}).type, (intents[0] || {}).detail);
+  };
+
   const deleteEntry = async (entry) => {
     const conns = LIB_connections(entry, byId, backlinks).length;
     const body = entry.cat === "events"
@@ -245,7 +255,7 @@ function WsLibrary({ go }) {
   const header = (
     <PageHeader
       title="故事圣经"
-      description={`《${workTitle}》的人物、世界设定与大事记，彼此关联。登记过的名字在写作台里会高亮，点一下就能查。`}
+      description={`《${workTitle}》的人物、世界设定与大事记，彼此关联。人物的构思档案、目录各场与已写正文里的事实会自动长进来；登记过的名字在写作台里会高亮，点一下就能查。`}
       actions={(
         <>
           <Segmented label="看法" value={vmode} onChange={switchView} options={VIEW_OPTIONS} />
@@ -297,7 +307,7 @@ function WsLibrary({ go }) {
   } else if (vmode === "timeline") {
     body = (
       <LibTimeline
-        entries={entries} byId={byId} chapters={chapters}
+        entries={entries} byId={byId} chapters={chapters} storyChapters={storyChapters}
         selId={selId}
         onSelect={setSelId}
         onNew={startCreate}
@@ -389,6 +399,7 @@ function WsLibrary({ go }) {
           ) : selId === null ? (
             <LibOverview
               facts={facts}
+              pending={pending}
               onSelect={(id) => openEntry(id)}
               onPickCat={(c) => { setCat(c); setSelId(null); setPane("list"); }}
               onGoGraph={() => switchView("graph")}
@@ -406,11 +417,13 @@ function WsLibrary({ go }) {
                     onOpen={(id) => openEntry(id)}
                   />
                   <Dossier
-                    entry={sel} conns={selConns} byId={byId} chapters={chapters}
+                    entry={sel} conns={selConns} byId={byId} chapters={chapters} pending={pending}
                     onNav={(id) => openEntry(id, { reveal: true })}
                     onEdit={() => setEditing(true)}
                     onDelete={() => deleteEntry(sel)}
                     onTogglePin={() => togglePin(sel)}
+                    onAdopt={() => adoptEntry(sel)}
+                    onGo={goView}
                   />
                 </React.Fragment>
               )

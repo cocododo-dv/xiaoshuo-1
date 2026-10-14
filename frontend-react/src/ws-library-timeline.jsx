@@ -13,6 +13,8 @@ const { useMemo: useTlMemo } = React;
    · 按章：大事记的「所在章」经目录解析成「第 N 章 · 标题」，按目录顺序排开。
    2026-09-21：删掉了原型写死的「现在 · 正文进行中 · CH01 – CH08」终点卡，
    以及从从未写入的 appears 字段推出的「章节脉络 / 贯穿全书」。
+   2026-10-14：目录各场排成的大事记（派生，见 ws-library-store.js）也在这两条轨道上，还没写的场淡一些；
+   按章的每一章下面附上这一章的 AI 章摘要（成稿中心 · 记忆里的那一份）。
    键盘：事件卡和按章的条目都是按钮，空格选中、回车直接打开档案；选中后下方的条也能打开。
    ========================================================== */
 
@@ -38,7 +40,7 @@ function TlMinis({ entry, byId }) {
   );
 }
 
-function LibTimeline({ selId, onSelect, onOpen, onNew, entries, byId, chapters }) {
+function LibTimeline({ selId, onSelect, onOpen, onNew, entries, byId, chapters, storyChapters }) {
   const ents = entries || [];
   const bid = byId || {};
   const chapterList = chapters || [];
@@ -75,6 +77,11 @@ function LibTimeline({ selId, onSelect, onOpen, onNew, entries, byId, chapters }
   }, [events, chapterList]);
 
   const sel = selId ? bid[selId] : null;
+  const digestOf = useTlMemo(() => {
+    const map = {};
+    (storyChapters || []).forEach(c => { if (c && c.chapter_id) map[c.chapter_id] = c.summary || ""; });
+    return map;
+  }, [storyChapters]);
 
   return (
     <div className="lib2-timeline">
@@ -91,7 +98,7 @@ function LibTimeline({ selId, onSelect, onOpen, onNew, entries, byId, chapters }
               <React.Fragment key={e.id}>
                 <button
                   type="button"
-                  className={`tl-event ${libAccClass(e.accent)} ${selId === e.id ? "is-sel" : ""}`}
+                  className={`tl-event ${libAccClass(e.accent)} ${selId === e.id ? "is-sel" : ""} ${e.derived && !e.realized ? "is-planned" : ""}`}
                   aria-pressed={selId === e.id}
                   onClick={() => onSelect(e.id)}
                   onDoubleClick={() => onOpen(e.id)}
@@ -126,6 +133,7 @@ function LibTimeline({ selId, onSelect, onOpen, onNew, entries, byId, chapters }
                   <span className="tl-chap-no">{label}</span>
                   <span className="tl-chap-n">{items.length}</span>
                 </div>
+                {digestOf[ref] ? <p className="tl-chap-digest" title="AI 章摘要（成稿中心 · 记忆）">{digestOf[ref]}</p> : null}
                 <div className="tl-chap-list">
                   {items.map(e => (
                     <LibEntryRow
@@ -134,7 +142,7 @@ function LibTimeline({ selId, onSelect, onOpen, onNew, entries, byId, chapters }
                       variant="card"
                       glyphSize="xs"
                       active={selId === e.id}
-                      className="tl-chip"
+                      className={e.derived && !e.realized ? "tl-chip is-planned" : "tl-chip"}
                       aria-pressed={selId === e.id}
                       onClick={() => onSelect(e.id)}
                       onDoubleClick={() => onOpen(e.id)}

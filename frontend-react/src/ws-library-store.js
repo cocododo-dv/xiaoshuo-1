@@ -16,6 +16,11 @@ import { LIB_KIND_LABEL } from "./labels/library.js";
               summary, blurb, facts[], links[], pinned, updatedAt,
               timeLabel?, chapterRef?, ref, details }
    details 是服务端原样的扩展字段组：编辑时在它上面合并，未知键（旧数据）不会被冲掉。
+   · 从故事长出来的那一半（2026-10-14，后端 services/library_story.py，只读）：人物带 profile（构思 04 / 06 / 08
+     确认过的那一版，按段）与 story（工作记忆里的现状 / 得知的事、章摘要里的变化、出场场次）；载荷的 story 段
+     另给派生条目——目录各场排成的大事记、场景地点与物品（derived: true，ref 是 story:…，不能编辑、删除、
+     当关系端点）——以及章摘要（libLive().chapters）与构思里还没确认的角色步（libLive().pending）。
+     作者登记的世界条目收下名字出现在里面的地点 / 物品，它们的场次与持有人在条目的 story 上。
    · 读：只按当前作品存一份。第一个订阅者（或 libEnsureLoaded / libRefetch）才发请求——import 本模块不拉数据，
      写作台的名字高亮、章节编排的视角候选可以直接 import 它，用到时再拉（审计 F05-01：它们以前读 window.LIB_*，
      没打开过「资料」页就是空的）。换作品时立即清掉旧快照，迟到的旧请求不写回。
@@ -26,8 +31,8 @@ import { LIB_KIND_LABEL } from "./labels/library.js";
 
 const LIB_CAT_ACCENT = { people: "crimson", world: "gold", events: "slate" };
 
-/* 不可变快照：每次档案变化换一份新对象（身份变了 = 内容变了） */
-const LIB_EMPTY = Object.freeze({ entries: [], byId: {} });
+/* 不可变快照：每次档案变化换一份新对象（身份变了 = 内容变了）。chapters = 各章摘要，pending = 构思里还没确认的角色步 */
+const LIB_EMPTY = Object.freeze({ entries: [], byId: {}, chapters: [], pending: [] });
 let libSnap = LIB_EMPTY;
 let libRevision = 0;
 const libSubscribers = createSubscribers();
@@ -47,10 +52,12 @@ function libBump() {
 }
 
 /* 档案换了一份：不可变快照换新 */
-function libReplace(entries) {
+function libReplace(entries, story = null) {
   const byId = {};
   entries.forEach(e => { byId[e.id] = e; });
-  libSnap = entries.length ? { entries, byId } : LIB_EMPTY;
+  const chapters = (story && Array.isArray(story.chapters)) ? story.chapters : [];
+  const pending = (story && Array.isArray(story.pending_profile_steps)) ? story.pending_profile_steps : [];
+  libSnap = entries.length || chapters.length || pending.length ? { entries, byId, chapters, pending } : LIB_EMPTY;
 }
 
 /* 订阅：第一个订阅者到来时按需拉一次当前作品的资料库。每次订阅各包一层，同一个函数订阅两次也各算一个。 */
@@ -83,9 +90,11 @@ function libStripRef(ref) { return String(ref || "").split(":").slice(1).join(":
 const libFactList = (value) => (Array.isArray(value) ? value.filter(f => f && typeof f === "object") : []);
 const libTagList = (value) => (Array.isArray(value) ? value.map(String).filter(Boolean) : []);
 
-/* 人物：role 是作者写的角色定位（主角 / 对立…），可能为空；kind 给写作台悬停卡一个非空的说明。 */
+/* 人物：role 是作者写的角色定位（主角 / 对立…），可能为空；kind 给写作台悬停卡一个非空的说明。
+   profile / story 是后端从构思与故事里推出来的只读部分（见模块说明），作者在资料里写的仍在 blurb / facts。 */
 function libAdaptCharacter(c, linksOf) {
   const d = c.details || {};
+  const profile = c.profile && Array.isArray(c.profile.sections) ? c.profile : { sections: [] };
   return {
     id: c.character_id, cat: "people", name: c.name,
     code: d.code || "", kind: c.role || "角色", role: c.role || "",
@@ -96,11 +105,17 @@ function libAdaptCharacter(c, linksOf) {
     facts: libFactList(d.facts),
     links: linksOf(`character:${c.character_id}`),
     ref: c.ref, details: d,
+    profile, story: c.story || null,
   };
 }
 
+/* 世界：作者的条目带 story = 它收下的场景地点 / 物品持有人；派生条目（origin: story）只有 story，
+   物品连向持有人（归属），地点不另连——它的场次由大事记那一头连过来。 */
 function libAdaptEntity(e, linksOf) {
   const d = e.details || {};
+  const derived = e.origin === "story";
+  const story = e.story || null;
+  const holders = (story && story.holders) || [];
   return {
     id: e.entity_id, cat: "world", name: e.name,
     code: d.code || "", kind: LIB_KIND_LABEL[e.kind] || e.kind || "设定", entityKind: e.kind || "concept",
@@ -109,8 +124,11 @@ function libAdaptEntity(e, linksOf) {
     summary: e.summary || "", tags: libTagList(e.tags),
     blurb: d.blurb || "",
     facts: libFactList(d.facts),
-    links: linksOf(e.ref),
+    links: derived
+      ? holders.map(h => ({ id: h.character_id, rel: h.value === "lost" ? "失去" : "持有", type: "belong" }))
+      : linksOf(e.ref),
     ref: e.ref, details: d,
+    derived, story,
   };
 }
 
@@ -133,6 +151,31 @@ function libAdaptEvent(ev) {
   };
 }
 
+/* 大事记（派生）：目录里规划过的一场。相关档案 = 视角 / 在场人物（归属）与地点（处所）；realized = 写成了。 */
+function libAdaptStoryEvent(ev) {
+  const roles = ev.roles || {};
+  return {
+    id: ev.event_id, cat: "events", name: ev.label,
+    code: "", kind: "事件",
+    accent: LIB_CAT_ACCENT.events, glyph: Array.from(ev.label || "场")[0],
+    pinned: false, updatedAt: 0,
+    summary: "", tags: [],
+    blurb: ev.note || "",
+    facts: [],
+    timeLabel: ev.time_label || "",
+    chapterRef: ev.chapter_ref || "",
+    realized: ev.realization_status === "realized",
+    location: ev.location || "",
+    sceneId: ev.scene_id || "",
+    storyFacts: Array.isArray(ev.facts) ? ev.facts : [],
+    links: (ev.entity_refs || []).map(ref => ({
+      id: libStripRef(ref), rel: roles[ref] || "相关", type: roles[ref] === "地点" ? "place" : "belong", viaEvent: true,
+    })).filter(l => l.id),
+    ref: ev.ref,
+    derived: true,
+  };
+}
+
 /* 服务端载荷 → 条目列表（关系在两端各挂一次：rel 只放作者写的关系标签，没写时留空，由视图显示关系类型的中文名——
    以前回退成 kind，作者会看到 conflict / related 这样的英文键） */
 function libAdapt(data) {
@@ -143,10 +186,13 @@ function libAdapt(data) {
     (linkIndex[rel.to_ref] = linkIndex[rel.to_ref] || []).push({ id: libStripRef(rel.from_ref), rel: rel.note || "", type: rel.kind, relationId: rel.relation_id });
   }
   const linksOf = (ref) => linkIndex[ref] || [];
+  const story = (data && data.story) || {};
   return [
     ...((data && data.characters) || []).map(c => libAdaptCharacter(c, linksOf)),
     ...((data && data.entities) || []).map(e => libAdaptEntity(e, linksOf)),
+    ...(story.entities || []).map(e => libAdaptEntity(e, linksOf)),
     ...((data && data.timeline) || []).map(ev => libAdaptEvent(ev)),
+    ...(story.timeline || []).map(ev => libAdaptStoryEvent(ev)),
   ];
 }
 
@@ -199,7 +245,7 @@ export function libRefetch() {
       const data = await apiGet(`/api/v2/projects/${pid}/library`);
       /* A→B 快速切换时，A 的迟到响应不得覆盖 B 的资料库。 */
       if (requestSerial !== libRequestSerial || libActiveId() !== pid || libVisibleProjectId !== pid) return false;
-      libReplace(libAdapt(data));
+      libReplace(libAdapt(data), data && data.story);
       libLoad = { pid, status: "ready", message: "" };
       libBump();
       return true;
@@ -265,7 +311,7 @@ export async function LIB_persist(edits) {
       const patch = edits[id];
       if (!patch) continue;
       const base = libSnap.byId[id];
-      if (!base) continue;
+      if (!base || base.derived) continue;   // 派生条目只读：改它要去构思 / 目录
       await libPushPatch(base, patch);
     }
     libRefetch();
@@ -288,7 +334,7 @@ async function libPushPatch(base, patch) {
     if (patch.links != null) {
       eventBody.entity_refs = patch.links
         .map(l => libSnap.byId[l.id])
-        .filter(t => t && t.ref && !String(t.ref).startsWith("event:"))
+        .filter(t => t && t.ref && !t.derived && !String(t.ref).startsWith("event:"))
         .map(t => t.ref);
     }
     await apiPatch(`${libApiBase()}/timeline/${base.id}`, eventBody);
@@ -337,7 +383,7 @@ async function libSyncLinks(base, nextLinks) {
       if (!changed || !before.relationId) continue;
     }
     const target = libSnap.byId[link.id];
-    if (!target || !target.ref || !base.ref || String(target.ref).startsWith("event:")) continue;
+    if (!target || !target.ref || !base.ref || target.derived || String(target.ref).startsWith("event:")) continue;
     if (before && before.relationId) await apiDelete(`${libApiBase()}/relations/${before.relationId}`);
     await apiPost(`${libApiBase()}/relations`, {
       from_ref: base.ref, to_ref: target.ref,
@@ -359,7 +405,7 @@ function libDeleteMessage(error, base) {
 }
 
 export async function LIB_deleteEntry(base) {
-  if (!base || !base.id) return false;
+  if (!base || !base.id || base.derived) return false;
   try {
     if (base.cat === "people") {
       await apiDelete(`${libApiBase()}/characters/${base.id}`);

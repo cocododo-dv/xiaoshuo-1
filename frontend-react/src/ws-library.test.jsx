@@ -544,9 +544,10 @@ async function mountLibrary(lib) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  await act(async () => root.render(<WsLibrary go={vi.fn()} />));
+  const go = vi.fn();
+  await act(async () => root.render(<WsLibrary go={go} />));
   return {
-    client, host,
+    client, host, go,
     setLibrary: (next) => { current = next; },
     unmount: async () => { await act(async () => root.unmount()); host.remove(); },
   };
@@ -833,6 +834,216 @@ describe("WsLibrary 视图：图谱与时间线", () => {
       await keydown(card, "Enter");
       expect(radio(view.host, "档案").getAttribute("aria-checked")).toBe("true");
       expect(view.host.querySelector(".dossier-name").textContent).toBe("第三潮汐事件");
+    } finally {
+      await view.unmount();
+    }
+  });
+});
+
+// 2026-10-14：资料页从故事长出来的那一半（后端 services/library_story.py）。以前构思同步进来的人物只剩名字，
+// 世界与大事记永远是空的。派生条目只读：不发写请求、不当关系端点；地点 / 物品可以「收进资料」。
+function storyLibrary() {
+  const lib = libResponse();
+  lib.characters[0] = {
+    ...lib.characters[0],
+    profile: { sections: [
+      { step_key: "character_sheets", step_label: "角色摘要表", title: "角色摘要", rows: [{ label: "目标", value: "修好那卷潮汐图" }] },
+      { step_key: "character_bibles", step_label: "角色全档案", title: "心理", rows: [{ label: "最深的恐惧", value: "被潮水带走记忆" }] },
+    ] },
+    story: {
+      state: [{ key: "has_item:铜罗盘", value: "held", scene_id: "s1" }, { key: "legal_status", value: "被停职", scene_id: "s1" }],
+      learned: [{ key: "learned_tide", value: "第三潮汐不是事故", scene_id: "s1" }],
+      changes: [{ chapter_id: "prj-main_CH01", text: "决定留在雾港" }],
+      pov_scene_ids: ["s1"], onstage_scene_ids: ["s2"],
+    },
+  };
+  lib.story = {
+    entities: [
+      { entity_id: "place-abc", kind: "location", name: "雾港灯塔下", origin: "story", ref: "story:place-abc",
+        story: { spots: ["雾港灯塔下"], scene_ids: ["s1"], character_ids: ["lin", "zhou"] } },
+      { entity_id: "item-def", kind: "item", name: "铜罗盘", origin: "story", ref: "story:item-def",
+        story: { holders: [{ character_id: "lin", value: "held", scene_id: "s1" }] } },
+    ],
+    timeline: [
+      { event_id: "scene-s1", origin: "story", ref: "story:scene-s1", scene_id: "s1", label: "林岑在灯塔下找到罗盘",
+        note: "林岑在灯塔下找到罗盘，周岚赶到。", time_label: "雾季·清晨", location: "雾港灯塔下", chapter_ref: "prj-main_CH01",
+        entity_refs: ["character:lin", "character:zhou", "story:place-abc"],
+        roles: { "character:lin": "视角", "character:zhou": "在场", "story:place-abc": "地点" },
+        realization_status: "realized",
+        facts: [{ entity_id: "lin", event_type: "character_state", key: "has_item:铜罗盘", value: "held" }] },
+      { event_id: "scene-s2", origin: "story", ref: "story:scene-s2", scene_id: "s2", label: "周岚去档案馆查旧图",
+        note: "周岚去档案馆查旧图。", time_label: "雾季·午后", location: "档案馆", chapter_ref: "prj-main_CH02",
+        entity_refs: ["character:zhou", "character:lin", "entity:arch"],
+        roles: { "character:zhou": "视角", "character:lin": "在场", "entity:arch": "地点" },
+        realization_status: "planned", facts: [] },
+    ],
+    chapters: [{ chapter_id: "prj-main_CH01", summary: "林岑找到罗盘，周岚起了疑心。", ending_state: "" }],
+    pending_profile_steps: [{ step_key: "character_sheets", step_label: "角色摘要表", status: "pending_review", approved_version: 2 }],
+  };
+  return lib;
+}
+
+const sectionOf = (root, testId) => root.querySelector(`[data-testid="${testId}"]`);
+
+describe("资料页：从故事长出来的那一半", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("store 把派生条目接进来：只读标记、大事记连向视角 / 在场人物与地点、物品连向持有人；章摘要与待确认的步另放", async () => {
+    const { store } = await loadLib(storyLibrary());
+    const live = store.libLive();
+    const place = live.byId["place-abc"];
+    expect(place).toMatchObject({ cat: "world", entityKind: "location", derived: true, kind: "地点" });
+    expect(live.byId["item-def"].links).toEqual([{ id: "lin", rel: "持有", type: "belong" }]);
+    const scene = live.byId["scene-s1"];
+    expect(scene).toMatchObject({ cat: "events", derived: true, realized: true, timeLabel: "雾季·清晨", sceneId: "s1" });
+    expect(scene.links).toEqual([
+      { id: "lin", rel: "视角", type: "belong", viaEvent: true },
+      { id: "zhou", rel: "在场", type: "belong", viaEvent: true },
+      { id: "place-abc", rel: "地点", type: "place", viaEvent: true },
+    ]);
+    expect(live.byId["scene-s2"].realized).toBe(false);
+    expect(live.byId["lin"].profile.sections).toHaveLength(2);
+    expect(live.byId["lin"].story.pov_scene_ids).toEqual(["s1"]);
+    expect(live.byId["arch"].derived).toBe(false);
+    expect(live.chapters).toEqual([{ chapter_id: "prj-main_CH01", summary: "林岑找到罗盘，周岚起了疑心。", ending_state: "" }]);
+    expect(live.pending.map(p => p.step_key)).toEqual(["character_sheets"]);
+  });
+
+  it("派生条目从不发写请求：改、删、当关系端点都不行", async () => {
+    const { client, store } = await loadLib(storyLibrary());
+    expect(await store.LIB_persist({ "scene-s1": { name: "改名" }, "place-abc": { blurb: "写点什么" } })).toBe(true);
+    expect(client.apiPatch).not.toHaveBeenCalled();
+    expect(await store.LIB_deleteEntry(store.libLive().byId["item-def"])).toBe(false);
+    expect(client.apiDelete).not.toHaveBeenCalled();
+
+    const lin = store.libLive().byId["lin"];
+    await store.LIB_persist({ lin: { links: [...lin.links, { id: "place-abc", rel: "", type: "place" }] } });
+    expect(client.apiPost.mock.calls.filter(c => /\/relations$/.test(c[0]))).toEqual([]);
+    expect(client.apiPatch).toHaveBeenCalledTimes(1);   // 只有人物自己的 PATCH
+  });
+
+  it("人物档案：构思里确认过的设定、构思里还没确认的提醒、写到现在、出场的场次；有构思档案就不催补简述", async () => {
+    const view = await mountLibrary(storyLibrary());
+    try {
+      await click(view.host.querySelector('.lib2-item[data-lib-id="lin"]'));
+      const profile = sectionOf(view.host, "lib-profile");
+      expect(profile.textContent).toContain("构思里的设定");
+      expect(profile.textContent).toContain("修好那卷潮汐图");
+      expect(profile.textContent).toContain("被潮水带走记忆");
+      expect(sectionOf(view.host, "lib-profile-pending").textContent).toContain("「角色摘要表」");
+
+      const story = sectionOf(view.host, "lib-character-story");
+      expect(story.textContent).toContain("视角 1 场 · 在场 1 场");
+      expect(story.textContent).toContain("持有物品 · 铜罗盘");
+      expect(story.textContent).toContain("持有");
+      expect(story.textContent).toContain("被停职");
+      expect(story.textContent).not.toContain("legal_status");
+      expect(story.textContent).toContain("第三潮汐不是事故");
+      expect(story.textContent).toContain("第 1 章 · 雾港");
+      expect(story.textContent).toContain("决定留在雾港");
+
+      const scenes = sectionOf(view.host, "lib-scene-rows");
+      expect(scenes.textContent).toContain("出场的场次");
+      expect(scenes.textContent).toContain("林岑在灯塔下找到罗盘");
+      expect(scenes.textContent).toContain("周岚去档案馆查旧图");
+      expect(scenes.querySelector(".lib-row.is-planned").textContent).toContain("周岚去档案馆查旧图");
+      expect(view.host.textContent).not.toContain("这份档案还没有简述");
+
+      const { snowStepByBackendKey } = await import("./snow-steps.js");
+      await click(buttonByText(profile, "去构思里改"));
+      expect(view.go).toHaveBeenCalledWith("snowflake", [{ type: "ws:snow-step", detail: snowStepByBackendKey("character_sheets").key }]);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("目录里的一场：只读（没有编辑 / 删除），列出落下的事实，能直达写作台的那一场", async () => {
+    const view = await mountLibrary(storyLibrary());
+    try {
+      await click(view.host.querySelector('.lib2-item[data-lib-id="scene-s1"]'));
+      expect(view.host.querySelector(".dossier-name").textContent).toBe("林岑在灯塔下找到罗盘");
+      expect(view.host.textContent).toContain("来自故事");
+      expect(buttonByText(view.host, "编辑档案")).toBeUndefined();
+      expect(buttonByText(view.host, "删除")).toBeUndefined();
+      expect(buttonByText(view.host, "置顶")).toBeUndefined();
+      const facts = sectionOf(view.host, "lib-event-story");
+      expect(facts.textContent).toContain("林岑");
+      expect(facts.textContent).toContain("持有物品 · 铜罗盘");
+      expect(view.host.textContent).toContain("已写成");
+      await click(buttonByText(view.host, "到写作台打开这一场"));
+      expect(view.go).toHaveBeenCalledWith("writer", [{ type: "ws:writer-scene", detail: "s1" }]);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("场景地点：列出在这里发生的场与来过的人；「收进资料」新建一份同名的地点档案", async () => {
+    const view = await mountLibrary(storyLibrary());
+    try {
+      await click(view.host.querySelector('.lib2-item[data-lib-id="place-abc"]'));
+      const world = sectionOf(view.host, "lib-world-story");
+      expect(world.textContent).toContain("来过的人物");
+      expect(world.textContent).toContain("林岑");
+      expect(world.textContent).toContain("周岚");
+      expect(world.textContent).not.toContain("归在这里的场景地点");
+      expect(sectionOf(view.host, "lib-scene-rows").textContent).toContain("在这里发生");
+      view.client.apiPost.mockResolvedValueOnce({ entity_id: "ENT_NEW" });
+      await click(buttonByText(view.host, "收进资料"));
+      await vi.waitFor(() => expect(view.client.apiPost).toHaveBeenCalledWith(
+        "/api/v2/projects/prj-main/library/entities",
+        { name: "雾港灯塔下", kind: "location", summary: "", tags: [], details: {} },
+      ), T);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("编辑表单的关联下拉里没有派生条目（后端不收 story: 端点）", async () => {
+    const view = await mountLibrary(storyLibrary());
+    try {
+      await click(view.host.querySelector('.lib2-item[data-lib-id="zhou"]'));
+      await click(buttonByText(view.host, "编辑档案"));
+      const options = Array.from(view.host.querySelectorAll("option")).map(o => o.textContent);
+      expect(options).toContain("档案馆");
+      expect(options).not.toContain("雾港灯塔下");
+      expect(options).not.toContain("铜罗盘");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("总览：说清哪些是从故事里长出来的；派生条目和有构思档案的人物不进「还没写简述」", async () => {
+    const view = await mountLibrary(storyLibrary());
+    try {
+      const notice = sectionOf(view.host, "lib-overview-story");
+      expect(notice.textContent).toContain("目录的 2 场（已写 1 场）");
+      expect(notice.textContent).toContain("1 处场景地点、1 件物品");
+      expect(sectionOf(view.host, "lib-overview-pending").textContent).toContain("「角色摘要表」");
+      const missing = Array.from(view.host.querySelectorAll(".ov-section"))
+        .find(s => s.textContent.includes("还没写简述"));
+      expect(missing.textContent).toContain("周岚");
+      expect(missing.textContent).not.toContain("林岑");
+      expect(missing.textContent).not.toContain("雾港灯塔下");
+      expect(missing.textContent).not.toContain("林岑在灯塔下找到罗盘");
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("时间线：目录的场按章排开，没写的场标出来，章下面附 AI 章摘要", async () => {
+    const view = await mountLibrary(storyLibrary());
+    try {
+      await click(buttonByText(view.host, "时间线"));
+      const planned = Array.from(view.host.querySelectorAll(".tl-event.is-planned")).map(b => b.textContent);
+      expect(planned).toHaveLength(1);
+      expect(planned[0]).toContain("周岚去档案馆查旧图");
+      const digest = view.host.querySelector(".tl-chap-digest");
+      expect(digest.textContent).toBe("林岑找到罗盘，周岚起了疑心。");
+      expect(digest.closest(".tl-chap").textContent).toContain("第 1 章 · 雾港");
     } finally {
       await view.unmount();
     }

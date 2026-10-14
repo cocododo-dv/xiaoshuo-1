@@ -113,11 +113,13 @@ function LIB_linkCount(entries, byId) {
 
 /* ---- 列表副标题 / 档案头的说明行 ----
    不再用类别名兜底（「人物」分组下每一行都写着「人物」）：
-   人物 → 一句话摘要或角色定位；世界 → 摘要或类型；大事记 → 时间。 */
+   人物 → 一句话摘要或角色定位；世界 → 摘要或类型（从故事里来的地点带上场数）；大事记 → 时间（写成了的标「已写」）。 */
 function LIB_entrySub(e) {
   if (!e) return "";
-  if (e.cat === "events") return e.timeLabel || "未定时间";
+  if (e.cat === "events") return `${e.timeLabel || "未定时间"}${e.derived && e.realized ? " · 已写" : ""}`;
   if (e.summary) return e.summary;
+  const scenes = e.story && Array.isArray(e.story.scene_ids) ? e.story.scene_ids.length : 0;
+  if (e.cat === "world" && scenes) return `${e.kind || ""} · ${scenes} 场`;
   if (e.cat === "people") return e.role || "";
   return e.kind || "";
 }
@@ -136,6 +138,11 @@ function LIB_chapterLabel(ref, chapters) {
   return value;
 }
 
+/* 作者要不要再补简述：从故事里推出来的条目不算（它们不归作者写）；构思里写过档案的人物也不算 */
+const LIB_authorOwesBlurb = (e) => !e.derived
+  && !String(e.blurb || "").trim()
+  && !(e.profile && Array.isArray(e.profile.sections) && e.profile.sections.length);
+
 /* ---- 总览：只说数据里真有的事 ---- */
 const LIB_RECENT_N = 6;
 /* byId / backlinks 由调用方给（资料页已经为别的用途算好了一份，不再各算一遍）；不给就在这里算 */
@@ -145,15 +152,24 @@ function LIB_overviewFacts(entries, byId = null, backlinks = null) {
   const total = entries.length;
   const linksN = LIB_linkCount(entries, byId);
   const byCat = LIB_CATS.map(c => ({ cat: c, n: entries.filter(e => e.cat === c.id).length }));
-  const missingBlurb = entries.filter(e => !String(e.blurb || "").trim());
-  const isolated = entries.filter(e => LIB_degree(e, byId, backlinks) === 0);
+  const missingBlurb = entries.filter(LIB_authorOwesBlurb);
+  const isolated = entries.filter(e => !e.derived && LIB_degree(e, byId, backlinks) === 0);
+  /* 从故事里长出来的：目录排成的大事记（写成了几场）、场景地点与物品 */
+  const storyEvents = entries.filter(e => e.derived && e.cat === "events");
+  const story = {
+    scenes: storyEvents.length,
+    written: storyEvents.filter(e => e.realized).length,
+    places: entries.filter(e => e.derived && e.cat === "world" && e.entityKind === "location").length,
+    items: entries.filter(e => e.derived && e.cat === "world" && e.entityKind === "item").length,
+    authorPlaces: entries.filter(e => !e.derived && e.cat === "world" && e.entityKind === "location").length,
+  };
   const recent = entries
     .filter(e => e.updatedAt)
     .slice()
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, LIB_RECENT_N);
   const pinned = entries.filter(e => e.pinned);
-  return { total, linksN, byCat, missingBlurb, isolated, recent, pinned };
+  return { total, linksN, byCat, missingBlurb, isolated, recent, pinned, story };
 }
 
 /* ---- 排序比较器 ---- */

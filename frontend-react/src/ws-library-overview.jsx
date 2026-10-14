@@ -3,11 +3,12 @@ import { I } from "./icons.jsx";
 import { agoLabel } from "./lib/format.js";
 import { LIB_entrySub } from "./ws-library-derive.js";
 import { LibEntryRow, libAccClass, libCatLabel } from "./ws-library-parts.jsx";
-import { SectionLabel } from "./ws-ui.jsx";
+import { Notice, SectionLabel } from "./ws-ui.jsx";
 
 /* ==========================================================
    Library — 故事圣经总览（进入资料库的落地页）
-   只说数据里真有的事：各类有几份、哪些还没写简述、哪些还没和别的档案连起来、最近改过哪些、置顶了哪些。
+   只说数据里真有的事：各类有几份、哪些还没写简述、哪些还没和别的档案连起来、最近改过哪些、置顶了哪些；
+   以及从故事里长出来的有多少（目录排成的大事记写成了几场、整理出几处场景地点与物品）、构思里还有没确认的角色步。
    原型的「就绪度 100%」「待你处理」队列删掉了——条目根本没有这些状态。
    平铺在详情面板里（区块之间用分隔线），不再卡片套卡片。
    ========================================================== */
@@ -22,8 +23,9 @@ function OvMore({ n }) {
   return n > 0 ? <div className="ov-more">还有 {n} 份</div> : null;
 }
 
-function LibOverview({ facts, onSelect, onPickCat, onGoGraph }) {
-  const { total, linksN, byCat, missingBlurb, isolated, recent, pinned } = facts;
+function LibOverview({ facts, pending, onSelect, onPickCat, onGoGraph }) {
+  const { total, linksN, byCat, missingBlurb, isolated, recent, pinned, story } = facts;
+  const grown = story && (story.scenes || story.places || story.items);
 
   return (
     <div className="ov" data-screen-label="library-overview">
@@ -51,6 +53,22 @@ function LibOverview({ facts, onSelect, onPickCat, onGoGraph }) {
           );
         })}
       </div>
+
+      {grown ? (
+        <Notice tone="info" icon={I.Activity} title="一部分档案是从故事里长出来的" testId="lib-overview-story">
+          {story.scenes ? `大事记里排着目录的 ${story.scenes} 场（已写 ${story.written} 场），按目录顺序。` : ""}
+          {story.places || story.items ? `世界里有 ${story.places} 处场景地点、${story.items} 件物品是从目录和已写正文里整理出来的。` : ""}
+          人物的构思档案（04 / 06 / 08）与写到现在的状态在各人的档案里。这些都只读，跟着构思、目录和正文走。
+          {story.places > 1 && !story.authorPlaces
+            ? " 场景地点是逐场记的，同一个地方会出现好几种写法：新建一份地点档案（比如全书反复出现的那个地方），名字出现在这些地点里的都会归到它下面。"
+            : ""}
+        </Notice>
+      ) : null}
+      {pending && pending.length > 0 ? (
+        <Notice tone="warn" testId="lib-overview-pending">
+          构思里{pending.map(p => `「${p.step_label}」`).join("")}有一版新的还没确认，人物档案里显示的是你确认过的那一版。
+        </Notice>
+      ) : null}
 
       <div className="ov-grid">
         <section className="ov-section">

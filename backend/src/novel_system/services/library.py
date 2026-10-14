@@ -3,6 +3,9 @@
 人物的权威实体是 StoryCharacter(P0-4),资料库不复制人物数据;
 overview 聚合接口把人物与非人物实体合并输出,关系边的端点用
 "character:<id>" / "entity:<id>" 前缀 ref 指向两类对象。
+
+overview 另带从故事长出来的那一半(``library_story``,只读、读时现推):人物的构思档案与写到现在,
+目录各场排成的大事记,场景地点与物品;派生条目在 ``story`` 下,作者自己的行照旧在原来的几个键里。
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from novel_system.db.models import (
     TimelineEvent,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.library_story import LibraryStory
 from novel_system.services.scene_lookup import require_project
 
 ENTITY_KINDS = {"location", "item", "faction", "concept"}
@@ -52,7 +56,9 @@ def _character_payload(character: StoryCharacter) -> dict[str, Any]:
         "kind": "character",
         "name": character.display_name,
         "role": character.role or "",
-        "summary": str(summary.get("one_line") or summary.get("summary") or ""),
+        # 作者在资料里写的一句话优先；构思同步来的人物没写过，就是 04 角色摘要表的一句话故事线
+        # （2026-10-14 以前只认 one_line / summary 两个键，04 存的 one_sentence_summary 从来显示不出来）
+        "summary": str(summary.get("one_line") or summary.get("summary") or summary.get("one_sentence_summary") or ""),
         # FE-ALIGN P6：资料卡扩展字段（facts/blurb/arc/appears 等自由字段组）
         "details": dict(summary.get("fe_details") or {}),
         "status": character.status,
@@ -115,13 +121,15 @@ class LibraryService:
             .where(LibraryRelation.project_id == project.project_id)
             .order_by(LibraryRelation.created_at)
         ).all()
+        story = LibraryStory(self.session, project.project_id, characters=list(characters), entities=list(entities))
         return {
             "project_id": project.project_id,
-            "characters": [_character_payload(item) for item in characters],
-            "entities": [_entity_payload(item) for item in entities],
+            "characters": [{**_character_payload(item), **story.character_extras(item)} for item in characters],
+            "entities": [{**_entity_payload(item), **story.entity_extras(item)} for item in entities],
             "relations": [_relation_payload(item) for item in relations],
             # FE-ALIGN P6：时间线并入聚合（前端一次装载）
             "timeline": [_timeline_payload(item) for item in self._timeline_rows(project.project_id)],
+            "story": story.payload(),
         }
 
     # ---- FE-ALIGN P6：时间线 ----

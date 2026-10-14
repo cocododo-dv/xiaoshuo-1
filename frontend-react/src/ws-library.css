@@ -290,6 +290,29 @@ button.lib-row.is-chip:hover .lib-row-name { color: var(--ink-1); }
 }
 .dossier-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* 从故事长出来的几块（ws-library-story.jsx）：构思档案、写到现在、地点 / 物品的故事。
+   这些是成段的文字，不用上面信息格的衬线粗体；标签在左、内容在右，窄屏上下排 */
+.dossier-profile { display: flex; flex-direction: column; gap: 6px; }
+.dossier-profile-h { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.dossier-profile-src { font-weight: 400; color: var(--ink-3); }
+.dossier-profile-rows { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.dossier-profile-row { display: grid; grid-template-columns: minmax(84px, 7em) minmax(0, 1fr); gap: 12px; }
+.dossier-profile-row dt { font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-3); }
+.dossier-profile-row dd {
+  margin: 0; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-1);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.dossier-story-list {
+  display: flex; flex-direction: column; gap: 4px; margin: 0; padding-left: 1.1em;
+  font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-1);
+}
+.dossier-story-who { margin-right: 6px; font-weight: 600; }
+.dossier-story-k { margin-right: 6px; color: var(--ink-3); }
+.dossier-story-text { font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-1); }
+/* 目录里还没写的场：名字淡一些（场次列表、时间线的卡与按章的条） */
+.lib-row.is-planned .lib-row-name, .tl-event.is-planned .tl-event-name { color: var(--ink-3); }
+.tl-event.is-planned { border-top-style: dashed; }
+
 /* 关系网络：按关系类型分组，组里是条目行 */
 .rel-groups { display: flex; flex-direction: column; gap: 14px; }
 .rel-group { display: flex; flex-direction: column; gap: 6px; }
@@ -661,6 +684,10 @@ button.lib-row.is-chip:hover .lib-row-name { color: var(--ink-1); }
   background: var(--paper-0); color: var(--ink-2); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
 }
 .tl-chap-list { display: flex; flex-direction: column; gap: 5px; padding: 8px; }
+.tl-chap-digest {
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  margin: 0; padding: 8px 11px 0; font-size: var(--fs-xs); line-height: var(--lh-ui); color: var(--ink-2);
+}
 .tl-chip.lib-row { gap: 8px; padding: 5px 8px; border-radius: var(--r-sm); background: var(--paper-1); }
 .tl-chip .lib-row-name { font-size: var(--fs-sm); font-weight: 500; }
 .tl-chip.is-active { background: var(--acc-wash); border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); }
@@ -731,6 +758,7 @@ button.lib-row.is-chip:hover .lib-row-name { color: var(--ink-1); }
   .trash-col-kind { width: 64px; }
   .trash-col-time { display: none; }
   .trash-time, .trash-table th:nth-child(3) { display: none; }
+  .dossier-profile-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .lib-row, .lib2-item::before, .tl-event, .graph-edge, .graph-node { transition: none; }

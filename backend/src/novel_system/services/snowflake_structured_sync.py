@@ -47,6 +47,10 @@ _SCENE_LIST_CONTENT_FIELDS = (
 )
 
 
+#: 人物行 ``summary_json`` 里归资料页的键（``library.LibraryService`` 写）：04 的同步保留它们
+_LIBRARY_OWNED_SUMMARY_KEYS = frozenset({"one_line", "fe_details"})
+
+
 def _restamp_scene_list_fields(item: dict[str, Any], plan_payload: dict[str, Any]) -> bool:
     """第 10 步存下的一行里 09 的那几栏写成场上现在的值（行里有这一栏才写）；写了返回 True。
 
@@ -144,7 +148,9 @@ class SnowflakeStructuredSyncMixin:
         row.role = item.get("role") or row.role
         row.status = "approved"
         if step_key == "character_sheets":
-            row.summary_json = item
+            # 作者在资料页写的一句话与扩展字段（简述、关键信息、置顶……）也存在这一列里：再确认一次 04 不能冲掉它们
+            kept = {key: value for key, value in (row.summary_json or {}).items() if key in _LIBRARY_OWNED_SUMMARY_KEYS}
+            row.summary_json = {**item, **kept}
         elif step_key == "character_bibles":
             row.bible_json = item
 
