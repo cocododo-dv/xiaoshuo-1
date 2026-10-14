@@ -1,0 +1,13 @@
+{
+  "alembic_revisions": [
+    "20261012_0100"
+  ],
+  "checksum": "0f67a53b29e5b60c407c42e567a7c619ceb22b8d9863450b743aea4678b9fb67",
+  "created_at": "2026-10-14T01:36:49Z",
+  "foreign_key_violations": 0,
+  "integrity": "ok",
+  "page_count": 6815,
+  "page_size": 4096,
+  "source": "novel_system.db",
+  "tool": "db_backup.v2"
+}
