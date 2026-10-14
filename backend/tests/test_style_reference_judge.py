@@ -253,9 +253,10 @@ def test_patch_and_revision_keep_follow_the_comparison_then_the_reading() -> Non
 class _FakeCalibrationLLM(AccountedGenerateMixin):
     """改写调用：给原文加记号返回；评审调用：带记号（普通改写）打 ``plain`` 分，原文打 ``original`` 分。"""
 
-    def __init__(self, *, original: float = 8.5, plain: float = 3.5) -> None:
+    def __init__(self, *, original: float = 8.5, plain: float = 3.5, short_rewrites: int = 0) -> None:
         self.original = original
         self.plain = plain
+        self.short_rewrites = short_rewrites
         self.requests: list = []
 
     def generate(self, request):  # noqa: ANN001
@@ -263,7 +264,11 @@ class _FakeCalibrationLLM(AccountedGenerateMixin):
         user = request.messages[-1]["content"]
         if "## Passage" in user:
             body = user.split("## Passage", 1)[1]
-            structured = {"text": PLAIN_MARK + body.strip()}
+            if self.short_rewrites > 0:
+                self.short_rewrites -= 1
+                structured = {"text": PLAIN_MARK + "压缩成一句。"}
+            else:
+                structured = {"text": PLAIN_MARK + body.strip()}
         else:
             structured = _structured(default=self.plain if PLAIN_MARK in user else self.original)
         return SimpleNamespace(
@@ -318,6 +323,25 @@ def test_calibration_job_scores_originals_against_plain_rewrites_and_stores_the_
     assert verdict.state == J.STATE_CALIBRATED and verdict.overall == 5.0
     payload = JC.calibration_payload(session, profile)
     assert payload["state"] == J.STATE_CALIBRATED and payload["job"]["kind"] == JOB_KIND_CALIBRATE
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_a_condensed_plain_rewrite_is_retried_once_with_the_length_spelled_out(session, monkeypatch) -> None:
+    """实库 2026-10-14：flash 把一段 2400 字的原文压成 942 字，整次校准失败。现在提示写明字数下限，写短了重试一次。"""
+    fake = _FakeCalibrationLLM(short_rewrites=1)
+    _profile_id, job = _run_calibration(session, monkeypatch, "cal_retry", fake)
+    assert job.state == "succeeded", job.error_json
+    rewrites = [r.messages[-1]["content"] for r in fake.requests if "## Passage" in r.messages[-1]["content"]]
+    assert len(rewrites) == 4 and len(fake.requests) == 10, "3 段改写 + 1 次重试 + 6 次评审"
+    assert "must have at least" in rewrites[0] and "previous rewrite was far too short" in rewrites[1]
+    assert job.progress_json["llm_calls"] == 10
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_two_condensed_rewrites_fail_the_calibration_with_the_reason(session, monkeypatch) -> None:
+    _profile_id, job = _run_calibration(session, monkeypatch, "cal_short", _FakeCalibrationLLM(short_rewrites=2))
+    assert job.state == "failed" and job.error_json["code"] == JC.CALIBRATION_CALL_FAILED_CODE
+    assert job.error_json["details"]["reason"] == "neutral_too_short"
 
 
 @pytest.mark.usefixtures("style_workers", "local_routes")

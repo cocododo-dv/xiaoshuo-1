@@ -15,7 +15,7 @@ provider / model、评审模板版本、画像版本）——任何一项变了�
 
 **作业**：学习文风成功后自动排一个（:func:`start_after_learn`）；也可以在画像页手动启动
 （``POST …/profiles/{id}/judge-calibration``）、取消（``…/judge-calibration/cancel``）。一次 = 锚点数 N 次改写 + 2N 次
-评审（缺省 N = 3，共 9 次调用），顺序跑，每次调用之后一个检查点；失败不续跑（重新校准从头来，十来次调用）。
+评审（缺省 N = 3，共 9 次调用；改写稿偏短时那一段重试一次），顺序跑，每次调用之后一个检查点；失败不续跑（重新校准从头来，十来次调用）。
 走对照检查那条短车道，不在分类 / 学习后面排队。
 
 **评审调用**：:func:`call_judge` 是作业侧（对照检查、校准）唯一的评审调用——同一份模板、同一种解析；起草流程里的
@@ -259,42 +259,48 @@ def call_neutralize(
     passage: str,
     context: LLMCallContext,
     execute: Callable[..., Any],
-) -> str:
-    """把一段原文改写成普通文字（校准的负锚点）；改写稿太短 / 没给 → 502（可重试）。"""
+) -> tuple[str, int]:
+    """把一段原文改写成普通文字（校准的负锚点）→ (改写稿, 调用次数)。改写稿短于原文的 ``NEUTRAL_MIN_RATIO``（模型把
+    这一段压缩了）→ 带着「上一次写短了」再要一次；两次都短 / 调用失败 → 502（可重试）。"""
     from novel_system.services.llm_client import build_llm_request
 
     template = runtime.template
-    request = build_llm_request(
-        runtime.route,
-        node_id=NEUTRALIZE_NODE_ID,
-        messages=[
-            {"role": "system", "content": str(template.system_prompt or "").rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION},
-            {"role": "user", "content": neutralize_user_prompt(template.task_prompt, passage)},
-        ],
-        response_schema=getattr(template, "structured_schema", None),
-    )
-    llm_call_id = f"llm_style_neutralize_{uuid.uuid4().hex}"
-    response = accounted_call(
-        llm_client,
-        request,
-        context=context,
-        llm_call_id=llm_call_id,
-        execute=execute,
-        wrap_error=lambda exc: _call_failed(
-            CALIBRATION_CALL_FAILED_CODE,
-            "校准用的改写调用失败：检查模型接入后重新校准。",
-            {"error_type": type(exc).__name__, "llm_call_id": llm_call_id},
-        ),
-    )
-    structured = getattr(response, "structured_output", None)
-    text = str(structured.get("text") or "").strip() if isinstance(structured, Mapping) else ""
-    if len(text) < NEUTRAL_MIN_RATIO * len(passage.strip()):
-        raise _call_failed(
-            CALIBRATION_CALL_FAILED_CODE,
-            "校准用的改写稿没有写完（比原文短太多）：重新校准。",
-            {"llm_call_id": llm_call_id, "reason": "neutral_too_short", "chars": len(text)},
+    calls = 0
+    text = ""
+    llm_call_id = ""
+    for retry in (False, True):
+        request = build_llm_request(
+            runtime.route,
+            node_id=NEUTRALIZE_NODE_ID,
+            messages=[
+                {"role": "system", "content": str(template.system_prompt or "").rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION},
+                {"role": "user", "content": neutralize_user_prompt(template.task_prompt, passage, retry=retry)},
+            ],
+            response_schema=getattr(template, "structured_schema", None),
         )
-    return text
+        llm_call_id = f"llm_style_neutralize_{uuid.uuid4().hex}"
+        response = accounted_call(
+            llm_client,
+            request,
+            context=context,
+            llm_call_id=llm_call_id,
+            execute=execute,
+            wrap_error=lambda exc, call_id=llm_call_id: _call_failed(
+                CALIBRATION_CALL_FAILED_CODE,
+                "校准用的改写调用失败：检查模型接入后重新校准。",
+                {"error_type": type(exc).__name__, "llm_call_id": call_id},
+            ),
+        )
+        calls += 1
+        structured = getattr(response, "structured_output", None)
+        text = str(structured.get("text") or "").strip() if isinstance(structured, Mapping) else ""
+        if len(text) >= NEUTRAL_MIN_RATIO * len(passage.strip()):
+            return text, calls
+    raise _call_failed(
+        CALIBRATION_CALL_FAILED_CODE,
+        "校准用的改写稿两次都比原文短太多（模型把这一段压缩了）：重新校准，或给「风格稿」换一个模型。",
+        {"llm_call_id": llm_call_id, "reason": "neutral_too_short", "chars": len(text), "passage_chars": len(passage.strip())},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -581,17 +587,16 @@ def run_calibration_job(session: Session, claimed: ClaimedJob, service: StyleJob
     neutral: list[str] = []
     for index, (window, text) in enumerate(passages):
         run.check_continue()
-        neutral.append(
-            call_neutralize(
-                llm_client,
-                runtimes[NEUTRALIZE_NODE_ID],
-                passage=text,
-                context=_context(claimed, node_id=NEUTRALIZE_NODE_ID, step=CALIBRATE_NEUTRALIZE_STEP),
-                execute=execute_accounted_call,
-            )
+        plain, calls = call_neutralize(
+            llm_client,
+            runtimes[NEUTRALIZE_NODE_ID],
+            passage=text,
+            context=_context(claimed, node_id=NEUTRALIZE_NODE_ID, step=CALIBRATE_NEUTRALIZE_STEP),
+            execute=execute_accounted_call,
         )
+        neutral.append(plain)
         run.checkpoint(
-            phase="neutralize", phase_label="把原文改写成普通文字", done=2 + index, total=total, llm_calls_delta=1
+            phase="neutralize", phase_label="把原文改写成普通文字", done=2 + index, total=total, llm_calls_delta=calls
         )
 
     positives: list[JudgeScores] = []

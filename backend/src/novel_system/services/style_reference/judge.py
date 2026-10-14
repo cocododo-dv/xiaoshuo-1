@@ -43,6 +43,8 @@ NEUTRALIZE_NODE_ID = "style_draft"
 
 JUDGE_SCALE = 10.0
 MAX_PATCH_DIMENSIONS = 4
+# 校准的普通改写：提示里要求的字数下限（占原文的比例）
+NEUTRAL_LENGTH_FLOOR = 0.8
 NOTE_MAX_CHARS = 200
 FIX_MAX_CHARS = 300
 SUMMARY_MAX_CHARS = 500
@@ -555,13 +557,22 @@ def compare_user_prompt(task_prompt: str, version_a: str, version_b: str) -> str
     )
 
 
-def neutralize_user_prompt(task_prompt: str, passage: str) -> str:
-    body = secure_reference_block(
-        str(passage or "").strip(), kind=NEUTRALIZE_TEXT_KIND, preamble=NEUTRALIZE_TEXT_PREAMBLE
+def neutralize_user_prompt(task_prompt: str, passage: str, *, retry: bool = False) -> str:
+    """改写提示：写明原文的字数与改写稿的下限（实库 2026-10-14：flash 把 2400 字的一段压成 942 字，整次校准失败）；
+    ``retry`` = 上一次写短了，再强调一次。"""
+    text = str(passage or "").strip()
+    body = secure_reference_block(text, kind=NEUTRALIZE_TEXT_KIND, preamble=NEUTRALIZE_TEXT_PREAMBLE)
+    floor = int(len(text) * NEUTRAL_LENGTH_FLOOR)
+    length = (
+        f"Length: the passage has about {len(text)} Chinese characters; the rewrite must have at least {floor} "
+        "(keep every beat and line of dialogue — do not summarise or condense)."
     )
+    if retry:
+        length += " Your previous rewrite was far too short and was discarded: write the full passage this time."
     return "\n".join(
         [
             str(task_prompt or "").strip(),
+            length,
             "",
             "## Passage",
             body,
