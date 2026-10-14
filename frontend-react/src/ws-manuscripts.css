@@ -257,6 +257,7 @@
 .ms-canon-fact strong { color: var(--accent-ink); font-weight: 600; }
 .ms-canon-candidate blockquote { margin: 10px 0 0; padding: 8px 11px; border-left: 2px solid var(--line-3); background: var(--paper-1); color: var(--ink-2); font-family: var(--font-serif); font-size: var(--fs-sm); line-height: 1.65; }
 .ms-canon-evidence-warning { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--danger-ink); font-size: var(--fs-xs); }
+.ms-canon-hard-check { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--info-ink); font-size: var(--fs-xs); }
 .ms-canon-entity { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 280px); align-items: center; gap: 12px; margin-top: 10px; padding: 9px 10px; background: var(--warn-wash); border-radius: var(--r-sm); font-size: var(--fs-xs); color: var(--warn-ink); }
 .ms-canon-entity select, .ms-canon-manual select, .ms-canon-manual input, .ms-canon-manual textarea, .ms-canon-verify textarea { width: 100%; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-0); color: var(--ink-1); padding: 7px 9px; font: inherit; font-size: var(--fs-sm); }
 .ms-canon-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 11px; }

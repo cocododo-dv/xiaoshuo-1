@@ -50,6 +50,7 @@
             ],
             "fact_key": "missing_limb",
             "fact_value": "右臂",
+            "hard_check": "失去右臂，后文再用它做事会被拦下",
             "evidence": {
               "text": "右臂已经折断",
               "start": 8,
@@ -159,6 +160,7 @@
             ],
             "fact_key": "has_item",
             "fact_value": "旧信",
+            "hard_check": null,
             "evidence": {
               "text": "阿远把旧信塞进怀里",
               "start": 0,
@@ -198,6 +200,7 @@
             ],
             "fact_key": "mood",
             "fact_value": "紧张",
+            "hard_check": null,
             "evidence": {
               "text": "苏晚接过旧信",
               "start": 10,
@@ -237,6 +240,7 @@
             ],
             "fact_key": "holder",
             "fact_value": "旧信",
+            "hard_check": null,
             "evidence": {
               "text": "苏晚接过旧信",
               "start": 10,
@@ -528,6 +532,7 @@
           ],
           "fact_key": "missing_limb",
           "fact_value": "右臂",
+          "hard_check": "失去右臂，后文再用它做事会被拦下",
           "evidence": {
             "text": "右臂已经折断",
             "start": 8,
@@ -637,6 +642,7 @@
           ],
           "fact_key": "has_item",
           "fact_value": "旧信",
+          "hard_check": null,
           "evidence": {
             "text": "阿远把旧信塞进怀里",
             "start": 0,
@@ -676,6 +682,7 @@
           ],
           "fact_key": "mood",
           "fact_value": "紧张",
+          "hard_check": null,
           "evidence": {
             "text": "苏晚接过旧信",
             "start": 10,
@@ -715,6 +722,7 @@
           ],
           "fact_key": "holder",
           "fact_value": "旧信",
+          "hard_check": null,
           "evidence": {
             "text": "苏晚接过旧信",
             "start": 10,

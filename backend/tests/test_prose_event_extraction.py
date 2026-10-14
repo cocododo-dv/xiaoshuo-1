@@ -309,7 +309,45 @@ def test_extractor_sends_its_template_schema_to_the_runner(session) -> None:
     template = runner.calls[0]["template"]
     assert template is not None and template.name == "narrative_event_extract"
     event_item = template.structured_schema["properties"]["events"]["items"]
-    assert set(event_item["required"]) == {"event_type", "entity_id", "fact_key", "fact_value", "evidence"}
+    assert set(event_item["required"]) == {
+        "event_type", "entity_id", "fact_kind", "fact_key", "fact_value", "evidence",
+    }
+    # 种类是枚举：按 schema 约束解码的中转选不出表外的值（2026-10-14）
+    assert event_item["properties"]["fact_kind"]["enum"][-1] == "other"
+
+
+def test_extracted_fact_kinds_become_hard_qc_keys(session) -> None:
+    """2026-10-14：v1 让模型自由起键名，实库抽出的物品得失一条都进不了硬质检。每条事件带一个
+    fact_kind，可查的种类由服务端拼成规范键；other 与「得知」照旧用模型起的键（得知的事不当成自己的状态）。"""
+    from novel_system.services.prose_event_extractor import extract_events_from_prose
+
+    runner = _Runner(
+        '{"events": ['
+        '{"event_type":"character_state","entity_id":"林远","fact_kind":"has_item","fact_key":"铜钥匙",'
+        '"fact_value":"held","evidence":"把铜钥匙揣进口袋"},'
+        '{"event_type":"location_change","entity_id":"林远","fact_kind":"other","fact_key":"moved_to",'
+        '"fact_value":"钟楼","evidence":"走进钟楼"},'
+        '{"event_type":"character_learns","entity_id":"林远","fact_kind":"location","fact_key":"location",'
+        '"fact_value":"苏晚在码头","evidence":"苏晚在码头"},'
+        '{"event_type":"character_state","entity_id":"苏晚","fact_kind":"other","fact_key":"oath",'
+        '"fact_value":"立誓守钟","evidence":"立誓守钟"},'
+        '{"event_type":"character_state","entity_id":"苏晚","fact_key":"位置","fact_value":"码头",'
+        '"evidence":"苏晚在码头"}'
+        ']}'
+    )
+    context = _llm_context()
+    _seed_success_ledger(session, context=context)
+    result = extract_events_from_prose("prose", session=session, llm_runner=runner, llm_context=context)
+
+    assert result.outcome == "completed_events"
+    assert [(event.fact_key, event.fact_value) for event in result.events] == [
+        ("has_item:铜钥匙", "held"),
+        ("location", "钟楼"),
+        ("learned_location", "苏晚在码头"),
+        ("oath", "立誓守钟"),
+        # 没带 fact_kind 的老回答照旧解析，键名认得的也改写
+        ("location", "码头"),
+    ]
 
 
 def test_extract_rejects_mixed_valid_and_invalid_event_items(session) -> None:

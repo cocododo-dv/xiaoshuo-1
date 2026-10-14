@@ -2,6 +2,9 @@
 
 只查硬事实（存活、位置、断肢、遗失物品、稳定的身体状况、结构化的外貌与能力），按分句 + 邻近 + 同义词匹配，
 记忆 / 闪回 / 失去之类的框定一律放过。命中是 Q1（阻断）；软事实（语气、关系的分寸）不在范围内。
+
+事实键按 ``fact_vocabulary`` 的写法读：``has_item:断剑`` = ``lost`` 与早先的 ``has_item`` = ``lost:断剑`` 是同一条
+契约（``checkable_form``）。``hard_check_note`` 用同一套判断告诉作者一条事实接受之后会被怎么核对。
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ from novel_system.services.narrative.replay import (
     runtime_authority_clause,
     snapshot_before,
 )
-from novel_system.services.narrative.taxonomy import CHECKABLE_FACT_KEYS
+from novel_system.services.narrative.fact_vocabulary import checkable_form, is_dead_value
 
 
 @dataclass(slots=True)
@@ -32,6 +35,8 @@ class ConsistencyViolation:
     source: str = "keyword"
     # 给作者看的名字（人物显示名；没有就是 id）——entity_id 仍是账本里的 id
     entity_name: str = ""
+    # 给作者看的一句中文说明（expected / actual 是写给修改简报的英文）
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -92,19 +97,22 @@ def check_consistency(
             display=display_name_of(names, char_id),
         )
         for fact_key, projected in state.facts.items():
-            if fact_key not in CHECKABLE_FACT_KEYS:
+            form = checkable_form(fact_key, projected.fact_value)
+            if form is None:
                 continue
+            kind, value = form
             facts_checked += 1
             violation = check_fact_against_text(
                 text_lower,
                 reference,
-                fact_key,
-                projected.fact_value,
+                kind,
+                value,
                 known_locations=known_locations,
                 place_groups=tuple(place_groups),
             )
             if violation is not None:
-                violations.append(violation)
+                # 账本里的键（has_item:断剑）留在违例上：分级的 authority_ref 按它指回那条事实
+                violations.append(replace(violation, fact_key=fact_key))
 
     return ConsistencyReport(
         passed=len(violations) == 0,
@@ -284,18 +292,38 @@ _ABILITY_ALIASES: dict[str, tuple[str, ...]] = {
     "magic": ("施法", "释放魔法", "念动咒语", "施展法术", "cast a spell", "used magic"),
 }
 
+# 给作者看的叫法（违例说明、成稿中心的「硬质检核对」）
+LIMB_LABELS = {"right_arm": "右臂", "left_arm": "左臂", "right_leg": "右腿", "left_leg": "左腿"}
+STATE_LABELS = {"unconscious": "昏迷", "blind": "失明", "deaf": "失聪", "mute": "失语", "paralyzed": "瘫痪"}
+FEATURE_LABELS = {"hair": "发色", "eyes": "瞳色"}
+COLOR_LABELS = {color: aliases[0] for color, aliases in _COLOR_ALIASES.items()}
+_ABILITY_LABELS = {
+    "swim": "游泳", "read": "阅读", "write": "写字", "speak": "说话", "see": "看见", "hear": "听见",
+    "walk": "行走", "fly": "飞行", "magic": "施法",
+}
+
 
 def _clause_has_negated_or_nonactual_action(clause: str) -> bool:
     return any(guard in clause for guard in (*_STATE_NEGATION_GUARDS, *_STATE_RECOVERY_GUARDS))
 
 
+# 只伤了一只眼 / 一只耳不算失明 / 失聪；已经好了、不再如此的值也不算
+_PARTIAL_SENSE_MARKERS = ("左眼", "右眼", "单眼", "一只眼", "一侧", "左耳", "右耳", "单耳", "一只耳", "one eye", "one ear")
+_STATE_RECOVERED_MARKERS = (
+    "不再", "恢复", "苏醒", "醒来", "醒了", "清醒", "痊愈", "康复", "好转", "重见光明", "recovered", "awake", "no longer",
+)
+
+
 def _physical_state_kind(value_lower: str) -> str | None:
+    if any(marker in value_lower for marker in _STATE_RECOVERED_MARKERS):
+        return None
     normalized = value_lower.replace("-", "_").replace(" ", "_")
     if any(token in normalized for token in ("unconscious", "coma", "昏迷", "失去意识")):
         return "unconscious"
-    if any(token in normalized for token in ("blind", "失明", "看不见")):
+    partial = any(marker in value_lower for marker in _PARTIAL_SENSE_MARKERS)
+    if not partial and any(token in normalized for token in ("blind", "失明", "看不见")):
         return "blind"
-    if any(token in normalized for token in ("deaf", "失聪", "听不见")):
+    if not partial and any(token in normalized for token in ("deaf", "失聪", "听不见")):
         return "deaf"
     if any(token in normalized for token in ("mute", "失语", "不能说话")):
         return "mute"
@@ -426,7 +454,7 @@ class _FactCheck:
     # 每组是同一个地点实体的全部写法（小写的 id、显示名、别名）
     place_groups: tuple[frozenset[str], ...] = ()
 
-    def violation(self, *, expected: str, actual: str, evidence: str) -> ConsistencyViolation:
+    def violation(self, *, expected: str, actual: str, evidence: str, reason: str = "") -> ConsistencyViolation:
         return ConsistencyViolation(
             fact_key=self.fact_key,
             expected=expected,
@@ -434,12 +462,13 @@ class _FactCheck:
             entity_id=self.entity.entity_id,
             evidence=evidence,
             entity_name=self.entity.display,
+            reason=f"正史里{self.entity.display}{reason}" if reason else "",
         )
 
 
 def _check_alive(check: _FactCheck) -> ConsistencyViolation | None:
     """alive==dead：死去的角色做着活人的动作（回忆 / 闪回 / 遗体之类的框定不算）。"""
-    if check.value_lower != "dead":
+    if not is_dead_value(check.value_lower):
         return None
     for clause in check.clauses:
         if not check.entity.in_clause(clause):
@@ -449,7 +478,12 @@ def _check_alive(check: _FactCheck) -> ConsistencyViolation | None:
         found = check.entity.verb_after(clause, _ALIVE_ACTION_VERBS, window=10)
         if found:
             label, verb = found
-            return check.violation(expected="dead", actual="appears alive in text", evidence=f"{label}…{verb}")
+            return check.violation(
+                expected="dead",
+                actual="appears alive in text",
+                evidence=f"{label}…{verb}",
+                reason=f"已经死了，这一稿却写到「{label}…{verb}」",
+            )
     return None
 
 
@@ -491,6 +525,7 @@ def _check_location(check: _FactCheck) -> ConsistencyViolation | None:
                 expected=check.fact_value,
                 actual=f"text places {check.entity.display} at {present_wrong}",
                 evidence=clause[:80],
+                reason=f"在「{check.fact_value}」，这一稿却写成还在「{present_wrong}」：「{clause[:40]}」",
             )
     return None
 
@@ -514,6 +549,7 @@ def _check_missing_limb(check: _FactCheck) -> ConsistencyViolation | None:
                 expected=f"missing: {check.fact_value}",
                 actual="text uses the missing limb",
                 evidence=clause[:80],
+                reason=f"已失去{LIMB_LABELS[group]}，这一稿又用上了：「{clause[:40]}」",
             )
         # using BOTH hands when one arm is gone (blueprint's 双手握剑 example)
         if group in ("right_arm", "left_arm"):
@@ -523,6 +559,7 @@ def _check_missing_limb(check: _FactCheck) -> ConsistencyViolation | None:
                     expected=f"missing: {check.fact_value}",
                     actual="text uses both hands despite a missing arm",
                     evidence=clause[:80],
+                    reason=f"已失去{LIMB_LABELS[group]}，这一稿却写双手并用：「{clause[:40]}」",
                 )
     return None
 
@@ -547,6 +584,7 @@ def _check_has_item(check: _FactCheck) -> ConsistencyViolation | None:
                 expected=f"item lost: {lost_item}",
                 actual="text shows character using the lost item",
                 evidence=clause[:80],
+                reason=f"已失去「{lost_item}」，这一稿又拿出来用：「{clause[:40]}」",
             )
     return None
 
@@ -568,11 +606,7 @@ def _check_physical_state(check: _FactCheck) -> ConsistencyViolation | None:
             replace(check, fact_key="missing_limb", fact_value=missing_limb, value_lower=missing_limb.lower())
         )
         if limb_violation is not None:
-            return check.violation(
-                expected=check.fact_value,
-                actual=limb_violation.actual,
-                evidence=limb_violation.evidence,
-            )
+            return replace(limb_violation, fact_key=check.fact_key, expected=check.fact_value)
 
     state_kind = _physical_state_kind(check.value_lower)
     if state_kind is None:
@@ -590,6 +624,7 @@ def _check_physical_state(check: _FactCheck) -> ConsistencyViolation | None:
                 expected=check.fact_value,
                 actual=f"text shows an action incompatible with {state_kind}: {found[1]}",
                 evidence=clause[:120],
+                reason=f"{STATE_LABELS[state_kind]}，这一稿却写到「{found[1]}」：「{clause[:40]}」",
             )
     return None
 
@@ -610,6 +645,7 @@ def _check_appearance(check: _FactCheck) -> ConsistencyViolation | None:
                     expected=check.fact_value,
                     actual="text gives the character a full head of hair",
                     evidence=clause[:120],
+                    reason=f"是光头，这一稿却写了一头头发：「{clause[:40]}」",
                 )
             continue
         expected_aliases = _COLOR_ALIASES.get(expected_color, ())
@@ -624,6 +660,10 @@ def _check_appearance(check: _FactCheck) -> ConsistencyViolation | None:
                     expected=check.fact_value,
                     actual=f"text describes {feature} colour as {actual_color}",
                     evidence=clause[:120],
+                    reason=(
+                        f"的{FEATURE_LABELS[feature]}是{COLOR_LABELS[expected_color]}，"
+                        f"这一稿写成了{COLOR_LABELS[actual_color]}：「{clause[:40]}」"
+                    ),
                 )
     return None
 
@@ -643,6 +683,7 @@ def _check_ability(check: _FactCheck) -> ConsistencyViolation | None:
                 expected=check.fact_value,
                 actual=f"text shows forbidden ability '{ability_name}': {found[1]}",
                 evidence=clause[:120],
+                reason=f"不能{_ABILITY_LABELS.get(ability_name, ability_name)}，这一稿却写到「{found[1]}」：「{clause[:40]}」",
             )
     return None
 
@@ -690,3 +731,45 @@ def check_fact_against_text(
             place_groups=place_groups,
         )
     )
+
+
+def hard_check_note(fact_key: str, fact_value: str) -> str | None:
+    """这条事实成为正史之后，硬质检拿它核对后文的哪一种写法（给作者看的一句话）；硬质检不核对它 → None。
+
+    与上面各检查器的前提逐条对应：值认不出契约（比如 ``has_item:钥匙`` = ``held``、``physical_state`` = 疲惫）的
+    事实只进起草提示词。"""
+    form = checkable_form(fact_key, fact_value)
+    if form is None:
+        return None
+    kind, value = form
+    value_lower = value.lower()
+    if kind == "alive":
+        return "已死，后文再写到说话、行动（回忆、遗体之类除外）会被拦下" if is_dead_value(value_lower) else None
+    if kind == "location":
+        return f"在「{value}」，后文若写成「还在」别的已知地点会被拦下" if value else None
+    if kind == "missing_limb":
+        group = _norm_limb_group(value_lower) if value_lower else None
+        return f"失去{LIMB_LABELS[group]}，后文再用它做事会被拦下" if group else None
+    if kind == "has_item":
+        lost = value_lower[len("lost:"):].strip() if value_lower.startswith("lost:") else ""
+        return f"已失去「{value[len('lost:'):].strip()}」，后文再拿出来用会被拦下" if lost else None
+    if kind == "physical_state":
+        group = _physical_state_missing_limb(value_lower)
+        if group:
+            return f"失去{LIMB_LABELS[group]}，后文再用它做事会被拦下"
+        state = _physical_state_kind(value_lower)
+        return f"{STATE_LABELS[state]}，后文写到与之不符的动作会被拦下" if state else None
+    if kind == "appearance":
+        contract = _appearance_contract(value_lower)
+        if contract is None:
+            return None
+        feature, color = contract
+        if feature == "bald":
+            return "光头，后文写成一头头发会被拦下"
+        return f"{FEATURE_LABELS[feature]}{COLOR_LABELS[color]}，后文写成别的颜色会被拦下"
+    if kind == "ability":
+        contract = _negative_ability_contract(value_lower)
+        if contract is None:
+            return None
+        return f"不能{_ABILITY_LABELS.get(contract[0], contract[0])}，后文写到做成会被拦下"
+    return None

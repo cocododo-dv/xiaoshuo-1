@@ -1072,3 +1072,39 @@ def test_author_requested_extraction_fails_closed_when_live_model_is_disabled(
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "LLM_DISABLED_FOR_CANON_EXTRACTION"
+
+
+def test_manual_fact_uses_the_hard_qc_vocabulary_and_is_checked_once_verified(session) -> None:
+    """2026-10-14：硬质检只认七种事实键，抽取与补录的键名却是自由的，核对过的事实也进不了硬质检。补录的「断肢」
+    写成规范键 missing_limb，候选上写明接受之后硬质检怎么核对；整场确认之后，下一场再用这只手就被拦下，
+    说明是作者读得懂的中文。"""
+    seeded = _seed_scene(session, "VOCAB")
+    service = CanonContinuityService(session)
+    service.mark_archive_pending(seeded["final_scene_row_id"])
+
+    candidate = service.create_manual_candidate(
+        seeded["project_id"],
+        seeded["scene_id"],
+        event_type="character_state",
+        raw_entity_ref="林远",
+        fact_key="断肢",
+        fact_value="右臂",
+        evidence_text="右臂已经折断",
+    )
+    assert (candidate["fact_key"], candidate["fact_value"]) == ("missing_limb", "右臂")
+    assert candidate["hard_check"] == "失去右臂，后文再用它做事会被拦下"
+    status = service.scene_status(seeded["project_id"], seeded["scene_id"])
+    assert status["candidates"][0]["hard_check"] == candidate["hard_check"]
+
+    service.decide_candidate(seeded["project_id"], candidate["candidate_id"], action="accept", actor_ref="author")
+    service.verify_scene_complete(
+        seeded["project_id"], seeded["scene_id"], actor_ref="author", note="已通读确认没有遗漏"
+    )
+    report = NarrativeEventLog(session).check_consistency(
+        "林远抬起右手握住门把。",
+        seeded["project_id"],
+        seeded["next_scene_id"],
+        character_ids=["CHAR_LINYUAN"],
+    )
+    assert [violation.fact_key for violation in report.violations] == ["missing_limb"]
+    assert report.violations[0].reason.startswith("正史里林远已失去右臂，这一稿又用上了")

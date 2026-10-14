@@ -313,6 +313,44 @@ describe("成稿中心权威章节流", () => {
     });
   });
 
+  it("硬质检会核对的候选写成中文叫法，并写明接受之后核对什么", async () => {
+    const pendingBody = {
+      ...COMPLETE_BODY,
+      canonContinuity: {
+        complete: false, scene_count: 1, synced_scene_count: 0, pending_scene_ids: ["s1"],
+        missing_final_scene_ids: [], pending_candidate_count: 2,
+        scenes: [{
+          scene_id: "s1", scene_seq: 1, final_scene_row_id: "final_s1_v1",
+          status: "pending_review", complete: false, pending_count: 2,
+          extraction: { extraction_outcome: "completed_events" },
+          candidates: [
+            {
+              candidate_id: "fc1", event_type: "character_state", raw_entity_ref: "林远",
+              fact_key: "has_item:旧信", fact_value: "lost", status: "pending",
+              hard_check: "已失去「旧信」，后文再拿出来用会被拦下",
+              entity_resolution_status: "exact", entity_options: [], evidence: { text: "林远把旧信烧掉。" },
+            },
+            {
+              candidate_id: "fc2", event_type: "character_learns", raw_entity_ref: "苏晚",
+              fact_key: "learned_archive", fact_value: "钟楼下埋着东西", status: "pending", hard_check: null,
+              entity_resolution_status: "exact", entity_options: [], evidence: { text: "钟楼下埋着东西。" },
+            },
+          ],
+        }],
+      },
+    };
+    flow.snapshot.mockReturnValue(readySnapshot(pendingBody));
+    flow.body.mockReturnValue(pendingBody);
+    const host = await renderPage("review");
+
+    await click(host.querySelector('[data-testid="manuscript-canon-tab"]'));
+    const [item, learned] = host.querySelectorAll('[data-testid="canon-candidate"]');
+    expect(item.querySelector(".ms-canon-fact").textContent).toBe("林远持有物品 · 旧信已失去");
+    expect(item.querySelector('[data-testid="canon-hard-check"]').textContent).toContain("硬质检核对：已失去「旧信」");
+    expect(learned.querySelector(".ms-canon-fact").textContent).toBe("苏晚learned_archive钟楼下埋着东西");
+    expect(learned.querySelector('[data-testid="canon-hard-check"]')).toBeNull();
+  });
+
   it("按章依次定稿：写齐了但不是当前章的章照样列在「等你批准」，却不默认选中；「批准为终稿」不可点，页脚说先批哪一章", async () => {
     const current = { ...chapter("planned"), current: true, scenes: [{ sid: "ch01s1", backendId: "s1", title: "交班", state: "writing", work: { hasFinal: false } }] };
     const later = { ...chapter("planned"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false,

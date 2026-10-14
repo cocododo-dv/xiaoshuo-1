@@ -2611,7 +2611,11 @@ templates:
     # 2026-09-30 v1（B11-16）：从成稿正文里抽「持久的状态变化」给正史核对当候选（成稿中心的「提取」与归档时的
     # 可选自动抽取共用）。原来写死在 prose_event_extractor.py 里，现在进模板：有版本号、
     # 受模板契约测试守着。正文按段落切成 ≤6000 字的几段，每段一次调用；多于一段时用户消息标明「第几段」。
-    version: "2026-09-30.v1"
+    # 2026-10-14 v2：每条事件多一个 fact_kind 枚举。硬质检只认七种事实（死亡、位置、物品得失、断肢、失能、
+    # 外貌、能力；narrative/taxonomy.py 的 CHECKABLE_FACT_KEYS），v1 让模型自由起键名，实库抽出的物品得失之类
+    # 一条都进不了硬质检。种类由服务端拼成规范键（narrative/fact_vocabulary.py：has_item:<物品> 等），
+    # 其余照旧 other + 自由键名。
+    version: "2026-10-14.v2"
     # 一段正文 ≤6000 字（按一字一 token 估）+ 系统提示，留余量。
     input_token_budget: 8000
     system_prompt: |
@@ -2628,9 +2632,32 @@ templates:
       - character_learns: a character gains specific knowledge/information
       - relation_change: the relationship between two characters shifts
 
-      Examples of durable facts to report: a character loses an arm (character_state); a
-      character learns who the killer is (character_learns); two characters end a scene as
-      enemies after being allies (relation_change).
+      Every event also has a fact_kind. Later scenes are checked automatically against the
+      kinds below, so for character_state and location_change events use one of them whenever
+      the fact fits, with fact_key and fact_value exactly as described:
+      - alive: the character dies on the page. fact_key "alive", fact_value "dead" (or "alive"
+        when someone believed dead is shown alive).
+      - location: where the character now is (always this kind for location_change).
+        fact_key "location", fact_value the place name as the prose writes it, short (e.g. 钟楼).
+      - has_item: the character gains or loses a physical object. fact_key the object's name
+        as written, short (e.g. 铜钥匙); fact_value "held" (picked up, received, kept) or "lost"
+        (lost, handed over, confiscated, stolen, destroyed). One event per object.
+      - missing_limb: the character loses a limb. fact_key "missing_limb", fact_value the limb
+        (e.g. 右臂).
+      - physical_state: a lasting incapacity (unconscious, blind, deaf, mute, paralyzed) or the
+        recovery from one. fact_key "physical_state", fact_value the state (e.g. 昏迷, 失明, 苏醒).
+        Ordinary injuries are kind other with a key like injury_left_leg.
+      - appearance: a lasting change of hair or eye colour. fact_key 发色 or 瞳色, fact_value the
+        colour (e.g. 白色).
+      - ability: a lasting loss or regain of an ability. fact_key the ability (e.g. 游泳),
+        fact_value "cannot" or "can".
+      Everything else — and every character_learns or relation_change event — is kind other,
+      with a short snake_case fact_key (e.g. learned_killer / stance_toward_X / rank).
+
+      Examples of durable facts to report: a character loses an arm (character_state,
+      missing_limb); a character pockets a key as evidence (character_state, has_item); a
+      character learns who the killer is (character_learns, other); two characters end a scene
+      as enemies after being allies (relation_change, other).
       Examples to NOT report: a character feels afraid for a moment; a character walks across
       a room; a character raises their voice.
 
@@ -2640,8 +2667,9 @@ templates:
           {
             "event_type": "character_state|location_change|character_learns|relation_change",
             "entity_id": "<character name/id exactly as written>",
-            "fact_key": "<short snake_case key, e.g. injury / location / learned / stance_toward_X>",
-            "fact_value": "<concise factual value>",
+            "fact_kind": "alive|location|has_item|missing_limb|physical_state|appearance|ability|other",
+            "fact_key": "<as described for the kind; for other a short snake_case key>",
+            "fact_value": "<as described for the kind; for other a concise factual value>",
             "evidence": "<short quote from the prose supporting this fact>"
           }
         ]
@@ -2650,6 +2678,7 @@ templates:
       Rules:
       - Only facts literally supported by the prose. When unsure, omit it.
       - Prefer durable facts (matter in later scenes) over momentary action.
+      - A checked kind is a promise: use it only when the prose states the fact plainly.
       - fact_value under 200 chars. Return {"events": []} if nothing qualifies.
     task_prompt: |
       ## Scene prose
@@ -2665,6 +2694,7 @@ templates:
             required:
               - event_type
               - entity_id
+              - fact_kind
               - fact_key
               - fact_value
               - evidence
@@ -2678,6 +2708,17 @@ templates:
                   - relation_change
               entity_id:
                 type: string
+              fact_kind:
+                type: string
+                enum:
+                  - alive
+                  - location
+                  - has_item
+                  - missing_limb
+                  - physical_state
+                  - appearance
+                  - ability
+                  - other
               fact_key:
                 type: string
               fact_value:

@@ -169,8 +169,11 @@ def test_extraction_reads_the_whole_scene_in_paragraph_chunks(session, monkeypat
     assert [(c["raw_entity_ref"], c["fact_key"]) for c in candidates] == [
         ("林远", "injury"),
         ("苏晚", "knows_archive"),
-        ("林远", "item_lost"),
+        # 物品得失写成硬质检认得的键（2026-10-14，narrative/fact_vocabulary.py）
+        ("林远", "has_item:旧信"),
     ]
+    assert candidates[2]["hard_check"] == "已失去「旧信」，后文再拿出来用会被拦下"
+    assert candidates[0]["hard_check"] is None
     assert all(c["evidence"]["grounded"] for c in candidates)
     staged = [
         session.get(NarrativeEvent, row.staged_event_id)

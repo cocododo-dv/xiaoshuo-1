@@ -8,7 +8,10 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CANON_EVENT_LABELS, CANON_EXTRACTION_OUTCOMES, CANON_EXTRACTION_REASONS } from "./labels/canon.js";
+import {
+  CANON_EVENT_LABELS, CANON_EXTRACTION_OUTCOMES, CANON_EXTRACTION_REASONS, CANON_FACT_KEY_SUGGESTIONS, CANON_FACT_KIND_LABELS,
+  canonFactKeyLabel, canonFactValueLabel,
+} from "./labels/canon.js";
 
 const CANON_DONE = { complete: true, missing_final_scene_ids: [], pending_scene_ids: [], pending_candidate_count: 0 };
 
@@ -228,6 +231,26 @@ describe("正史审核台的词表", () => {
     const backend = [...source.slice(start, source.indexOf(")", start)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
     expect(Object.keys(CANON_EVENT_LABELS)).toEqual(backend);
     expect(Object.values(CANON_EVENT_LABELS).every((label) => /[\u4e00-\u9fff]/.test(label))).toBe(true);
+  });
+
+  it("硬质检认得的事实种类与后端 narrative/fact_vocabulary.py 的 FACT_KINDS 逐项相同；带槽的键与固定取值翻成中文", () => {
+    const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../backend/src/novel_system/services/narrative/fact_vocabulary.py"), "utf8");
+    const start = source.indexOf("FACT_KINDS = (");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const backend = [...source.slice(start, source.indexOf(")", start)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(Object.keys(CANON_FACT_KIND_LABELS)).toEqual(backend);
+    expect(CANON_FACT_KEY_SUGGESTIONS.map((item) => item.value.split(":")[0])).toEqual(backend);
+
+    expect(canonFactKeyLabel("has_item:旧信")).toBe("持有物品 · 旧信");
+    expect(canonFactKeyLabel("appearance:hair")).toBe("外貌 · 发色");
+    expect(canonFactKeyLabel("location")).toBe("位置");
+    expect(canonFactKeyLabel("oath")).toBe("oath");
+    expect(canonFactValueLabel("has_item:旧信", "lost")).toBe("已失去");
+    expect(canonFactValueLabel("alive", "dead")).toBe("已死");
+    expect(canonFactValueLabel("location", "钟楼")).toBe("钟楼");
+    // 不是硬质检种类的键，值里碰巧是 lost 也原样
+    expect(canonFactValueLabel("mood", "lost")).toBe("lost");
   });
 
   it("提取结果 / 原因的叫法只收后端还会写的值（后端早不再写的键是死叫法，比如离线模式退役后的 offline_unsupported）", () => {

@@ -18,6 +18,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.canon.common import SCENE_COMPLETION_COMMIT_KINDS
 from novel_system.services.errors import DomainError
+from novel_system.services.narrative.hard_facts import hard_check_note
 
 
 @dataclass(frozen=True)
@@ -389,6 +390,8 @@ class CanonSnapshotsMixin:
             "entity_options": self._entity_options(row, entity_labels),
             "fact_key": row.fact_key,
             "fact_value": row.fact_value,
+            # 接受成正史之后硬质检拿它核对后文的哪一种写法；不核对 → None
+            "hard_check": hard_check_note(row.fact_key, row.fact_value),
             "evidence": {
                 "text": row.evidence_text or "",
                 "start": row.evidence_start,

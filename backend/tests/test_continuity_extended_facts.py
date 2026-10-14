@@ -358,3 +358,89 @@ def test_the_character_name_in_a_contradiction_never_counts_as_a_term_to_change(
     # 反例：别的 issue 说明里写到这个名字、旁边有改动标记，照旧按冲突处理（取词规则只对账本矛盾换 id）
     llm_issue = {"issue_key": "tone", "message": f"Replace the name “{NAMED}” in the hook.", "source": "llm"}
     assert _annotate_qc_issues(scene, "", {"pass_flag": False, "issues": [llm_issue]})["issues"][0]["conflicts_with"]
+
+
+def _log_fact(log: NarrativeEventLog, *, key: str, value: str, entity: str = "顾舟") -> None:
+    log.log_event(
+        project_id=PROJECT_ID,
+        chapter_id=CHAPTER_ID,
+        scene_id=SETUP_ID,
+        event_type="character_state",
+        entity_type="character",
+        entity_id=entity,
+        fact_key=key,
+        fact_value=value,
+        authority_status="accepted",
+        source_kind="test_fixture",
+    )
+
+
+def test_items_are_tracked_one_slot_per_object(session) -> None:
+    """2026-10-14：以前一个人只有一格 has_item，拿到第二件东西就把丢掉的那件盖掉了，再拿出丢掉的东西也查不出来。
+    规范写法 has_item:<物品> 每件一格：丢掉的照查，还拿着的照用。"""
+    log = _log(session, entity="顾舟", key="has_item:盐钟", value="held")
+    _log_fact(log, key="has_item:盐钟", value="lost")
+    _log_fact(log, key="has_item:铜钥匙", value="held")
+    session.commit()
+
+    uses_lost = log.check_consistency("顾舟拿出盐钟摇了摇。", PROJECT_ID, TARGET_ID, character_ids=["顾舟"])
+    assert [violation.fact_key for violation in uses_lost.violations] == ["has_item:盐钟"]
+    assert uses_lost.violations[0].reason.startswith("正史里顾舟已失去「盐钟」，这一稿又拿出来用")
+
+    uses_held = log.check_consistency("顾舟拿出铜钥匙开了门。", PROJECT_ID, TARGET_ID, character_ids=["顾舟"])
+    assert uses_held.passed
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "text"),
+    [
+        ("alive", "dead", "顾舟转身说道：走吧。"),
+        ("ability:游泳", "cannot", "顾舟游泳穿过了冰冷的河道。"),
+        ("appearance:发色", "黑色", "顾舟的一头金色头发在灯下发亮。"),
+        ("physical_state", "失明", "顾舟看见窗外升起一盏红灯。"),
+    ],
+)
+def test_slotted_and_chinese_canonical_facts_are_checked(session, key, value, text) -> None:
+    log = _log(session, entity="顾舟", key=key, value=value)
+
+    report = log.check_consistency(text, PROJECT_ID, TARGET_ID, character_ids=["顾舟"])
+
+    assert [violation.fact_key for violation in report.violations] == [key]
+    assert report.violations[0].reason.startswith("正史里顾舟")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("physical_state", "左眼失明"),
+        ("physical_state", "已经苏醒"),
+        ("physical_state", "不再昏迷"),
+        ("ability:游泳", "can"),
+        ("learned_location", "苏晚在码头"),
+    ],
+)
+def test_partial_recovered_and_learned_facts_do_not_block(session, key, value) -> None:
+    log = _log(session, entity="顾舟", key=key, value=value)
+
+    report = log.check_consistency(
+        "顾舟看见码头的灯，忽然起身说道：游泳过去。", PROJECT_ID, TARGET_ID, character_ids=["顾舟"]
+    )
+
+    assert report.passed, [(item.fact_key, item.evidence) for item in report.violations]
+
+
+def test_event_log_violation_carries_a_chinese_reason_for_the_author(session) -> None:
+    from novel_system.services.quality_checks.continuity import deterministic_continuity_issues
+
+    _log(session, entity="顾舟", key="has_item:盐钟", value="lost")
+    scene = session.get(SceneCard, TARGET_ID)
+    scene.onstage_chars_json = ["顾舟"]
+
+    check = deterministic_continuity_issues(session, scene, "顾舟拿出盐钟摇了摇。")
+
+    issue = next(item for item in check.issues if item["issue_key"] == "event_log_consistency_violation")
+    assert issue["human_readable_reason"].startswith("正史里顾舟已失去「盐钟」")
+    assert issue["message"].startswith("Event log contradiction: 顾舟.has_item:盐钟")
+    classified = classify_issues([issue])[0]
+    assert classified["blocking"] is True
+    assert classified["human_readable_reason"] == issue["human_readable_reason"]

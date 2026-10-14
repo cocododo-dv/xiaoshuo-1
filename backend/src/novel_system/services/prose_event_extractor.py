@@ -10,7 +10,10 @@ Two callers: the author's 「提取」 (``CanonContinuityService.extract_scene_c
 the whole scene paragraph-chunk by chunk — ``extract_scene_events``) and the opt-in archive
 step (``NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED`` + ``llm_enabled``, one call over the first
 6,000 characters — its checkpoint product holds exactly one parent call). The prompt is the
-``narrative_event_extract`` template in ``config/prompts.yaml``. Every call returns an explicit
+``narrative_event_extract`` template in ``config/prompts.yaml``. Each event names a ``fact_kind`` (an enum
+in the structured schema): the hard-QC kinds become canonical keys (``narrative.fact_vocabulary``:
+``location``, ``alive``, ``has_item:<物品>`` …) so accepted facts are checked against later prose;
+``other`` keeps the model's free-form key. Every call returns an explicit
 product envelope for no-call, completed, rejected, provider-failed, and parse-failed outcomes;
 accounting/control-plane integrity failures are never degraded.
 """
@@ -35,6 +38,7 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.hash_engine import sha256_text
+from novel_system.services.narrative.fact_vocabulary import compose_extracted_fact
 from novel_system.services.narrative.taxonomy import entity_type_for_event
 
 logger = logging.getLogger(__name__)
@@ -245,8 +249,13 @@ def extract_events_from_prose(
         if etype not in _VALID_EVENT_TYPES:
             continue
         entity_id = str(raw.get("entity_id", "")).strip()
-        fact_key = str(raw.get("fact_key", "")).strip()
-        fact_value = str(raw.get("fact_value", "")).strip()
+        # 种类认得的事实换成硬质检认得的键（fact_kind 缺省 / 表外 → 按 other，模型起的键照旧）
+        fact_key, fact_value = compose_extracted_fact(
+            etype,
+            str(raw.get("fact_kind") or ""),
+            str(raw.get("fact_key", "")),
+            str(raw.get("fact_value", "")),
+        )
         if not (entity_id and fact_key and fact_value):
             continue
         events.append(
@@ -452,6 +461,7 @@ def _parse_response(response: Any) -> dict[str, Any] | None:
             or not isinstance(event.get("fact_value"), str)
             or not event["fact_value"].strip()
             or not isinstance(event.get("evidence", ""), str)
+            or not isinstance(event.get("fact_kind", ""), str)
             for event in parsed["events"]
         ):
             return None

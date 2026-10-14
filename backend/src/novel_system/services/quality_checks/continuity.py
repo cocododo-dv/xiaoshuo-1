@@ -88,6 +88,8 @@ def deterministic_continuity_issues(session: Session, scene: SceneCard, content:
                 violation.actual,
             ),
             "source": "deterministic",
+            # 作者界面读的中文说明（成稿门 / 写作台的阻断列表先取它，再取上面的英文说明）
+            **({"human_readable_reason": violation.reason} if violation.reason else {}),
             "details": {
                 "entity_id": violation.entity_id,
                 "entity_name": violation.entity_name or violation.entity_id,

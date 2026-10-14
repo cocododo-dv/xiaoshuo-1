@@ -1,12 +1,15 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { Spinner } from "./ws-ui.jsx";
-import { CANON_EVENT_LABELS, CANON_EXTRACTION_OUTCOMES, CANON_EXTRACTION_REASONS, CANON_STATUS_LABELS } from "./labels/canon.js";
+import {
+  CANON_EVENT_LABELS, CANON_EXTRACTION_OUTCOMES, CANON_EXTRACTION_REASONS, CANON_FACT_KEY_SUGGESTIONS, CANON_STATUS_LABELS,
+  canonFactKeyLabel, canonFactValueLabel,
+} from "./labels/canon.js";
 
 /* ==========================================================
    正史审核台的零件（从 ws-manuscripts-canon.jsx 拆出，2026-10）
    · CanonSceneCard —— 一场：状态、提取结果（可重新提取）、候选事实逐条裁决、整场通读确认；
-   · CanonCandidate —— 一条候选事实：证据、实体消歧、接受 / 驳回；
+   · CanonCandidate —— 一条候选事实：证据、实体消歧、接受 / 驳回；硬质检会核对的事实写明核对什么（后端 hard_check）；
    · CanonManualEntry —— 模型漏掉的事实从终稿证据手工补录（表单状态由正史台持有：换章只清「选哪一场」）。
    动作都由正史台（ManuCanon）给：这里只画。
    ========================================================== */
@@ -95,10 +98,13 @@ export function CanonCandidate({ candidate, busy, selected, onSelect, onDecide }
       </div>
       <div className="ms-canon-fact">
         <b>{candidate.raw_entity_ref}</b>
-        <span>{candidate.fact_key}</span>
+        <span title={candidate.fact_key}>{canonFactKeyLabel(candidate.fact_key)}</span>
         <I.ArrowRight size={13} />
-        <strong>{candidate.fact_value}</strong>
+        <strong>{canonFactValueLabel(candidate.fact_key, candidate.fact_value)}</strong>
       </div>
+      {candidate.hard_check && (
+        <div className="ms-canon-hard-check" data-testid="canon-hard-check"><I.ShieldCheck size={12} /> 硬质检核对：{candidate.hard_check}</div>
+      )}
       <blockquote>“{(candidate.evidence && candidate.evidence.text) || "无证据摘录"}”</blockquote>
       {!evidenceGrounded && <div className="ms-canon-evidence-warning"><I.AlertTriangle size={12} /> 这段引文不在当前终稿中，只能驳回后重新补录。</div>}
       {pending && needsEntity && (
@@ -132,7 +138,10 @@ export function CanonManualEntry({ scenes, sceneId, onSceneId, manual, setField,
         <label><span>场景</span><select value={sceneId} onChange={(event) => onSceneId(event.target.value)}><option value="">选择场景…</option>{scenes.map((scene) => <option key={scene.scene_id} value={scene.scene_id}>第 {scene.scene_seq} 场</option>)}</select></label>
         <label><span>类型</span><select value={manual.event_type} onChange={setField("event_type")}>{Object.entries(CANON_EVENT_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
         <label><span>实体规范名</span><input value={manual.raw_entity_ref} onChange={setField("raw_entity_ref")} placeholder="如：林远" /></label>
-        <label><span>事实键</span><input value={manual.fact_key} onChange={setField("fact_key")} placeholder="如：injury" /></label>
+        <label><span>事实键</span><input value={manual.fact_key} onChange={setField("fact_key")} list="canon-fact-key-suggestions" placeholder="如：injury；下拉里是硬质检会核对的写法" /></label>
+        <datalist id="canon-fact-key-suggestions">
+          {CANON_FACT_KEY_SUGGESTIONS.map((item) => <option value={item.value} label={item.hint} key={item.value} />)}
+        </datalist>
         <label className="is-wide"><span>事实值</span><input value={manual.fact_value} onChange={setField("fact_value")} placeholder="如：右臂骨折，需要固定六周" /></label>
         <label className="is-wide"><span>终稿原文证据（必须逐字存在）</span><textarea value={manual.evidence_text} onChange={setField("evidence_text")} placeholder="粘贴当前终稿中的原句" /></label>
       </div>

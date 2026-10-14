@@ -18,6 +18,7 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.narrative.fact_vocabulary import normalize_fact
 from novel_system.services.narrative.taxonomy import ENTITY_TYPES, EVENT_TYPES, entity_type_for_event
 from novel_system.services.narrative_event_log import NarrativeEventLog
 
@@ -50,8 +51,8 @@ class CanonDecisionsMixin:
         if event_type not in EVENT_TYPES:
             raise DomainError("CANON_EVENT_TYPE_INVALID", "不支持这种事实类型", status_code=400)
         clean_entity = str(raw_entity_ref or "").strip()
-        clean_key = str(fact_key or "").strip()
-        clean_value = str(fact_value or "").strip()
+        # 与抽取同一套写法：「位置」= location、has_item = lost:断剑 → has_item:断剑 = lost（硬质检按规范键核对）
+        clean_key, clean_value = normalize_fact(event_type, str(fact_key or ""), str(fact_value or ""))
         clean_evidence = str(evidence_text or "").strip()
         if not all((clean_entity, clean_key, clean_value, clean_evidence)):
             raise DomainError(

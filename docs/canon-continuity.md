@@ -70,6 +70,8 @@ $env:NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED = "true"
 
 未启用这一步时，场景保持 `pending_extraction`，由上面的后台工人接手；作者也可以从“正史”页签显式发起。作者点的「提取」按段落把整场分成几段（每段约 6,000 字）逐段读完；归档时的自动提取只读开头约 6,000 字。提示词是 `config/prompts.yaml` 的 `narrative_event_extract` 模板。供应商失败、解析失败或发送前拒绝会记为 `degraded`，不会把“没抽出来”解释成“没有事实”。模型返回空列表或若干候选都需要作者在逐条裁决后做场景级完整性确认，避免漏抽被静默放行。
 
+**事实键的写法（2026-10-14，`services/narrative/fact_vocabulary.py`）**：硬质检只核对七种事实——死亡（`alive` = `dead`）、位置（`location`）、物品得失（`has_item:<物品>` = `held` / `lost`，每件一格）、断肢（`missing_limb`）、失能（`physical_state`：昏迷 / 失明 / 失聪 / 失语 / 瘫痪）、外貌（`appearance:hair` / `appearance:eyes` = 颜色）、能力（`ability:<能力>` = `cannot` / `can`）；别的键只进起草提示词。抽取模板 v2 让模型给每条事件选一个 `fact_kind`（结构化输出里的枚举，其余一律 `other` + 自由键名），服务端按它拼成规范键；手工补录与抽取走同一个 `normalize_fact`（「位置」→ `location`，`has_item` = `lost:断剑` → `has_item:断剑` = `lost`），意思拿不准就原样留着。「得知」「关系变化」的事实用了可查的键名会加前缀（`learned_location`），不当成这个人自己的状态。早先手写的 `has_item` = `lost:X`、`ability` = `cannot:X`、`appearance` = `hair:X` 照旧核对（`checkable_form`）。候选载荷的 `hard_check` 写明接受之后硬质检核对什么（成稿中心候选卡上的「硬质检核对」），违例带一句中文 `human_readable_reason` 给作者看。硬质检仍只读核对完成的正史，没核对的候选不拦任何正文。
+
 ## 长篇上下文注入
 
 起草一场时，模型对已经写出来的正文知道这些：
