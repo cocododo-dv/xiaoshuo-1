@@ -444,12 +444,11 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 .arr-drama-chev { margin-left: auto; color: var(--ink-3); transition: transform var(--t-fast); }
 .arr-drama.is-open .arr-drama-chev { transform: rotate(180deg); }
 .arr-drama-groups { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s2) var(--s5) var(--s5); }
-.arr-dgroup { display: flex; flex-direction: column; gap: 9px; }
-.arr-dgroup-head { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
-.arr-dgroup-head svg { color: var(--ink-3); }
-.arr-dgroup-rule { flex: 1; height: 1px; margin-left: 4px; background: var(--line-1); }
+/* 雪花的章：章的说明在分章面板里写，这里只读，旁边一扇门 */
+.arr-drama-door { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.arr-field-text:disabled { color: var(--ink-2); background: transparent; cursor: default; }
 /* 戏剧卡的格子、护栏、章节蓝图：两列，编辑器窄了（下面的容器查询）并成一列 */
-.arr-dgroup-fields, .arr-guard-grid, .arr-bp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.arr-dgroup-fields, .arr-bp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .arr-field {
   display: flex; flex-direction: column; gap: 5px; padding: 10px 12px;
   border: 1px solid var(--line-1); border-radius: var(--r-md); background: var(--paper-0);
@@ -459,21 +458,17 @@ button.arr-card-grip:hover, button.arr-scene-grip:hover { background: var(--pape
 .arr-field.is-primary { grid-column: 1 / -1; border-color: color-mix(in srgb, var(--accent) 30%, var(--line-1)); }
 .arr-field.is-primary:focus-within { border-color: var(--accent); }
 .arr-field-head { display: flex; align-items: baseline; gap: 8px; }
-.arr-field-label { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.arr-field-label { flex: 0 0 auto; white-space: nowrap; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
 .arr-field.is-primary .arr-field-label { color: var(--accent-ink); }
 .arr-field-hint { margin-left: auto; font-size: var(--fs-xs); color: var(--ink-3); text-align: right; }
-.arr-field-text, .arr-guard-text {
+.arr-field-text {
   width: 100%; min-height: 3em; padding: 2px 0; border: 0; outline: none; resize: none; background: transparent;
   color: var(--ink-1); font-family: var(--font-serif); font-size: var(--fs-md); line-height: 1.6; field-sizing: content;
 }
 .arr-field.is-primary .arr-field-text { font-size: 15px; }
-.arr-field-text::placeholder, .arr-guard-text::placeholder { color: var(--ink-4); }
-.arr-guard { padding: 10px 13px; border-radius: var(--r-md); background: var(--tone-wash); }
-.arr-guard:focus-within { box-shadow: inset 0 0 0 1px var(--tone); }
-.arr-guard-label { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; font-size: var(--fs-xs); font-weight: 600; color: var(--tone-ink); }
-.arr-guard-text { min-height: 2.4em; font-size: 13.5px; }
+.arr-field-text::placeholder { color: var(--ink-4); }
 @container arr-ed (max-width: 640px) {
-  .arr-dgroup-fields, .arr-guard-grid, .arr-bp-grid { grid-template-columns: 1fr; }
+  .arr-dgroup-fields, .arr-bp-grid { grid-template-columns: 1fr; }
 }
 
 /* 章节蓝图卡 */

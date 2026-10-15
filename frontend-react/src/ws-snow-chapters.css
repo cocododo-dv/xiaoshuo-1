@@ -59,3 +59,14 @@
 .sf-chapterplan-warn-actions { display: inline-flex; gap: 6px; margin-left: 8px; flex: none; }
 .sf-chapterplan-warn.tone-gold { color: var(--gold-ink); }
 .sf-chapterplan > .sf-chapterplan-warn { padding: 0 24px 8px; }
+/* 章的说明（给读者什么 / 先别揭 / 备注）：摘要下面一行，可展开 */
+.sf-chapterplan-intent { padding: 2px 12px 6px 36px; border-bottom: 1px solid var(--line-1); font-size: var(--fs-xs); }
+.sf-chapterplan-intent summary { cursor: pointer; color: var(--ink-3); font-weight: 600; padding: 3px 0; }
+.sf-chapterplan-intent-sum { margin-left: 8px; font-weight: 400; color: var(--ink-3); }
+.sf-chapterplan-intent-fields { display: grid; gap: 4px; padding-top: 2px; }
+.sf-chapterplan-intent-row { display: grid; grid-template-columns: 112px 1fr; gap: 8px; align-items: baseline; }
+.sf-chapterplan-intent-k { color: var(--ink-3); font-weight: 600; }
+.sf-chapterplan-intent-v { width: 100%; min-width: 0; box-sizing: border-box; resize: vertical; font: inherit; line-height: 1.6;
+  color: var(--ink-1); background: var(--paper-0); border: 1px solid var(--line-1); border-radius: 6px; padding: 3px 8px; }
+.sf-chapterplan-intent-v:focus { outline: none; border-color: var(--gold); }
+.sf-chapterplan-intent-wait { margin: 2px 0 0; color: var(--ink-3); line-height: 1.6; }

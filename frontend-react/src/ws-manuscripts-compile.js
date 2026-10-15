@@ -52,10 +52,11 @@ export function manuCanonPendingCount(snapshot) {
   return canon && Array.isArray(canon.pending_scene_ids) ? canon.pending_scene_ids.length : 0;
 }
 
-/* 成稿中心看的戏剧卡四格（键与叫法同 labels/catalog.js 的 DRAMA_FIELDS：结构页签的概要卡、导出的附录都按这个顺序） */
-export const MANU_DRAMA_KEYS = ["promise", "spine", "arc", "aftertaste"];
+/* 成稿中心看的章的说明两格（键与叫法同 labels/catalog.js 的 DRAMA_FIELDS：结构页签的概要卡、导出的附录都按这个顺序；
+   备注只给作者自己看，不进成稿） */
+export const MANU_DRAMA_KEYS = ["promise", "forbidden"];
 
-/* 目录戏剧卡 → 这四格（键就是后端的键）；四项都空就没有戏剧卡。 */
+/* 目录章的说明 → 这两格（键就是后端的键）；两格都空就没有。 */
 export function manuDramaOf(chapter) {
   const d = (chapter && chapter.drama) || {};
   const pick = (v) => (v && v !== "—" ? v : "");
@@ -209,9 +210,10 @@ function fullChapterTitle(chapter) {
   return chapterLabel(chapter, { maxTitle: Infinity });
 }
 
-/* 附录里的戏剧卡：叫法与章节编排的编辑器同一套（核心承诺 / 主线推进 / 人物变化 / 结尾余味，批准 #19） */
+/* 附录里的章的说明：叫法与分章面板、章节编排同一套（这一章给读者什么 / 先别揭；「先别揭」的几行用顿号连起来） */
 function dramaLine(drama) {
-  return `戏剧卡 — ${MANU_DRAMA_KEYS.map((key) => `${dramaFieldLabel(key)}：${drama[key] || "—"}`).join("；")}`;
+  const value = (key) => String(drama[key] || "").split("\n").map((line) => line.trim()).filter(Boolean).join("、");
+  return `章的说明 — ${MANU_DRAMA_KEYS.map((key) => `${dramaFieldLabel(key)}：${value(key) || "—"}`).join("；")}`;
 }
 
 /* 把 scopeIds 里的章（按目录顺序）编译成一个文件：{ name, content, mime }。

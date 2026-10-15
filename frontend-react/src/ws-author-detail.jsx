@@ -15,7 +15,7 @@ import { chapterLabel } from "./labels/catalog.js";
 /* ==========================================================
    章节详情 — 中间的编辑器
    页头（面包屑 · 章名 · 状态 / 运行 / 删除 / 体检 · 锚点）→ 构思条 → 场景看板（ws-author-scenes.jsx）→ 交接 →
-   戏剧卡（ws-author-drama.jsx）→ 章节蓝图（ws-author-ai.jsx）。
+   章的说明（ws-author-drama.jsx，原戏剧卡）→ 章节蓝图（ws-author-ai.jsx）。
    跨视图的去处（写作台、AI 起草台、构思第 10 步）都走外壳给的 goView。
    ========================================================== */
 
@@ -109,7 +109,7 @@ function ArrEditor({
   const anchors = [
     { key: "scenes", label: "场景" },
     { key: "handoff", label: "交接" },
-    { key: "drama", label: "戏剧卡" },
+    { key: "drama", label: "章的说明" },
     ...(ch.backendId ? [{ key: "blueprint", label: "章节蓝图" }] : []),
   ];
   const jump = (key) => {
@@ -171,7 +171,7 @@ function ArrEditor({
           onEditPlan={editInPlan} onForkWrite={forkWrite} onForkAI={forkAI} />
 
         <ArrHandoffStrip prev={prev} ch={ch} next={next} numOf={numOf} onJump={onJump} sectionRef={refs.handoff} />
-        <ArrDramaCard ch={ch} locked={locked} onPatchDrama={onPatchDrama} sectionRef={refs.drama} />
+        <ArrDramaCard ch={ch} locked={locked} onPatchDrama={onPatchDrama} onOpenPlan={onOpenPlan} sectionRef={refs.drama} />
         {/* 章节蓝图：起草读的那一份，作者可以改写，也可以让 AI 重新生成 */}
         <ArrBlueprintCard ch={ch} locked={locked} sectionRef={refs.blueprint} onConfigureModel={onConfigureModel} />
       </div>

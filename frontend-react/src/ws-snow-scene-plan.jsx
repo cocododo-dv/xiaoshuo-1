@@ -3,13 +3,16 @@ import { I } from "./icons.jsx";
 import { S2AutoText } from "./ws-snow-fields.jsx";
 import { s2LoadUiPref, s2SaveUiPref, S2_PREF_KEYS } from "./ws-snow-hooks.js";
 import {
-  S2_TRIAGE_LABEL, S2_VERDICTS, s2BusyOn, s2InferSpine, s2PlanState, s2PovLabel, s2RosterList, s2SceneNo,
+  S2_TRIAGE_LABEL, S2_VERDICTS, s2BusyOn, s2ChapterIntent, s2ChapterRuns, s2InferSpine, s2PlanState, s2PovLabel, s2RosterList,
+  s2SceneNo,
 } from "./ws-snow-model.js";
 
 /* ==========================================================
    10 场景规划（从 ws-snow-scenes.jsx 拆出，2026-09-22）
    ----------------------------------------------------------
    逐场画草图：主动 目标 / 冲突 / 挫败，反应 反应 / 两难 / 决定。形态与视角跟随 09，这里只规划、裁定。
+   2026-10-16：按章分组——覆盖格按 09 的「所在章」分段，场景头写着它在哪一章、是不是收章的那一场（它的挫败 / 决定
+   与钩子就是整章的结尾），上面一行是这一章的说明（给读者什么 / 先别揭；在分章面板里写，catalogChapters 按章名对上）。
    ========================================================== */
 
 const { useState: useSS } = React;
@@ -17,7 +20,7 @@ const { useState: useSS } = React;
 /* 第 10 步的版面围绕三拍：场景头（编号 · 题名 · 形态 · 视角 · 你的裁定）→ 主三拍 → 接着的次要三拍 →
    收起的「场景卡细节」→ 破例理由 → 分诊结果。以前三拍前面先铺了十二个零散输入框，三拍本身落在首屏之外、
    还是两行高的框，长一点的节拍就被截住。「场景卡细节」收起与否按本机记住。 */
-export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
+export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai, catalogChapters, onOpenChapterPlan }) {
   const list = ((refs && refs.scenes) || {}).list || [];
   const roster = s2RosterList(refs);
   const plans = scaffold.plans || {};
@@ -66,6 +69,11 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const nextUnplanned = () => { const t = list.find(s => stateOf(s.id) === 0 && s.id !== selId); if (t) selScene(t.id); };
   const no = s2SceneNo(scene.id, selIdx);
   const spineMark = scene.spine || s2InferSpine(scene.fn);
+  const runs = s2ChapterRuns(list);
+  const selRun = runs.find(r => r.ids.includes(selId)) || null;
+  const chapterLabel = selRun ? selRun.label : "";
+  const closesChapter = !!(chapterLabel && selRun.ids[selRun.ids.length - 1] === selId);
+  const intent = chapterLabel ? s2ChapterIntent(catalogChapters, chapterLabel) : null;
 
   const triples = proactive
     ? [
@@ -106,18 +114,27 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
       <div className="sf-plan-nav">
         <span className={`sf-plan-cov ${fully === list.length ? "is-all" : ""}`}><I.CheckCircle size={12} /> {fully} / {list.length} 场已规划</span>
         <div className="sf-plan-cells" role="group" aria-label="逐场规划进度">
-          {list.map((s, i) => {
-            const st = stateOf(s.id);
-            const tri = triOf(s.id);
-            const label = cellTitle(s, i, st, tri);
-            return (
-              <button key={s.id}
-                className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${(s.spine || s2InferSpine(s.fn)) ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""}`}
-                onClick={() => selScene(s.id)} title={label} aria-label={label} aria-current={s.id === selId ? "true" : undefined}>
-                {i + 1}
-              </button>
-            );
-          })}
+          {runs.map(run => (
+            <span key={run.start} className={`sf-plan-chgroup ${run.label ? "" : "is-loose"}`} data-testid="snow-plan-chgroup"
+              title={run.label ? `${run.label} · ${run.ids.length} 场` : undefined}>
+              {run.label && <span className="sf-plan-chlabel">{run.label}</span>}
+              {run.ids.map((id, k) => {
+                const i = run.start + k;
+                const s = list[i];
+                const st = stateOf(s.id);
+                const tri = triOf(s.id);
+                const closing = !!run.label && k === run.ids.length - 1;
+                const label = cellTitle(s, i, st, tri) + (closing ? " · 收章" : "");
+                return (
+                  <button key={s.id}
+                    className={`sf-plan-cell st-${st} ${s.id === selId ? "is-sel" : ""} ${s.type === "reactive" ? "is-rea" : "is-pro"} ${(s.spine || s2InferSpine(s.fn)) ? "is-spine" : ""} ${tri ? "tri-" + tri.status : ""} ${closing ? "is-chend" : ""}`}
+                    onClick={() => selScene(s.id)} title={label} aria-label={label} aria-current={s.id === selId ? "true" : undefined}>
+                    {i + 1}
+                  </button>
+                );
+              })}
+            </span>
+          ))}
         </div>
         {fully < list.length && <button className="btn btn-quiet btn-sm" onClick={nextUnplanned}><I.ChevronRight size={13} /> 下一个未规划</button>}
         <div className="sf-plan-legend" aria-hidden="true">
@@ -151,6 +168,10 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           </span>
         </div>
         <div className="sf-plan-head-sub">
+          {chapterLabel && <span className="sf-plan-chname" data-testid="snow-plan-chapter">{chapterLabel}</span>}
+          {closesChapter && (
+            <span className="sf-plan-chend" data-testid="snow-plan-chapter-end" title="这一场收章：它的挫败 / 决定与钩子就是整章的结尾，读者在这里决定要不要翻下一章">收章</span>
+          )}
           {scene.place && <span><I.MapPin size={11} /> {scene.place}</span>}
           {spineMark && <span className="sf-plan-spine" title={scene.spine ? "09 里标的灾难" : "按「功能」一栏认出的灾难"}>{spineMark}{scene.spine ? "" : "（推断）"}</span>}
           {scene.fn && <span>{scene.fn}</span>}
@@ -174,6 +195,20 @@ export function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
           </div>
         )}
       </div>
+
+      {intent && (
+        <div className="sf-plan-chintent" data-testid="snow-plan-chapter-intent">
+          <span className="sf-plan-seam-tag">{chapterLabel}</span>
+          {intent.promise
+            ? <span className="sf-plan-seam-text">给读者：{intent.promise}</span>
+            : <span className="sf-plan-seam-text is-empty">还没写这一章给读者什么</span>}
+          {intent.notYet.length > 0 && <span className="sf-plan-seam-text">先别揭：{intent.notYet.join("、")}</span>}
+          {onOpenChapterPlan && (
+            <button type="button" className="sf-plan-seam-go" onClick={onOpenChapterPlan}
+              title="章的说明在分章面板里写（目录里已经有这一章之后）">{intent.found ? "在分章面板里写" : "打开分章面板"}</button>
+          )}
+        </div>
+      )}
 
       {prev && (
         <div className={`sf-plan-seam ${prevSeam ? "" : "is-empty"}`}>

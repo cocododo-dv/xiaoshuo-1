@@ -369,7 +369,7 @@ const WsCatalog = {
       id, act, n, title: String(o.title || "").trim() || `第 ${insertAt + 1} 章`,
       state: first ? "writing" : "planned", current: first,
       words: { cur: 0, target: 0 },
-      drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "" },
+      drama: { promise: "", forbidden: "", notes: "" },
       scenes: [{ title: "新场景", kind: "主动", state: first ? "writing" : "todo", goal: "", obstacle: "", turn: "" }],
     };
     const next = chs.slice();

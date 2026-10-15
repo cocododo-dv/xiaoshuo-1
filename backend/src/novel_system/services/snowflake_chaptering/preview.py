@@ -10,7 +10,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SnowflakeChapterPlan, SnowflakeScenePlan
+from novel_system.db.models import ChapterGoal, SnowflakeChapterPlan, SnowflakeScenePlan
+from novel_system.services.chapter_drama import INTENT_KEYS, chapter_intent
 from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_chapter_table import (
     NEW_CHAPTER_PREFIX,
@@ -240,13 +241,20 @@ def shape_preview(
     chapter_payloads = []
     for index, chapter in enumerate(chapters, start=1):
         members = by_chapter[chapter.row_uid]
+        pinned_id = catalog_chapter_id(session, chapter, mint=False)
+        catalog = session.get(ChapterGoal, pinned_id) if pinned_id else None
+        catalog_ready = catalog is not None and not catalog.trashed_flag
         chapter_payloads.append(
             {
                 "row_uid": chapter.row_uid,
                 "chapter_plan_id": chapter.chapter_plan_id,
                 "chapter_seq": index,
                 # 钉过的目录章号；还没物化过 / 预览里的新章是空串（确认写入时才铸号）
-                "chapter_id": catalog_chapter_id(session, chapter, mint=False),
+                "chapter_id": pinned_id,
+                # 章的说明（给读者什么 / 先别揭 / 备注，2026-10-16）住在目录里的这一章上（chapter_intent）：
+                # 目录里还没有这一章时是空的，面板不让填，确认写入之后再写
+                "catalog_ready": catalog_ready,
+                "intent": chapter_intent(catalog) if catalog_ready else {key: "" for key in INTENT_KEYS},
                 "act": int(chapter.act or 1),
                 "title": chapter.title or "",
                 "summary": chapter.summary or "",

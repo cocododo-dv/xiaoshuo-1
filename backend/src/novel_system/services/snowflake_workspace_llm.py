@@ -19,6 +19,7 @@ from novel_system.services.structured_llm_call import run_structured_call, suppl
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services import snowflake_chapter_llm as chapter_llm
 from novel_system.services.prompt_builder import PromptConfigurationError
+from novel_system.services.snowflake_chapter_context import CHAPTER_CONTEXT_KEY, chapter_context_for_scene_planning
 from novel_system.services.snowflake_prompt_budget import (
     AUTHOR_DIRECTION_BRIEF_KEY,
     STYLE_REFERENCE_STRUCTURE_KEY,
@@ -465,6 +466,15 @@ class SnowflakeWorkspaceLLMService(RuntimeLLMAccess):
         # （加上游各步的全书级条目）。受保护键：降载阶梯永不削它。
         if author_direction_brief:
             prompt_payload[AUTHOR_DIRECTION_BRIEF_KEY] = author_direction_brief
+        # 2026-10-16 规划层收拢第 3 步：场景规划知道每场在哪一章、哪一场收章、作者写的章的说明
+        if step_key == "scene_details":
+            chapter_context = chapter_context_for_scene_planning(
+                self.session,
+                project.project_id,
+                [str(scene.get("scene_id") or "") for scene in focus.scenes] if focus.scenes else None,
+            )
+            if chapter_context:
+                prompt_payload[CHAPTER_CONTEXT_KEY] = chapter_context
         if focus.scenes:
             prompt_payload["focus_scenes"] = {
                 "scenes": normalize(focus.scenes),

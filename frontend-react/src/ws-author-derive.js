@@ -140,7 +140,9 @@ export function arrChapterChecks(ch, snow) {
   const scenes = (ch && ch.scenes) || [];
   const facts = arrChapterFacts(ch);
   const drama = (ch && ch.drama) || {};
-  const dramaDone = DRAMA_KEYS.filter((k) => !isBlank(drama[k])).length;
+  /* 章的说明只数进蓝图的两格（给读者什么 / 先别揭）：备注只给作者自己看，写没写不算体检项 */
+  const intentKeys = DRAMA_KEYS.filter((k) => k !== "notes");
+  const dramaDone = intentKeys.filter((k) => !isBlank(drama[k])).length;
   const ready = scenes.filter((s) => s.state === "done" || s.state === "writing").length;
   const words = (ch && ch.words) || { cur: 0, target: 0 };
   /* 没设字数目标（雪花整理出来的章都没有）就不谈预算：0 目标下任何字数都会被算成「超额」 */
@@ -155,7 +157,7 @@ export function arrChapterChecks(ch, snow) {
       ok: facts.beats.total > 0 && facts.beats.planned === facts.beats.total, warn: facts.beats.planned < facts.beats.total || !facts.beats.total },
     { key: "started", label: "场景动笔", val: `${ready}/${scenes.length}`,
       ok: ready === scenes.length && scenes.length > 0, warn: ready < scenes.length },
-    { key: "drama", label: "戏剧卡（可选）", val: `${dramaDone}/${DRAMA_KEYS.length}`, ok: dramaDone === DRAMA_KEYS.length },
+    { key: "drama", label: "章的说明（可选）", val: `${dramaDone}/${intentKeys.length}`, ok: dramaDone === intentKeys.length },
     { key: "budget", label: "字数预算", val: budget.val, ok: !!budget.ok, warn: !!budget.warn },
   ];
   if (snow && snow.canPlan) {

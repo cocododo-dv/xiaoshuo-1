@@ -47,6 +47,9 @@ PROTECTED_KEYS = frozenset(
         # 2026-09-16 阶段 T：作者意图要点（教练对话蒸馏、作者核过）。条目数与单条长度在
         # snowflake_direction_brief 里有硬上限（16 条 × 160 字 + 继承 24 条），受保护也不会失控。
         AUTHOR_DIRECTION_BRIEF_KEY,
+        # 2026-10-16：第 10 步看的章（哪几场一章、哪一场收章、作者写的给读者什么 / 先别揭；snowflake_chapter_context）。
+        # 每章几行，定向深化时只带这一批场所在的章。
+        "chapter_context",
     }
 )
 

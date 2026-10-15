@@ -17,15 +17,11 @@ SCENE_STATES = ("todo", "writing", "done")
 SCENE_BRIEF_GCS = ("goal", "conflict", "setback")
 SCENE_BRIEF_RDD = ("reaction", "dilemma", "decision")
 
-#: 戏剧卡六格的键与中文名——与前端 ``labels/catalog.js`` 的 ``DRAMA_FIELDS`` 同一套叫法；键表也是
-#: ``chapter_drama`` 送给写蓝图的模型的那几格（外加禁止包含）
+#: 章的说明里进章节蓝图的那一格（外加「先别揭」= forbidden）——与前端 ``labels/catalog.js`` 的 ``DRAMA_FIELDS``
+#: 同一套叫法。2026-10-16 规划层收拢：原戏剧卡的另外五格（章节问题 / 主线推进 / 人物变化 / 结尾余味 / 结尾效果）
+#: 都是这一章几场三拍的再概括，退役；库里的旧值不读不写（``chapter_drama``）。
 DRAMA_SLOT_LABELS: dict[str, str] = {
-    "promise": "核心承诺",
-    "spine": "主线推进",
-    "arc": "人物变化",
-    "problem": "章节问题",
-    "aftertaste": "结尾余味",
-    "ending": "结尾效果",
+    "promise": "这一章给读者什么",
 }
 
 #: 目录侧的幕（章节编排按它分卷）

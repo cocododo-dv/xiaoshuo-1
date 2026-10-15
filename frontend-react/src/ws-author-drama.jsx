@@ -2,27 +2,20 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Tag } from "./ws-ui.jsx";
 import { DRAMA_FIELDS, DRAMA_KEYS } from "./labels/catalog.js";
+import { arrIsPlanChapter } from "./ws-author-derive.js";
 
 /* ==========================================================
-   章节详情 · 戏剧卡（从 ws-author-detail.jsx 拆出，2026-10）
-   这一章的写法：承诺、推进和余味，外加两条护栏（禁止包含 / 备注）。它归章节编排（不在构思里）；留空也能写，
-   一格都没写时收成一行。卡上说的都是真的（round 2 · B2-5，以前说会进起草、会拦，其实起草和检查都没读过它）：
-   填了的格子与「禁止包含」进章节蓝图——章节蓝图卡的「AI 生成」、起草前现做的蓝图都读（后端 chapter_drama.py），
-   起草读的是蓝图，已有的蓝图要重新生成才跟上；「禁止包含」的词还进起草提示里的场景卡、写进正文会按字面查出
-   （起草验收、运行前预检、质检复核、成稿门，后端 qc_constraints.literal_forbidden_term_sources）。「禁止包含」一行一条：
-   整行出现才算，不按逗号 / 顿号再拆。备注是作者给自己的话，两个写蓝图的地方都不送。
+   章节详情 · 章的说明（原戏剧卡；从 ws-author-detail.jsx 拆出，2026-10）
+   三格：这一章给读者什么 / 先别揭 / 备注（后端 narrative_json.drama 的 promise / forbidden / notes，services/chapter_intent.py）。
+   2026-10-16 规划层收拢：原戏剧卡的另外五格都是这一章几场三拍的再概括，退役；章的说明也只在一处写——雪花整理出来的章
+   在构思的分章面板里写（这里只读，旁边一扇门），手建的章在这里写。
+   前两格进章节蓝图（章节蓝图卡读的、起草前现做的都读；改了它们，蓝图会提示过时）；「先别揭」一行一条，还进起草提示里
+   的场景卡，整行写进正文会按字面查出来（起草验收、运行前预检、质检复核、成稿门，后端 qc_constraints）。备注只给作者看。
    ========================================================== */
 
 const { useEffect, useState } = React;
 
-/* 三组（承诺 / 推进 / 收束）；每组的格子与叫法在 labels/catalog.js 的 DRAMA_FIELDS（成稿中心、导出附录同一套） */
-const ARR_DRAMA_GROUPS = [
-  { key: "promise", label: "承诺", icon: "Star" },
-  { key: "drive", label: "推进", icon: "ArrowRight" },
-  { key: "close", label: "收束", icon: "Sparkles" },
-].map((group) => ({ ...group, fields: DRAMA_FIELDS.filter((field) => field.group === group.key) }));
-
-/* 戏剧卡的一格。textarea 不受控（边写边存会打断输入法），所以 key 带上服务端的值：
+/* 一格。textarea 不受控（边写边存会打断输入法），所以 key 带上服务端的值：
    目录重拉带来新值时换一个新的框显示新值；失焦时只有真的改了才写回——
    以前 key 只有章 id，重拉之后框里还是旧字，下一次失焦把旧字写回去，把服务端的新值悄悄冲掉。 */
 function ArrDramaText({ className, label, value, ck, locked, onCommit, placeholder }) {
@@ -34,14 +27,15 @@ function ArrDramaText({ className, label, value, ck, locked, onCommit, placehold
   );
 }
 
-function ArrDramaCard({ ch, locked, onPatchDrama, sectionRef }) {
+function ArrDramaCard({ ch, locked, onPatchDrama, onOpenPlan, sectionRef }) {
   const drama = ch.drama || {};
   const filled = DRAMA_KEYS.filter((k) => String(drama[k] || "").trim()).length;
-  const guarded = !!(String(drama.forbidden || "").trim() || String(drama.notes || "").trim());
+  /* 雪花整理出来的章：章的说明在构思的分章面板里写，这里只读 */
+  const fromPlan = arrIsPlanChapter(ch);
   /* null = 跟着内容走（一格都没写就收成一行）；作者点过就听作者的。偏好记着是哪一章的，换章即回到「跟着内容走」。
      自动展开只往「开」的方向走：开过一次就钉住——清空唯一写过的一格、Tab 到下一格时，失焦写回让内容变空，
      卡片要是跟着收起，刚拿到焦点的那一格就被卸掉，焦点掉到 body 上。 */
-  const autoOpen = filled > 0 || guarded;
+  const autoOpen = filled > 0;
   const [pref, setPref] = useState(() => ({ id: ch.id, open: null }));
   const openPref = pref.id === ch.id ? pref.open : null;
   useEffect(() => {
@@ -54,48 +48,38 @@ function ArrDramaCard({ ch, locked, onPatchDrama, sectionRef }) {
     <section className={`card arr-drama ${open ? "is-open" : "is-collapsed"}`} ref={sectionRef} aria-labelledby={`${bodyId}-title`}>
       <button type="button" className="arr-drama-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpenPref(!open)}>
         <span className="arr-drama-toggle-main">
-          <span className="card-title" id={`${bodyId}-title`}>戏剧卡</span>
+          <span className="card-title" id={`${bodyId}-title`}>章的说明</span>
           <Tag tone="neutral" className="tab-num">可选 · {filled}/{DRAMA_KEYS.length}</Tag>
           <I.ChevronDown size={15} className="arr-drama-chev" />
         </span>
-        <span className="card-sub">这一章的写法：承诺、推进和余味。它归这里（不在构思里）；生成章节蓝图时 AI 照着它写，起草读的是蓝图（已有的蓝图要重新生成才跟上）。留空也能写。</span>
+        <span className="card-sub">
+          这一章给读者什么、先别揭什么。前两格进章节蓝图；「先别揭」起草时告诉 AI，写进正文会被按字面查出来；备注只给你看。留空也能写。
+        </span>
       </button>
       {open && (
         <div className="arr-drama-groups" id={bodyId}>
-          {ARR_DRAMA_GROUPS.map((g) => {
-            const Ic = I[g.icon] || I.Dot;
-            return (
-              <div className="arr-dgroup" key={g.key}>
-                <header className="arr-dgroup-head"><Ic size={13} /><span>{g.label}</span><i className="arr-dgroup-rule" /></header>
-                <div className="arr-dgroup-fields">
-                  {g.fields.map((f) => (
-                    <div className={`arr-field ${f.primary ? "is-primary" : ""}`} key={f.key}>
-                      <header className="arr-field-head">
-                        <span className="arr-field-label">{f.label}</span>
-                        <span className="arr-field-hint">{f.hint}</span>
-                      </header>
-                      <ArrDramaText className="arr-field-text" label={f.label} value={drama[f.key]} ck={`${ch.id}|${f.key}`}
-                        locked={locked} placeholder="还没写" onCommit={(v) => onPatchDrama(f.key, v)} />
-                    </div>
-                  ))}
-                </div>
+          {fromPlan && (
+            <p className="arr-drama-door">
+              <span>这一章是构思里分出来的：章的说明在分章面板里写，这里只读。</span>
+              {onOpenPlan && (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenPlan}>
+                  <I.Layout size={13} /> 在分章面板里改
+                </button>
+              )}
+            </p>
+          )}
+          <div className="arr-dgroup-fields">
+            {DRAMA_FIELDS.map((f) => (
+              <div className={`arr-field ${f.key === "promise" ? "is-primary" : ""}`} key={f.key}>
+                <header className="arr-field-head">
+                  <span className="arr-field-label">{f.label}</span>
+                  <span className="arr-field-hint">{f.hint}</span>
+                </header>
+                <ArrDramaText className="arr-field-text" label={f.label} value={drama[f.key]} ck={`${ch.id}|${f.key}`}
+                  locked={locked || fromPlan} placeholder={fromPlan ? "还没写" : f.placeholder}
+                  onCommit={(v) => onPatchDrama(f.key, v)} />
               </div>
-            );
-          })}
-          <div className="arr-dgroup arr-dgroup-guard">
-            <header className="arr-dgroup-head"><I.ShieldCheck size={13} /><span>护栏</span><i className="arr-dgroup-rule" /></header>
-            <div className="arr-guard-grid">
-              <div className="arr-guard" data-tone="danger">
-                <div className="arr-guard-label"><I.Ban size={12} /> 禁止包含</div>
-                <ArrDramaText className="arr-guard-text" label="禁止包含" value={drama.forbidden} ck={`${ch.id}|forbidden`} locked={locked}
-                  placeholder="这一章不能出现的词或情节，一行一条：起草时告诉 AI，整行写进正文会被查出来" onCommit={(v) => onPatchDrama("forbidden", v)} />
-              </div>
-              <div className="arr-guard" data-tone="info">
-                <div className="arr-guard-label"><I.Quote size={12} /> 备注</div>
-                <ArrDramaText className="arr-guard-text" label="章节备注" value={drama.notes} ck={`${ch.id}|notes`} locked={locked}
-                  placeholder="给自己留的话（AI 读不到）" onCommit={(v) => onPatchDrama("notes", v)} />
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       )}

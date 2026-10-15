@@ -109,7 +109,7 @@ function ArrBlueprintCard({ ch, locked, sectionRef, onConfigureModel }) {
         <div>
           <h2 className="card-title" id={`${idPrefix}-title`}>章节蓝图</h2>
           <div className="card-sub">
-            起草时本章每一场都读这一份；还没有时，第一次起草前会按场景卡和戏剧卡现做一份。可以直接改写，也可以让 AI 按全书上下文重新生成。
+            起草时本章每一场都读这一份；还没有时，第一次起草前会按场景卡和章的说明现做一份。改了章的说明，这里会提示过时。可以直接改写，也可以让 AI 按全书上下文重新生成。
           </div>
         </div>
       </div>

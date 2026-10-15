@@ -639,13 +639,13 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(host.querySelector('[data-testid="chapter-plan-panel"]')).not.toBeNull();
   });
 
-  it("戏剧卡：目录重拉带来新值时框里显示新值；失焦没改就不写回（以前会把服务端的新值冲掉）", async () => {
+  it("章的说明：目录重拉带来新值时框里显示新值；失焦没改就不写回（以前会把服务端的新值冲掉）", async () => {
     localStorage.setItem("arr.mode", JSON.stringify("detail"));
     localStorage.setItem("arr.picked", JSON.stringify("ch01"));
     catalogState.ready = true;
     catalogState.chapters = [chapter("ch01", "第一章", { drama: { promise: "旧的承诺" } })];
     await act(async () => root.render(<WsAuthor />));
-    const promise = () => host.querySelector('textarea[aria-label="核心承诺"]');
+    const promise = () => host.querySelector('textarea[aria-label="这一章给读者什么"]');
     expect(promise().value).toBe("旧的承诺");
 
     // 服务端来了新值（目录重拉，比如另一个窗口改过）
@@ -662,7 +662,7 @@ describe("章节编排 · 服务端目录真相", () => {
     expect(WsCatalog.set.mock.calls[0][0][0].drama.promise).toBe("作者自己的承诺");
   });
 
-  it("戏剧卡一格都没写时收成一行（场景看板排在它前面）；点开才出现各格", async () => {
+  it("章的说明一格都没写时收成一行（场景看板排在它前面）；点开才出现各格", async () => {
     localStorage.setItem("arr.mode", JSON.stringify("detail"));
     localStorage.setItem("arr.picked", JSON.stringify("ch01"));
     catalogState.ready = true;
@@ -670,16 +670,16 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => root.render(<WsAuthor />));
     const toggle = host.querySelector(".arr-drama-toggle");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.textContent).toContain("可选 · 0/6");
-    expect(host.querySelector('textarea[aria-label="核心承诺"]')).toBeNull();
+    expect(toggle.textContent).toContain("可选 · 0/3");
+    expect(host.querySelector('textarea[aria-label="这一章给读者什么"]')).toBeNull();
     const body = host.querySelector(".arr-ed-body");
     const order = [...body.children].map((node) => node.className);
     expect(order.findIndex((name) => name.includes("arr-scenes"))).toBeLessThan(order.findIndex((name) => name.includes("arr-drama")));
     await act(async () => click(toggle));
-    expect(host.querySelector('textarea[aria-label="核心承诺"]')).not.toBeNull();
+    expect(host.querySelector('textarea[aria-label="这一章给读者什么"]')).not.toBeNull();
   });
 
-  it("戏剧卡开过就不因内容清空而收起：清空唯一写过的一格、Tab 到下一格，焦点还在下一格里", async () => {
+  it("章的说明开过就不因内容清空而收起：清空唯一写过的一格、Tab 到下一格，焦点还在下一格里", async () => {
     localStorage.setItem("arr.mode", JSON.stringify("detail"));
     localStorage.setItem("arr.picked", JSON.stringify("ch01"));
     catalogState.ready = true;
@@ -688,16 +688,34 @@ describe("章节编排 · 服务端目录真相", () => {
     await act(async () => root.render(<WsAuthor />));
     expect(host.querySelector(".arr-drama").className).toContain("is-open");
 
-    const promise = host.querySelector('textarea[aria-label="核心承诺"]');
+    const promise = host.querySelector('textarea[aria-label="这一章给读者什么"]');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
     await act(async () => { promise.focus(); setter.call(promise, ""); promise.dispatchEvent(new Event("input", { bubbles: true })); });
-    // Tab 到下一格：焦点先进「章节问题」，失焦写回让内容变空，目录随之重拉
-    await act(async () => { host.querySelector('textarea[aria-label="章节问题"]').focus(); });
+    // Tab 到下一格：焦点先进「先别揭」，失焦写回让内容变空，目录随之重拉
+    await act(async () => { host.querySelector('textarea[aria-label="先别揭"]').focus(); });
     await act(async () => root.render(<WsAuthor />));
     expect(WsCatalog.set).toHaveBeenCalledTimes(1);
     expect(catalogState.chapters[0].drama.promise).toBe("");
     expect(host.querySelector(".arr-drama").className).toContain("is-open");
-    expect(document.activeElement).toBe(host.querySelector('textarea[aria-label="章节问题"]'));
+    expect(document.activeElement).toBe(host.querySelector('textarea[aria-label="先别揭"]'));
+  });
+
+  it("构思分出来的章：章的说明在这里只读，旁边一扇门打开分章面板（手建的章照旧能写）", async () => {
+    installSnowSync();
+    localStorage.setItem("arr.mode", JSON.stringify("detail"));
+    localStorage.setItem("arr.picked", JSON.stringify("ch01"));
+    catalogState.ready = true;
+    catalogState.chapters = [planChapter("ch01", "雨夜来信", { drama: { promise: "林昭读完旧信", forbidden: "寄信人", notes: "" } })];
+    await act(async () => root.render(<WsAuthor />));
+
+    const promise = host.querySelector('textarea[aria-label="这一章给读者什么"]');
+    expect(promise.value).toBe("林昭读完旧信");
+    expect(promise.disabled).toBe(true);
+    expect(host.querySelector('textarea[aria-label="先别揭"]').disabled).toBe(true);
+    const door = [...host.querySelectorAll(".arr-drama-door button")].find((b) => b.textContent.includes("在分章面板里改"));
+    await act(async () => click(door));
+    await act(async () => {});
+    expect(host.querySelector('[data-testid="chapter-plan-panel"]')).not.toBeNull();
   });
 
   it("输入法选词的那一下回车不算「改完了」：章节标题不失焦、不写目录；真正的回车才写回", async () => {

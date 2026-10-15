@@ -170,7 +170,7 @@ function ManuStructure({ body, chapter, canonical, go, diag = null, fidelity = n
     <div className="ms-struct">
       {drama && (
         <div className="card">
-          <div className="card-head"><div className="card-title">戏剧卡</div></div>
+          <div className="card-head"><div className="card-title">章的说明</div></div>
           <div className="ms-struct-grid">
             {MANU_DRAMA_KEYS.map((key) => (
               <div key={key}><div className="ms-struct-k">{dramaFieldLabel(key)}</div><div className="ms-struct-v">{drama[key] || "—"}</div></div>

@@ -114,7 +114,7 @@ export function catFromApiChapter(c) {
     current: !!c.current,
     words: { cur: (c.words && c.words.cur) || 0, target: (c.words && c.words.target) || 0 },
     promise: c.promise || "",
-    drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "", ...(c.drama || {}) },
+    drama: { promise: "", forbidden: "", notes: "", ...(c.drama || {}) },
     scenes: (c.scenes || []).map(catFromApiScene),
   };
 }

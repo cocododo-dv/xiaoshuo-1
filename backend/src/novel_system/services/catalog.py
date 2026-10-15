@@ -63,6 +63,8 @@ from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
 )
+from novel_system.services.chapter_drama import chapter_intent
+from novel_system.services.chapter_intent import intent_changes, note_intent_changed
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.chapter_structure_ownership import (
     chapter_structure_owned_by_plan_action,
@@ -170,6 +172,7 @@ class CatalogService(CatalogReader):
                 },
             )
         previous_title = chapter_title(chapter)
+        previous_intent = chapter_intent(chapter)
         for key in NARRATIVE_FIELDS:
             if key in body:
                 narrative[key] = body[key]
@@ -192,6 +195,8 @@ class CatalogService(CatalogReader):
                 setattr(chapter, key, value)
             if set_current:
                 project.current_chapter_id = chapter.chapter_id
+            # 章的说明里进蓝图的两格（给读者什么 / 先别揭）变了：这一章的章节蓝图让位（chapter_intent）
+            note_intent_changed(self.session, chapter.chapter_id, intent_changes(previous_intent, chapter_intent(chapter)))
             self.session.flush()
         # 阶段 Z「章名只有一个」：这一章是构思分出来的，作者在这里改了名 → 章计划、09 的章头、07 的章节表
         # 在同一事务里接过同一个名字（否则分章面板还挂着旧名，「AI 起章名」会给起过名的章再起一遍）。

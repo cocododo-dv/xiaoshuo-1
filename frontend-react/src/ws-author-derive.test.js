@@ -194,7 +194,7 @@ describe("章的显示状态、章节体检与卷带", () => {
 
   it("章节体检：只报读得出来的事实，与构思同步只对有构思分章的书出现", () => {
     const ch = chapter("ch02", {
-      drama: { promise: "承诺", spine: "（待补）" },
+      drama: { promise: "承诺", forbidden: "（待补）", notes: "备注不算体检项" },
       words: { cur: 900, target: 0 },
       scenes: [scene("s1", { state: "writing" }), scene("s2", { goal: "" })],
     });
@@ -202,7 +202,7 @@ describe("章的显示状态、章节体检与卷带", () => {
     const byKey = Object.fromEntries(rows.map((row) => [row.key, row]));
     expect(byKey.beats).toMatchObject({ val: "1/2", warn: true, ok: false });
     expect(byKey.started).toMatchObject({ val: "1/2", warn: true });
-    expect(byKey.drama.val).toBe("1/6");          // 「（待补）」是占位，不算写过
+    expect(byKey.drama.val).toBe("1/2");          // 章的说明只数进蓝图的两格；「（待补）」是占位，不算写过
     expect(byKey.budget).toMatchObject({ val: "未设目标", ok: false, warn: false });
     expect(byKey.sync).toMatchObject({ val: "2 场待同步", warn: true });
     expect(arrChapterChecks(ch, { canPlan: false, pending: 0 }).map((row) => row.key)).not.toContain("sync");

@@ -164,6 +164,30 @@ export function s2PovLabel(pov, roster) {
   return hit ? hit.name : pov;  // 已是姓名 / 自由文本 → 原样
 }
 
+/* ---- 10 场景规划：按章分组（2026-10-16 规划层收拢第 3 步） ---- */
+/* 09 行上的「所在章」标签（服务端写的，分章面板才是编辑处）相邻相同的归成一章；没有章标签的场各自一组（label 为空）。
+   返回 [{ label, ids, start }]，ids 按故事序；一章的最后一个 id 就是收章的那一场。 */
+export function s2ChapterRuns(list) {
+  const runs = [];
+  (Array.isArray(list) ? list : []).forEach((s, i) => {
+    if (!s || !s.id) return;
+    const label = String(s.chapter || "");
+    const last = runs[runs.length - 1];
+    if (last && label && last.label === label) last.ids.push(s.id);
+    else runs.push({ label, ids: [s.id], start: i });
+  });
+  return runs;
+}
+
+/* 这一章的说明（给读者什么 / 先别揭）：按章名在目录里找同名的章（章名两扇门同名，阶段 Z）。找不到 / 没写是空串。 */
+export function s2ChapterIntent(catalogChapters, label) {
+  const name = String(label || "").trim();
+  const hit = name ? (Array.isArray(catalogChapters) ? catalogChapters : []).find(c => c && String(c.title || "").trim() === name) : null;
+  const drama = (hit && hit.drama) || {};
+  const notYet = String(drama.forbidden || "").split("\n").map(line => line.trim()).filter(Boolean);
+  return { found: !!hit, promise: String(drama.promise || "").trim(), notYet };
+}
+
 /* ---- 10 场景规划：逐场覆盖与链条核验 ---- */
 /* 阶段 E：形态以 09 场景列表为真相——传入 type 时按它取三槽；只有拿不到 09 信息时才看存储的 plan.mode。
    以前覆盖格按存储的 mode 数槽，09 切换类型后格子说「三槽齐」、编辑器却是另一组空槽。 */

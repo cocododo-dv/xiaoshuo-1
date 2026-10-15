@@ -10,7 +10,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import OperationLog, SnowflakeChapterPlan, SnowflakeScenePlan, utcnow
+from novel_system.db.models import ChapterGoal, OperationLog, SnowflakeChapterPlan, SnowflakeScenePlan, utcnow
+from novel_system.services.chapter_intent import write_chapter_intent
 from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_chapter_table import (
     catalog_chapter_id,
@@ -126,6 +127,7 @@ def save(session: Session, project_id: str, payload: dict[str, Any] | None = Non
     # 已经钉过的章不管现在排第几都还是它自己的号：拆章 / 并章 / 重排只动真的换了章的场。
     for chapter in ordered_chapters:
         catalog_chapter_id(session, chapter)
+    _write_chapter_intents(session, incoming_chapters, table)
     for plan in story_scenes:
         chapter = live.get(plan.chapter_plan_id or "")
         if chapter is None:
@@ -157,6 +159,29 @@ def save(session: Session, project_id: str, payload: dict[str, Any] | None = Non
     )
     session.flush()
     return {"assigned_scene_count": len(touched), "healed_scene_plan_ids": healed}
+
+
+# 面板载荷里章的说明的键 → 目录章 drama 里的键
+_INTENT_FIELDS: tuple[tuple[str, str], ...] = (("promise", "promise"), ("forbidden", "forbidden_text"), ("notes", "notes"))
+
+
+def _write_chapter_intents(session: Session, incoming_chapters: list[dict[str, Any]], table: Any) -> None:
+    """章的说明（给读者什么 / 先别揭 / 备注）写进目录里的这一章（``chapter_intent``，2026-10-16）。
+
+    存在目录章上，不在章计划行上：确认写入重新物化时目录章的 narrative_json 原样留着，拆章 / 并章按「还是不是同一章」
+    认领，三格跟着章走。目录里还没有这一章（新拆出来、还没确认写入过）就不写——面板在那时不让填。"""
+    for item in incoming_chapters:
+        values = {key: item[source] for key, source in _INTENT_FIELDS if source in item}
+        if not values:
+            continue
+        row_uid = str(item.get("row_uid") or "").strip()
+        chapter = table.alias.get(row_uid) or table.by_uid.get(row_uid)
+        if chapter is None or chapter.removed_at or not chapter.catalog_chapter_id:
+            continue
+        catalog = session.get(ChapterGoal, chapter.catalog_chapter_id)
+        if catalog is None or catalog.trashed_flag:
+            continue
+        write_chapter_intent(session, catalog, values, operation="snowflake_chapter_plan.save")
 
 
 def refresh_auto_chapter_fields(chapters: list[SnowflakeChapterPlan], scenes: list[SnowflakeScenePlan]) -> None:

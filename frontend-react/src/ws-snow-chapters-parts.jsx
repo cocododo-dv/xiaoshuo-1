@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { chapterNoInTitle } from "./ws-snow-chapters-model.js";
+import { DRAMA_FIELDS } from "./labels/catalog.js";
 
 /* ==========================================================
    分章面板的展示件（从 ws-snow-chapters.jsx 拆出，2026-09-22）
@@ -31,6 +32,32 @@ function SceneMain({ scene }) {
 
 /* 一章。chapter.index 是它在章表里的位置；挪章界只给两种合法的挪法（首场并入上一章、末场移到下一章）。
    onGoToScene 为空时不给「在构思里改这一场」（宿主没有接这扇门）。 */
+/* 章的说明（给读者什么 / 先别揭 / 备注，2026-10-16 规划层收拢）：雪花的章只在这里写，章节编排里只读。
+   存在目录里的这一章上——新拆出来、还没确认写入过的章目录里没有，先确认写入再写。写了的章默认展开。 */
+function ChapterIntent({ chapter, onSetField }) {
+  const filled = DRAMA_FIELDS.filter(f => String(chapter[f.key] || "").trim()).length;
+  const n = chapter.index + 1;
+  return (
+    <details className="sf-chapterplan-intent" open={filled > 0} data-testid={`chapter-plan-intent-${chapter.index}`}>
+      <summary>章的说明<span className="sf-chapterplan-intent-sum">{chapter.catalogReady ? (filled ? `已写 ${filled} 格` : "可选") : "确认写入之后可写"}</span></summary>
+      {chapter.catalogReady ? (
+        <div className="sf-chapterplan-intent-fields">
+          {DRAMA_FIELDS.map(f => (
+            <label className="sf-chapterplan-intent-row" key={f.key}>
+              <span className="sf-chapterplan-intent-k" title={f.hint}>{f.label}</span>
+              <textarea className="sf-chapterplan-intent-v" rows={f.key === "promise" ? 1 : 2} value={chapter[f.key] || ""}
+                placeholder={f.placeholder} aria-label={`第 ${n} 章 · ${f.label}`}
+                onChange={e => onSetField(f.key, e.target.value)} />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p className="sf-chapterplan-intent-wait">这一章目录里还没有：确认写入之后就能写它给读者什么、先别揭什么。</p>
+      )}
+    </details>
+  );
+}
+
 export function ChapterPlanChapter({ chapter, isLastChapter, saving, onSetField, onMerge, onMove, onSplit, onGoToScene }) {
   const first = chapter.scenes[0];
   const last = chapter.scenes[chapter.scenes.length - 1];
@@ -73,6 +100,7 @@ export function ChapterPlanChapter({ chapter, isLastChapter, saving, onSetField,
           data-testid={`chapter-plan-summary-${chapter.index}`}
         />
       )}
+      {!!chapter.scenes.length && <ChapterIntent chapter={chapter} onSetField={onSetField} />}
       <ul className="sf-chapterplan-scenes">
         {chapter.scenes.map((scene, si) => {
           const isFirst = si === 0;

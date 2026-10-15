@@ -372,7 +372,7 @@ function WsSnowflake({ initialStep }) {
                 <S2StepEditor step={active} data={data} draft={draft} setDraft={setDraft}
                   scaffold={scaffolds[activeKey]} onScaffold={updateScaffold} refs={scaffolds} go={selectStep}
                   ai={stepAI} onOpenChapterPlan={openChapterPlan} onRenameChapter={renameChapter}
-                  catalogHasChapters={catalogChapters.length > 0} />
+                  catalogHasChapters={catalogChapters.length > 0} catalogChapters={catalogChapters} />
               </React.Fragment>
             )}
             {tab === "coach" && (

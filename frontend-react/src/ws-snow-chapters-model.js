@@ -43,6 +43,11 @@ export function shapeDraft(preview) {
       spine: c.spine || "",
       chapterGoal: c.chapter_goal || "",
       summary: c.summary || "",
+      /* 章的说明（给读者什么 / 先别揭 / 备注，2026-10-16）住在目录里的这一章上：目录里还没有这一章时不让写 */
+      catalogReady: !!c.catalog_ready,
+      promise: (c.intent && c.intent.promise) || "",
+      forbidden: (c.intent && c.intent.forbidden) || "",
+      notes: (c.intent && c.intent.notes) || "",
       scenes: (c.scenes || []).map(s => shapeScene(s)),
     })),
     unassigned: ((preview && preview.unassigned) || []).map(s => ({ ...shapeScene(s), anchored: false, planned: false })),
@@ -112,6 +117,8 @@ export function buildChapterPlanPayload(draft) {
       spine: c.spine,
       chapter_goal: c.chapterGoal,
       ...(c.summary != null ? { summary: c.summary } : {}),
+      /* 章的说明只给目录里已经有的章（后端也只写这些章） */
+      ...(c.catalogReady ? { promise: c.promise || "", forbidden_text: c.forbidden || "", notes: c.notes || "" } : {}),
     })),
     assignments: draft.chapters.flatMap(c =>
       c.scenes.map(s => ({ scene_plan_id: s.scenePlanId, chapter_row_uid: c.rowUid })),
@@ -211,7 +218,8 @@ export function splitChapterAt(draft, chapterIndex, sceneIndex) {
   const next = cloneDraft(draft);
   const moved = next.chapters[chapterIndex].scenes.splice(sceneIndex);
   next.chapters.splice(chapterIndex + 1, 0, {
-    rowUid: mintChapterKey(), title: "", act: source.act || 1, spine: "", chapterGoal: "", summary: "", scenes: moved,
+    rowUid: mintChapterKey(), title: "", act: source.act || 1, spine: "", chapterGoal: "", summary: "",
+    catalogReady: false, promise: "", forbidden: "", notes: "", scenes: moved,
   });
   return respine(next);
 }

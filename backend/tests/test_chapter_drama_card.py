@@ -4,8 +4,9 @@
 （``near_final_planning`` 的规划快照）从不读它，「禁止包含」也没有哪一道检查读——只有章节编排里按「AI 生成蓝图」
 时它才进提示词。现在：
 
-- 填了的六格与「禁止包含」进场景运行现做的章节蓝图（``chapter_drama`` 段，有渲染位）；人物压力蓝图不读它；
-  备注是作者留给自己的话，两个写蓝图的地方（章节编排「AI 生成蓝图」与场景运行）都不送。
+- 「给读者什么」（promise）与「禁止包含」（先别揭）进场景运行现做的章节蓝图（``chapter_drama`` 段，有渲染位）；
+  人物压力蓝图不读它；备注是作者留给自己的话，两个写蓝图的地方（章节编排「AI 生成蓝图」与场景运行）都不送。
+  2026-10-16 规划层收拢：原戏剧卡的另外五格退役，库里留着的旧值也不进蓝图（``chapter_drama._BLUEPRINT_KEYS``）。
 - 「禁止包含」一行一条（一行就是一个按字面查的写法，``A|B`` 任一即算；不按逗号 / 顿号再拆），与场景卡
   ``forbidden_text`` 一起查：起草的验收门、运行前预检、硬质检的确定性核对、成稿门、分类器复核，起草提示里的场景卡
   也照实告诉模型（``qc_constraints`` 一处）。
@@ -96,8 +97,10 @@ def test_a_filled_drama_card_reaches_the_scene_run_chapter_blueprint_prompt(sess
     prompts = {request.node_id: _user_prompt(request) for request in client.requests}
     architecture = prompts["chapter_story_architecture"]
     assert "## Chapter Drama Card" in architecture
-    for value in ("林昭在雨城找到写旧信的人", "写信的人为什么等了十年", "林昭从追问变成替人保密", "旧信落进案卷室的火盆"):
-        assert value in architecture
+    assert "林昭在雨城找到写旧信的人" in architecture
+    # 退役的旧格（章节问题 / 人物变化 / 结尾效果）库里还留着，也不进蓝图
+    for retired in ("写信的人为什么等了十年", "林昭从追问变成替人保密", "旧信落进案卷室的火盆"):
+        assert retired not in architecture
     assert "铜钥匙" in architecture and "林昭说出真名" in architecture
     # 备注是作者留给自己的话；空格子不进
     assert "给自己的话" not in architecture
@@ -301,9 +304,6 @@ def test_notes_reach_neither_blueprint_writer(session) -> None:
     assert "给自己的话" not in payload
     assert context.prompt_payload["chapter_card"]["drama"] == {
         "promise": "林昭在雨城找到写旧信的人",
-        "problem": "写信的人为什么等了十年",
-        "arc": "林昭从追问变成替人保密",
-        "ending": "旧信落进案卷室的火盆",
         "forbidden": "铜钥匙\n林昭说出真名",
     }
     assert context.prompt_payload["author_constraints"]["forbidden"] == "铜钥匙\n林昭说出真名"

@@ -48,6 +48,10 @@ class ChapterTitlesRequest(StrictRequestModel):
 class ChapterPlanChapter(_ChapterPlanItem):
     chapter_goal: str | None = Field(default=None, max_length=10_000)
     summary: str | None = Field(default=None, max_length=10_000)
+    # 章的说明（2026-10-16）：写进目录里的这一章（services/chapter_intent.py）；目录里还没有这一章时服务不写
+    promise: str | None = Field(default=None, max_length=2_000)
+    forbidden_text: str | None = Field(default=None, max_length=10_000)
+    notes: str | None = Field(default=None, max_length=10_000)
 
 
 class ChapterPlanAssignment(BaseModel):
