@@ -58,3 +58,30 @@
   padding: 2px 6px; border-radius: 6px; cursor: pointer; }
 .sdc-toggle:hover { color: var(--ink-2); background: var(--paper-2); }
 .sdc.is-collapsed { gap: 0; }
+/* ==========================================================
+   AI 写前笔记 sbn-*（ws-scene-blueprint.jsx）：起草前 AI 对这一场怎么演的理解，紧跟在设计卡下面，同一套纸面
+   ========================================================== */
+.sbn { display: grid; gap: 8px; margin: 0 0 8px; padding: 12px 14px; background: var(--paper-1);
+  border: 1px dashed var(--line-1); border-radius: 10px; font-family: var(--font-sans); text-align: left; }
+.sbn.is-collapsed { gap: 0; }
+.sbn-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sbn-title { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.sbn-hint { font-size: 11px; color: var(--ink-3); }
+.sbn-toggle { margin-left: auto; border: 0; background: transparent; font: inherit; font-size: 11px; font-weight: 600;
+  color: var(--ink-3); padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.sbn-toggle:hover { color: var(--ink-2); background: var(--paper-2); }
+.sbn-sub { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
+.sbn-group { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line-1); }
+.sbn-group-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sbn-rows { display: grid; gap: 4px; }
+.sbn-row, .sbn-edit-row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: baseline; }
+.sbn-row-k { font-size: 11px; font-weight: 600; color: var(--ink-3); }
+.sbn-row-v { font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
+.sbn-edit { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line-1); }
+.sbn-edit-text { width: 100%; min-width: 0; resize: vertical; font: inherit; font-size: var(--fs-xs); line-height: 1.6;
+  color: var(--ink-1); background: var(--paper-0); border: 1px solid var(--line-1); border-radius: 6px; padding: 5px 8px; }
+.sbn-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.sbn-pressure { padding-top: 8px; border-top: 1px solid var(--line-1); }
+.sbn-pressure summary { cursor: pointer; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+.sbn-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-top: 4px; }
+@media (max-width: 900px) { .sbn-row, .sbn-edit-row { grid-template-columns: 1fr; gap: 1px; } }

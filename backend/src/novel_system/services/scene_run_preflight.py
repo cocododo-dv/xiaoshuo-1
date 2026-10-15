@@ -195,9 +195,9 @@ class SceneRunPreflightService:
             items.append(
                 {
                     "code": "SCENE_BLUEPRINT_MISSING",
-                    "title": "Scene literary blueprint is missing",
-                    "detail": "The run can auto-generate it, but the author should review the scene intent before drafting.",
-                    "technical_hint": "POST /api/v1/scenes/{scene_id}/literary-blueprint",
+                    "title": "还没有写前笔记",
+                    "detail": "起草时 AI 会先现做一份；想先看一眼，就在 AI 起草台的写前笔记上点「先出笔记」。",
+                    "technical_hint": "POST /api/v1/scenes/{scene_id}/blueprint/generate",
                 }
             )
         # 2026-09-13 阶段 A：带场景结构（雪花 / 章节编排的三拍与坩埚）的场按结构本身体检，

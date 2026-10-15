@@ -199,8 +199,8 @@ function WsSceneBoard({ go, t }) {
         </div>
         <SceneStyleNoticeStrip notices={scene.styleNotices} />
         <div className="scn2-stage-body">
-          {renderState === "queued" && <Preflight model={designModel} sync={designSyncProps} />}
-          {renderState === "running" && <RunningStage model={designModel} job={run.currentJob} draftMode={scene.draftMode} />}
+          {renderState === "queued" && <Preflight model={designModel} sync={designSyncProps} sid={scene.sid} />}
+          {renderState === "running" && <RunningStage model={designModel} job={run.currentJob} draftMode={scene.draftMode} sid={scene.sid} />}
           {awaitingChoice && <CandidatePicker sid={scene.sid} onDone={run.onCandidateChosen} onRework={() => run.startRun("")} />}
           {renderState === "ready" && !awaitingChoice && <ReviewStage scene={scene} />}
           {renderState === "archived" && <ArchivedStage scene={scene} />}

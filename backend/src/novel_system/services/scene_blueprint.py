@@ -38,7 +38,11 @@ from novel_system.services.style_reference.planning_context import (
 )
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
-from novel_system.services.planning_queries import latest_scene_blueprint
+from novel_system.services.planning_queries import (
+    AUTHOR_BLUEPRINT_SOURCE,
+    is_author_scene_blueprint,
+    latest_scene_blueprint,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -133,10 +137,13 @@ class SceneBlueprintService:
 
     def reusable(self, scene_id: str, *, policy: StylePolicy | None = None) -> SceneBlueprint | None:
         """还能直接用的最新蓝图：它的版式得与这一场现在的风格策略相符——让位（有绑定且作者手笔直起）要事实版，
-        否则要写法版。v3 之前生成的蓝图在绑定下预写了结尾台词、指定了意象，不再复用、下一次跑时重生成。"""
+        否则要写法版。v3 之前生成的蓝图在绑定下预写了结尾台词、指定了意象，不再复用、下一次跑时重生成。
+        作者保存的「我的版本」总能用：那是作者的决定，不是按旧策略算出来的缓存。"""
         latest = self.latest(scene_id)
         if latest is None:
             return None
+        if is_author_scene_blueprint(latest):
+            return latest
         if policy is None:
             scene = self.session.get(SceneCard, scene_id)
             policy = style_policy_live(self.session, scene, freeze_contract=False) if scene is not None else StylePolicy()
@@ -214,20 +221,54 @@ class SceneBlueprintService:
                 next_action="configure_scene_blueprint_route_and_retry",
             )
 
-        for row in self.session.execute(
+        return self._persist(
+            scene,
+            payload,
+            llm_call_id=llm_call_id,
+            source_bundle_id=source["source_bundle_id"],
+            source_bundle_hash=source["source_bundle_hash"],
+        )
+
+    def save_author_version(self, scene: SceneCard, payload: dict[str, Any]) -> SceneBlueprint:
+        """作者的「我的版本」：没有模型调用、来源记成作者；之前的蓝图让位。"""
+        return self._persist(
+            scene,
+            payload,
+            llm_call_id=None,
+            source_bundle_id=AUTHOR_BLUEPRINT_SOURCE,
+            source_bundle_hash=sha256_json_normalized(payload),
+        )
+
+    def retire_live(self, scene_id: str) -> int:
+        """这一场还在用的蓝图全部让位（放弃我的版本、重做之前）；返回让位的行数。"""
+        rows = self.session.execute(
             select(SceneBlueprint).where(
-                SceneBlueprint.scene_id == scene.scene_id,
+                SceneBlueprint.scene_id == scene_id,
                 SceneBlueprint.status.in_(("draft", "accepted")),
             )
-        ).scalars().all():
+        ).scalars().all()
+        for row in rows:
             row.status = "superseded"
+        if rows:
+            self.session.flush()
+        return len(rows)
 
+    def _persist(
+        self,
+        scene: SceneCard,
+        payload: dict[str, Any],
+        *,
+        llm_call_id: str | None,
+        source_bundle_id: str | None,
+        source_bundle_hash: str | None,
+    ) -> SceneBlueprint:
+        self.retire_live(scene.scene_id)
         blueprint = SceneBlueprint(
             row_id=f"scene_blueprint_{scene.scene_id}_{uuid.uuid4().hex[:10]}",
             scene_id=scene.scene_id,
             chapter_id=scene.chapter_id,
-            source_bundle_id=source["source_bundle_id"],
-            source_bundle_hash=source["source_bundle_hash"],
+            source_bundle_id=source_bundle_id,
+            source_bundle_hash=source_bundle_hash,
             blueprint_json=payload,
             llm_call_id=llm_call_id,
             status="accepted",

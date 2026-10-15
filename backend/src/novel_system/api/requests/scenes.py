@@ -117,3 +117,12 @@ class SceneBudgetTopupRequest(StrictRequestModel):
 class SceneAuthorNotesSaveRequest(StrictRequestModel):
     notes: str = Field(max_length=100_000)
     base_revision_no: int = Field(ge=0, le=INT64_MAX)
+
+
+class SceneBlueprintSaveRequest(StrictRequestModel):
+    """AI 起草台写前笔记的「我的版本」：场景蓝图逐格的文字（键是蓝图的格子，服务按这一场的版式核对）。"""
+
+    fields: dict[
+        Annotated[str, Field(min_length=1, max_length=64)],
+        Annotated[str, Field(max_length=2_000)],
+    ] = Field(max_length=16)

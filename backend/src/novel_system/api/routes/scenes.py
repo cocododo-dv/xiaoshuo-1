@@ -1,9 +1,10 @@
 """场景接口：作者笔记、删场、v1 场景卡建 / 改、运行（同步 run/full · 后台任务 · 取消 · 查询）、运行态与状态投影、
-关键场景的候选终选与选后续跑、生命周期预算追加、采纳归档、AI 起草台的工作台载荷。
+关键场景的候选终选与选后续跑、生命周期预算追加、采纳归档、AI 起草台的工作台载荷与写前笔记。
 
 路由只做请求校验、幂等与信封；业务都在服务里（B12-01）：工作台载荷 ``services/scene_workbench.py``、候选终选
 ``services/candidate_selection.py``、采纳归档 ``services/scene_adoption.py``、v1 场景卡 ``services/scene_upsert.py``、
-预算追加 ``services/scene_budget.py``、运行态视图 ``services/author_state.py``。
+预算追加 ``services/scene_budget.py``、运行态视图 ``services/author_state.py``、写前笔记
+``services/scene_blueprint_view.py``。
 
 ``Orchestrator`` 与 ``start_scene_run_job_worker`` 是这个模块上的名字，由这里调用——测试在这里替换它们。
 """
@@ -22,6 +23,7 @@ from novel_system.api.requests.common import EmptyRequest
 from novel_system.api.requests.scenes import (
     AdoptCurrentRequest,
     SceneAuthorNotesSaveRequest,
+    SceneBlueprintSaveRequest,
     SceneBudgetTopupRequest,
     SceneIdsRequest,
     SceneRunCancelRequest,
@@ -40,6 +42,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.run_job_leases import STATUS_QUEUED
 from novel_system.services.scene_adoption import adopt_current
+from novel_system.services.scene_blueprint_view import SceneBlueprintViewService
 from novel_system.services.scene_budget import apply_topup, validated_topup
 from novel_system.services.scene_notes import SceneNotesService
 from novel_system.services.scene_run_jobs import (
@@ -405,4 +408,60 @@ def scene_workbench(
     return respond(
         request,
         SceneWorkbenchService(session).payload(scene_id, diagnostics=include == INCLUDE_DIAGNOSTICS),
+    )
+
+
+# ---------- AI 写前笔记（场景蓝图 + 人物压力；services/scene_blueprint_view.py） ----------
+
+
+@router.get("/api/v1/scenes/{scene_id}/blueprint")
+def get_scene_blueprint(scene_id: str, request: Request, session: Session = Depends(get_session)):
+    return respond(request, SceneBlueprintViewService(session).view(scene_id))
+
+
+@router.put("/api/v1/scenes/{scene_id}/blueprint")
+def save_scene_blueprint(
+    scene_id: str,
+    payload: SceneBlueprintSaveRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    return mutate(
+        request,
+        session,
+        payload={"scene_id": scene_id, **body},
+        action=lambda: SceneBlueprintViewService(session).save_author_version(
+            scene_id, body["fields"], actor_ref=actor_ref_of(request)
+        ),
+    )
+
+
+@router.post("/api/v1/scenes/{scene_id}/blueprint/restore-ai")
+def restore_scene_blueprint(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    return mutate(
+        request,
+        session,
+        payload={"scene_id": scene_id},
+        action=lambda: SceneBlueprintViewService(session).restore_ai_version(scene_id, actor_ref=actor_ref_of(request)),
+    )
+
+
+@router.post("/api/v1/scenes/{scene_id}/blueprint/generate")
+def generate_scene_blueprint(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    return mutate(
+        request,
+        session,
+        payload={"scene_id": scene_id},
+        action=lambda: SceneBlueprintViewService(session).regenerate(scene_id, actor_ref=actor_ref_of(request)),
     )

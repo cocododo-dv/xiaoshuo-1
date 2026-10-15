@@ -13,6 +13,8 @@
 作者在章节编排里亲手写的章蓝图（``llm_call_id`` 为空的那一行）不作废（B07-03）：它是作者的决定，不是按旧设计
 算出来的缓存——作废了，章节编排里它就没了，下一次场景运行还会拿一份 AI 写的蓝图顶替它。它原样留着，记一条
 「设计在它之后改过」（:data:`AUTHOR_ARCHITECTURE_KEPT_EVENT`），读蓝图时据此提示作者看一眼（:func:`design_changed_since`）。
+AI 起草台里作者保存的场景蓝图「我的版本」（``planning_queries.is_author_scene_blueprint``）同理：留着，记
+:data:`AUTHOR_SCENE_BLUEPRINT_KEPT_EVENT`（:func:`scene_blueprint_design_changed_since`）。
 """
 
 from __future__ import annotations
@@ -32,12 +34,16 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.chapter_architecture import is_author_architecture
+from novel_system.services.planning_queries import is_author_scene_blueprint
 
 SUPERSEDED_STATUS = "superseded"
 _LIVE_BLUEPRINT_STATUSES: tuple[str, ...] = ("draft", "accepted")
 #: 作者写的章蓝图因设计 / 绑定变化本该作废、按 B07-03 留下时记的操作日志（读蓝图时据此给「设计改过」的提示）
 AUTHOR_ARCHITECTURE_KEPT_EVENT = "chapter_architecture_kept_after_design_change"
+#: 同上，作者保存的场景蓝图「我的版本」
+AUTHOR_SCENE_BLUEPRINT_KEPT_EVENT = "scene_blueprint_kept_after_design_change"
 _DESIGN_CHANGED_MESSAGE = "这份蓝图写好之后，构思或参考书又改过：蓝图照旧保留、照旧用于起草；需要时改写或重新生成。"
+_SCENE_DESIGN_CHANGED_MESSAGE = "你的版本写好之后，构思或参考书又改过：它照旧保留、照旧用于起草；需要时改写或重做。"
 
 
 def supersede_scene_planning_artifacts(
@@ -56,6 +62,7 @@ def supersede_scene_planning_artifacts(
         "character_pressure": 0,
         "chapter_architecture": 0,
         "author_architecture_kept": 0,
+        "author_scene_blueprint_kept": 0,
     }
     if scenes:
         for row in session.execute(
@@ -64,6 +71,11 @@ def supersede_scene_planning_artifacts(
                 SceneBlueprint.status.in_(_LIVE_BLUEPRINT_STATUSES),
             )
         ).scalars().all():
+            if is_author_scene_blueprint(row):
+                _log_author_kept(session, AUTHOR_SCENE_BLUEPRINT_KEPT_EVENT, "scene_blueprint", row.row_id, reason,
+                                 {"scene_id": row.scene_id})
+                counts["author_scene_blueprint_kept"] += 1
+                continue
             row.status = SUPERSEDED_STATUS
             counts["scene_blueprints"] += 1
         for row in session.execute(
@@ -85,20 +97,21 @@ def supersede_scene_planning_artifacts(
         ).scalars().all():
             if is_author_architecture(row):
                 # 作者亲手写的蓝图（B07-03）：留着，记一条「设计在它之后改过」
-                session.add(
-                    OperationLog(
-                        event_type=AUTHOR_ARCHITECTURE_KEPT_EVENT,
-                        object_type="generation_planning_artifact",
-                        object_ref=row.row_id,
-                        payload_json={"chapter_id": row.object_id, "reason": reason, "kept_at": utcnow()},
-                    )
-                )
+                _log_author_kept(session, AUTHOR_ARCHITECTURE_KEPT_EVENT, "generation_planning_artifact", row.row_id, reason,
+                                 {"chapter_id": row.object_id})
                 counts["author_architecture_kept"] += 1
                 continue
             row.status = SUPERSEDED_STATUS
             counts["chapter_architecture"] += 1
     if any(
-        counts[key] for key in ("scene_blueprints", "character_pressure", "chapter_architecture", "author_architecture_kept")
+        counts[key]
+        for key in (
+            "scene_blueprints",
+            "character_pressure",
+            "chapter_architecture",
+            "author_architecture_kept",
+            "author_scene_blueprint_kept",
+        )
     ):
         session.flush()
     return counts
@@ -108,12 +121,33 @@ def design_changed_since(session: Session, artifact: GenerationPlanningArtifact 
     """这份（作者写的）章蓝图留下来之后，设计 / 绑定又变过吗？变过 → 最近一次的 ``{reason, at, message}``。"""
     if not is_author_architecture(artifact):
         return None
+    return _latest_kept_event(session, AUTHOR_ARCHITECTURE_KEPT_EVENT, artifact.row_id, _DESIGN_CHANGED_MESSAGE)
+
+
+def scene_blueprint_design_changed_since(session: Session, row: SceneBlueprint | None) -> dict[str, Any] | None:
+    """作者保存的场景蓝图「我的版本」留下来之后，设计 / 绑定又变过吗？口径同 :func:`design_changed_since`。"""
+    if not is_author_scene_blueprint(row):
+        return None
+    return _latest_kept_event(session, AUTHOR_SCENE_BLUEPRINT_KEPT_EVENT, row.row_id, _SCENE_DESIGN_CHANGED_MESSAGE)
+
+
+def _log_author_kept(
+    session: Session, event_type: str, object_type: str, row_id: str, reason: str, extra: dict[str, Any]
+) -> None:
+    session.add(
+        OperationLog(
+            event_type=event_type,
+            object_type=object_type,
+            object_ref=row_id,
+            payload_json={**extra, "reason": reason, "kept_at": utcnow()},
+        )
+    )
+
+
+def _latest_kept_event(session: Session, event_type: str, row_id: str, message: str) -> dict[str, Any] | None:
     event = session.execute(
         select(OperationLog)
-        .where(
-            OperationLog.event_type == AUTHOR_ARCHITECTURE_KEPT_EVENT,
-            OperationLog.object_ref == artifact.row_id,
-        )
+        .where(OperationLog.event_type == event_type, OperationLog.object_ref == row_id)
         .order_by(OperationLog.operation_id.desc())
     ).scalars().first()
     if event is None:
@@ -122,7 +156,7 @@ def design_changed_since(session: Session, artifact: GenerationPlanningArtifact 
     return {
         "reason": str(payload.get("reason") or ""),
         "at": str(payload.get("kept_at") or event.created_at or ""),
-        "message": _DESIGN_CHANGED_MESSAGE,
+        "message": message,
     }
 
 
@@ -146,6 +180,7 @@ def supersede_for_binding_scope(
         "character_pressure": 0,
         "chapter_architecture": 0,
         "author_architecture_kept": 0,
+        "author_scene_blueprint_kept": 0,
     }
     if not ref:
         return empty
@@ -178,8 +213,10 @@ def supersede_for_binding_scope(
 
 __all__ = [
     "AUTHOR_ARCHITECTURE_KEPT_EVENT",
+    "AUTHOR_SCENE_BLUEPRINT_KEPT_EVENT",
     "SUPERSEDED_STATUS",
     "design_changed_since",
+    "scene_blueprint_design_changed_since",
     "supersede_for_binding_scope",
     "supersede_scene_planning_artifacts",
 ]

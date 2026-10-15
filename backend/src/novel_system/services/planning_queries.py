@@ -16,6 +16,16 @@ from novel_system.db.models import FinalScene, GenerationPlanningArtifact, Scene
 # 仍算「成稿正文」的 FinalScene 状态（``superseded`` 是被成稿中心换下来的旧版）。
 FINAL_TEXT_STATUSES: tuple[str, ...] = ("approved", "near_final_ready", "archived")
 
+# 作者在 AI 起草台保存的「我的版本」场景蓝图：没有模型调用、来源记成作者（``services/scene_blueprint_view.py``）。
+# 起草优先用它，设计 / 绑定再变也不作废（只提示「设计改过」）。只看 ``llm_call_id`` 不够：测试与旧数据里有
+# 不带调用 id 的 AI 蓝图。
+AUTHOR_BLUEPRINT_SOURCE = "author"
+
+
+def is_author_scene_blueprint(row: SceneBlueprint | None) -> bool:
+    """这一行是作者保存的「我的版本」吗？"""
+    return row is not None and row.llm_call_id is None and row.source_bundle_id == AUTHOR_BLUEPRINT_SOURCE
+
 
 def latest_scene_blueprint(session: Session, scene_id: str) -> SceneBlueprint | None:
     """The newest ``accepted`` / ``draft`` blueprint of a scene (``created_at`` then ``row_id``)."""

@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { SceneDesignCard } from "./ws-scene-design.jsx";
+import { SceneBlueprintNote } from "./ws-scene-blueprint.jsx";
 import { EmptyState, Notice, Spinner, Tabs, Tag } from "./ws-ui.jsx";
 import { countChars } from "./lib/text.js";
 import { scnCandidates, scnResumeAfterSelection, scnSelectCandidate } from "./ws-scene-api.js";
@@ -14,7 +15,8 @@ const { useEffect, useRef, useState } = React;
 /* ==========================================================
    AI 起草台 — 台面（中间一栏）
    场景头 · 七步管线 · 风格提示条，下面按这一场的状态换内容：
-   待起草 → 预检（设计卡）；运行中 → 起草说明；待复核 → 正文或候选终选；已归档 → 定稿。
+   待起草 → 预检（设计卡 + AI 写前笔记）；运行中 → 起草说明（两张都只读）；待复核 → 正文或候选终选（写前笔记收着，
+   看这一稿照的是哪一份）；已归档 → 定稿（写前笔记同样收着）。
    ========================================================== */
 
 /* ============================ Head ============================ */
@@ -152,8 +154,9 @@ function Draft({ scene }) {
 /* ============================ Preflight（待起草） ============================ */
 
 /* 预检 = 起草前对着这一场的设计卡看一眼。一行只列能从卡上读出来的事实；缺拍子、缺 POV 才用警示色。
-   设计卡本身占满中间——AI 读的就是它。「在构思里改」只留裁决条上那一个。 */
-function Preflight({ model, sync }) {
+   设计卡本身占满中间——AI 读的就是它。「在构思里改」只留裁决条上那一个。设计卡下面是 AI 写前笔记：起草前 AI
+   对这一场怎么演的理解，能改成我的版本、能重做（sid = 后端场景 id）。 */
+function Preflight({ model, sync, sid }) {
   if (!model) {
     return (
       <div className="scn2-pre scn2-scroll">
@@ -184,6 +187,7 @@ function Preflight({ model, sync }) {
           ))}
         </ul>
         <SceneDesignCard model={model} sync={sync} />
+        <SceneBlueprintNote sid={sid} />
       </div>
     </div>
   );
@@ -193,7 +197,7 @@ function Preflight({ model, sync }) {
 
 /* 起草进行中：没有假百分比、没有按计时器冒出来的日志。当前在哪一步看上面的管线条；
    这里说清楚接下来会发生什么，并把 AI 正在读的那张设计卡摆出来。 */
-function RunningStage({ model, job, draftMode }) {
+function RunningStage({ model, job, draftMode, sid }) {
   const step = job && job.current_step ? runJobStepLabel(job.current_step, job.draft_mode || draftMode) : "";
   return (
     <div className="scn2-run scn2-pre scn2-scroll">
@@ -203,6 +207,7 @@ function RunningStage({ model, job, draftMode }) {
           整稿写完、过完后端质检后回到这里等你裁决。离开这一页不影响后台运行，回来时从后端恢复。
         </Notice>
         {model && <SceneDesignCard model={model} />}
+        <SceneBlueprintNote sid={sid} editable={false} />
       </div>
     </div>
   );
@@ -350,6 +355,7 @@ function CandidatePicker({ sid, onDone, onRework = null }) {
 function ReviewStage({ scene }) {
   return (
     <div className="scn2-review scn2-scroll">
+      <SceneBlueprintNote sid={scene.sid} editable={false} collapsible defaultOpen={false} />
       <Draft scene={scene} />
     </div>
   );
@@ -363,6 +369,7 @@ function ArchivedStage({ scene }) {
           已写入 <strong>{scene.n}</strong> 的正文文档（{(scene.verdict && scene.verdict.words) || scene.words || "—"} 字），场景卡已置「完成」，字数已回写目录。
         </Notice>
       )}
+      <SceneBlueprintNote sid={scene.sid} editable={false} collapsible defaultOpen={false} />
       <Draft scene={scene} />
     </div>
   );
