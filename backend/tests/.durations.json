@@ -78,6 +78,7 @@
  "test_idempotency_contract.py": 1.18,
  "test_idempotency_retention.py": 0.29,
  "test_input_token_budgets.py": 0.56,
+ "test_legacy_upsert_brief.py": 0.24,
  "test_library.py": 2.5,
  "test_library_timeline_and_graph.py": 3.7,
  "test_literary_quality.py": 4.62,
@@ -329,7 +330,6 @@
  "test_trash_purge_completeness.py": 0.42,
  "test_utcnow_monotonic.py": 0.12,
  "test_value_coercion.py": 0.02,
- "test_writer_brief_round_trip.py": 0.24,
  "test_writer_deep_review.py": 5.97,
  "test_writing_stats_html.py": 0.05
 }

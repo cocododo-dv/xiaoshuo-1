@@ -66,7 +66,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "SCENE_STATE_NOT_FOUND": "这一场还没有运行记录。",
     "SCENE_AUTHOR_NOTES_CONFLICT": "这一场的作者笔记在别处改过了，请刷新后再保存。",
     "SCENE_DEEP_REVIEW_PREFERENCES_CONFLICT": "深改面板的设置在别处改过了，请刷新后再保存。",
-    "WRITER_BRIEF_INVALID": "写作简报的格式不对。",
     "AUTHOR_NOTE_INVALID": "改写指令必须是文字。",
     "AUTHOR_NOTE_TOO_LONG": "改写指令太长了，请精简后再提交。",
     # ---- 目录（章节编排）----

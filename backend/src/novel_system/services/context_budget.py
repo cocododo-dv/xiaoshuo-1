@@ -51,14 +51,12 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # 2026-09-13 阶段 F：已确认的雪花设计背景（一句话 / 五句脊柱 / 道德前提 / 章位置 / POV 角色摘要 /
     # 视角故事 / 相邻两场）。背景而非事实：预算紧时先压成要点、最后整段省略；硬 QC 类任务不看。
     ("scene_design_context", "Scene Design Context (Snowflake)", ("scene_design_context",)),
-    ("chapter_writer_brief", "Chapter Writer Brief", ("chapter_writer_brief",)),
     # round 2 · B2-5：章节编排的戏剧卡，只有章架构的规划快照写（bundle_sections.PLANNING_SECTION_DIGEST_KEYS）
     (
         "chapter_drama",
         "Chapter Drama Card (the author's intent for this chapter — honour it; never write anything listed under forbidden)",
         ("chapter_drama",),
     ),
-    ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
     ("author_instruction", "Author Instruction", ("author_instruction",)),
     # 2026-10-12 编辑通读：作者采纳的、针对这一章的编辑意见（方向，不是事实）。很短，不压缩；硬 QC 不看。
     (EDITORIAL_GUIDANCE_SECTION_KEY, EDITORIAL_GUIDANCE_SECTION_LABEL, (EDITORIAL_GUIDANCE_SECTION_KEY,)),

@@ -37,7 +37,6 @@ from novel_system.services.style_reference.planning_context import (
     style_reference_prompt_blocks,
 )
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 from novel_system.services.planning_queries import (
     AUTHOR_BLUEPRINT_SOURCE,
     is_author_scene_blueprint,
@@ -308,15 +307,11 @@ class SceneBlueprintService:
             "source_version_refs": {
                 "chapter_goal": chapter.chapter_id,
                 "scene_card": scene.scene_id,
-                "chapter_writer_brief": chapter.chapter_id,
-                "scene_writer_brief": scene.scene_id,
             },
             "resolved_ref_ids": {},
             "ordered_injections": [
                 {"slot": "chapter_goal", "ref_id": chapter.chapter_id, "digest_key": "chapter_goal"},
                 {"slot": "scene_card", "ref_id": scene.scene_id, "digest_key": "scene_card"},
-                {"slot": "chapter_writer_brief", "ref_id": chapter.chapter_id, "digest_key": "chapter_writer_brief"},
-                {"slot": "scene_writer_brief", "ref_id": scene.scene_id, "digest_key": "scene_writer_brief"},
             ],
             "inline_digests": {
                 # 章目标 / 场目标 / 节拍只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
@@ -331,8 +326,6 @@ class SceneBlueprintService:
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
-                "chapter_writer_brief": json.dumps(normalize_chapter_writer_brief(chapter.writer_brief_json), ensure_ascii=False, sort_keys=True),
-                "scene_writer_brief": json.dumps(normalize_scene_writer_brief(scene.writer_brief_json), ensure_ascii=False, sort_keys=True),
             },
         }
         # 2026-09-13 阶段 A：蓝图从作者写下的场景结构（形态、坩埚、三拍、代价）推导，

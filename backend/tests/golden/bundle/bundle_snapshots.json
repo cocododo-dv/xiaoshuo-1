@@ -1,12 +1,10 @@
 {
   "P_GOLD_CH01_SC01": {
-    "bundle_snapshot_hash": "345dc3afb200f20ff7f7c6bdb7c1da20ba2ab8510bb19c2d407147d542155438",
+    "bundle_snapshot_hash": "5a7a3df763628b3f1aac79fa2835ad2811c787bdf463798ae78da59683fce783",
     "slots": [
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "chapter_story_architecture",
       "character_contract",
       "scene_summary"
@@ -17,8 +15,6 @@
       "scene_structure_brief",
       "style_reference_runtime_contract_version",
       "style_reference_runtime_contract_status",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "chapter_story_architecture_artifact_row_id",
       "character_contract",
       "scene_summary_id"
@@ -27,23 +23,19 @@
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "chapter_story_architecture",
       "character_contract",
       "scene_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "9feadc9c51d5aff366c2ba77bc399c242510676f54005323c25a0de89cd3c770"
+    "snapshot_sha256": "8e171337b28a3818ef8786912e8d833229052ffdb7b8af9291dbff13e0a07b45"
   },
   "P_GOLD_CH01_SC02": {
-    "bundle_snapshot_hash": "7c965ad1ae7904fca54e2134b03df8caac40ae0290768d7d3fde85d4094774bf",
+    "bundle_snapshot_hash": "3cb1f65abc26a8103a75b7c179866437487dbaa2f8140a8aad5fc0de9a364795",
     "slots": [
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "scene_blueprint",
       "character_pressure",
       "chapter_story_architecture",
@@ -59,8 +51,6 @@
       "scene_structure_brief",
       "style_reference_runtime_contract_version",
       "style_reference_runtime_contract_status",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "scene_blueprint_row_id",
       "character_pressure_artifact_row_id",
       "chapter_story_architecture_artifact_row_id",
@@ -76,8 +66,6 @@
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "scene_blueprint",
       "character_pressure",
       "chapter_story_architecture",
@@ -88,16 +76,14 @@
       "scene_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "c733b5a14ede8f1200b062512ca9c11008c4452ca88a3494c9d9ef919e1cf0db"
+    "snapshot_sha256": "dcaf1a11d072d3f94da61a8b3c3c884cf5a491e144b5ff21d0791a8e60a85228"
   },
   "P_GOLD_CH02_SC01": {
-    "bundle_snapshot_hash": "c565bc24bcdb151a23bf4b002253203587d7b862f6c34307d844ef23b1e51ada",
+    "bundle_snapshot_hash": "43cb84bdfc93ab8ac82c448ad6765767219430773cbbe4951e7dc98ef66f70a6",
     "slots": [
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "character_contract",
       "story_so_far",
       "editorial_guidance",
@@ -111,8 +97,6 @@
       "scene_structure_brief",
       "style_reference_runtime_contract_version",
       "style_reference_runtime_contract_status",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "character_contract",
       "story_so_far_digest_row_ids",
       "editorial_guidance",
@@ -126,8 +110,6 @@
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "character_contract",
       "story_so_far",
       "editorial_guidance",
@@ -137,16 +119,14 @@
       "chapter_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "f802c74156f1ed2e9184a9728a87472dcea0bf2bc2a753911435d4fd080406b3"
+    "snapshot_sha256": "9a7801e8875255fe9f67e40ecc75cd2d7452a9035b0e586c4b2fd767124cd2ca"
   },
   "P_GOLD_CH02_SC02": {
-    "bundle_snapshot_hash": "471fc4ede1e8910b0595fcf0ff72d6e9df6ec3aa61aa740306d6915ad828105a",
+    "bundle_snapshot_hash": "abe31509dbd30739e4ff51831dc1fa133e5b563f731271a3b9f3d262f2935b9d",
     "slots": [
       "chapter_goal",
       "scene_card",
       "scene_structure_brief",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "character_contract",
       "story_so_far",
       "editorial_guidance",
@@ -164,8 +144,6 @@
       "style_reference_runtime_contract_hash",
       "style_reference_scene_scale",
       "reference_binding_ids",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "character_contract",
       "story_so_far_digest_row_ids",
       "editorial_guidance",
@@ -180,8 +158,6 @@
       "scene_structure_brief",
       "_style_reference_scene_scale",
       "_style_reference_runtime_contract",
-      "chapter_writer_brief",
-      "scene_writer_brief",
       "character_contract",
       "story_so_far",
       "editorial_guidance",
@@ -190,6 +166,6 @@
       "chapter_summary"
     ],
     "degraded_slots": [],
-    "snapshot_sha256": "a4d1bc883769140f08565ef63fd0faa87cbb1561728875181d85d7f4500d206b"
+    "snapshot_sha256": "8d56f3e9744649502b951128b819b1fcd491560cf7f556aa26f7572b4a29fe15"
   }
 }

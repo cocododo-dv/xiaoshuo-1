@@ -286,8 +286,8 @@ Retired and ignored except for one startup warning: the LLM quota / cost / auto-
   input). `semantic_payload` ignores empty top-level values, the default `rendering_mode: full` and the scene-row
   packaging keys — otherwise echoes mint `pending_review` versions and block materialization.
 - `effective_rendering_mode` is the one rendering rule (`skip` is reactive-only); `cut` and `exception_reason` are
-  author-only; read triage through `snowflake_triage.latest_triage_rows`. `writer_briefs.normalize_scene_writer_brief`
-  keeps only its 13 keys — snowflake beats reach prompts through `scene_structure_brief.py`. Materialization writes no
+  author-only; read triage through `snowflake_triage.latest_triage_rows`. Snowflake beats reach prompts only via
+  `scene_structure_brief.py` (the v2 writer briefs are retired). Materialization writes no
   boilerplate (`story_slots`; empty = 未规划); `forbidden_text` holds literal terms read via
   `qc_constraints.forbidden_terms`. Character ids are stored as `<project>_<raw>` and stripped for the frontend
   (`snowflake_character_ids.py`).

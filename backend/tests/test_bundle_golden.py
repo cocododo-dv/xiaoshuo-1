@@ -69,9 +69,6 @@ def _scene(chapter_id: str, seq: int, *, pov: str = "林昭", onstage: tuple[str
         hook="门外有人敲了三下。",
         target_length_band="medium",
         writer_brief_json={
-            "character_desire": "林昭想当场查清旧信的来历。",
-            "obstacle": "许望守着案卷不肯松口。",
-            "choice_under_pressure": "拆穿许望，还是先保住证人。",
             "scene_form": "proactive",
             "scene_crucible": "旧信只有一封，两人都想要。",
             "goal": "拿到旧信。",
@@ -104,10 +101,6 @@ def _seed_book(session) -> None:
                 chapter_goal=f"第 {index} 章：旧信的下落。",
                 display_order=index,
                 planned_scene_count=2,
-                writer_brief_json={
-                    "core_promise": "真相与保护不能同时兑现。",
-                    "chapter_question": "谁在暗处盯着案卷？",
-                },
                 created_at=T0,
             )
         )

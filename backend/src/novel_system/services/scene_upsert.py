@@ -16,18 +16,12 @@ from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_approval import is_chapter_approved, require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.text_input import validate_user_text_payload
-from novel_system.services.writer_briefs import normalize_scene_writer_brief
 
 
 def upsert_scene(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
     """v1 ``POST /api/v1/scenes``：按 scene_id 建场景卡或整行更新（测试 / 运维入口）。"""
     validate_user_text_payload(payload, field_prefix="scene")
-    payload = {
-        **payload,
-        "writer_brief_json": normalize_scene_writer_brief(
-            payload.get("writer_brief_json")
-        ),
-    }
+    payload = {**payload, "writer_brief_json": dict(payload.get("writer_brief_json") or {})}
     lifecycle = AuthorLifecycleService(session)
     chapter_id = payload.get("chapter_id")
     if not isinstance(chapter_id, str) or not chapter_id:

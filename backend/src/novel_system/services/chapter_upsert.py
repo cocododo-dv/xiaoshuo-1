@@ -15,16 +15,12 @@ from novel_system.services.chapter_approval import is_chapter_approved, require_
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
 from novel_system.services.text_input import validate_user_text_payload
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 
 def upsert_chapter(session: Session, payload: dict[str, Any]) -> dict[str, Any]:
     """v1 ``POST /api/v1/chapters``：按 chapter_id 建章或整行更新（测试 / 运维入口）。"""
     validate_user_text_payload(payload, field_prefix="chapter")
-    payload = {
-        **payload,
-        "writer_brief_json": normalize_chapter_writer_brief(payload.get("writer_brief_json")),
-    }
+    payload = {**payload, "writer_brief_json": dict(payload.get("writer_brief_json") or {})}
     chapter = session.get(ChapterGoal, payload["chapter_id"])
     created = chapter is None
     _assert_chapter_display_order_available(

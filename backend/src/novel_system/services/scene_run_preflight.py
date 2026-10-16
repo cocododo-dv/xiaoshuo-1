@@ -14,7 +14,6 @@ from novel_system.services.qc_constraints import (
 from novel_system.services.scene_design_ownership import design_owned_by_plan
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_structure_brief import missing_structure_fields, scene_has_structure
-from novel_system.services.writer_briefs import normalize_scene_writer_brief
 from novel_system.services.planning_queries import latest_scene_blueprint
 
 
@@ -200,8 +199,8 @@ class SceneRunPreflightService:
                     "technical_hint": "POST /api/v1/scenes/{scene_id}/blueprint/generate",
                 }
             )
-        # 2026-09-13 阶段 A：带场景结构（雪花 / 章节编排的三拍与坩埚）的场按结构本身体检，
-        # 不再拿 v2 简报的字段清单去要求一个已经走完十步的作者「再填一套」。
+        # 2026-09-13 阶段 A：带场景结构（雪花 / 章节编排的三拍与坩埚）的场按结构本身体检。没有结构的场不再拿
+        # v2 写作简报的字段清单去要（2026-10-16 写作简报退役：没有界面能填，只是一条永远消不掉的提醒）。
         if scene_has_structure(scene):
             missing_beats = missing_structure_fields(scene)
             if missing_beats:
@@ -221,22 +220,4 @@ class SceneRunPreflightService:
                         "technical_hint": "scene_card.writer_brief_json: scene_crucible + goal/conflict/setback or reaction/dilemma/decision",
                     }
                 )
-            return items
-
-        brief = normalize_scene_writer_brief(scene.writer_brief_json)
-        missing_intent = [
-            key
-            for key in ("choice_under_pressure", "power_shift", "new_information", "emotional_turn", "image_anchor", "reader_aftertaste")
-            if not brief.get(key)
-        ]
-        if missing_intent:
-            items.append(
-                {
-                    "code": "SCENE_LITERARY_INTENT_INCOMPLETE",
-                    "title": "Scene literary intent is incomplete",
-                    "detail": "Consider filling the v2 writer brief fields before generation: " + ", ".join(missing_intent),
-                    "technical_hint": "scene_card.writer_brief_json",
-                }
-            )
-
         return items

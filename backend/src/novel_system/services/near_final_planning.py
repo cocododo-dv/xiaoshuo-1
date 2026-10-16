@@ -44,7 +44,6 @@ from novel_system.services.style_reference.planning_context import (
     register_planning_style_reference,
     style_reference_prompt_blocks,
 )
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 CHARACTER_PRESSURE_ARTIFACT = "character_pressure_blueprint"
 
@@ -346,14 +345,10 @@ class NearFinalPlanningService:
         source_refs: dict[str, Any] = {
             "chapter_goal": chapter.chapter_id,
             "scene_card": scene.scene_id,
-            "chapter_writer_brief": chapter.chapter_id,
-            "scene_writer_brief": scene.scene_id,
         }
         injections = [
             {"slot": "chapter_goal", "ref_id": chapter.chapter_id, "digest_key": "chapter_goal"},
             {"slot": "scene_card", "ref_id": scene.scene_id, "digest_key": "scene_card"},
-            {"slot": "chapter_writer_brief", "ref_id": chapter.chapter_id, "digest_key": "chapter_writer_brief"},
-            {"slot": "scene_writer_brief", "ref_id": scene.scene_id, "digest_key": "scene_writer_brief"},
         ]
         inline_digests: dict[str, str] = {
             # 章目标 / 场目标 / 节拍只给作者规划过的（旧物化补的「推进本章：<章名>」不算，S2 1）
@@ -368,16 +363,6 @@ class NearFinalPlanningService:
                     "hook": scene.hook or "",
                     "all_chapter_scene_cards": self._chapter_scene_digest(chapter),
                 },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            "chapter_writer_brief": json.dumps(
-                normalize_chapter_writer_brief(chapter.writer_brief_json),
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-            "scene_writer_brief": json.dumps(
-                normalize_scene_writer_brief(scene.writer_brief_json),
                 ensure_ascii=False,
                 sort_keys=True,
             ),

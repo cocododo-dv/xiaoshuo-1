@@ -32,8 +32,6 @@ BUNDLE_SECTION_DIGEST_KEYS: frozenset[str] = frozenset(
         SCENE_DESIGN_SECTION_KEY,
         NARRATIVE_GUIDANCE_SECTION_KEY,
         "author_instruction",
-        "chapter_writer_brief",
-        "scene_writer_brief",
         "scene_blueprint",
         "character_pressure",
         "chapter_story_architecture",

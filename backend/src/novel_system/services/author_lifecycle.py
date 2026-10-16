@@ -30,10 +30,6 @@ from novel_system.services.chapter_approval import (
     approved_chapter_block,
     is_chapter_approved,
 )
-from novel_system.services.writer_briefs import (
-    normalize_chapter_writer_brief,
-    normalize_scene_writer_brief,
-)
 from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import planned_chapter_goal, planned_text
 
@@ -372,7 +368,6 @@ class AuthorLifecycleService:
             "planned_scene_count": chapter.planned_scene_count,
             "mid_aggregate_enabled": chapter.mid_aggregate_enabled,
             **_planned_chapter_fields(chapter),
-            "writer_brief_json": normalize_chapter_writer_brief(chapter.writer_brief_json),
         }
 
     def serialize_chapter_state(self, chapter_state: ChapterState | None, chapter_id: str) -> dict:
@@ -403,7 +398,6 @@ class AuthorLifecycleService:
             "forbidden_text": scene.forbidden_text,
             "exit_change": scene.exit_change,
             "hook": scene.hook,
-            "writer_brief_json": normalize_scene_writer_brief(scene.writer_brief_json),
             "target_length_band": scene.target_length_band,
             "scene_type": scene.scene_type,
             "is_chapter_last": scene.is_chapter_last,

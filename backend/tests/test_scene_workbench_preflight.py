@@ -15,24 +15,6 @@ from novel_system.db.models import (
 from tests.support.seed import seed_chapter, seed_scene
 
 
-SCENE_WRITER_BRIEF_V2 = {
-    "schema_version": "writer_brief_v2",
-    "character_desire": "CHAR_A wants the truth.",
-    "obstacle": "CHAR_B holds back the key fact.",
-    "stakes": "The old clue may be lost.",
-    "secret_or_misunderstanding": "Both hide what they know about the letter.",
-    "subtext": "Trust is being tested under the reunion.",
-    "irreversible_change": "They leave knowing the secret has an observer.",
-    "reader_question": "Who sent the old letter?",
-    "choice_under_pressure": "CHAR_A must choose between trust and exposure.",
-    "power_shift": "CHAR_B loses control of the conversation.",
-    "new_information": "The letter points to a third watcher.",
-    "emotional_turn": "Suspicion turns into reluctant alliance.",
-    "image_anchor": "The old letter becomes a warning.",
-    "reader_aftertaste": "The reunion feels useful but unsafe.",
-}
-
-
 def create_chapter(chapter_id: str = "CH910") -> None:
     seed_chapter(
         chapter_id,
@@ -72,8 +54,6 @@ def create_scene(
 
 
 def seed_literary_ready_state(session: Session, scene_id: str = "CH910_SC01", chapter_id: str = "CH910") -> None:
-    scene = session.get(SceneCard, scene_id)
-    scene.writer_brief_json = dict(SCENE_WRITER_BRIEF_V2)
     session.add(
         SceneBlueprint(
             row_id=f"scene_blueprint_{scene_id}_seed",
@@ -360,7 +340,6 @@ def test_workbench_preflight_surfaces_authoring_warnings_without_blocking_run(cl
         "SCENE_ONSTAGE_CHARACTERS_MISSING",
         "SCENE_BEATS_MISSING",
         "SCENE_BLUEPRINT_MISSING",
-        "SCENE_LITERARY_INTENT_INCOMPLETE",
     ]
 
 

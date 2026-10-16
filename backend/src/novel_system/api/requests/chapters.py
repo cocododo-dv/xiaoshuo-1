@@ -8,7 +8,6 @@ from novel_system.api.requests.common import (
     BoundedIdentifier,
     BoundedJsonObject,
     StrictRequestModel,
-    WriterBriefJsonInput,
 )
 
 
@@ -30,9 +29,8 @@ class ChapterUpsertRequest(StrictRequestModel):
     ending_effect: str | None = Field(default=None, max_length=100_000)
     must_not: str | None = Field(default=None, max_length=100_000)
     notes: str | None = Field(default=None, max_length=100_000)
-    # Shape validation belongs to normalize_chapter_writer_brief() so chapter
-    # and scene endpoints share WRITER_BRIEF_INVALID / HTTP 400 semantics.
-    writer_brief_json: WriterBriefJsonInput = None
+    # 场景卡 / 章的原始简报（雪花物化的来源与三拍、目录的标题等）：原样存。v2 写作简报 2026-10-16 退役。
+    writer_brief_json: BoundedJsonObject | None = None
 
 
 class ChapterIdsRequest(StrictRequestModel):

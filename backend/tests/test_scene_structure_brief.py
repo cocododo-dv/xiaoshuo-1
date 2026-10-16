@@ -1,8 +1,8 @@
 """阶段 A（2026-09-13 雪花评估）：作者写下的场景结构要到达写作。
 
 断链的复现：雪花物化把形态 / 坩埚 / 三拍 / 代价写进 ``SceneCard.writer_brief_json``，
-但 ``writer_briefs.normalize_scene_writer_brief`` 只认 v2 的 13 个键，bundle / 蓝图 /
-近终稿 / 预检看到的简报全是空的。这里锁住修复：
+但当时的 v2 写作简报归一化只认另外 13 个键，bundle / 蓝图 / 近终稿 / 预检看到的简报全是空的
+（v2 写作简报 2026-10-16 退役）。这里锁住修复：
 - 结构简报直读原始键，带标签渲染，POV 解析成姓名；
 - 进入起草 bundle（紧跟 scene_card）、蓝图快照与近终稿快照，预算再紧也不被压；
 - 预检按三拍缺口体检，而不是要求雪花作者再填一套 v2 字段；
@@ -269,8 +269,8 @@ def test_bundle_carries_the_structure_section_right_after_the_scene_card(session
     assert slots.index(SCENE_STRUCTURE_SECTION_KEY) == slots.index("scene_card") + 1
     names = [section.name for section in collect_prompt_sections(snapshot)]
     assert names.index(SCENE_STRUCTURE_SECTION_KEY) == names.index("scene_card") + 1
-    # v2 归一化通道对雪花简报仍然是空的——修复没有绕过它，而是另开了事实通道
-    assert "scene_writer_brief" not in snapshot["inline_digests"]
+    # 结构简报是唯一的通道（v2 写作简报 2026-10-16 退役）
+    assert not any("writer_brief" in key for key in snapshot["inline_digests"])
 
     v2_snapshot = BundleBuilder(session).build(V2_ONLY_ID)["snapshot"]
     assert SCENE_STRUCTURE_SECTION_KEY not in v2_snapshot["inline_digests"]
@@ -359,8 +359,9 @@ def test_preflight_checks_the_beats_instead_of_asking_for_v2_intent(session) -> 
     assert "conflict, setback" in structure_item["detail"]
     assert all(item["code"] != "SCENE_LITERARY_INTENT_INCOMPLETE" for item in incomplete)
 
+    # 没有结构的场：既不要一套结构，也不再要那套没有界面能填的 v2 字段（2026-10-16 退役）
     v2_only = [item["code"] for item in preflight.build(_scene(session, V2_ONLY_ID))["warning_items"]]
-    assert "SCENE_LITERARY_INTENT_INCOMPLETE" in v2_only
+    assert "SCENE_LITERARY_INTENT_INCOMPLETE" not in v2_only
     assert "SCENE_STRUCTURE_INCOMPLETE" not in v2_only
 
 

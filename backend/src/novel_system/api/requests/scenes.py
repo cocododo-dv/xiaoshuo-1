@@ -10,7 +10,7 @@ from novel_system.api.requests.common import (
     INT64_MAX,
     BoundedIdentifier,
     StrictRequestModel,
-    WriterBriefJsonInput,
+    BoundedJsonObject,
 )
 
 
@@ -39,10 +39,8 @@ class SceneUpsertRequest(StrictRequestModel):
     forbidden_text: str | None = Field(default=None, max_length=100_000)
     exit_change: str | None = Field(default=None, max_length=20_000)
     hook: str | None = Field(default=None, max_length=20_000)
-    # Keep the established domain-error contract for malformed writer briefs:
-    # normalize_scene_writer_brief() validates the JSON shape and returns the
-    # stable WRITER_BRIEF_INVALID / HTTP 400 response used by API clients.
-    writer_brief_json: WriterBriefJsonInput = None
+    # 场景卡 / 章的原始简报（雪花物化的来源与三拍、目录的标题等）：原样存。v2 写作简报 2026-10-16 退役。
+    writer_brief_json: BoundedJsonObject | None = None
     target_length_band: str | None = Field(default=None, max_length=64)
     scene_type: str | None = Field(default=None, max_length=64)
     is_chapter_last: int = Field(default=0, ge=0, le=1)

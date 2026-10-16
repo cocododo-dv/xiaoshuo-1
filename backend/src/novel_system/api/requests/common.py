@@ -1,10 +1,10 @@
-"""请求体的共用边界：严格模型基类、空命令体、有界 JSON 对象、写作简报输入与标识符别名。"""
+"""请求体的共用边界：严格模型基类、空命令体、有界 JSON 对象与标识符别名。"""
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, WithJsonSchema
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 
 # SQLite INTEGER 的上限：修订号、时长、预算这类计数的请求上限
@@ -77,35 +77,4 @@ BoundedJsonObject = Annotated[
     dict[str, Any],
     Field(max_length=MAX_API_OBJECT_PROPERTIES),
     AfterValidator(_validate_bounded_json_object),
-]
-
-
-def _validate_writer_brief_resource_bounds(value: Any) -> Any:
-    # Shape/type errors intentionally remain in the shared writer-brief
-    # normalizers so clients keep WRITER_BRIEF_INVALID / HTTP 400.  A genuine
-    # object still receives the same anti-exhaustion bounds as flexible JSON.
-    if isinstance(value, dict):
-        return _validate_bounded_json_object(value)
-    return value
-
-
-# Runtime shape validation deliberately remains in the writer-review domain
-# normalizers so malformed briefs keep the stable WRITER_BRIEF_INVALID / 400
-# contract.  The explicit schema prevents that implementation detail from
-# advertising arbitrary JSON to OpenAPI clients.
-WriterBriefJsonInput = Annotated[
-    Any,
-    AfterValidator(_validate_writer_brief_resource_bounds),
-    WithJsonSchema(
-        {
-            "anyOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "maxProperties": MAX_API_OBJECT_PROPERTIES,
-                },
-                {"type": "null"},
-            ]
-        }
-    ),
 ]

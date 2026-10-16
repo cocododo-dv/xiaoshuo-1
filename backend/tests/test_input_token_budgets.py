@@ -107,8 +107,6 @@ CHAPTER_TEXT = DRAFT_MARKER + "\n" + "\n\n".join(_prose(2500, seed=10 + index) f
 _RICH_SECTION_CHARS = {
     "chapter_goal": 60,
     "scene_card": 300,
-    "chapter_writer_brief": 260,
-    "scene_writer_brief": 150,
     "author_instruction": 120,
     "scene_blueprint": 700,
     "character_pressure": 500,

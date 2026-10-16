@@ -55,7 +55,6 @@ from novel_system.services.scene_workbench import (
     SceneWorkbenchService,
     attach_style_notices,
 )
-from novel_system.services.writer_briefs import normalize_scene_writer_brief
 
 router = APIRouter(tags=["scenes"])
 
@@ -113,11 +112,6 @@ def create_scene(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(exclude_unset=True)
-    # Domain validation precedes the durable idempotency claim.  A malformed
-    # brief therefore cannot reserve a key needed by the corrected request.
-    body["writer_brief_json"] = normalize_scene_writer_brief(
-        body.get("writer_brief_json")
-    )
     return mutate(
         request,
         session,

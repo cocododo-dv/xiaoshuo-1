@@ -6,7 +6,7 @@ must_withhold`` 写进 ``SceneCard.writer_brief_json``，但写作侧一律经
 ``writer_briefs.normalize_scene_writer_brief`` 归一化，而那份 v2 schema 只认另外 13 个键，
 于是起草 bundle、蓝图快照、近终稿快照、预检看到的场景简报全部为空。起草模型只剩
 ``scene_digest.scene_card_digest`` 里无标签的 ``Beats`` 和一行 ``Scene type: proactive``，
-而起草提示词从未解释主动 / 反应场景该怎么写。
+而起草提示词从未解释主动 / 反应场景该怎么写。（那份 v2 写作简报 2026-10-16 退役：没有界面能填，从没进过提示。）
 
 本模块**直读原始键**，渲染成带标签的事实段，作为与 ``scene_card`` 同级的事实 section
 （``context_budget.SECTION_SPECS`` 里的 ``scene_structure_brief``）进入起草 bundle、蓝图快照
@@ -81,8 +81,8 @@ def scene_has_structure(scene: SceneCard) -> bool:
 
 
 def missing_structure_fields(scene: SceneCard) -> list[str]:
-    """按形态列出还缺的必填结构字段（坩埚 + 本形态三拍）。没有结构的场返回空表——
-    那是 v2 简报的事，由预检的另一条规则处理。作者写了破例理由时也返回空表（阶段 N）。"""
+    """按形态列出还缺的必填结构字段（坩埚 + 本形态三拍）。没有结构的场返回空表（不替作者要一套结构）。
+    作者写了破例理由时也返回空表（阶段 N）。"""
     if not scene_has_structure(scene):
         return []
     if _text(_brief(scene).get("exception_reason")):

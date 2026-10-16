@@ -84,11 +84,6 @@ from novel_system.services.style_reference.runtime_contract import (
 from novel_system.services.style_reference.structure import reference_scene_scale
 from novel_system.services.style_prompt_injection import SCENE_SITUATION_TAGS_KEY
 from novel_system.services.style_reference.tags import normalize_situation_tags
-from novel_system.services.writer_briefs import (
-    normalize_chapter_writer_brief,
-    normalize_scene_writer_brief,
-    writer_brief_has_content,
-)
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.scene_lookup import get_chapter_or_404, get_scene_or_404
 from novel_system.services.planning_queries import (
@@ -331,22 +326,6 @@ class BundleBuilder:
                 ref_id=f"author_instruction:{instruction_hash}",
                 text=normalized_author_note,
                 refs={"author_instruction_hash": instruction_hash},
-            )
-        chapter_writer_brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
-        if writer_brief_has_content(chapter_writer_brief):
-            sections.add(
-                "chapter_writer_brief",
-                ref_id=chapter.chapter_id,
-                text=json.dumps(chapter_writer_brief, ensure_ascii=False, sort_keys=True),
-                refs={"chapter_writer_brief": chapter.chapter_id},
-            )
-        scene_writer_brief = normalize_scene_writer_brief(scene.writer_brief_json)
-        if writer_brief_has_content(scene_writer_brief):
-            sections.add(
-                "scene_writer_brief",
-                ref_id=scene.scene_id,
-                text=json.dumps(scene_writer_brief, ensure_ascii=False, sort_keys=True),
-                refs={"scene_writer_brief": scene.scene_id},
             )
 
         scene_blueprint = latest_scene_blueprint(self.session, scene.scene_id)

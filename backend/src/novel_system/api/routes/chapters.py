@@ -12,7 +12,6 @@ from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.catalog import CatalogService
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.chapter_upsert import upsert_chapter
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 router = APIRouter(tags=["chapters"])
 
@@ -29,12 +28,6 @@ def create_chapter(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(exclude_unset=True)
-    # Reject/normalize the domain payload before claiming an idempotency key.
-    # Invalid requests must never poison a key that the author can correct and
-    # retry, while semantically equivalent briefs should hash identically.
-    body["writer_brief_json"] = normalize_chapter_writer_brief(
-        body.get("writer_brief_json")
-    )
     return mutate(
         request,
         session,
