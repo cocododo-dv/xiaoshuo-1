@@ -90,7 +90,7 @@ def _load_secret() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    refuse_foreign_checkout(TOOL)
+    refuse_foreign_checkout("style_ratchet")
     args = _parse_args(argv)
     try:
         specs = _specs(args)
