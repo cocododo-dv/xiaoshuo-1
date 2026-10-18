@@ -40,6 +40,8 @@ from novel_system.services.run_job_leases import (
     update_observed,
 )
 from novel_system.services.scene_run_checkpoint import (
+    TRIAL_CHECKPOINT,
+    TRIAL_SCENE_STATUS,
     SceneRunCheckpointService,
     scene_job_execution_id,
     scene_run_outcome,
@@ -73,6 +75,8 @@ _SCENE_JOB_STEP_BY_STATUS = {
     "awaiting_candidate_selection": "awaiting_candidate_selection",
     "quality_warning_pending_acceptance": "awaiting_author_acceptance",
     "human_review_required": "blocked",
+    # 快速试写停在硬 QC 之后：任务完成，场景等作者读试写稿、决定要不要「继续跑完」
+    TRIAL_SCENE_STATUS: TRIAL_SCENE_STATUS,
 }
 
 
@@ -96,6 +100,8 @@ class SceneRunJobService:
         author_note: str | None = None,
         run_policy: str = "reliable",
         budget_resume_parent_execution_id: str | None = None,
+        stop_after: str | None = None,
+        trial_resume_parent_execution_id: str | None = None,
     ) -> ChapterRunJob:
         scene = AuthorLifecycleService(self.session).require_active_scene(scene_id)
         run_preflight = SceneRunPreflightService(self.session).build(scene)
@@ -158,6 +164,13 @@ class SceneRunJobService:
                 **(
                     {"budget_resume_parent_execution_id": budget_resume_parent_execution_id}
                     if budget_resume_parent_execution_id
+                    else {}
+                ),
+                # 快速试写（只跑到硬 QC）/ 试写之后「继续跑完」（接上一次执行的检查点）
+                **({"stop_after": stop_after} if stop_after else {}),
+                **(
+                    {"trial_resume_parent_execution_id": trial_resume_parent_execution_id}
+                    if trial_resume_parent_execution_id
                     else {}
                 ),
             },
@@ -242,6 +255,40 @@ class SceneRunJobService:
                 },
             )
         return str(state.active_execution_id)
+
+    def resolve_trial_resume(self, scene_id: str) -> tuple[str, dict[str, Any]]:
+        """快速试写之后「继续跑完」接哪一次执行：(执行 id, 那次任务的载荷)。只认服务端记着的、停在试写稿上的执行；
+        作者指令与运行策略照那次任务的来（续跑的 bundle 冻结了指令，换一句会被拒）。"""
+        state = self.session.get(SceneRunState, scene_id)
+        latest: ChapterRunJob | None
+        try:
+            latest = self.latest_job(scene_id)
+        except DomainError as exc:
+            if exc.code != "RUN_JOB_NOT_FOUND":
+                raise
+            latest = None
+        eligible = bool(
+            state is not None
+            and latest is not None
+            and state.active_execution_id
+            and state.run_execution_status == "completed"
+            and state.run_checkpoint == TRIAL_CHECKPOINT
+            and state.scene_status == TRIAL_SCENE_STATUS
+            and latest.status == "completed"
+            and scene_job_execution_id(latest.job_id) == state.active_execution_id
+        )
+        if not eligible:
+            raise DomainError(
+                "RUN_TRIAL_RESUME_UNAVAILABLE",
+                "no trial draft is waiting to be continued for this scene",
+                status_code=409,
+                details={
+                    "scene_id": scene_id,
+                    "latest_job_id": latest.job_id if latest is not None else None,
+                    "scene_status": state.scene_status if state is not None else None,
+                },
+            )
+        return str(state.active_execution_id), dict(latest.payload_json or {})
 
     def owner_for(self, job: ChapterRunJob) -> SceneRunJobLease:
         if not job.worker_id or not job.attempt_no:
@@ -1033,6 +1080,16 @@ def _run_scene_job_worker(job_id: str) -> None:
                 expected_parent_execution_id=budget_resume_parent,
             )
             session.commit()
+        trial_resume_parent = str((job.payload_json or {}).get("trial_resume_parent_execution_id") or "")
+        if trial_resume_parent and _budget_handoff_pending(session, scene_id, job_id):
+            # 与预算续跑同一个判定：这一任务的执行还不是场景的活动执行 = 交接还没做
+            SceneRunCheckpointService(session).acquire_trial_resume(
+                scene_id,
+                scene_job_execution_id(job_id),
+                expected_parent_execution_id=trial_resume_parent,
+            )
+            session.commit()
+        stop_after = str((job.payload_json or {}).get("stop_after") or "") or None
         result = Orchestrator(session).run_scene(
             scene_id,
             author_note=str((job.payload_json or {}).get("author_note") or "") or None,
@@ -1040,6 +1097,7 @@ def _run_scene_job_worker(job_id: str) -> None:
             execution_id=scene_job_execution_id(job_id),
             run_job_id=job_id,
             lease_renewer=owner.renew,
+            **({"stop_after": stop_after} if stop_after else {}),
         )
         job = service.get_job(job_id)
         if service.cancellation_requested(owner):

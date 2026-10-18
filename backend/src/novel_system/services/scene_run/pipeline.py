@@ -47,7 +47,12 @@ from novel_system.services.scene_run.results import (
     soft_risk_acceptance_event_id,
 )
 from novel_system.services.scene_run.snapshots import planning_provenance, qc_report_snapshot
-from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER, checkpoint_corrupt
+from novel_system.services.scene_run_checkpoint import (
+    RUN_CHECKPOINT_ORDER,
+    STOP_AFTER_HARD_QC,
+    TRIAL_SCENE_STATUS,
+    checkpoint_corrupt,
+)
 from novel_system.services.style_policy import style_policy_for_bundle
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +64,7 @@ class PipelineMixin:
         scene_id: str,
         author_note: str | None = None,
         run_policy: str = "reliable",
+        stop_after: str | None = None,
     ) -> dict:
         # Wave 2/3（治理 §5.4/§5.5）：run_policy 现已落列（Wave 3 迁移 0062）。
         # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
@@ -79,6 +85,22 @@ class PipelineMixin:
                 {
                     **base_result(ctx.state, ctx.bundle),
                     "hard_qc": qc_decision_payload(ctx.hard_qc),
+                },
+            )
+        if stop_after == STOP_AFTER_HARD_QC:
+            # 快速试写（2026-10-18）：首稿过了硬 QC 就停，交给作者读；检查点停在 hard_qc_ready，
+            # 「继续跑完」由新任务接着从风格稿往下跑（scene_run_checkpoint.acquire_trial_resume）
+            ctx.state.scene_status = TRIAL_SCENE_STATUS
+            self.session.flush()
+            return self._with_author_projection(
+                scene_id,
+                ctx.state,
+                {
+                    **base_result(ctx.state, ctx.bundle),
+                    "hard_qc": qc_decision_payload(ctx.hard_qc),
+                    "planning": ctx.planning,
+                    "run_policy": ctx.run_policy,
+                    "trial": True,
                 },
             )
         self._phase_style_candidates(ctx)

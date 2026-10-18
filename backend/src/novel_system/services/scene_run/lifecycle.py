@@ -45,6 +45,7 @@ class RunLifecycleMixin:
         execution_id: str | None = None,
         run_job_id: str | None = None,
         lease_renewer=None,
+        stop_after: str | None = None,
     ) -> dict:
         author_note = normalize_author_note(author_note)
         _scene, state = self._ensure_scene_and_state(scene_id)
@@ -91,7 +92,13 @@ class RunLifecycleMixin:
             lease_renewer=lease_renewer,
         ):
             return self._run_with_terminal_outcome(
-                scene_id, effective_execution_id, checkpoints, author_note=author_note, run_policy=run_policy
+                scene_id,
+                effective_execution_id,
+                checkpoints,
+                author_note=author_note,
+                run_policy=run_policy,
+                # 只有试写才带：测试里换掉的旧签名桩不受牵连
+                **({"stop_after": stop_after} if stop_after else {}),
             )
 
     def _commit_format_refusal(self, exc: DomainError) -> None:
@@ -119,14 +126,17 @@ class RunLifecycleMixin:
         *,
         author_note: str | None,
         run_policy: str,
+        stop_after: str | None = None,
     ) -> dict:
-        """在执行范围里跑管线，按结果给执行记终态；失败时把这次执行的账本审计写回（或围上）。"""
+        """在执行范围里跑管线，按结果给执行记终态；失败时把这次执行的账本审计写回（或围上）。
+        ``stop_after="hard_qc"`` = 快速试写：首稿过了硬 QC 就停（``scene_run_checkpoint.TRIAL_SCENE_STATUS``）。"""
         try:
             self._raise_if_run_cancelled()
             result = self._run_scene_pipeline(
                 scene_id,
                 author_note=author_note,
                 run_policy=run_policy,
+                **({"stop_after": stop_after} if stop_after else {}),
             )
             # 严格模式停在一份可归档的稿子上等作者接受 Q2/Q3，是成功的终点（scene_run_outcome）
             checkpoints.mark_run_outcome(

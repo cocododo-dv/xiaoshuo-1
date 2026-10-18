@@ -456,12 +456,19 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
     }
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", attempt, authorNote: normalizedNote, error: null, budgetBlock: null, styleNotices: [], styleWindows: null, styleFidelity: null, pipeState: "", cost: [],
-      log: [{ t: t0, who: "system", text: `已提交第 ${attempt} 次起草${normalizedNote ? "，附改写指令" : ""}` }] } }));
+    const trial = options.trial === true;
+    const continueTrial = options.continueTrial === true;
+    const submitted = continueTrial
+      ? "已提交「继续跑完」：从试写稿接着跑风格稿、软质检、近终稿"
+      : `已提交第 ${attempt} 次${trial ? "试写（只到首稿和硬质检）" : "起草"}${normalizedNote ? "，附改写指令" : ""}`;
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", attempt, authorNote: normalizedNote, error: null, budgetBlock: null, styleNotices: [], styleWindows: null, styleFidelity: null, pipeState: "", cost: [], trial: false,
+      log: [{ t: t0, who: "system", text: submitted }] } }));
     try {
       const res = await scnRun(sc, normalizedNote, "", {
         signal: controller.signal,
         resumeBudget: options.resumeBudget === true,
+        stopAfter: trial ? "hard_qc" : undefined,
+        continueTrial,
         onJobCreated: (job, sceneId) => setObservedRunJob({ job, sceneId }),
         waitForTerminal: waitForTerminal(controller.signal),
       });
@@ -469,7 +476,8 @@ function useSceneRuns({ items, runs, setRuns, pickedId, pinItem }) {
       setRuns(m => {
         const stamp = formatLocaleMonthDayTime(Date.now());
         const prevAtt = ((m[id] && m[id].attempts) || []).map(a => a.time && a.time.startsWith("本次") ? { ...a, time: stamp, result: "退回重写", tone: "slate" } : a);
-        const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: normalizedNote ? "按指令改写" : "初稿", cmp: normalizedNote ? { verdict: "作者改写指令：" + normalizedNote } : undefined }, ...prevAtt].slice(0, 8);
+        const kind = res.trial ? "试写稿" : (continueTrial ? "试写后跑完" : (normalizedNote ? "按指令改写" : "初稿"));
+        const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: kind, cmp: normalizedNote ? { verdict: "作者改写指令：" + normalizedNote } : undefined }, ...prevAtt].slice(0, 8);
         const nr = { ...(m[id] || {}), ...res, authorNote: normalizedNote, state: res.state === "archived" ? "archived" : "ready", attempt, attempts, at: Date.now() };
         scnRunSave(sc.sid, nr);
         return { ...m, [id]: nr };

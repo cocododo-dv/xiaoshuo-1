@@ -42,6 +42,15 @@ _FORMAT_FREE_CHECKPOINTS = frozenset(
 _FORMAT_REFUSAL_RELEASES = frozenset({"active", "waiting_selection"})
 
 
+# 快速试写（2026-10-18）：起草任务带 ``stop_after="hard_qc"`` 时，管线过了硬 QC 就停——首稿（作者手笔直起时就是风格先行的
+# 一稿）已经过了硬约束，风格稿 / 软 QC / 准终稿 / 归档都没做；检查点停在 ``hard_qc_ready``，这次执行记为完成。
+# 「继续跑完」开一个新任务（``continue_trial``），:meth:`SceneRunCheckpointService.acquire_trial_resume` 把检查点交给它。
+STOP_AFTER_HARD_QC = "hard_qc"
+STOP_AFTER_VALUES: tuple[str, ...] = (STOP_AFTER_HARD_QC,)
+TRIAL_SCENE_STATUS = "trial_draft_ready"
+TRIAL_CHECKPOINT = "hard_qc_ready"
+
+
 def scene_run_outcome(scene_status: str | None) -> Literal["completed", "waiting_selection", "failed"]:
     """一次运行（首跑或终选后的续跑）停下时的场景状态 → 执行围栏的终态；场景任务据此判完成还是阻塞（B01-05）。
 
@@ -49,9 +58,10 @@ def scene_run_outcome(scene_status: str | None) -> Literal["completed", "waiting
     - ``quality_warning_pending_acceptance``：严格模式停在一份可归档的稿子上、等作者接受 Q2/Q3 警告——这是
       成功的终点，不是失败 / 可重试的检查点；
     - ``awaiting_candidate_selection``：停在匿名终选门，等作者选；
+    - ``trial_draft_ready``：快速试写停在硬 QC 之后——作者要的就是这一稿，完成；「继续跑完」另起任务接检查点；
     - 其余（人工复核、准终稿要修改 …）：失败，可从检查点重试。
     """
-    if scene_status in {"archived", "quality_warning_pending_acceptance"}:
+    if scene_status in {"archived", "quality_warning_pending_acceptance", TRIAL_SCENE_STATUS}:
         return "completed"
     if scene_status == "awaiting_candidate_selection":
         return "waiting_selection"
@@ -366,6 +376,75 @@ class SceneRunCheckpointService:
             raise DomainError(
                 "RUN_EXECUTION_IN_PROGRESS",
                 "another budget resume owner won the checkpoint handoff",
+                status_code=409,
+                details={"active_execution_id": latest.active_execution_id},
+            )
+        self.session.flush()
+        return self._result(self._state(scene_id, refresh=True), resumed=True)
+
+    def acquire_trial_resume(
+        self,
+        scene_id: str,
+        execution_id: str,
+        *,
+        expected_parent_execution_id: str,
+    ) -> ExecutionCheckpoint:
+        """快速试写之后「继续跑完」：把停在 ``hard_qc_ready`` 的已完成执行交给新的服务端执行（同预算续跑的交接）。"""
+        state = self._state(scene_id, refresh=True)
+        payload = self._checkpoint_payload(state)
+        self._validate_checkpoint(state, payload)
+        current = state.active_execution_id
+        if (
+            current != expected_parent_execution_id
+            or state.run_execution_status != "completed"
+            or state.run_checkpoint != TRIAL_CHECKPOINT
+            or state.scene_status != TRIAL_SCENE_STATUS
+        ):
+            raise DomainError(
+                "RUN_TRIAL_RESUME_UNAVAILABLE",
+                "the trial draft checkpoint is no longer owned by the expected completed execution",
+                status_code=409,
+                details={
+                    "active_execution_id": current,
+                    "expected_parent_execution_id": expected_parent_execution_id,
+                    "status": state.run_execution_status,
+                    "checkpoint": state.run_checkpoint,
+                },
+            )
+        self._refuse_outdated_format(state, payload)
+        superseded = list(payload.get("superseded_execution_ids") or [])
+        if current not in superseded:
+            superseded.append(current)
+        artifact_lineage = list(payload.get("artifact_execution_lineage_ids") or [])
+        if current not in artifact_lineage:
+            artifact_lineage.append(current)
+        next_payload = {
+            **payload,
+            "execution_id": execution_id,
+            "trial_resume_parent_execution_id": current,
+            "superseded_execution_ids": superseded,
+            "artifact_execution_lineage_ids": artifact_lineage,
+        }
+        handed_off = self.session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                SceneRunState.active_execution_id == current,
+                SceneRunState.run_execution_status == "completed",
+            )
+            .values(
+                active_execution_id=execution_id,
+                run_execution_status="active",
+                run_checkpoint_json=next_payload,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if handed_off.rowcount != 1:
+            self.session.rollback()
+            latest = self._state(scene_id, refresh=True)
+            raise DomainError(
+                "RUN_EXECUTION_IN_PROGRESS",
+                "another owner won the trial checkpoint handoff",
                 status_code=409,
                 details={"active_execution_id": latest.active_execution_id},
             )

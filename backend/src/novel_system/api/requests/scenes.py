@@ -81,6 +81,10 @@ class SceneRunCommandRequest(StrictRequestModel):
 
 class SceneRunJobRequest(SceneRunCommandRequest):
     resume_budget: bool | None = None
+    # 快速试写：只跑到首稿过硬 QC 就停（scene_run_checkpoint.STOP_AFTER_VALUES）
+    stop_after: Literal["hard_qc"] | None = None
+    # 试写之后「继续跑完」：接上一次停在试写稿上的执行的检查点
+    continue_trial: bool | None = None
 
 
 class SceneRunCancelRequest(StrictRequestModel):

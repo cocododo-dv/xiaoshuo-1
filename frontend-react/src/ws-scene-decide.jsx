@@ -8,7 +8,8 @@ const { useEffect, useState } = React;
 
 /* ==========================================================
    AI 起草台 — 裁决条（台面底部）
-   待起草：开始起草（或追加预算）· 运行中：等待 · 待复核：采纳并归档 / 退回重写 / 存为候选并去写作台
+   待起草：开始起草 / 先试写（或追加预算）· 运行中：等待 · 待复核：采纳并归档 / 退回重写 / 存为候选并去写作台
+   · 试写稿（只跑到首稿和硬质检）：继续跑完，或者直接裁决
    · 等你终选：只有一句等待（终选在台面上做）· 已归档：去写作台或成稿中心。
    裁决只认后端 author_state：这里不再有前端自己的判词。
    ========================================================== */
@@ -71,7 +72,15 @@ function DecisionBar({ scene, state, runJobStatus, go, onEditPlan = null, onArch
             : <button className="btn btn-quiet btn-sm" onClick={() => go && go("author")} title="场景卡在章节编排里维护">编辑场景卡</button>}
           {scene.budgetBlock && onBudgetTopup
             ? <button className="btn btn-accent" data-testid="scene-budget-topup" onClick={() => onBudgetTopup()}><I.Plus size={13} /> 追加预算并继续</button>
-            : <button className="btn btn-accent" data-testid="scene-start" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>}
+            : (
+              <>
+                <button className="btn btn-ghost btn-sm" data-testid="scene-trial" onClick={() => onRun && onRun("", { trial: true })}
+                  title="只跑规划、首稿和硬质检就停（约全流程三成的用量），读了满意再「继续跑完」">
+                  <I.Zap size={13} /> 先试写
+                </button>
+                <button className="btn btn-accent" data-testid="scene-start" onClick={() => onRun && onRun("")}><I.Play size={13} /> 开始起草</button>
+              </>
+            )}
         </div>
       </div>
     );
@@ -120,6 +129,12 @@ function DecisionBar({ scene, state, runJobStatus, go, onEditPlan = null, onArch
       {/* 待复核时的失败也要说出来：追加预算没成、退回重写的指令被拒收，过去只是按钮闪一下就没了下文 */}
       {scene.error && (
         <Notice tone="danger" className="scn2-decide-note" testId="scene-ready-error">{scene.error}</Notice>
+      )}
+      {scene.trial && !budgetBlocked && (
+        <Notice tone="info" className="scn2-decide-note" title="这是试写稿" testId="scene-trial-ready"
+          actions={<button className="btn btn-accent btn-sm" data-testid="scene-trial-continue" disabled={!onRun} onClick={() => onRun && onRun("", { continueTrial: true })}><I.Play size={13} /> 继续跑完</button>}>
+          只跑了规划、首稿和硬质检；风格修改、软质检和近终稿评审还没做。满意就「继续跑完」（从这一稿接着跑，不重写首稿），也可以直接裁决或退回重写。
+        </Notice>
       )}
       {budgetBlocked && (
         <Notice tone="warn" className="scn2-decide-note" title={scene.budgetBlock.label}

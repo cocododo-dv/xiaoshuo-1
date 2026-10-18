@@ -203,6 +203,7 @@
  "test_scene_run_checkpoint_soft_qc.py": 11.91,
  "test_scene_run_checkpoint_style_candidates.py": 7.91,
  "test_scene_run_jobs.py": 8.85,
+ "test_scene_run_trial.py": 3.0,
  "test_scene_structure_brief.py": 1.22,
  "test_scene_token_budget.py": 19.9,
  "test_scene_workbench_preflight.py": 2.62,

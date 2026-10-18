@@ -659,6 +659,88 @@ describe("SceneRunJobControl", () => {
     expect(result.gate).toMatchObject({ authorState: "archived", canArchive: false });
   });
 
+  it("快速试写：任务带 stop_after，停在试写稿上的结果标成试写（正文取首稿）", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/run/jobs") {
+        return Promise.resolve({ job_id: "job-trial", scene_id: "s1", status: "completed" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          neutral_draft: { content: "潮水退去。\n她把旧信压在案卷下面。" },
+          scene_run_state: { scene_status: "trial_draft_ready" },
+          author_state: { author_state: "draft_ready", can_archive: true },
+        });
+      }
+      return baseGet(url);
+    });
+
+    const result = await mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "", { stopAfter: "hard_qc" });
+
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/run/jobs", { run_policy: "strict", stop_after: "hard_qc" });
+    expect(result.trial).toBe(true);
+    expect(result.state).toBe("ready");
+    expect(result.draft.map((p) => p.parts[0].text)).toEqual(["潮水退去。", "她把旧信压在案卷下面。"]);
+    expect(result.log.some((line) => line.text.includes("硬质检"))).toBe(true);
+  });
+
+  it("继续跑完：任务只说 continue_trial，指令与运行策略由后端照试写那次", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/run/jobs") {
+        return Promise.resolve({ job_id: "job-continue", scene_id: "s1", status: "completed" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          final_scene: { content: "潮水退去。" },
+          scene_run_state: { scene_status: "archived" },
+          author_state: { author_state: "archived", can_archive: false },
+        });
+      }
+      return baseGet(url);
+    });
+
+    const result = await mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "", { continueTrial: true });
+
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/run/jobs", { run_policy: "strict", continue_trial: true });
+    expect(result.trial).toBe(false);
+    expect(result.state).toBe("archived");
+  });
+
+  it("裁决条：待起草时有「先试写」，试写稿上有「继续跑完」，各自把选项交给起草", async () => {
+    const { DecisionBar } = await import("./ws-scene-decide.jsx");
+    const onRun = vi.fn();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    await act(async () => root.render(<DecisionBar scene={{ id: "s1", sid: "ch01s1" }} state="queued" onRun={onRun} />));
+    await act(async () => { host.querySelector('[data-testid="scene-trial"]').click(); });
+    expect(onRun).toHaveBeenLastCalledWith("", { trial: true });
+
+    const trialScene = {
+      id: "s1", sid: "ch01s1", trial: true,
+      gate: { authorState: "draft_ready", blocking: [], warnings: [], recommended: [], canArchive: true },
+    };
+    await act(async () => root.render(<DecisionBar scene={trialScene} state="ready" onRun={onRun} onArchive={() => {}} />));
+    expect(host.querySelector('[data-testid="scene-trial-ready"]').textContent).toContain("只跑了规划、首稿和硬质检");
+    await act(async () => { host.querySelector('[data-testid="scene-trial-continue"]').click(); });
+    expect(onRun).toHaveBeenLastCalledWith("", { continueTrial: true });
+
+    await act(async () => root.render(<DecisionBar scene={{ ...trialScene, trial: false }} state="ready" onRun={onRun} onArchive={() => {}} />));
+    expect(host.querySelector('[data-testid="scene-trial-ready"]')).toBeNull();
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   it("aborts an in-flight job-specific GET instead of merely ignoring its response", async () => {
     const { mod, client } = await loadSceneRun();
     client.apiPost.mockImplementation((url) => {

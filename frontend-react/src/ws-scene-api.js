@@ -105,7 +105,9 @@ function scnPollJob(job, trackedGet, signal) {
 
 /* ---- 完整一跑（FE-ALIGN F6）：投递 run job → 等终态 → workbench 取产出 ----
    第三个参数是旧签名留下的位置（冒烟脚本与测试仍按四参调用），不再使用。
-   lifecycle：{ signal, runPolicy, resumeBudget, onJobCreated(job, sceneId), waitForTerminal(job, sceneId) } */
+   lifecycle：{ signal, runPolicy, resumeBudget, stopAfter, continueTrial, onJobCreated(job, sceneId), waitForTerminal(job, sceneId) }
+   stopAfter: "hard_qc" = 快速试写（首稿过了硬质检就停）；continueTrial = 试写之后继续跑完（后端接上一次的检查点，
+   指令与运行策略照试写那次）。 */
 async function scnRun(item, note, _prevText, lifecycle = {}) {
   const signal = lifecycle && lifecycle.signal;
   const trackedGet = (path) => signal ? apiGet(path, { signal }) : apiGet(path);
@@ -127,6 +129,8 @@ async function scnRun(item, note, _prevText, lifecycle = {}) {
   }
   if (authorNote) body.author_note = authorNote;
   if (lifecycle && lifecycle.resumeBudget === true) body.resume_budget = true;
+  if (lifecycle && lifecycle.stopAfter === "hard_qc") body.stop_after = "hard_qc";
+  if (lifecycle && lifecycle.continueTrial === true) body.continue_trial = true;
   let job;
   try {
     job = await trackedPost(`/api/v1/scenes/${sceneId}/run/jobs`, body);

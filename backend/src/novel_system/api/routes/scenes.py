@@ -201,12 +201,29 @@ def create_scene_run_job(
             if body.get("resume_budget") is True
             else None
         )
+        author_note = body.get("author_note")
+        run_policy = _parse_run_policy(body)
+        trial_resume_parent_execution_id = None
+        if body.get("continue_trial") is True:
+            # 试写之后「继续跑完」：接服务端记着的那次执行；指令与运行策略照那次任务（续跑的 bundle 冻结了指令）
+            if body.get("stop_after") or body.get("resume_budget"):
+                raise DomainError(
+                    "RUN_TRIAL_RESUME_CONFLICT",
+                    "continue_trial cannot be combined with stop_after or resume_budget",
+                    status_code=422,
+                    details={"scene_id": scene_id},
+                )
+            trial_resume_parent_execution_id, parent_payload = service.resolve_trial_resume(scene_id)
+            author_note = parent_payload.get("author_note")
+            run_policy = str(parent_payload.get("run_policy") or "reliable")
         job = service.create_job(
             scene_id,
             actor_ref=actor_ref,
-            author_note=body.get("author_note"),
-            run_policy=_parse_run_policy(body),
+            author_note=author_note,
+            run_policy=run_policy,
             budget_resume_parent_execution_id=budget_resume_parent_execution_id,
+            stop_after=body.get("stop_after"),
+            trial_resume_parent_execution_id=trial_resume_parent_execution_id,
         )
         return service.serialize_job(job)
 

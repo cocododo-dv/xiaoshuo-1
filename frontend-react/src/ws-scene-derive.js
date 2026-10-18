@@ -52,8 +52,12 @@ const RUN_JOB_STEP_LABELS = {
   near_final: "近终稿",
   // Best-of-N 关键场景的暂停点：管线停在这里等作者盲选一稿（过去原样回显英文词）
   awaiting_candidate_selection: "等你终选",
+  // 快速试写：管线过了硬质检就停，等作者读试写稿、决定要不要「继续跑完」
+  trial_draft_ready: "试写稿",
   archived: "已归档",
 };
+/* 快速试写停下时的场景状态（后端 scene_run_checkpoint.TRIAL_SCENE_STATUS） */
+const TRIAL_PIPE_STATE = "trial_draft_ready";
 const RUN_JOB_STYLE_FIRST_DRAFT_LABEL = "首稿（作者手笔）";
 function runJobStepLabel(step, draftMode) {
   const token = step == null ? "" : String(step);
@@ -77,6 +81,7 @@ function scnRunStageIndex(token) {
   const t = String(token || "");
   if (!t) return -1;
   if (t === "archived") return 6;
+  if (t === TRIAL_PIPE_STATE) return 2;
   // 顺序有讲究：hard_qc_*_rewrite_required 同时含 rewrite，必须先认成硬质检
   if (t.includes("soft_qc")) return 4;
   if (t.includes("hard_qc")) return 2;
@@ -501,6 +506,7 @@ function scnRunRecordFromWorkbench(wb, { job = null, authorNote = "", pipeState 
   record.styleWindows = scnStyleWindowsFrom(wb);
   record.styleFidelity = scnStyleFidelityFrom(wb);
   record.budgetBlock = budgetBlock;
+  record.trial = record.pipeState === TRIAL_PIPE_STATE;
   return record;
 }
 
@@ -509,6 +515,7 @@ const AUTHOR_NOTE_LIMIT = 2000;
 
 export {
   AUTHOR_NOTE_LIMIT,
+  TRIAL_PIPE_STATE,
   stateLabelOf, stateToneOf,
   RUN_JOB_POLLING_STATUSES, RUN_JOB_CANCELABLE_STATUSES, RUN_JOB_TERMINAL_STATUSES, RUN_JOB_STATUS_LABELS,
   runJobStepLabel, RUN_STAGES, scnRunStageIndex, scnPipeStepName, scnDraftModeFrom,
