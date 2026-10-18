@@ -54,6 +54,22 @@ const MINE_VIEW = {
   },
 };
 
+const PLAN_VIEW = {
+  ...AI_VIEW,
+  plan_check: {
+    version: "plan_check_v1",
+    reviewed_at: "2026-10-18T09:00:00Z",
+    complete: false,
+    missing: ["hook"],
+    items: [
+      { id: "goal", label: "目标", planned: "从档案室取出旧信", grade: "kept", grade_label: "照办", evidence_excerpt: "林昭推开档案室的门", located: true, note: "她进了档案室。" },
+      { id: "setback", label: "挫折", planned: "旧信被人先一步取走", grade: "partly", grade_label: "部分偏离", evidence_excerpt: "柜子里空了", located: true, note: "没写谁取的。" },
+      { id: "must_withhold", label: "先别揭", planned: "取信的是她哥哥", grade: "missed", grade_label: "明显偏离", evidence_excerpt: "他哥哥刚来过", located: false, note: "直接说出来了。" },
+      { id: "hook", label: "钩子", planned: "门缝里塞进一张字条", grade: null, grade_label: "没回", evidence_excerpt: "", located: false, note: "" },
+    ],
+  },
+};
+
 describe("AI 写前笔记", () => {
   const mounted = [];
   beforeEach(() => { vi.resetModules(); });
@@ -160,5 +176,40 @@ describe("AI 写前笔记", () => {
     expect(readOnly.querySelector('[data-testid="scene-blueprint-plan"]')).toBeNull();
     await act(async () => { button(readOnly, "展开").click(); });
     expect(readOnly.querySelector('[data-testid="scene-blueprint-plan"]')).toBeTruthy();
+  });
+
+  it("写后对照：逐条给等级、原句与计划，漏答的条目单独说明；收起时头部也标出偏离几条", async () => {
+    const { SceneBlueprintNote } = await setup(PLAN_VIEW);
+    const host = await mount(<SceneBlueprintNote sid={SID} editable={false} collapsible defaultOpen={false} />);
+
+    expect(host.querySelector('[data-testid="scene-plan-check-badge"]').textContent).toBe("写后对照：2 条偏离计划");
+    expect(host.querySelector('[data-testid="scene-plan-check"]')).toBeNull();
+    await act(async () => { button(host, "展开").click(); });
+
+    const check = host.querySelector('[data-testid="scene-plan-check"]');
+    expect(check.textContent).toContain("照办 1 · 部分偏离 1 · 明显偏离 1");
+    const rows = [...check.querySelectorAll(".sbn-row")];
+    expect(rows.map((r) => r.dataset.grade)).toEqual(["kept", "partly", "missed", "none"]);
+    expect(rows[0].textContent).toContain("「林昭推开档案室的门」");
+    expect(rows[0].textContent).toContain("计划：从档案室取出旧信");
+    expect(rows[2].textContent).toContain("明显偏离");
+    expect(rows[2].textContent).toContain("正文里没找到");
+    expect(rows[3].textContent).toContain("没回");
+    expect(host.querySelector('[data-testid="scene-plan-check-missing"]').textContent).toContain("评审漏了 1 条");
+  });
+
+  it("没有写后对照（还没评审 / 没有场景结构）时不出这一组", async () => {
+    const { SceneBlueprintNote } = await setup({ ...AI_VIEW, plan_check: null });
+    const host = await mount(<SceneBlueprintNote sid={SID} />);
+    expect(host.querySelector('[data-testid="scene-plan-check"]')).toBeNull();
+    expect(host.querySelector('[data-testid="scene-plan-check-badge"]')).toBeNull();
+  });
+
+  it("全部照办时头部写「照计划」", async () => {
+    const kept = { ...PLAN_VIEW.plan_check, complete: true, missing: [], items: PLAN_VIEW.plan_check.items.slice(0, 1) };
+    const { SceneBlueprintNote } = await setup({ ...AI_VIEW, plan_check: kept });
+    const host = await mount(<SceneBlueprintNote sid={SID} />);
+    expect(host.querySelector('[data-testid="scene-plan-check-badge"]').textContent).toBe("写后对照：照计划");
+    expect(host.querySelector('[data-testid="scene-plan-check-missing"]')).toBeNull();
   });
 });

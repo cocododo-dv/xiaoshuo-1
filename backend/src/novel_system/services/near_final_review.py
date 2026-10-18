@@ -41,6 +41,14 @@ from novel_system.services.near_final_payload import (
     _promotion_blockers_from_acceptance,
     should_rewrite,
 )
+from novel_system.services.plan_check import (
+    PLAN_CHECK_KEY,
+    apply_plan_check_schema,
+    normalize_plan_check,
+    plan_check_findings,
+    plan_check_prompt,
+    plan_items_from_bundle,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.scene_lookup import require_scene
 from novel_system.services.style_reference.policy import STYLE_REFERENCE_FAIL_CLOSED_ERRORS
@@ -122,6 +130,11 @@ class NearFinalAcceptanceService:
         scene = require_scene(self.session, scene_id)
         prompt = self.prompt_builder.build(bundle["snapshot"], "near_final_acceptance_review")
         user_prompt = _acceptance_user_prompt(prompt["user_prompt"], source_content=source_content)
+        # 2026-10-18 终稿逐条复核：这一场冻结的场景结构里写了的条目附在末尾，schema 按条目生成（plan_check.py）
+        items = plan_items_from_bundle(bundle)
+        if items:
+            user_prompt = f"{user_prompt}\n\n{plan_check_prompt(items)}"
+        prompt = {**prompt, "structured_schema": apply_plan_check_schema(prompt.get("structured_schema"), items)}
         # 2026-09-09 样例优先:验收评审拿到与 style_draft 相同的 [STYLE_REFERENCE] 前缀(同一冻结
         # 契约、同一组样例窗口),「author voice match」对照参考原文而不是评审的默认口味;
         # 注入失败只降级,不阻断评审。
@@ -142,9 +155,14 @@ class NearFinalAcceptanceService:
                 source_draft_content=source_content,
                 execution_step_key=execution_step_key,
             )
-            payload = _normalize_acceptance_payload(
-                node_result.response.structured_output, schema=prompt.get("structured_schema")
+            structured = node_result.response.structured_output
+            payload = _normalize_acceptance_payload(structured, schema=prompt.get("structured_schema"))
+            plan_check = normalize_plan_check(
+                structured.get(PLAN_CHECK_KEY) if isinstance(structured, dict) else None, items, source_content
             )
+            # 不改变放行：只把逐条结果带上，偏离的几条另作发现进评审记录（诊断抽屉读它们）
+            payload["plan_check"] = plan_check
+            payload["findings"] = [*payload.get("findings", []), *plan_check_findings(plan_check)]
             llm_call_id = node_result.llm_call_id
         except LLMNodeExecutionError as exc:
             llm_call_id = self._ledgered_failure_llm_call_id(
@@ -199,6 +217,8 @@ class NearFinalAcceptanceService:
                 "execution_step_key": execution_step_key,
                 # 阶段 D：场景三问随评审记录持久化，工作台 / 目录按最近一次评审透出
                 "scene_story_check": payload.get("scene_story_check"),
+                # 2026-10-18：终稿逐条复核（写前笔记与工作台读它）；没有场景结构 / 评审执行失败 → None
+                "plan_check": payload.get("plan_check"),
             },
         )
         self.session.flush()

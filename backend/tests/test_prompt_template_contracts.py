@@ -244,6 +244,8 @@ BEHAVIOUR: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "near_final_acceptance_review": (
         (
             "Always fill scene_story_check",
+            "fill plan_check with exactly one entry for every id it lists",
+            "issue (one Chinese sentence naming what is wrong), evidence_excerpt",
             "never use a 0–1 or 0–100 scale",
             "target (what to change), issue (what is wrong), fix_direction (how to fix it)",
             "If no [STYLE_REFERENCE] block is present, do not pass scenes",

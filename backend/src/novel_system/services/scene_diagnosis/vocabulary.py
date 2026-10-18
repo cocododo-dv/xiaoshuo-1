@@ -48,6 +48,18 @@ REVIEW_DIMENSION_LABELS: dict[str, str] = {
     "structure": "结构",
     "scene_form": "场景形态",
     "source_text": "正文",
+    # 准终稿验收评审的维度（near_final_payload.SCENE_ACCEPTANCE_SCORE_KEYS）与终稿逐条复核（plan_check.PLAN_DIMENSION）
+    "story_necessity": "这一场的必要",
+    "character_pressure": "人物压力",
+    "forced_choice_pressure": "被逼的选择",
+    "dialogue_edge": "对白的锋芒",
+    "information_release": "信息释放",
+    "prose_freshness": "文字新鲜",
+    "ending_drive": "结尾推力",
+    "continuity": "连续性",
+    "author_voice_match": "作者口吻",
+    "reference_safety": "原文安全",
+    "plan_adherence": "计划对照",
 }
 CRAFT_LABELS: dict[str, str] = {
     "adjacent_echo": "贴邻叠句",

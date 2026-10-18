@@ -58,6 +58,7 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 - `rules`：`literary_quality.analyze_literary_quality` 的 21 维。每条规则发现现在带 `needle`（命中的词 / 句）与 `anchor`（`text` / `ending` / `scene`），`rule_signal_id` 由「命中了什么」而不是「在第几段」算出（`rules:<dimension>:<8 hex of needle>`，缺席类 `rules:<dimension>:scene`，结尾类 `…:ending`）——前面加一段、别处改几个字，id 不变，「忽略」跟着发现走。中文问题 / 改法在 `literary_quality.DIMENSION_NOTES`，唯一一份。
 - `craft`：原写作台的三条本地规则搬到服务端（`craft_findings`）：贴邻叠句（taste）、段落偏长（info，>170 字）、连续三句同字开头（info）。有风格绑定时按参考作者校准（§7.1）：阈值取参考书段长的长尾，参考作者常用的叠句 / 句首重复不提示。
 - `review`：起草台准定稿评审（`writer_evaluations` 里 rubric `near_final_acceptance_v1`）最近一行的发现，含 `failure_class` 与 `revision_brief`。
+  2026-10-18：评审模板 v12 起每条发现带 `issue` / `evidence_excerpt` / `recommendation`（v11 只有 `dimension` / `evidence` / `severity`，抽屉一条都显示不出来；旧行按 `evidence` 当问题说明读，在正文里找得到就钉段）；终稿逐条复核（`services/plan_check.py`）里部分偏离 / 明显偏离的条目也作为发现进来（维度 `plan_adherence`「计划对照」，明显偏离 = revision，部分偏离 = info）。
 - `ai`：写作台的 AI 深评（rubric `literary_revision_v1`）最近一行的发现、`revision_brief`、各镜头分数。
 
 **钉到段落**：正文是作者稿 HTML；`manuscript_html.manuscript_paragraphs` 按写作台编辑器的 `querySelectorAll("p, blockquote")` 同一规则拆段（含嵌套、文档序），`paragraph_index` 就是编辑器里的段序号，`start / end` 是这一段可见文字里的偏移；先按偏移取 Range，对不上再按证据文字在那一段找，再全文找。`plain_manuscript_text` 是规则引擎、成稿门与诊断共同吃的那份可见文字——过去规则直接吃 HTML，「第一句」里带着 `<p>`，同一条发现在两个页面算出两个 id。

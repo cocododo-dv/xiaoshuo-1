@@ -1616,7 +1616,11 @@ templates:
     # 2/3 次 scores 为空）；有风格块时所有「怎么写」的判断以参考作者为准，不按房风扣分。评审只拿 4 窗样例。
     # 2026-09-23 风格参考 v3 收尾 v11：findings / revision_brief 的成员声明 properties（就是提示词里说的那几个键）——
     # 按 schema 约束解码的中转对没声明 properties 的成员只解出 {}（真实安装上本模板出过 findings = [{}]）。
-    version: "2026-09-23.v11"
+    # 2026-10-18 v12 终稿逐条复核（services/plan_check.py）：user 消息末尾有 Plan Items 段时，按条回 plan_check（照办 / 基本照办 /
+    # 部分偏离 / 明显偏离 + 正文原句 + 一句话）——硬 QC 只核首稿，之后的整场改写没有逐条结论；schema 的 plan_check 由代码按这一场
+    # 的条目动态生成（每个条目 id 一个必填成员）。findings 改用诊断抽屉认的键（issue / evidence_excerpt / recommendation）：
+    # v11 的 dimension / evidence / severity 没有 issue，诊断抽屉一条都显示不出来（实库 SC04 / SC05）。
+    version: "2026-10-18.v12"
     input_token_budget: 96000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
@@ -1634,7 +1638,8 @@ templates:
       Always fill scene_story_check, the author's post-draft triage of this one scene: crucible_identified (true when a reader can tell from the prose alone what traps the POV character in this scene and why they cannot simply leave), shape_landed (true when the scene's designed beats — the proactive or reactive trio — actually happen on the page in order, with the cost visible; when no Scene Structure section exists, judge the shape the prose itself sets up), verdict ("yes" = the scene works as a story unit and belongs in the book; "no" = it does not work as written — it should be rewritten from its plan or cut; "maybe" = it can be fixed with targeted revision), and note (one Chinese sentence naming the single most important thing that makes it a yes, a no, or a maybe; when the Scene Structure section states Reader should feel, say in the same sentence whether the prose actually delivers that feeling). scene_story_check is advisory triage for the author; it must not change near_final_status or pass_flag, which follow the readiness dimensions above.
       If the scene is ready, near_final_status must be near_final_ready and pass_flag true. Otherwise near_final_status must be revision_required and pass_flag false.
       This review checks whether the scene's contractual promises are fulfilled, not hard factual correctness — that is hard_qc's job. Go clause by clause against the execution contract and architecture artifacts rather than re-checking facts from scratch.
-      Give every findings entry the same key set: dimension (which readiness dimension from above it concerns), evidence (the specific passage or absence supporting the finding), severity. Give every revision_brief entry: target (what to change), issue (what is wrong), fix_direction (how to fix it).
+      Give every findings entry the same key set: dimension (which readiness dimension from above it concerns), issue (one Chinese sentence naming what is wrong), evidence_excerpt (the shortest verbatim quote from the draft that shows it, copied exactly; empty when the problem is an absence), severity (revision = should be fixed, taste = a matter of taste, info = worth knowing), recommendation (one Chinese sentence on how to fix it). Give every revision_brief entry: target (what to change), issue (what is wrong), fix_direction (how to fix it).
+      When a Plan Items section ends this message, fill plan_check with exactly one entry for every id it lists, judging the draft under review as it stands — not the plan, not earlier drafts. grade: kept (the item happens on the page as planned), mostly (it happens with small departures), partly (only part of it happens, or it is changed in a way that matters), missed (it does not happen, or the prose does the opposite). For must_withhold, kept means the prose does not reveal it and missed means it is revealed; for pov, kept means the scene stays in that character's point of view throughout. evidence_excerpt: the shortest verbatim quote from the draft that shows the item landing — or, for a departure, the passage that departs; for must_withhold, the passage that gives it away — copied exactly, empty when the item is simply absent. note: one Chinese sentence on what the prose actually does with the item. plan_check is a report for the author; it never changes near_final_status, pass_flag or the scores.
       Fill every scores key — story_necessity, character_pressure, forced_choice_pressure, dialogue_edge, information_release, prose_freshness, ending_drive, continuity, author_voice_match, model_voice_risk, reference_safety — with a number from 0 to 10 (10 = fully ready on that dimension; for model_voice_risk 10 means no model voice at all), and overall_score with your overall readiness on the same 0–10 scale; one decimal is enough, and never use a 0–1 or 0–100 scale. overall_score is a judgement of the whole scene, not the highest dimension.
       When a [STYLE_REFERENCE] block is present, the reference author is the standard for every judgement of manner: author_voice_match, prose_freshness and model_voice_risk measure how close the prose is to the [风格样例], a device the samples use again and again is the voice rather than staleness, and narratorial comment, humour, asides, pop-culture or everyday comparisons, colloquial speech, or a summarising close that the samples also use never lower a score.
     structured_schema:
@@ -1728,12 +1733,26 @@ templates:
           items:
             type: object
             additionalProperties: true
+            required:
+              - dimension
+              - issue
+              - evidence_excerpt
+              - severity
+              - recommendation
             properties:
               dimension:
                 type: string
-              evidence:
+              issue:
+                type: string
+              evidence_excerpt:
                 type: string
               severity:
+                type: string
+                enum:
+                  - revision
+                  - taste
+                  - info
+              recommendation:
                 type: string
         revision_brief:
           type: array
@@ -1772,6 +1791,12 @@ templates:
                 - maybe
             note:
               type: string
+        # 占位：真正下发的 plan_check 由 services/plan_check.apply_plan_check_schema 按这一场的条目生成（每个条目 id 一个必填成员，
+        # 成员 = grade（kept / mostly / partly / missed）+ evidence_excerpt + note）；这一场没有场景结构时整个去掉
+        plan_check:
+          type: object
+          additionalProperties: true
+          properties: {}
 
   writer_passage_patch:
     # 2026-09-14 保真修补 WP6.3 v3：项目 / 场景有风格绑定时补丁拿到 [STYLE_REFERENCE]（k≤3 样例窗口），在参考作者

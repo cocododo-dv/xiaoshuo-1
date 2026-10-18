@@ -14,6 +14,8 @@
   否则这一场暂时没有笔记，下一次起草（或「重做」）现做。
 - 重做（:meth:`regenerate`）：蓝图与人物压力都按现在的设计重做（两次模型调用；本章还没有章节蓝图时起草本来也要先做
   一份，这里同样会做）。我的版本也随之让位。
+- 写后对照（``plan_check``，2026-10-18）：最近一次准终稿评审对这一场场景结构的逐条复核（``services/plan_check.py``），
+  评的是 AI 交出的准终稿；作者之后在写作台改过的地方不在里面。没有评审 / 没有场景结构 → ``None``。
 
 起草任务在跑时不许改、不许重做（409 ``RUN_JOB_IN_PROGRESS``）；批准过的章锁着（``chapter_approval``）。
 """
@@ -25,7 +27,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import GenerationPlanningArtifact, OperationLog, SceneBlueprint, SceneCard, SceneRunState
+from novel_system.db.models import (
+    AttemptTracker,
+    GenerationPlanningArtifact,
+    OperationLog,
+    SceneBlueprint,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.near_final_planning import (
@@ -108,7 +117,21 @@ class SceneBlueprintViewService:
             "running": self._running(scene.scene_id),
             "blueprint": self._blueprint_view(scene, row),
             "character_pressure": _pressure_view(pressure),
+            "plan_check": self._plan_check(scene.scene_id),
         }
+
+    def _plan_check(self, scene_id: str) -> dict[str, Any] | None:
+        """最近一次准终稿评审的逐条复核（随评审的尝试记录存）；那一次没有逐条结果 → None。"""
+        attempt = self.session.execute(
+            select(AttemptTracker)
+            .where(AttemptTracker.scene_id == scene_id, AttemptTracker.step == "near_final_acceptance_review")
+            .order_by(AttemptTracker.attempt_id.desc())
+        ).scalars().first()
+        details = attempt.details_json if attempt is not None and isinstance(attempt.details_json, dict) else {}
+        check = details.get("plan_check")
+        if not isinstance(check, dict):
+            return None
+        return {**check, "reviewed_at": attempt.created_at}
 
     def _blueprint_view(self, scene: SceneCard, row: SceneBlueprint | None) -> dict[str, Any] | None:
         if row is None:

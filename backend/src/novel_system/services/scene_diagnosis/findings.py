@@ -311,6 +311,12 @@ def evaluation_findings(
             continue
         issue_text = str(item.get("issue") or "").strip()
         recommendation = str(item.get("recommendation") or "").strip()
+        # 准终稿评审 v11（2026-09-23 → 10-18）的发现只有 dimension / evidence / severity：没有 issue，以前整条被跳过
+        # （实库 SC04 / SC05 的评审发现一条都没进抽屉）。evidence 有时是原句、有时是说明——当作问题说明给作者看，
+        # 在正文里找得到就钉住
+        legacy_evidence = str(item.get("evidence") or "").strip() if isinstance(item.get("evidence"), str) else ""
+        if not issue_text and not recommendation and legacy_evidence:
+            issue_text = legacy_evidence
         if not issue_text and not recommendation:
             # 真实安装上见过的空成员（schema-enforcing 中转把没声明 properties 的成员解码成 {}）：
             # 没有一个字可给作者看，不当作一条「unknown」发现列出来
@@ -318,6 +324,11 @@ def evaluation_findings(
         dimension = str(item.get("dimension") or item.get("category") or item.get("kind") or "").strip() or "review_note"
         excerpt = compact_ws(str(item.get("evidence_excerpt") or ""))
         evidence = locate(text.paragraphs, needle=excerpt, excerpt=excerpt) if excerpt else None
+        if evidence is None and not excerpt and legacy_evidence:
+            legacy_needle = compact_ws(legacy_evidence)
+            evidence = locate(text.paragraphs, needle=legacy_needle, excerpt=legacy_needle)
+            if evidence is not None:
+                excerpt = legacy_needle
         if evidence is None and origin_kind == "passage":
             # 局部深评没引到原句时，仍然钉在它看的那（第一）段上
             focus_list = [int(value) for value in (meta.get("focus_paragraphs") or []) if isinstance(value, int)]

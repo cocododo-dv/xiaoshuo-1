@@ -5,8 +5,10 @@ import { createSubscribers } from "./lib/store-utils.js";
    WsSceneBlueprint — AI 起草台「AI 写前笔记」的 store（界面在 ws-scene-blueprint.jsx）
 
    后端契约（services/scene_blueprint_view.py，/api/v1/scenes/{sid}/blueprint）：
-   · GET —— { scene_form, running, blueprint, character_pressure }。blueprint 逐格带 origin：plan（第 10 步写下的那一格
+   · GET —— { scene_form, running, blueprint, character_pressure, plan_check }。blueprint 逐格带 origin：plan（第 10 步写下的那一格
      落地而来）/ ai（第 10 步里没有，AI 加的）/ author（我的版本）；我的版本留下来之后构思或参考书又改过时带 design_changed。
+     plan_check 是最近一次准终稿评审的写后对照（services/plan_check.py：每条 { id, label, planned, grade, evidence_excerpt,
+     located, note }，grade ∈ kept / mostly / partly / missed，没回为 null；没有评审或没有场景结构时为 null）。
    · PUT { fields } —— 保存成我的版本（起草优先用它，设计再变也不作废）。
    · POST restore-ai —— 我的版本让位，被它顶下去的 AI 版（设计没再变过的话）回来。
    · POST generate —— 蓝图与人物压力按现在的设计重做（要模型；没配好时后端 409，错误原样挂进桶）。
@@ -47,6 +49,28 @@ function sbFields(list) {
   })).filter((f) => f.key);
 }
 
+const PLAN_GRADES = ["kept", "mostly", "partly", "missed"];
+
+function sbPlanCheck(raw) {
+  if (!raw || !Array.isArray(raw.items)) return null;
+  const items = raw.items.filter((it) => it && it.id).map((it) => ({
+    id: String(it.id),
+    label: String(it.label || it.id),
+    planned: String(it.planned || ""),
+    grade: PLAN_GRADES.includes(it.grade) ? it.grade : null,
+    evidence: String(it.evidence_excerpt || ""),
+    located: !!it.located,
+    note: String(it.note || ""),
+  }));
+  if (!items.length) return null;
+  return {
+    items,
+    departures: items.filter((it) => it.grade === "partly" || it.grade === "missed").length,
+    missing: items.filter((it) => !it.grade).length,
+    reviewedAt: String(raw.reviewed_at || ""),
+  };
+}
+
 /* 后端回包 → 视图形状 */
 function sbAdapt(data) {
   if (!data) return null;
@@ -70,6 +94,7 @@ function sbAdapt(data) {
       createdAt: pressure.created_at || "",
       fields: sbFields(pressure.fields).map(({ key, value }) => ({ key, value })),
     } : null,
+    planCheck: sbPlanCheck(data.plan_check),
   };
 }
 

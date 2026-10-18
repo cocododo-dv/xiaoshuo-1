@@ -137,6 +137,7 @@
  "test_orchestrator_branch_rules.py": 4.84,
  "test_orchestrator_flow.py": 6.76,
  "test_periodic_heartbeat.py": 0.16,
+ "test_plan_check.py": 2.0,
  "test_pov_finding_desensitization.py": 0.3,
  "test_pov_knowledge_projection.py": 0.67,
  "test_pricing.py": 0.07,

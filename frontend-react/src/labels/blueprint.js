@@ -1,7 +1,8 @@
 /* ==========================================================
    labels/blueprint.js — AI 写前笔记的叫法（场景蓝图与人物压力的格子、每一格的来源）
    后端字段见 services/scene_blueprint.py（SCENE_BLUEPRINT_FIELDS / SCENE_BLUEPRINT_FACT_FIELDS）与
-   services/near_final_planning.py（CHARACTER_PRESSURE_FIELDS）；来源判法见 services/scene_blueprint_view.py。
+   services/near_final_planning.py（CHARACTER_PRESSURE_FIELDS）；来源判法见 services/scene_blueprint_view.py；
+   写后对照的等级见 services/plan_check.py（GRADE_LABELS）。
    ========================================================== */
 
 export const BLUEPRINT_FIELD_LABELS = Object.freeze({
@@ -32,6 +33,21 @@ export const BLUEPRINT_ORIGIN_LABELS = Object.freeze({
   plan: "照第 10 步",
   ai: "AI 加的",
   author: "我的版本",
+});
+
+/* 写后对照：准终稿评审对照第 10 步每一条的结论（没回 = 评审漏了这一条） */
+export const PLAN_GRADE_LABELS = Object.freeze({
+  kept: "照办",
+  mostly: "基本照办",
+  partly: "部分偏离",
+  missed: "明显偏离",
+});
+
+export const PLAN_GRADE_TONES = Object.freeze({
+  kept: "ok",
+  mostly: "neutral",
+  partly: "warn",
+  missed: "danger",
 });
 
 export function blueprintFieldLabel(key) {

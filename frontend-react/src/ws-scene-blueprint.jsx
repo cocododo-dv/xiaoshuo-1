@@ -3,13 +3,15 @@ import { I } from "./icons.jsx";
 import { WsSceneBlueprint } from "./ws-scene-blueprint-store.js";
 import { EmptyState, Notice, Tag } from "./ws-ui.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
-import { BLUEPRINT_ORIGIN_LABELS, blueprintFieldLabel } from "./labels/blueprint.js";
+import { BLUEPRINT_ORIGIN_LABELS, PLAN_GRADE_LABELS, PLAN_GRADE_TONES, blueprintFieldLabel } from "./labels/blueprint.js";
 
 /* ==========================================================
    AI 起草台 · AI 写前笔记（store 是 ws-scene-blueprint-store.js 的 WsSceneBlueprint）
    起草前 AI 对这一场「怎么演」的理解：场景蓝图 + 人物压力，起草时和设计卡一起读。蓝图分两组摆：「照第 10 步」是
    第 10 步写下的那几格落地而来，「AI 加的」是第 10 步里没有、AI 自己添的——作者一眼看出它往设计里加了什么。
    可以改成我的版本（起草优先用、构思再改也不作废）、恢复 AI 版、让 AI 重做。起草任务在跑时只读。
+   写后对照（SbnPlanCheck）：准终稿评审逐条对照第 10 步——照办 / 基本照办 / 部分偏离 / 明显偏离，带正文原句；收起时头部
+   也标出偏离几条。它评的是 AI 交出的准终稿，不拦任何东西；偏离的几条也进诊断抽屉。
    editable=false：只读（起草中、看稿时）。collapsible：头部一行可收起（看稿时默认收着）。
    ========================================================== */
 
@@ -49,6 +51,44 @@ function SbnGroup({ origin, fields, hint }) {
   );
 }
 
+function SbnPlanCheck({ check }) {
+  const counts = Object.keys(PLAN_GRADE_LABELS)
+    .map((g) => [g, check.items.filter((it) => it.grade === g).length])
+    .filter(([, n]) => n > 0)
+    .map(([g, n]) => `${PLAN_GRADE_LABELS[g]} ${n}`);
+  return (
+    <div className="sbn-group" data-testid="scene-plan-check">
+      <div className="sbn-group-head">
+        <Tag tone={check.departures ? "warn" : "ok"}>写后对照</Tag>
+        <span className="sbn-hint">
+          准终稿评审逐条对照第 10 步：{counts.join(" · ") || "没有结论"}{check.reviewedAt ? `（${check.reviewedAt.slice(0, 10)}）` : ""}
+        </span>
+      </div>
+      {check.missing > 0 && (
+        <Notice tone="warn" testId="scene-plan-check-missing">评审漏了 {check.missing} 条，标「没回」；下次起草或重新评审时会再问。</Notice>
+      )}
+      <div className="sbn-rows">
+        {check.items.map((it) => (
+          <div className="sbn-row" key={it.id} data-grade={it.grade || "none"}>
+            <span className="sbn-row-k">{it.label}</span>
+            <span className="sbn-row-v">
+              <Tag tone={it.grade ? PLAN_GRADE_TONES[it.grade] : "neutral"}>{it.grade ? PLAN_GRADE_LABELS[it.grade] : "没回"}</Tag>{" "}
+              {it.note}
+              {it.evidence ? (
+                <span className="sbn-plan-quote" title={it.located ? "正文里的原句" : "正文里没找到这句，可能已经改掉了"}>
+                  「{it.evidence}」{it.located ? "" : "（正文里没找到）"}
+                </span>
+              ) : null}
+              <span className="sbn-plan-planned">计划：{it.planned}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="sbn-hint">评的是 AI 交出的准终稿；你之后在写作台改过的地方不在这份对照里。偏离的几条也在诊断抽屉里，偏离得好就逐条忽略。</p>
+    </div>
+  );
+}
+
 function SbnEditor({ fields, values, onChange, disabled }) {
   return (
     <div className="sbn-edit">
@@ -80,6 +120,7 @@ function SceneBlueprintNote({ sid, editable = true, collapsible = false, default
   const data = snap.data;
   const bp = data && data.blueprint;
   const pressure = data && data.pressure;
+  const planCheck = data && data.planCheck;
   const busy = snap.action.busy;
   const running = !!(data && data.running);
   const canWrite = editable && !running && !busy;
@@ -115,6 +156,11 @@ function SceneBlueprintNote({ sid, editable = true, collapsible = false, default
         <span className="sbn-title"><I.Sparkles size={13} /> AI 写前笔记</span>
         {bp ? <Tag tone={mine ? "accent" : "neutral"}>{mine ? "我的版本" : "AI 版"}</Tag> : null}
         {bp && bp.createdAt ? <span className="sbn-hint">{bp.createdAt.slice(0, 10)}</span> : null}
+        {planCheck ? (
+          <Tag tone={planCheck.departures ? "warn" : "ok"} testId="scene-plan-check-badge">
+            {planCheck.departures ? `写后对照：${planCheck.departures} 条偏离计划` : "写后对照：照计划"}
+          </Tag>
+        ) : null}
         {collapsible && (
           <button type="button" className="sbn-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? "收起" : "展开"}
@@ -167,6 +213,8 @@ function SceneBlueprintNote({ sid, editable = true, collapsible = false, default
             <SbnRows fields={pressure.fields.filter((f) => f.value.trim())} />
           </details>
         )}
+
+        {planCheck && <SbnPlanCheck check={planCheck} />}
 
         {editable && (
           <div className="sbn-actions">

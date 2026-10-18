@@ -84,4 +84,6 @@
 .sbn-pressure { padding-top: 8px; border-top: 1px solid var(--line-1); }
 .sbn-pressure summary { cursor: pointer; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
 .sbn-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-top: 4px; }
+.sbn-plan-quote { display: block; margin-top: 2px; color: var(--ink-2); font-family: var(--font-serif); }
+.sbn-plan-planned { display: block; margin-top: 2px; font-size: 11px; color: var(--ink-3); }
 @media (max-width: 900px) { .sbn-row, .sbn-edit-row { grid-template-columns: 1fr; gap: 1px; } }
