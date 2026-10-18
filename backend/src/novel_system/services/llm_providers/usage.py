@@ -80,6 +80,45 @@ def usage_output_tokens(raw_usage: dict[str, Any] | None) -> int | None:
     return None
 
 
+# 提示缓存（2026-10-18）：各家报「这次输入里有多少是从缓存读的 / 新写进缓存的」的键。OpenAI Responses / Chat、
+# Gemini、DeepSeek 的读数是输入数的一部分；Anthropic 的 ``cache_read_input_tokens`` /
+# ``cache_creation_input_tokens`` 不算在它的 ``input_tokens`` 里——所以这里只取原数，不往输入或合计上加减。
+_CACHE_READ_PATHS: tuple[tuple[str, ...], ...] = (
+    ("input_tokens_details", "cached_tokens"),
+    ("prompt_tokens_details", "cached_tokens"),
+    ("cachedContentTokenCount",),
+    ("prompt_cache_hit_tokens",),
+    ("cache_read_input_tokens",),
+)
+_CACHE_WRITE_PATHS: tuple[tuple[str, ...], ...] = (("cache_creation_input_tokens",),)
+
+
+def _first_usage_int(raw_usage: Any, paths: tuple[tuple[str, ...], ...]) -> int | None:
+    if not isinstance(raw_usage, dict):
+        return None
+    for path in paths:
+        value: Any = raw_usage
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        number = usage_int(value)
+        if number is not None:
+            return number
+    return None
+
+
+def usage_cache_tokens(raw_usage: dict[str, Any] | None) -> dict[str, int]:
+    """供应商实报的缓存读 / 写 token：``{"cached_input_tokens": …, "cache_write_input_tokens": …}``，只放报了的键
+    （没报 = 不知道，不当 0）。"""
+    out: dict[str, int] = {}
+    read = _first_usage_int(raw_usage, _CACHE_READ_PATHS)
+    if read is not None:
+        out["cached_input_tokens"] = read
+    write = _first_usage_int(raw_usage, _CACHE_WRITE_PATHS)
+    if write is not None:
+        out["cache_write_input_tokens"] = write
+    return out
+
+
 def _safe_usage_int(value: Any) -> int:
     parsed = usage_int(value)
     return parsed if parsed is not None else 0
@@ -132,6 +171,7 @@ __all__ = [
     "extract_raw_usage",
     "normalize_raw_usage",
     "raw_usage_is_complete",
+    "usage_cache_tokens",
     "usage_output_tokens",
     "wire_usage",
 ]

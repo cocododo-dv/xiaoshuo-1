@@ -87,6 +87,7 @@ from novel_system.services.llm_providers.usage import (
     NormalizedUsage,
     extract_raw_usage,
     normalize_raw_usage,
+    usage_cache_tokens,
 )
 from novel_system.services.llm_scene_fence import (
     consume_scene_provider_attempt as _consume_scene_provider_attempt,
@@ -896,6 +897,8 @@ def _finalize_parent_success(
             "usage_present": response.usage_present,
             "usage_complete": response.usage_complete,
             "usage_overage_tokens": usage_overage_tokens,
+            # 供应商报了才有：提示缓存读 / 写的 token（``usage_cache_tokens``）
+            **usage_cache_tokens(response.raw_usage),
         }
     )
     parent.finish_reason = response.finish_reason

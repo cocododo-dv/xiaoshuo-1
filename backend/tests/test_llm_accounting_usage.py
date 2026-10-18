@@ -222,6 +222,56 @@ def test_complete_provider_usage_is_actual_and_persisted_without_estimate(sessio
     assert attempt.usage_is_estimate is False
     assert (parent.prompt_tokens, parent.completion_tokens, parent.total_tokens) == (13, 7, 20)
     assert parent.usage_is_estimate is False
+    # 没报缓存数 = 不知道：摘要里不出现缓存键，不记成 0
+    assert "cached_input_tokens" not in parent.response_payload_summary
+
+
+@pytest.mark.parametrize(
+    ("raw_usage", "expected"),
+    [
+        ({"input_tokens": 9, "output_tokens": 1, "input_tokens_details": {"cached_tokens": 6}}, {"cached_input_tokens": 6}),
+        ({"prompt_tokens": 9, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 0}}, {"cached_input_tokens": 0}),
+        ({"promptTokenCount": 9, "candidatesTokenCount": 1, "cachedContentTokenCount": 4}, {"cached_input_tokens": 4}),
+        ({"prompt_tokens": 9, "completion_tokens": 1, "prompt_cache_hit_tokens": 7}, {"cached_input_tokens": 7}),
+        (
+            {"input_tokens": 3, "output_tokens": 1, "cache_read_input_tokens": 50, "cache_creation_input_tokens": 20},
+            {"cached_input_tokens": 50, "cache_write_input_tokens": 20},
+        ),
+        ({"input_tokens": 9, "output_tokens": 1}, {}),
+        ({"input_tokens": 9, "output_tokens": 1, "input_tokens_details": {"cached_tokens": "x"}}, {}),
+        (None, {}),
+    ],
+)
+def test_provider_cache_tokens_are_read_from_each_usage_shape(raw_usage, expected) -> None:
+    from novel_system.services.llm_providers.usage import usage_cache_tokens
+
+    assert usage_cache_tokens(raw_usage) == expected
+
+
+def test_reported_cache_reads_land_in_the_ledger_summary_without_touching_the_totals(session) -> None:
+    accounting = _accounting_module()
+    usage = {"input_tokens": 13, "output_tokens": 7, "total_tokens": 20, "input_tokens_details": {"cached_tokens": 8}}
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=5,
+        max_retries=0,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json={"id": "cached", "model": "test-model", "output_text": '{"scene_text":"ok"}', "usage": usage},
+            )
+        ),
+    )
+
+    accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+
+    session.expire_all()
+    parent = session.query(LlmCall).one()
+    assert (parent.prompt_tokens, parent.completion_tokens, parent.total_tokens) == (13, 7, 20)
+    assert parent.response_payload_summary["cached_input_tokens"] == 8
+    assert "cache_write_input_tokens" not in parent.response_payload_summary
 
 
 @pytest.mark.parametrize(
