@@ -15,7 +15,9 @@
 - ``revise_dimensions``：定向修改要改的维（改稿可把至多 2 窗换成示范这些维手法的窗）；
 - ``recent_gaps``：近期常见偏差的白话短语（文风卡末尾补充强调，N7）；
 - ``node_ids``：接收这份提示的模型节点（H1：书的云策略按这些节点的实际路由判；模板可能在几个节点下派发时
-  全部列上，每一个都要满足；空 = 说不出，「仅本机」的书按不许送处理）。
+  全部列上，每一个都要满足；空 = 说不出，「仅本机」的书按不许送处理）；
+- ``exclude_windows``：选窗时跳过这些窗号（2026-10-18，风格棘轮的留出段——没有场景的渲染才用；有场景的冻结
+  选窗不受它影响）。
 """
 
 from __future__ import annotations
@@ -78,6 +80,7 @@ class StyleRenderRequest:
     revise_dimensions: tuple[str, ...] = field(default_factory=tuple)
     recent_gaps: tuple[str, ...] = field(default_factory=tuple)
     node_ids: tuple[str, ...] = field(default_factory=tuple)
+    exclude_windows: tuple[int, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         role = str(self.role or ROLE_DRAFT).strip().lower()
@@ -115,6 +118,7 @@ class StyleRenderRequest:
             self, "recent_gaps", _texts(self.recent_gaps, limit=MAX_RECENT_GAPS, max_chars=RECENT_GAP_MAX_CHARS)
         )
         object.__setattr__(self, "node_ids", normalize_node_ids(self.node_ids))
+        object.__setattr__(self, "exclude_windows", tuple(sorted({int(no) for no in self.exclude_windows or ()})))
 
     def effective_k(self, sample_windows: int) -> int:
         """这一次渲染实际送几窗：绑定的样例窗数 → 角色上限（评审 4 / 规划 3）→ 调用方上限。"""
@@ -143,6 +147,8 @@ class StyleRenderRequest:
             "revise_dimensions": list(self.revise_dimensions),
             "recent_gap_count": len(self.recent_gaps),
             "node_ids": list(self.node_ids),
+            # 只在用到时出现：既有审计的形状不变
+            **({"exclude_windows": list(self.exclude_windows)} if self.exclude_windows else {}),
         }
 
 

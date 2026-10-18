@@ -235,6 +235,11 @@ BEHAVIOUR: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("Keep every event", "Remove the author's characteristic manner", "Do not copy any sentence"),
         ("[STYLE_REFERENCE]",),
     ),
+    # 风格棘轮的情节要点：只说发生什么、不带原文措辞、专名换新（起草提示的红线禁止沿用样例里的专名）
+    "style_ratchet_plot_points": (
+        ("never how the original tells it", "Never reuse the passage's wording", "Replace every proper name"),
+        ("[STYLE_REFERENCE]",),
+    ),
     # 场景验收：场景三问、0–10、简报三键；无风格块时才守房风
     "near_final_acceptance_review": (
         (

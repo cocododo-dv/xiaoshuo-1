@@ -660,6 +660,7 @@ def selection_inputs(policy: Any, request: StyleRenderRequest, *, scene: Any = N
         "dimensions": target_dimensions(policy, request),
         "dialogue_heavy": bool(request.dialogue_heavy),
         "rendering_mode": request.rendering_mode,
+        **({"exclude_windows": list(request.exclude_windows)} if request.exclude_windows else {}),
     }
 
 
@@ -842,8 +843,11 @@ def resolve_scene_selection(
         if not windows:
             return SceneSelection(book_id=book_id, root=root, notices=notices)
     inputs = selection_inputs(policy, request, scene=scene)
+    # 风格棘轮的留出段：选窗时整窗跳过（没有场景的渲染才会带，不进冻结键）
+    excluded = set(request.exclude_windows)
+    pool = [window for window in windows if window.window_no not in excluded] if excluded else windows
     refs = compute_selection(
-        windows,
+        pool,
         k=k,
         seed=selection_seed(policy, request),
         position=inputs["position"],

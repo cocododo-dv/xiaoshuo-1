@@ -257,6 +257,13 @@ def _copy_hits(text: str, indexes: list[_BookCopyIndex]) -> list[CopyHit]:
     return hits
 
 
+def shared_runs(text: str, sources: Iterable[str], *, label: str = "passage") -> list[CopyHit]:
+    """``text`` 里与给定几段文字连续 ≥12（规范化）字相同的区间——与抄袭门同一套规范化、阈值与合并规则，只是比对的
+    是调用方给的文字而不是整本书。风格棘轮用它保证留出段不出现在模型看到的东西里、情节要点不带原文措辞
+    （``style_reference.ratchet``）。命中的 ``book_id`` 是 ``label``。"""
+    return _copy_hits(str(text or ""), [_BookCopyIndex(label, (str(source or "") for source in sources))])
+
+
 def _policy_books_and_profiles(policy: Any) -> tuple[list[str], list[str]]:
     books: list[str] = []
     profiles: list[str] = []
@@ -629,5 +636,6 @@ __all__ = [
     "introduced_copy",
     "protected_term_warning",
     "reset_reference_copy_gate_cache",
+    "shared_runs",
     "unavailable_warning",
 ]

@@ -66,6 +66,8 @@ def cache_key(
             route_token,
             # 没有 bundle 的渲染用的是哪一份冻结选窗（这一场当前 bundle 的，还是自己的 live 行，M4）
             selection_anchor,
+            # 选窗跳过的窗号（风格棘轮的留出段）；没有时不进键，既有的键不变
+            *([f"exclude:{','.join(str(no) for no in request.exclude_windows)}"] if request.exclude_windows else []),
         ]
     )
     return sha256_text(material)

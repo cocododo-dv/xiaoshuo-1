@@ -266,6 +266,7 @@
  "test_style_fidelity_summary_queries.py": 7.31,
  "test_style_fidelity_ui_payloads.py": 0.17,
  "test_style_first_draft.py": 15.5,
+ "test_style_ratchet.py": 4.0,
  "test_style_reference_activity.py": 2.94,
  "test_style_reference_banned_terms.py": 3.61,
  "test_style_reference_binding_apply.py": 0.92,

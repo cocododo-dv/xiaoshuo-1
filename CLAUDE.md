@@ -27,7 +27,7 @@ publication arbiter.
   `backend/tests/fixture_runtime.py` (`seed_runtime_fixture`, also `PRJ_DEMO_CH001`); the product never seeds them.
 - Operator tools, run from `backend/` as `python -m novel_system.tools.<name>`: `reset_author_state`, `db_backup`,
   `compact_db`, `raise_llm_output_budget`, `refresh_style_reference_books`,
-  `purge_style_reference_books`, `build_voice_baseline`. Database writers dry-run unless `--execute`; those that open
+  `purge_style_reference_books`, `build_voice_baseline`, `style_ratchet`. Database writers dry-run unless `--execute`; those that open
   the app's session also refuse `--execute` (exit 2) when the DB revision differs from the code (`tools/_cli.py`).
   Every tool refuses to run another checkout's code (exit 2, `tools/_checkout_guard.py`; Alembic's `env.py` raises).
 
