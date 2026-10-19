@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -44,7 +44,7 @@ from novel_system.services.style_reference.inject.preview import preview_render
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.scene_preview import scene_preview_payload
 from novel_system.services.style_reference.schemas import InjectionPreviewRequest
-from novel_system.services.style_reference.summaries import profile_detail
+from novel_system.services.style_reference.summaries import line_examples_payload, profile_detail
 
 router = APIRouter(tags=ROUTE_TAGS)
 
@@ -124,6 +124,20 @@ def cancel_judge_calibration(
         }
 
     return mutate(request, session, payload={"profile_id": profile_id}, action=_do)
+
+
+@router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}/examples")
+def get_card_line_examples(
+    profile_id: str,
+    line_id: str,
+    request: Request,
+    limit: int = Query(default=400, ge=1, le=2000),
+    session: Session = Depends(get_session),
+):
+    """只读:一句(文风卡句或按场面的句)在全书的全部例子——依据它的发现(通读全书时展开到归并前各批)的全部逐字
+    引文,按原书顺序,带段落序号与章;另给按章计数。句子不在这份画像上 404 ``STYLE_REFERENCE_CARD_LINE_NOT_FOUND``。"""
+    profile = _profile_or_404(session, profile_id)
+    return respond(request, line_examples_payload(session, profile, line_id, limit=limit))
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/card-lines/{{line_id}}")

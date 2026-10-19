@@ -6,6 +6,7 @@
 - 文风卡合成：每维 1–2 条 do（refs 指向观察）、有避免的维 1 条 avoid，外加气质、规划手法、标题与概述；载荷里有
   上一版文风卡（``previous_card``）时每条 do 都 ``keep`` 上一版同一维同一类的第 i 句（测「在上一版上修订」）；
 - 通读全书的归并（同一个合成节点、载荷带 ``findings``）：陈述一字不差的发现归成一组；
+- 按场面的写法（同一个合成节点、载荷带 ``situation``）：前两条发现各写一句（refs 指向它），有上一版的就 keep；
 - 叙事层在载荷有 ``scope`` 时顺带交结构：每个片段中间那一段换场（地点），每个整章片段一条章法（章号是 4 的倍数 =
   高潮，其余推进；单数章悬念未解、双数章反转；2 条线、1 个视点）；
 - 受保护专名：候选里属于 ``protected`` 的词（kind 按 ``kinds``，缺省 person）；
@@ -126,6 +127,22 @@ def default_structure(payload: dict[str, Any]) -> dict[str, Any]:
                 }
             )
     return {"scene_starts": starts, "chapters": chapters}
+
+
+def default_situation(payload: dict[str, Any]) -> dict[str, Any]:
+    findings = payload.get("findings") or []
+    previous = payload.get("previous_lines") or []
+    situation = payload.get("situation") or ""
+    return {
+        "lines": [
+            {
+                "text": f"写{situation}时先让人物说半句闲话再进正事（第{'一二'[i]}条）",
+                "refs": [findings[i]["ref"]],
+                "keep": previous[i]["id"] if i < len(previous) else "",
+            }
+            for i in range(min(2, len(findings)))
+        ]
+    }
 
 
 def default_consolidate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -276,6 +293,8 @@ class FakeLearnLLM(AccountedGenerateMixin):
                 output.update(default_structure(payload))
             return output
         if node == NODE_SYNTH:
+            if "situation" in payload:
+                return default_situation(payload)
             return default_consolidate(payload) if "findings" in payload else default_card(payload)
         if node == NODE_PROTECTED:
             terms = [
@@ -309,6 +328,7 @@ __all__ = [
     "SimulatedCrash",
     "default_card",
     "default_consolidate",
+    "default_situation",
     "default_structure",
     "default_extract",
     "paragraphs_of",

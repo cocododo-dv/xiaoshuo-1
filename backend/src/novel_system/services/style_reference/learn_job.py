@@ -51,6 +51,7 @@ from novel_system.services.style_reference.learn_llm import (
     LEARN_NODE_IDS,
     load_consolidate_runtime,
     load_learn_runtimes,
+    load_situation_runtime,
 )
 from novel_system.services.style_reference.learn_select import (
     FULL_BATCH_MAX_CHARS,
@@ -61,7 +62,8 @@ from novel_system.services.style_reference.learn_select import (
 )
 from novel_system.services.style_reference.learn_tags import plan_tag_batches
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
-from novel_system.services.style_reference.tags import TAGS_VERSION
+from novel_system.services.style_reference.learn_situations import MIN_WINDOWS as SITUATION_MIN_WINDOWS
+from novel_system.services.style_reference.tags import SITUATION_TAGS, TAGS_VERSION
 from novel_system.services.style_reference.windows import (
     WINDOW_INDEX_VERSION,
     index_marker,
@@ -81,6 +83,8 @@ PHASE_CONSOLIDATE = "consolidate"
 PHASE_SYNTHESIZE = "synthesize"
 PHASE_PROTECTED = "protected"
 PHASE_TAGS = "tags"
+# 通读全书才有：按场面的写法（要用窗口的场面标签，排在打标签之后）
+PHASE_SITUATIONS = "situations"
 PHASE_FINALIZE = "finalize"
 PHASE_ORDER: tuple[str, ...] = (
     PHASE_WINDOWS,
@@ -90,10 +94,13 @@ PHASE_ORDER: tuple[str, ...] = (
     PHASE_SYNTHESIZE,
     PHASE_PROTECTED,
     PHASE_TAGS,
+    PHASE_SITUATIONS,
     PHASE_FINALIZE,
 )
-# 快速学习没有归并步
-QUICK_PHASE_ORDER: tuple[str, ...] = tuple(phase for phase in PHASE_ORDER if phase != PHASE_CONSOLIDATE)
+# 快速学习没有归并步、没有按场面的写法
+QUICK_PHASE_ORDER: tuple[str, ...] = tuple(
+    phase for phase in PHASE_ORDER if phase not in (PHASE_CONSOLIDATE, PHASE_SITUATIONS)
+)
 PHASE_LABELS: dict[str, str] = {
     PHASE_WINDOWS: "整理全书样例窗口",
     PHASE_SELECT: "挑选学习样本",
@@ -102,6 +109,7 @@ PHASE_LABELS: dict[str, str] = {
     PHASE_SYNTHESIZE: "写文风卡",
     PHASE_PROTECTED: "识别本书专名",
     PHASE_TAGS: "给全书片段打标签",
+    PHASE_SITUATIONS: "按场面学写法",
     PHASE_FINALIZE: "写入画像",
 }
 # 通读全书时这几步换个说法
@@ -128,6 +136,7 @@ REASON_CONSOLIDATE_FAILED = "consolidate_failed"
 REASON_SYNTHESIZE_FAILED = "synthesize_failed"
 REASON_PROTECTED_FAILED = "protected_terms_failed"
 REASON_TAGGING_FAILED = "tagging_failed"
+REASON_SITUATIONS_FAILED = "situations_failed"
 REASON_CARD_FILTERED_EMPTY = "card_filtered_empty"
 
 RUN_DISPATCH_STATE = "learn_job"
@@ -286,6 +295,7 @@ def start_learn_job(
     load_learn_runtimes()
     if mode == MODE_FULL:
         load_consolidate_runtime()
+        load_situation_runtime()
     ensure_cloud_llm_allowed(book, operation="learn_style", node_ids=LEARN_NODE_IDS, llm_client=llm_client)
     skipped = _skipped_layers(book, force=force)
     if len(skipped) == len(LAYERS):
@@ -489,6 +499,15 @@ def _full_estimate(
         if found.read_run_id:
             reusable = {"read_at": found.read_at, "run_id": found.read_run_id}
     reading_calls = len(plan) * len(layers)
+    # 按场面的写法：每类够常见的场面一次（按现有窗口标签估；还没打标签时按词表上限估）
+    tagged = [w for w in rows if isinstance(w.tags_json, Mapping) and w.tags_json.get("situations")]
+    counts: dict[str, int] = {}
+    for w in tagged:
+        for situation in set(w.tags_json.get("situations") or []):
+            counts[str(situation)] = counts.get(str(situation), 0) + 1
+    situation_calls = (
+        sum(1 for n in counts.values() if n >= SITUATION_MIN_WINDOWS) if tagged else len(SITUATION_TAGS)
+    )
     return {
         "batches": len(plan),
         "chapters": len(spans),
@@ -499,8 +518,9 @@ def _full_estimate(
             "synthesize": 1,
             "protected": 1,
             "tags": tag_calls,
+            "situations": situation_calls,
         },
-        "est_calls": reading_calls + 16 + 2 + tag_calls,
+        "est_calls": reading_calls + 16 + 2 + tag_calls + situation_calls,
         "est_input_chars": sum(int(batch["chars"]) for batch in plan) * len(layers),
         "reusable": reusable,
     }

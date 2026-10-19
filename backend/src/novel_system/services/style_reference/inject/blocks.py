@@ -26,6 +26,7 @@ from novel_system.services.style_reference.card import (
     EXAMPLE_UNIT_PREFIX,
     LINE_STATE_EXCLUDED,
     UNIT_GAP,
+    UNIT_SITUATION,
     DimensionCard,
     card_from_profile_json,
     line_states_from_profile_json,
@@ -47,6 +48,7 @@ from novel_system.services.style_reference.inject.request import (
 from novel_system.services.style_reference.inject.selection import (
     WindowRef,
 )
+from novel_system.services.style_reference.situation_card import situation_lines_for
 from novel_system.services.style_reference.untrusted_data import (
     FEW_SHOT_FRAME_END,
     NEUTRALIZED_MARK,
@@ -156,6 +158,7 @@ class CardSource:
 
 FIT_EXAMPLE_PREFIX = "__example__:"
 FIT_GAPS_UNIT = "__gaps__"
+FIT_SITUATIONS_UNIT = "__situations__"
 
 
 class DimensionCardSource(CardSource):
@@ -176,8 +179,10 @@ class DimensionCardSource(CardSource):
         recent_gaps: Sequence[str],
         budget_chars: int,
         examples: Mapping[str, str] | None = None,
+        situation_lines: Sequence[tuple[str, str]] = (),
     ) -> None:
         self.card = card
+        self.situation_lines = tuple((str(s), str(t)) for s, t in situation_lines)
         self.role = role
         self.dimension_states = dict(dimension_states)
         self.line_states = dict(line_states)
@@ -190,6 +195,8 @@ class DimensionCardSource(CardSource):
         for unit in reversed(plan.priority):
             if unit.kind == UNIT_GAP:
                 unit_id = FIT_GAPS_UNIT
+            elif unit.kind == UNIT_SITUATION:
+                unit_id = FIT_SITUATIONS_UNIT
             elif unit.unit_id.startswith(EXAMPLE_UNIT_PREFIX):
                 unit_id = FIT_EXAMPLE_PREFIX + unit.unit_id[len(EXAMPLE_UNIT_PREFIX) :]
             else:
@@ -217,6 +224,7 @@ class DimensionCardSource(CardSource):
             budget_chars=self.budget_chars,
             role=ROLE_REVIEW if self.role == ROLE_REVIEW else ROLE_DRAFT,
             examples=examples,
+            situation_lines=() if FIT_SITUATIONS_UNIT in excluded else self.situation_lines,
         )
 
     def render(self, excluded: frozenset[str] = frozenset()) -> str:
@@ -450,11 +458,13 @@ def build_card_source(
     reference_mode: str | None = None,
     recent_gaps: Sequence[str] | None = None,
     protected_terms: Sequence[str] = (),
+    situation_tags: Sequence[str] = (),
 ) -> CardSource | None:
     """v3 文风卡 → :class:`DimensionCardSource`；画像没有文风卡 → ``None``（没有卡替身，2026-09-24）。
 
     ``card_only`` 且允许送原文时给卡句挂 ≤11 字的原话例子（不含 ``protected_terms``，M3）；``recent_gaps``
-    缺省用请求里的（渲染入口传去掉「不学」维之后的，L8）。"""
+    缺省用请求里的（渲染入口传去掉「不学」维之后的，L8）；``situation_tags`` 是这一场的场面标签——画像里有对上的
+    按场面写法（``situation_card``）就放进卡的「这一场的场面」一节。"""
     card = card_from_profile_json(profile_json)
     if card is None:
         return None
@@ -472,6 +482,7 @@ def build_card_source(
         recent_gaps=gaps,
         budget_chars=injection_budget().card_budget_chars,
         examples=examples,
+        situation_lines=situation_lines_for(profile_json, situation_tags),
     )
 
 

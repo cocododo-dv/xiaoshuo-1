@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { STYLE_DIMENSIONS } from "./ws-labels.js";
 import {
+  srCoverageText,
   SR_CLOUD_POLICIES,
   SR_REFERENCE_MODES,
   SR_SEGMENTS_ONLY_LABEL,
@@ -501,5 +502,18 @@ describe("模型在这一步能不能用", () => {
   it("运行时还没读到（null）不拦——服务端是最后一道闸", () => {
     expect(srModelGate(null, { purpose: "classify", cloudPolicy: "local_only" })).toBeNull();
     expect(srModelGate(cloud, { purpose: "nope" })).toBeNull();
+  });
+});
+
+describe("一句文风卡的依据在全书的分布（2026-10-19）", () => {
+  it("贯穿全书 / 散见全书 / 集中在几章 / 只在一章；不知道全书几章时只说几章", () => {
+    const spread = { quotes: 40, chapters: Array.from({ length: 30 }, (_, i) => [i * 2 + 1, 1]).concat([[59, 10]]) };
+    expect(srCoverageText(spread, 60)).toBe("全书 40 处 · 贯穿全书（31/60 章）");
+    expect(srCoverageText({ quotes: 9, chapters: [[3, 2], [31, 3], [50, 4]] }, 60)).toBe("全书 9 处 · 散见全书（3 章）");
+    expect(srCoverageText({ quotes: 20, chapters: [[20, 1], [22, 9], [25, 9], [40, 1]] }, 60)).toBe("全书 20 处 · 集中在第 22–25 章");
+    expect(srCoverageText({ quotes: 3, chapters: [[12, 3]] }, 60)).toBe("全书 3 处 · 只在第 12 章");
+    expect(srCoverageText({ quotes: 5, chapters: [[1, 2], [9, 3]] }, 0)).toBe("全书 5 处 · 分布在 2 章");
+    expect(srCoverageText({ quotes: 0, chapters: [] }, 60)).toBeNull();
+    expect(srCoverageText(null, 60)).toBeNull();
   });
 });

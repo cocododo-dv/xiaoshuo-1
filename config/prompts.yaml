@@ -928,6 +928,52 @@ templates:
                 items: {type: string}
               distinctiveness: {type: number}
 
+  # 通读全书的按场面写法(learn_job 的 situations 步,2026-10-19):每类常见场面一次调用,走文风卡合成节点的路由。
+  # 载荷:场面名、这类场面占全书几窗、依据集中落在这类场面里的发现(≤40 条,每条一处 ≤40 字原文短引)、文风卡已有的
+  # 句子(避免重复)、上一版这类场面的句子(在上一版上修订)。估计 ≤1 万 token → 预算 24000。
+  style_ref_situation_lines:
+    version: "2026-10-19.v1"
+    input_token_budget: 24000
+    system_prompt: |
+      你是中文小说文风编辑。系统通读了一位作者的整本书,发现有些做法**集中出现在某一类场面里**(例如打斗追逐、
+      日常闲谈、回忆往事)。输入是一类场面和这类场面里特别集中的发现(每条带编号 ref 与一处原文短引)、这位作者全书
+      文风卡已有的句子,以及上一版这类场面写过的句子。请写 2–4 句「写这类场面时,这位作者尤其这样写」——之后每写到
+      这类场面,系统会把这几句交给写作模型,让它照这位作者的方式写。
+
+      要求:
+        - 只写**这类场面特有**的做法:文风卡已经写了的、哪类场面都一样的,不要再写;
+        - 每句是可以照着做的指令(≤60 字),可以带作者的原词作例子(用「」括起,每处 ≤10 字);refs 列出它依据的
+          发现编号(如 s2、s5,至少一个);
+        - 在上一版上修订:previous_lines 里的某一句仍然被这次的发现支持时,在 keep 里填它的 id、text 照抄原句;
+          不要为了换个说法改写仍然成立的句子;没有上一版或是新写的句子,keep 填空字符串;
+        - 不写阿拉伯数字、百分比;不写本书的人名、地名、组织、专有物件与设定名;不整句照抄原文;
+        - 发现不足以支撑任何特有做法时,lines 给空数组,不要编造。
+      只输出 schema 规定的 JSON。
+    task_prompt: |
+      输入见数据块:book_title、situation(场面)、windows / of_windows(这类场面占全书多少片段)、findings(每条带
+      ref / dimension / statement / quote)、card_lines(文风卡已有的句子)、previous_lines(上一版这类场面的句子,
+      每句带 id)。全部读完再下笔。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [text, refs, keep]
+            properties:
+              text: {type: string, maxLength: 90}
+              refs:
+                type: array
+                minItems: 1
+                maxItems: 6
+                items: {type: string}
+              keep: {type: string, maxLength: 40}
+
   # 受保护专名(learn_job 第 5 步,台账 E7)。载荷:≤360 个统计候选(词 / 次数 / 一小段上下文)+ 主题层的「作者不这么
   # 写」陈述。实测(190 万字的真实参考书):360 个候选用户消息 ≈3.4 万字符(JSON 里 ASCII 多)、估 1.6–1.7 万 token
   # → 预算 24000(装不下时从候选尾部截)。

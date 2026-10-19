@@ -53,8 +53,9 @@ LEARN_NODE_IDS: tuple[str, ...] = (
     NODE_TAG_WINDOWS,
 )
 
-# 通读全书的归并模板：在文风卡合成节点的路由上跑
+# 通读全书的归并模板、按场面写法模板：都在文风卡合成节点的路由上跑
 CONSOLIDATE_TEMPLATE = "style_ref_consolidate_findings"
+SITUATION_TEMPLATE = "style_ref_situation_lines"
 
 LEARN_CONFIG_MISSING_CODE = "STYLE_REFERENCE_LEARN_CONFIG_MISSING"
 LEARN_CALL_FAILED_CODE = "STYLE_REFERENCE_LEARN_LLM_CALL_FAILED"
@@ -126,6 +127,11 @@ def load_learn_runtimes(
 def load_consolidate_runtime() -> NodeRuntime:
     """通读全书的归并：文风卡合成节点的路由 + 归并模板（缺路由 / 模板同样 409 ``…_LEARN_CONFIG_MISSING``）。"""
     return load_learn_runtimes((NODE_SYNTHESIZE,), template_names={NODE_SYNTHESIZE: CONSOLIDATE_TEMPLATE})[NODE_SYNTHESIZE]
+
+
+def load_situation_runtime() -> NodeRuntime:
+    """通读全书的按场面写法：文风卡合成节点的路由 + 场面模板。"""
+    return load_learn_runtimes((NODE_SYNTHESIZE,), template_names={NODE_SYNTHESIZE: SITUATION_TEMPLATE})[NODE_SYNTHESIZE]
 
 
 def _task_text(runtime: NodeRuntime, extra_instruction: str | None) -> str:
@@ -247,9 +253,11 @@ __all__ = [
     "NODE_PROTECTED_TERMS",
     "NODE_SYNTHESIZE",
     "NODE_TAG_WINDOWS",
+    "SITUATION_TEMPLATE",
     "call_structured",
     "estimate_input_tokens",
     "load_consolidate_runtime",
+    "load_situation_runtime",
     "load_learn_runtimes",
     "payload_fits",
     "render_messages",

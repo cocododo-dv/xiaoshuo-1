@@ -426,6 +426,11 @@ export async function srLoadParagraphs(bookId, start, end) {
 /* ==========================================================
    禁用词（本书专名由学习作业识别；作者自己加的「起草时不许出现」的词）
    ========================================================== */
+/* 一句文风卡（或按场面的句）在全书的全部例子：画像页点开时取，不进缓存（2026-10-19） */
+export async function srLoadLineExamples(profileId, lineId) {
+  return (await apiGet(`${API}/profiles/${encodeURIComponent(profileId)}/card-lines/${encodeURIComponent(lineId)}/examples`)) || null;
+}
+
 export async function srLoadBannedTerms(profileId) {
   return ((await apiGet(`${API}/profiles/${encodeURIComponent(profileId)}/banned-terms`)) || {}).terms || [];
 }

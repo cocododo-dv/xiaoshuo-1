@@ -5,10 +5,11 @@ import { wsConfirm } from "./ws-notify.jsx";
 import { EmptyState, Notice, Segmented, Spinner, Tag } from "./ws-ui.jsx";
 import { styleDimensionLabel } from "./labels/style-reference.js";
 import {
-  SR_DIMENSION_STATES, srBindingOwnedByWork, srDimensionGroups, srFormatWhen, srIsLegacyGlobalBinding, srNormalizeConfig,
+  SR_DIMENSION_STATES, srBindingOwnedByWork, srCoverageText, srDimensionGroups, srFormatWhen, srIsLegacyGlobalBinding,
+  srNormalizeConfig,
 } from "./ws-styleref-model.js";
 import {
-  srAddBannedTerm, srLoadBannedTerms, srLoadProfile, srLoadProjectBinding, srProfileDetail, srProjectBinding,
+  srAddBannedTerm, srLoadBannedTerms, srLoadLineExamples, srLoadProfile, srLoadProjectBinding, srProfileDetail, srProjectBinding,
   srRemoveBannedTerm, srSetCardLineState, srSetDimensionState, srSubscribe,
 } from "./ws-styleref-store.js";
 import { SrErrorLine, srActiveWork, srNotifyError, useSrStore } from "./ws-styleref-ui.jsx";
@@ -160,6 +161,8 @@ export function SrPortrait({ book, go, onAction }) {
                     fidelity={workFid.averages[dim.dimension] || null}
                     gaps={workFid.gapsByDim[dim.dimension] || null}
                     workTitle={(work && work.title) || "当前作品"}
+                    profileId={profile.profile_id}
+                    bookChapters={profile.book_chapters}
                   />
                 ))}
               </ul>
@@ -168,6 +171,7 @@ export function SrPortrait({ book, go, onAction }) {
         </>
       )}
 
+      <SrSituationCard profile={profile} />
       <SrVoiceAndStructure profile={profile} />
       <SrBannedTerms profile={profile} />
     </div>
@@ -175,7 +179,9 @@ export function SrPortrait({ book, go, onAction }) {
 }
 
 /* 一维：标题行（名字、概括、计数、作品在这一维的平均分、状态选择、展开）+ 展开后的对照、各句、手法、作品在这一维 */
-function SrDimensionRow({ dim, state, onSetState, onLineState, fidelity = null, gaps = null, workTitle = "当前作品" }) {
+function SrDimensionRow({
+  dim, state, onSetState, onLineState, fidelity = null, gaps = null, workTitle = "当前作品", profileId = null, bookChapters = 0,
+}) {
   const [open, setOpen] = React.useState(false);
   const bodyId = React.useId();
   const doLines = (dim.lines || []).filter((l) => l.kind !== "avoid");
@@ -222,13 +228,13 @@ function SrDimensionRow({ dim, state, onSetState, onLineState, fidelity = null, 
               {doLines.length > 0 && (
                 <div className="sr-dim-section">
                   <div className="sr-dim-section-label">这位作者</div>
-                  <ul className="sr-lines">{doLines.map((line) => <SrCardLine key={line.line_id} line={line} onState={onLineState} />)}</ul>
+                  <ul className="sr-lines">{doLines.map((line) => <SrCardLine key={line.line_id} line={line} onState={onLineState} profileId={profileId} bookChapters={bookChapters} />)}</ul>
                 </div>
               )}
               {avoidLines.length > 0 && (
                 <div className="sr-dim-section">
                   <div className="sr-dim-section-label">作者不这么写</div>
-                  <ul className="sr-lines">{avoidLines.map((line) => <SrCardLine key={line.line_id} line={line} onState={onLineState} />)}</ul>
+                  <ul className="sr-lines">{avoidLines.map((line) => <SrCardLine key={line.line_id} line={line} onState={onLineState} profileId={profileId} bookChapters={bookChapters} />)}</ul>
                 </div>
               )}
               {dim.devices && dim.devices.length > 0 && (
@@ -244,10 +250,13 @@ function SrDimensionRow({ dim, state, onSetState, onLineState, fidelity = null, 
 }
 
 /* 一句：正文、「必须体现」、✓ / ✗（再点一次取消）、原话 */
-function SrCardLine({ line, onState }) {
+function SrCardLine({ line, onState, profileId = null, bookChapters = 0 }) {
   const [showQuotes, setShowQuotes] = React.useState(false);
   const quotesId = React.useId();
   const toggle = (state) => onState(line.line_id, line.state === state ? null : state);
+  const coverage = srCoverageText(line.coverage, bookChapters);
+  /* 全书的依据比这里列出的多（通读全书时一句背后常有几十处）：展开后给「看全书 N 处例子」 */
+  const allExamples = !!(profileId && line.coverage && Number(line.coverage.quotes) > (line.evidence || []).length);
   return (
     <li className={`sr-line${line.state ? ` is-${line.state}` : ""}`} data-line-id={line.line_id}>
       <div className="sr-line-main">
@@ -277,6 +286,7 @@ function SrCardLine({ line, onState }) {
             原话 {line.evidence_count}
           </button>
         )}
+        {coverage && <span className="sr-line-coverage" data-testid="sr-line-coverage">{coverage}</span>}
       </div>
       {showQuotes && (
         <ul className="sr-quotes" id={quotesId}>
@@ -286,11 +296,87 @@ function SrCardLine({ line, onState }) {
               <q className="text-serif">{ev.text}</q>
             </li>
           ))}
-          {line.evidence_count > (line.evidence || []).length && (
+          {!allExamples && line.evidence_count > (line.evidence || []).length && (
             <li className="sr-quote-more">另有 {line.evidence_count - (line.evidence || []).length} 条</li>
           )}
         </ul>
       )}
+      {showQuotes && allExamples && <SrLineExamples profileId={profileId} lineId={line.line_id} total={line.coverage.quotes} />}
+    </li>
+  );
+}
+
+/* 一句在全书的全部例子（2026-10-19）：点了才去取，按原书顺序、标出第几章 */
+function SrLineExamples({ profileId, lineId, total }) {
+  const [state, setState] = React.useState({ phase: "idle", data: null, error: null });
+  const load = async () => {
+    setState({ phase: "loading", data: null, error: null });
+    try { setState({ phase: "ready", data: await srLoadLineExamples(profileId, lineId), error: null }); }
+    catch (e) { setState({ phase: "error", data: null, error: e }); }
+  };
+  if (state.phase === "idle") {
+    return (
+      <button type="button" className="btn btn-ghost btn-sm sr-examples-load" data-testid="sr-line-examples-load" onClick={load}>
+        看全书 {total} 处例子
+      </button>
+    );
+  }
+  if (state.phase === "loading") return <div className="sr-quote-more"><Spinner size={12} /> 正在取全书的例子…</div>;
+  if (state.phase === "error") return <SrErrorLine error={state.error} testId="sr-line-examples-error" />;
+  const examples = (state.data && state.data.examples) || [];
+  return (
+    <ul className="sr-quotes sr-quotes-all" data-testid="sr-line-examples">
+      {examples.map((ex) => (
+        <li key={ex.quote_id} className="sr-quote">
+          {ex.chapter != null && <span className="sr-quote-where tab-num">第 {ex.chapter} 章</span>}
+          <q className="text-serif">{ex.text}</q>
+        </li>
+      ))}
+      {state.data && state.data.total > examples.length && (
+        <li className="sr-quote-more">只列出前 {examples.length} 处（共 {state.data.total} 处）</li>
+      )}
+    </ul>
+  );
+}
+
+/* 按场面的写法（2026-10-19，通读全书时学的）：这位作者写某类场面时尤其会怎么写；起草到这类场面时会带上 */
+function SrSituationCard({ profile }) {
+  const situations = Array.isArray(profile.situations) ? profile.situations.filter((s) => s && (s.lines || []).length) : [];
+  if (!situations.length) return null;
+  return (
+    <div className="card" data-testid="sr-situations">
+      <div className="card-head">
+        <div>
+          <div className="card-title">按场面的写法</div>
+          <div className="card-sub">通读全书时学的：依据集中出现在某类场面里的写法。起草到这类场面时，会把这几句一起带上。</div>
+        </div>
+      </div>
+      {situations.map((entry) => (
+        <section key={entry.situation} className="sr-situation" aria-label={entry.situation}>
+          <h4 className="sr-situation-title">{entry.situation}<span className="sr-situation-meta tab-num">{entry.windows} 个片段</span></h4>
+          <ul className="sr-lines">
+            {entry.lines.map((line) => <SrSituationLine key={line.line_id} line={line} profileId={profile.profile_id} bookChapters={profile.book_chapters} />)}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function SrSituationLine({ line, profileId, bookChapters }) {
+  const [open, setOpen] = React.useState(false);
+  const coverage = srCoverageText(line.coverage, bookChapters);
+  return (
+    <li className="sr-line" data-line-id={line.line_id}>
+      <div className="sr-line-main"><span className="sr-line-text text-serif">{line.text}</span></div>
+      <div className="sr-line-actions">
+        {coverage && (
+          <button type="button" className="sr-line-quotes-toggle" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+            {coverage}
+          </button>
+        )}
+      </div>
+      {open && <SrLineExamples profileId={profileId} lineId={line.line_id} total={line.coverage.quotes} />}
     </li>
   );
 }

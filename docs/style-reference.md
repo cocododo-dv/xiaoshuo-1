@@ -67,6 +67,8 @@
 |---|---|
 | `dimension_card` | 文风卡（`card.DimensionCard`）：16 维按辨识度排，每维一句概括、通用模型的默认写法、1–3 条「这位作者这样写」（`do`）与「作者不这么写」（`avoid`，每句带证据引文，允许 ≤11 字的原话作例子）、手法名（画像页显示）、可测特征；顶层 `temperament`（气质，至多 4 条必须体现） |
 | `card_line_states` | 作者对每句的 ✓（`pinned`，每场都带）/ ✗（`excluded`，不再用）；不让画像失效，重新学习时沿用 |
+| `situation_card` | 按场面的写法（通读全书才有，`situation_card` 模块）：`{"version", "situations": [{"situation", "windows", "lines": [{"line_id", "text", "finding_ids", "evidence_quote_ids", "source"}]}]}`；进冻结契约，起草时这一场的场面对上了才带 |
+| `line_evidence` | 每句（文风卡句与场面句）的依据落在哪几章：`{line_id: {"quotes", "chapters": [[章, 引文数], …]}}`；只给画像页（「贯穿全书」「集中在第 X–Y 章」），不进契约 |
 | `voice` | 测量核声音特征 + 具体习惯句（作者自己的高频词与大致频率）+ 作者自身的参照分布 |
 | `voice_signature` | **过渡别名**：与 `voice` 同源、不带分布。运行时契约的画像白名单与刻意复沓旗标 `deliberate_repetition` 的读者（新鲜度预算、场景诊断）还在用——保留 |
 | `structure_card` / `planning_guidance` / `narrative_guidance` | 结构画像（章长、开合类型、章首章尾样例、场长、章题样式；通读全书后另有量出来的场与 `chapter_craft` 章法）、场景手法、叙事机制 |
@@ -136,6 +138,7 @@
 6. `tags` 给还没有 v2 标签（或标签版本变了）的窗口打场面 / 情绪 / **维度**标签（`style_ref_tag_windows` v2，每批 ≤8 窗；词表 `tags.py`，
    维度 = 这一窗最能示范的 ≤3 个维度键，不再依赖文风卡的手法）；全书已打过就跳过（重新学习约 6 次调用），`{"retag": true}` 强制重打；
 7. `finalize` 专名与原文重合过滤卡片、沿用 ✓ / ✗、写画像，一个事务；卡片被滤空则作业失败，在用的画像不动。
+   同一个事务里写窗口的示范证据（见上）与画像的 `line_evidence`（每句的引文落在哪几章，`learn_evidence.line_coverage`）。
 
 **两种学习方式**（2026-10-19，`POST …/learn {"mode": "quick" | "full"}`，缺省 `quick`；界面缺省选通读全书）：
 
@@ -162,6 +165,14 @@
     与场长分布、`scene_shift_distribution`——「一场多长」（`structure_card.reference_scene_scale`）与分章的参考场数
     （`snowflake_chaptering.scale`）按 `scene_sizes_measured` 用它；各章章法汇成 `chapter_craft`（功能与章末收法的占比、
     每章几条线 / 几个视点、高潮章之间隔几章），渲染进 `[结构画像]` 块（规划、文风卡合成、画像页都看得到）。
+  - **按场面的写法**（`situations` 步，排在 `tags` 之后，`learn_situations`）：窗口的场面标签 × 各批原始发现的引文——
+    一条发现落在某类场面窗口里的引文占比，比这类场面占全书窗口的比例高出 1.5 倍以上、且至少 2 处，就算这类场面的
+    特别做法；至少 8 窗的场面才做，每类按「集中度 × 条数」送 ≤40 条，一次调用（模板 `style_ref_situation_lines`，走
+    `style_ref_synthesize_profile` 节点的路由）写 2–4 句，不重复文风卡已有的、在上一版上修订（`keep`）；没有依据 /
+    带统计数字 / 超长的丢，定稿时过文风卡同一道过滤（本书专名、作者禁用词、≥12 字原文重合），写进画像
+    `situation_card`。起草时（`inject.blocks.build_card_source`）这一场的场面标签（蓝图给的，或由场景设计推，与选窗
+    同一口径）对上了，至多 2 类、每类 3 句放进文风卡块的「这一场的场面」一节——与近期常见偏差同一档，排在各维第一句
+    之前（`card.plan_card_block`，拟合单元 `__situations__`）。
   - **沿用**：一次通读的身份（段落根哈希、窗口索引版本、切法版本与上限、切出来的区间、读了哪几层、各层抽取模板版本与
     模型）记在血缘 run 行的 `coverage_json["full"]`；下一次通读身份相同就不再读书，归并身份（加上归并模板版本与模型）
     也相同就连归并一起沿用，只重写文风卡。`{"reread": true}` 从头再读。`GET …/learn` 的 `estimate.full`（批数、调用数、
@@ -404,7 +415,7 @@ QMAI 的文风自进化：拿作者写过、模型没见过的一段原文，只
 |---|---|
 | `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`，还要 `X-Admin-Token`；没配 `NOVEL_SYSTEM_ADMIN_TOKEN` 时只放行回环客户端）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
 | `learn.py` | `POST /books/{id}/learn`（`{"mode":"full"}` 通读全书、缺省快速学习；`{"reread":true}` 通读时不沿用上一次；`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（快速学习的；`full` 是通读全书的批数 / 调用数 / 能否沿用；含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` |
-| `profiles.py` | `GET /profiles/{id}`（文风画像页，含 `judge_calibration` 校准卡；画像摘要在书库载荷里）· `POST /profiles/{id}/judge-calibration` · `POST /profiles/{id}/judge-calibration/cancel`（§4.5）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
+| `profiles.py` | `GET /profiles/{id}/card-lines/{line_id}/examples`（一句——文风卡句或场面句——在全书的全部例子：引文按原书顺序、带段落序号与章，另给按章计数；`?limit=` 1–2000，缺省 400；不在这份画像上 404 `STYLE_REFERENCE_CARD_LINE_NOT_FOUND`）· `GET /profiles/{id}`（文风画像页，每句带 `coverage`，另有 `book_chapters` 与 `situations`；含 `judge_calibration` 校准卡；画像摘要在书库载荷里）· `POST /profiles/{id}/judge-calibration` · `POST /profiles/{id}/judge-calibration/cancel`（§4.5）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
 | `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` |
 | `checks.py` | `POST /checks` · `GET /checks/{job_id}` · `POST /checks/{job_id}/cancel`（§4.4、§7） |
 | `activity.py` | `GET /activity` |

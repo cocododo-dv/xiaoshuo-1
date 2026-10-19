@@ -237,6 +237,12 @@
 .sr-quote q { font-size: var(--fs-sm); line-height: 1.7; color: var(--ink-1); quotes: "「" "」"; }
 .sr-quote-where { flex: 0 0 auto; font-size: 11.5px; color: var(--ink-3); }
 .sr-quote-more { font-size: var(--fs-xs); color: var(--ink-3); padding-left: 12px; }
+.sr-line-coverage { font-size: var(--fs-xs); color: var(--ink-3); }
+.sr-examples-load { margin-top: 8px; }
+.sr-quotes-all { max-height: 360px; overflow-y: auto; padding-right: 4px; }
+.sr-situation + .sr-situation { margin-top: 14px; }
+.sr-situation-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
+.sr-situation-meta { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
 .sr-plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .sr-plain-list li { position: relative; padding-left: 12px; font-size: var(--fs-sm); line-height: 1.6; color: var(--ink-1); }
 .sr-plain-list li::before { content: ""; position: absolute; left: 2px; top: 0.72em; width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }

@@ -11,7 +11,7 @@
 
 **预算（M2）**：卡的总预算（``injection_budget.yaml`` 的 ``card_budget_chars``，默认 2600 字）按固定次序分：
 气质与 ✓ 钉住 / 标「必须」的句先占（永不因预算去掉——要去只能整张卡不发）→「作者不这么写」有自己的保底
-份额（:data:`CARD_AVOID_SHARE`）→ 近期常见偏差 → 每一维的第一句（先让每一维都在）→ 卡句后面的原话例子 →
+份额（:data:`CARD_AVOID_SHARE`）→ 近期常见偏差 → 这一场的场面（按场面的写法）→ 每一维的第一句（先让每一维都在）→ 卡句后面的原话例子 →
 每一维的第二、三句 → 保底之外的「作者不这么写」。装不下的整句不带，永不截半句；外层预算拟合
 （``inject.fit``）按 :attr:`CardPlan.priority` 倒过来去：先去例子与多出来的句，最后才让整维消失。
 """
@@ -72,6 +72,8 @@ CARD_HEADER_REVIEW = "[文风卡](评审时逐维对照：草稿在这些维度�
 CARD_AVOID_TITLE = "[作者不这么写]"
 CARD_GAPS_TITLE = "[近期常见偏差](前几场草稿里反复出现的不像之处，这一场特别注意)"
 CARD_MAX_GAPS = 3
+# 2026-10-19 按场面的写法(situation_card):这一场的场面对上了才带;与近期常见偏差同一档,排在各维第一句之前
+CARD_SITUATIONS_TITLE = "[这一场的场面](这位作者写这类场面时尤其会这样写)"
 _LINES_PER_DIMENSION = {DIMENSION_EMPHASIZE: 3, "normal": 2}
 
 # 取舍单元的类别（预算紧时的保留次序见模块说明；``mandatory`` 永不因预算去掉）
@@ -85,6 +87,8 @@ UNIT_AVOID_EXTRA = "avoid_extra"
 UNIT_TEMPERAMENT = "temperament"
 EXAMPLE_UNIT_PREFIX = "example:"
 GAP_UNIT_PREFIX = "gap:"
+UNIT_SITUATION = "situation"
+SITUATION_UNIT_PREFIX = "situation:"
 
 
 class CardLine(BaseModel):
@@ -247,6 +251,7 @@ def plan_card_block(
     role: str = "draft",
     examples: Mapping[str, str] | None = None,
     avoid_share: float = CARD_AVOID_SHARE,
+    situation_lines: Sequence[tuple[str, str]] | None = None,
 ) -> CardPlan:
     """``[文风卡]`` 块与它的取舍（见模块说明的预算次序）。
 
@@ -263,6 +268,7 @@ def plan_card_block(
     header = CARD_HEADER_REVIEW if role == "review" else CARD_HEADER_DRAFT
     temperament = "气质（必须）：" + "；".join(card.temperament) if card.temperament else ""
     gaps = [str(g).strip() for g in (recent_gaps or []) if str(g or "").strip()][:CARD_MAX_GAPS]
+    situations = [(str(s), str(t).strip()) for s, t in (situation_lines or []) if str(t or "").strip()]
     entries = sorted(
         (entry for entry in card.dimensions if states.get(entry.dimension) != DIMENSION_EXCLUDE),
         key=lambda entry: (states.get(entry.dimension) != DIMENSION_EMPHASIZE, -entry.distinctiveness),
@@ -304,6 +310,9 @@ def plan_card_block(
     primary = [unit for rank, _order, unit in ranked_do if rank == 0]
     extra = [unit for rank, _order, unit in ranked_do if rank > 0]
     gap_units = [CardUnit(f"{GAP_UNIT_PREFIX}{index}", UNIT_GAP) for index in range(len(gaps))]
+    situation_units = [
+        CardUnit(f"{SITUATION_UNIT_PREFIX}{index}", UNIT_SITUATION) for index in range(len(situations))
+    ]
 
     kept: set[str] = {unit.unit_id for unit in mandatory}
 
@@ -334,6 +343,14 @@ def plan_card_block(
         if gap_out:
             out.append(CARD_GAPS_TITLE)
             out.extend(gap_out)
+        situation_out = [
+            f"- {situation}：{text}"
+            for index, (situation, text) in enumerate(situations)
+            if f"{SITUATION_UNIT_PREFIX}{index}" in keep
+        ]
+        if situation_out:
+            out.append(CARD_SITUATIONS_TITLE)
+            out.extend(situation_out)
         return "\n".join(out) if len(out) > 1 else ""
 
     def _fits(unit_id: str) -> bool:
@@ -360,6 +377,11 @@ def plan_card_block(
             leftover_avoid.append(CardUnit(unit.unit_id, UNIT_AVOID_EXTRA))
     # 2. 近期常见偏差
     for unit in gap_units:
+        priority.append(unit)
+        if not _fits(unit.unit_id):
+            dropped.append(unit)
+    # 2b. 这一场的场面（按场面的写法）
+    for unit in situation_units:
         priority.append(unit)
         if not _fits(unit.unit_id):
             dropped.append(unit)
@@ -412,6 +434,9 @@ __all__ = [
     "CARD_HEADER_REVIEW",
     "CARD_LINE_MAX_CHARS",
     "CARD_MAX_GAPS",
+    "CARD_SITUATIONS_TITLE",
+    "SITUATION_UNIT_PREFIX",
+    "UNIT_SITUATION",
     "CardLine",
     "CardPlan",
     "CardUnit",

@@ -398,6 +398,42 @@ export function srLearnModeEstimateText(estimate, mode, { bookChars = null, rere
   return mode === SR_LEARN_MODE_FULL ? srFullEstimateText(estimate, { reread }) : srLearnEstimateText(estimate, { bookChars });
 }
 
+/* 一句文风卡的依据在全书落在哪几章（2026-10-19，画像 line_evidence → coverage {quotes, chapters: [[章, 条数]…]}）：
+   首尾都伸到全书前后四分之一以内：覆盖四成以上的章 →「贯穿全书」，否则 →「散见全书」；只有一章 →「只在第 X 章」；
+   其余按条数取一成到九成的章 →「集中在第 X–Y 章」。不知道全书几章时只说分布在几章 */
+function srWeightedChapter(chapters, ratio) {
+  const total = chapters.reduce((sum, [, n]) => sum + n, 0);
+  let seen = 0;
+  for (const [chapter, n] of chapters) {
+    seen += n;
+    if (seen >= total * ratio) return chapter;
+  }
+  return chapters[chapters.length - 1][0];
+}
+
+export function srCoverageText(coverage, bookChapters = 0) {
+  if (!coverage || !Number(coverage.quotes)) return null;
+  const chapters = (Array.isArray(coverage.chapters) ? coverage.chapters : [])
+    .filter((pair) => Array.isArray(pair) && pair.length === 2)
+    .map(([c, n]) => [Number(c), Number(n)])
+    .sort((a, b) => a[0] - b[0]);
+  const head = `全书 ${coverage.quotes} 处`;
+  if (!chapters.length) return head;
+  const book = Number(bookChapters) || 0;
+  const first = chapters[0][0];
+  const last = chapters[chapters.length - 1][0];
+  if (chapters.length === 1) return `${head} · 只在第 ${first} 章`;
+  if (!book) return `${head} · 分布在 ${chapters.length} 章`;
+  if (first <= book * 0.25 && last >= book * 0.75) {
+    return chapters.length >= book * 0.4
+      ? `${head} · 贯穿全书（${chapters.length}/${book} 章）`
+      : `${head} · 散见全书（${chapters.length} 章）`;
+  }
+  const low = srWeightedChapter(chapters, 0.1);
+  const high = srWeightedChapter(chapters, 0.9);
+  return low === high ? `${head} · 集中在第 ${low} 章` : `${head} · 集中在第 ${low}–${high} 章`;
+}
+
 /* 为什么建议重新学习 */
 const SR_RELEARN_TEXT = {
   types_changed: "段落类型已更新，建议重新学习：挑样本、打标签都要看段落类型。",

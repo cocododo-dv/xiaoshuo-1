@@ -79,6 +79,8 @@ V3_PROFILE_JSON_KEYS = frozenset(
         "learned_from",
         "profile_version",
         "protected_terms_version",
+        # 2026-10-19:通读全书学的按场面写法(起草时这一场的场面对上了才带)
+        "situation_card",
     }
 )
 FROZEN_PROFILE_JSON_KEYS = V3_PROFILE_JSON_KEYS

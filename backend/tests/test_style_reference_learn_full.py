@@ -722,3 +722,162 @@ def test_quick_learn_writes_evidence_for_the_windows_it_read_and_learns_no_struc
     assert "structure" not in job.result_json
     windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == BOOK)).all()
     assert job.result_json["windows"]["with_evidence"] == sum(1 for w in windows if (w.tags_json or {}).get("evidence")) > 0
+
+
+# ---------------------------------------------------------------- 全书例子 / 分布 / 按场面的写法（2026-10-19 第三轮）
+
+
+def test_situation_ranking_keeps_findings_concentrated_in_a_kind_of_scene() -> None:
+    from novel_system.services.style_reference.learn_situations import FindingSpot, rank_situation_findings
+
+    # 10 窗:0–3 打斗追逐,其余日常闲谈
+    windows = {no: (["打斗追逐"] if no < 4 else ["日常闲谈"]) for no in range(10)}
+    spots = [
+        # 引文全在打斗窗:集中度 = 1 / 0.4 = 2.5
+        FindingSpot("f_fight", "language.rhetoric", "打斗时用降格比喻", (("q1", 0, "像一只被踩了尾巴的猫"), ("q2", 1, "刀光乱得像过年"), ("q3", 2, "长长的一句话说了很久很久"))),
+        # 一半一半:打斗占 0.5 / 0.4 = 1.25 < 1.5
+        FindingSpot("f_even", "scene.dialogue", "对白里夹抱怨", (("q4", 0, "烦死了"), ("q5", 5, "又来了"))),
+        # 只有一处打斗引文:不够两处
+        FindingSpot("f_once", "narrative.pacing", "短句急刹", (("q6", 3, "停。"), ("q7", 7, "走。"), ("q8", 8, "等等。"))),
+        # 引文不在任何窗里
+        FindingSpot("f_out", "theme.motifs", "雨夜", (("q9", None, "雨"),)),
+    ]
+    ranked = rank_situation_findings(windows, spots, min_windows=3)
+    assert [c.situation for c in ranked] == ["打斗追逐"]
+    fight = ranked[0]
+    assert fight.windows == 4 and fight.of_windows == 10
+    assert [(f["ref"], f["finding_id"], f["lift"], f["quotes_in"]) for f in fight.findings] == [("s1", "f_fight", 2.5, 3)]
+    assert fight.findings[0]["quote"] == "刀光乱得像过年"  # 最短的那处
+    # 场面太少的不做
+    assert rank_situation_findings(windows, spots, min_windows=5) == []
+
+
+def test_situation_lines_need_grounding_keep_the_previous_wording_and_go_through_the_card_filters() -> None:
+    from novel_system.services.style_reference.learn_situations import (
+        SituationCandidates,
+        filter_situation_card,
+        parse_situation_lines,
+    )
+
+    candidates = SituationCandidates(
+        situation="打斗追逐",
+        windows=4,
+        of_windows=10,
+        findings=[{"ref": "s1", "finding_id": "f1", "quote_id": "q1"}, {"ref": "s2", "finding_id": "f2", "quote_id": "q2"}],
+    )
+    structured = {
+        "lines": [
+            {"text": "打斗里用日常物件打比方", "refs": ["s1"], "keep": ""},
+            {"text": "没有依据的一句", "refs": ["s9"], "keep": ""},
+            {"text": "出手前数到3", "refs": ["s2"], "keep": ""},  # 阿拉伯数字
+            {"text": "随便换个说法", "refs": ["S2"], "keep": "cl_old"},
+        ]
+    }
+    lines = parse_situation_lines(structured, candidates, previous={"cl_old": "动手之前先让人物嘴硬一句"})
+    assert [(line["text"], line["source"], line["finding_ids"]) for line in lines] == [
+        ("打斗里用日常物件打比方", "synthesis", ["f1"]),
+        ("动手之前先让人物嘴硬一句", "kept", ["f2"]),
+    ]
+    assert lines[1]["line_id"] == "cl_old" and lines[0]["line_id"].startswith("cl_")
+    card = filter_situation_card(
+        {"打斗追逐": {"windows": 4, "lines": lines}, "日常闲谈": {"windows": 9, "lines": [{**lines[0], "text": "林昭爱说反话"}]}},
+        lambda text: "林昭" in text,
+    )
+    assert card["version"] == "situation_card_v1"
+    assert [(e["situation"], [line["text"] for line in e["lines"]]) for e in card["situations"]] == [
+        ("打斗追逐", ["打斗里用日常物件打比方", "动手之前先让人物嘴硬一句"])
+    ]
+    assert filter_situation_card({"打斗追逐": {"windows": 4, "lines": lines}}, lambda text: True) is None
+
+
+def test_the_drafting_card_gets_the_lines_of_this_scenes_situations() -> None:
+    from novel_system.services.style_reference.card import plan_card_block
+    from novel_system.services.style_reference.inject.blocks import FIT_SITUATIONS_UNIT, DimensionCardSource
+    from novel_system.services.style_reference.situation_card import situation_lines_for
+
+    profile_json = {
+        "situation_card": {
+            "version": "situation_card_v1",
+            "situations": [
+                {"situation": "日常闲谈", "windows": 30, "lines": [{"line_id": "cl_a", "text": "闲谈里句句带刺"}]},
+                {"situation": "打斗追逐", "windows": 12, "lines": [
+                    {"line_id": "cl_b", "text": "打斗里用日常物件打比方"},
+                    {"line_id": "cl_c", "text": "动手之前先嘴硬一句"},
+                ]},
+                {"situation": "回忆往事", "windows": 9, "lines": [{"line_id": "cl_d", "text": "回忆用现在时插进来"}]},
+            ],
+        }
+    }
+    picked = situation_lines_for(profile_json, ["打斗追逐", "情感交流", "回忆往事", "日常闲谈"], max_situations=2)
+    assert picked == [("打斗追逐", "打斗里用日常物件打比方"), ("打斗追逐", "动手之前先嘴硬一句"), ("回忆往事", "回忆用现在时插进来")]
+    assert situation_lines_for({}, ["打斗追逐"]) == []
+    card = DimensionCard(
+        dimensions=[DimensionEntry(dimension="scene.dialogue", label="对话写法", lines=[CardLine(line_id="cl_x", text="对白短，带口头禅")])]
+    )
+    text = plan_card_block(card, situation_lines=picked, budget_chars=2000).text
+    assert "[这一场的场面]" in text and "- 打斗追逐：打斗里用日常物件打比方" in text
+    assert text.index("[这一场的场面]") > text.index("对话写法")
+    source = DimensionCardSource(
+        card, role="draft", dimension_states={}, line_states={}, recent_gaps=(), budget_chars=2000, situation_lines=picked
+    )
+    assert FIT_SITUATIONS_UNIT in source.drop_order
+    assert "[这一场的场面]" not in source.render(frozenset({FIT_SITUATIONS_UNIT}))
+    # 预算紧时先保这一场的场面,再保各维的第一句
+    from novel_system.services.style_reference.card import CARD_HEADER_DRAFT, CARD_SITUATIONS_TITLE
+
+    budget = len(CARD_HEADER_DRAFT) + len(CARD_SITUATIONS_TITLE) + len("- 打斗追逐：打斗里用日常物件打比方") + 4
+    tight = plan_card_block(card, situation_lines=picked[:1], budget_chars=budget)
+    assert "打斗里用日常物件打比方" in tight.text and "对话写法" not in tight.text
+
+
+def test_full_learn_writes_situation_lines_coverage_and_serves_every_example(client, session, monkeypatch) -> None:
+    from novel_system.services.style_reference import learn_situations
+
+    # 合成书的窗口都是「日常闲谈」:放低门槛,让这一类场面进来
+    monkeypatch.setattr(learn_situations, "LIFT_MIN", 0.5)
+    monkeypatch.setattr(learn_situations, "MIN_WINDOWS", 1)
+    seed(session)
+    fake, job = _learn(monkeypatch, mode="full")
+    assert job.state == "succeeded", job.error_json
+    assert job.cursor_json["phases_done"] == list(learn_job.PHASE_ORDER)
+    situation_payloads = [p for node, p in fake.payloads if node == NODE_SYNTH and "situation" in p]
+    assert len(situation_payloads) == 1 and situation_payloads[0]["situation"] == "日常闲谈"
+    assert situation_payloads[0]["card_lines"] and situation_payloads[0]["previous_lines"] == []
+    assert job.result_json["situations"] == {"日常闲谈": 2}
+    profile_id = job.result_json["profile_id"]
+    pj = _profile(profile_id).profile_json
+    entry = pj["situation_card"]["situations"][0]
+    assert entry["situation"] == "日常闲谈" and len(entry["lines"]) == 2
+    situation_line = entry["lines"][0]
+    # 每句的依据落在哪几章:文风卡句与场面句都有
+    card = card_from_profile_json(pj)
+    card_line = next(line for _d, line in card.all_lines() if line.kind == "do")
+    coverage = pj["line_evidence"][card_line.line_id]
+    assert coverage["quotes"] >= 4 and all(chapter >= 1 for chapter, _n in coverage["chapters"])
+    assert pj["line_evidence"][situation_line["line_id"]]["quotes"] >= 1
+    # 画像页:每句带覆盖、按场面一节、全书章数
+    detail = client.get(f"{PREFIX}/profiles/{profile_id}").json()["data"]["profile"]
+    assert detail["book_chapters"] == 6
+    assert detail["situations"][0]["situation"] == "日常闲谈" and detail["situations"][0]["lines"][0]["coverage"]
+    shown = next(line for dim in detail["dimensions"] for line in dim["lines"] if line["line_id"] == card_line.line_id)
+    assert shown["coverage"]["quotes"] == coverage["quotes"]
+    # 全书例子:按原书顺序、带章,条数与覆盖一致
+    examples = client.get(f"{PREFIX}/profiles/{profile_id}/card-lines/{card_line.line_id}/examples").json()["data"]
+    assert examples["total"] == coverage["quotes"] and examples["text"] == card_line.text
+    indexes = [ex["paragraph_index"] for ex in examples["examples"]]
+    assert indexes == sorted(indexes) and all(ex["text"] and ex["chapter"] for ex in examples["examples"])
+    assert examples["chapters"] == coverage["chapters"]
+    limited = client.get(f"{PREFIX}/profiles/{profile_id}/card-lines/{card_line.line_id}/examples?limit=1").json()["data"]
+    assert len(limited["examples"]) == 1 and limited["total"] == coverage["quotes"]
+    of_situation = client.get(f"{PREFIX}/profiles/{profile_id}/card-lines/{situation_line['line_id']}/examples").json()["data"]
+    assert of_situation["label"] == "日常闲谈" and of_situation["total"] >= 1
+    missing = client.get(f"{PREFIX}/profiles/{profile_id}/card-lines/cl_000000000000/examples")
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "STYLE_REFERENCE_CARD_LINE_NOT_FOUND"
+    # 再学一次:上一版的场面句交给模型,keep 了就是原句原 id
+    fake2, second = _learn(monkeypatch, mode="full")
+    assert second.state == "succeeded", second.error_json
+    again = next(p for node, p in fake2.payloads if node == NODE_SYNTH and "situation" in p)
+    assert [line["id"] for line in again["previous_lines"]] == [line["line_id"] for line in entry["lines"]]
+    new_entry = _profile(profile_id).profile_json["situation_card"]["situations"][0]
+    assert [line["line_id"] for line in new_entry["lines"]] == [line["line_id"] for line in entry["lines"]]
+    assert all(line["source"] == "kept" for line in new_entry["lines"])

@@ -34,6 +34,7 @@ from novel_system.db.models import (
     StyleReferenceProfile,
     StyleReferenceQuote,
 )
+from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.binding_config import (
     ALL_DIMENSIONS,
     normalize_binding_config,
@@ -44,14 +45,17 @@ from novel_system.services.style_reference.card import (
     card_from_profile_json,
     line_states_from_profile_json,
 )
+from novel_system.services.style_reference.card_states import CARD_LINE_NOT_FOUND_CODE
 from novel_system.services.style_reference.import_job import (
     classification_payload,
     classification_provenance,
 )
 from novel_system.services.style_reference.jobs import JOB_KIND_CLASSIFY, JOB_KIND_LEARN
+from novel_system.services.style_reference.learn_evidence import line_examples
 from novel_system.services.style_reference.learn_job import learn_payload
 from novel_system.services.style_reference.paragraph_root import ROOT_KEY
 from novel_system.services.style_reference.profile_fields import generation_safe_summary
+from novel_system.services.style_reference.situation_card import situation_entries
 from novel_system.services.style_reference.structure_render import render_structure_card_parts
 
 RELEARN_TYPES_CHANGED = "types_changed"
@@ -346,6 +350,54 @@ def _layer_of(dimension: str) -> str:
     return str(dimension).split(".", 1)[0]
 
 
+def _coverage(raw: Any) -> dict[str, Any] | None:
+    """``line_evidence`` 里一句的记录 → ``{"quotes": 引文数, "chapters": [[章, 引文数], …]}``；没有 → None。"""
+    if not isinstance(raw, Mapping) or not _int(raw.get("quotes")):
+        return None
+    chapters = [
+        [int(pair[0]), int(pair[1])]
+        for pair in raw.get("chapters") or []
+        if isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(v, int) for v in pair)
+    ]
+    return {"quotes": _int(raw.get("quotes")), "chapters": chapters}
+
+
+def line_examples_payload(
+    session: Session,
+    profile: StyleReferenceProfile,
+    line_id: str,
+    *,
+    limit: int = 400,
+) -> dict[str, Any]:
+    """一句（文风卡句或按场面的句）在全书的全部例子（画像页点「全书例子」时取）。句子不在这份画像上 404
+    ``STYLE_REFERENCE_CARD_LINE_NOT_FOUND``。"""
+    profile_json = profile.profile_json if isinstance(profile.profile_json, Mapping) else {}
+    card = card_from_profile_json(profile_json)
+    found: tuple[str, Any, str] | None = None
+    for dimension, line in card.all_lines() if card is not None else []:
+        if line.line_id == line_id:
+            found = (dimension, line, DIMENSION_LABELS.get(dimension, dimension))
+            break
+    if found is None:
+        for entry in situation_entries(profile_json):
+            for line in entry.lines:
+                if line.line_id == line_id:
+                    found = (f"situation:{entry.situation}", line, entry.situation)
+                    break
+            if found is not None:
+                break
+    if found is None:
+        raise DomainError(
+            CARD_LINE_NOT_FOUND_CODE,
+            f"card line {line_id!r} is not on this profile's style card",
+            status_code=404,
+            details={"profile_id": profile.profile_id, "line_id": line_id},
+        )
+    dimension, line, label = found
+    payload = line_examples(session, str(profile.book_id), dimension, line, limit=limit)
+    return {**payload, "text": line.text, "label": label, "profile_id": profile.profile_id}
+
+
 def _structure_lines(profile_json: Mapping[str, Any]) -> list[str]:
     block, _samples = render_structure_card_parts(profile_json, include_samples=False)
     lines = []
@@ -437,6 +489,8 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
             finding_ids.update(str(f) for f in line.finding_ids if f)
             direct_quotes.update(str(q) for q in line.evidence_quote_ids if q)
     by_finding, quotes, indexes, findings = _evidence_index(session, finding_ids, direct_quotes)
+    # 2026-10-19：每句的依据在全书落在哪几章（学习定稿算好的 line_evidence）；全部例子按需取（line_examples_payload）
+    line_evidence = profile_json.get("line_evidence") if isinstance(profile_json.get("line_evidence"), Mapping) else {}
 
     def _line(dimension: str, line: Any) -> dict[str, Any]:
         quote_order: list[str] = []
@@ -468,6 +522,7 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
             "evidence": evidence,
             "evidence_count": len(quote_order),
             "sources": sources,
+            "coverage": _coverage(line_evidence.get(line.line_id)),
         }
 
     dimensions: list[dict[str, Any]] = []
@@ -540,6 +595,25 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
         "voice": _voice(profile_json),
         "structure": {"lines": _structure_lines(profile_json)},
         "planning_guidance": _clean_lines(profile_json.get("planning_guidance")),
+        "book_chapters": _int((profile_json.get("structure_card") or {}).get("chapter_count"))
+        if isinstance(profile_json.get("structure_card"), Mapping)
+        else 0,
+        "situations": [
+            {
+                "situation": entry.situation,
+                "windows": entry.windows,
+                "lines": [
+                    {
+                        "line_id": line.line_id,
+                        "text": line.text,
+                        "source": line.source,
+                        "coverage": _coverage(line_evidence.get(line.line_id)),
+                    }
+                    for line in entry.lines
+                ],
+            }
+            for entry in situation_entries(profile_json)
+        ],
         "protected_terms_count": protected_count,
         "coverage": {
             key: coverage.get(key)

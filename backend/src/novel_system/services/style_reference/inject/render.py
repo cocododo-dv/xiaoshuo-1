@@ -107,6 +107,7 @@ from novel_system.services.style_reference.inject.selection import (
     SceneSelection,
     WindowRef,
     current_bundle_selection,
+    derive_situation_tags,
     resolve_scene_selection,
     role_windows,
 )
@@ -540,6 +541,8 @@ def _build_rendered(
             reference_mode=plan.reference_mode,
             recent_gaps=recent_gaps,
             protected_terms=example_protected_terms(plan.layer),
+            # 与选窗同一个场面口径：请求给的（蓝图）优先，没有就由场景设计推
+            situation_tags=list(request.situation_tags) or list(derive_situation_tags(scene)),
         )
         voice = voice_block(plan.profile_json, request.role, dimension_states=states)
     k = request.effective_k(getattr(policy, "sample_windows", 0))

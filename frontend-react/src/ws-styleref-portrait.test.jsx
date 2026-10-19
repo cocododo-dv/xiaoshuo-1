@@ -50,6 +50,45 @@ describe("文风画像", () => {
     expect($(".sr-quote-more", row).textContent).toBe("另有 1 条");
   });
 
+  it("通读之后：每句说出依据在全书的分布、点开能看全书的全部例子；按场面的写法单独一张卡（2026-10-19）", async () => {
+    state.profile = {
+      ...state.profile,
+      book_chapters: 60,
+      dimensions: state.profile.dimensions.map((d) => (d.dimension !== "scene.dialogue" ? d : {
+        ...d,
+        lines: d.lines.map((l) => (l.line_id === "L1" ? { ...l, coverage: { quotes: 42, chapters: [[2, 5], [10, 6], [30, 10], [55, 21]] } } : l)),
+      })),
+      situations: [{
+        situation: "打斗追逐", windows: 37,
+        lines: [{ line_id: "S1", text: "打斗里用日常物件打比方", source: "synthesis", coverage: { quotes: 3, chapters: [[12, 3]] } }],
+      }],
+    };
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (url.includes("/card-lines/")
+      ? Promise.resolve({
+        line_id: "L1", total: 42, chapters: [],
+        examples: [{ quote_id: "x1", text: "“走吗？”", paragraph_index: 10, chapter: 2 }, { quote_id: "x2", text: "“再说。”", paragraph_index: 900, chapter: 55 }],
+      })
+      : baseGet(url)));
+    await openPortrait();
+    await click($(".sr-dim-toggle", dimRow("scene.dialogue")));
+    const line = $('[data-line-id="L1"]');
+    expect($('[data-testid="sr-line-coverage"]', line).textContent).toBe("全书 42 处 · 散见全书（4 章）");
+    await click($(".sr-line-quotes-toggle", line));
+    expect($(".sr-quote-more", line)).toBeNull(); // 「另有 N 条」换成了看全书的例子
+    await click(byTestId("sr-line-examples-load"));
+    await settle();
+    expect(client.apiGet).toHaveBeenCalledWith(`${API}/profiles/pf-a/card-lines/L1/examples`);
+    const examples = byTestId("sr-line-examples");
+    expect($$(".sr-quote-where", examples).map((el) => el.textContent)).toEqual(["第 2 章", "第 55 章"]);
+    expect(examples.textContent).toContain("只列出前 2 处（共 42 处）");
+    const situations = byTestId("sr-situations");
+    expect(situations.textContent).toContain("打斗追逐");
+    expect(situations.textContent).toContain("37 个片段");
+    expect(situations.textContent).toContain("打斗里用日常物件打比方");
+    expect(situations.textContent).toContain("全书 3 处 · 只在第 12 章");
+  });
+
   it("✓ 总带上：先标上再等服务端；服务端拒绝就回滚", async () => {
     await openPortrait();
     await click($(".sr-dim-toggle", dimRow("scene.dialogue")));

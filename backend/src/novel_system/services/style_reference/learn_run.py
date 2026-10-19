@@ -111,7 +111,22 @@ from novel_system.services.style_reference.learn_consolidate import (
 )
 from novel_system.services.style_reference.learn_consolidate import needs_retry as consolidation_needs_retry
 from novel_system.services.style_reference.learn_consolidate import retry_instruction as consolidation_retry_instruction
-from novel_system.services.style_reference.learn_evidence import EVIDENCE_VERSION, card_line_quotes, window_evidence
+from novel_system.services.style_reference.learn_evidence import (
+    EVIDENCE_VERSION,
+    card_line_quotes,
+    line_coverage,
+    quote_positions,
+    window_evidence,
+)
+from novel_system.services.style_reference.learn_situations import (
+    SituationCandidates,
+    filter_situation_card,
+    load_finding_spots,
+    parse_situation_lines,
+    rank_situation_findings,
+    situation_payload,
+)
+from novel_system.services.style_reference.situation_card import SituationLine, previous_situation_lines
 from novel_system.services.style_reference.learn_extract import (
     POSITION_LABELS,
     ExtractionSet,
@@ -146,6 +161,7 @@ from novel_system.services.style_reference.learn_job import (
     PHASE_ORDER,
     PHASE_PROTECTED,
     PHASE_SELECT,
+    PHASE_SITUATIONS,
     PHASE_SYNTHESIZE,
     PHASE_TAGS,
     PHASE_WINDOWS,
@@ -155,6 +171,7 @@ from novel_system.services.style_reference.learn_job import (
     REASON_INPUT_TOO_SMALL,
     REASON_NO_FINDINGS,
     REASON_PROTECTED_FAILED,
+    REASON_SITUATIONS_FAILED,
     REASON_SYNTHESIZE_FAILED,
     REASON_TAGGING_FAILED,
     RUN_DISPATCH_STATE,
@@ -173,6 +190,7 @@ from novel_system.services.style_reference.learn_llm import (
     call_structured,
     load_consolidate_runtime,
     load_learn_runtimes,
+    load_situation_runtime,
     payload_fits,
 )
 from novel_system.services.style_reference.learn_select import (
@@ -240,6 +258,8 @@ CONSOLIDATE_ATTEMPTS = 3
 # 切批时按真实载荷核预算：装不下就把上限乘这个系数重切，最多几轮
 FULL_PLAN_SHRINK = 0.85
 FULL_PLAN_SHRINK_ROUNDS = 6
+# 一类场面的写法最多几次调用(调用失败退避;没写出可用的句子带说明重问一次)
+SITUATION_ATTEMPTS = 3
 # 顺带交换场点与章法的那一层(它本来就读整章)
 STRUCTURE_LAYER = "narrative"
 # 交给「本书专名」步骤的主题层「不这么写」陈述最多几条（通读全书时各批加起来会很多）
@@ -290,6 +310,7 @@ class _LearnRun(JobRun):
         self.cursor: dict[str, Any] = dict(claimed.cursor or {})
         self.runtimes: dict[str, NodeRuntime] = {}
         self.consolidate_runtime: NodeRuntime | None = None
+        self.situation_runtime: NodeRuntime | None = None
         self.mode = MODE_FULL if str(self.params.get("mode") or "") == MODE_FULL else MODE_QUICK
         self._window_starts_cache: list[tuple[int, int, int]] | None = None
         self.book_title = ""
@@ -388,7 +409,8 @@ class _LearnRun(JobRun):
         plan = (self.cursor.get("plan") or {}).get("batches") or []
         reading = 1 if full.get("reused_reading") else max(1, len(plan) * len(layers))
         merging = 1 if full.get("reused_consolidation") else len(ALL_DIMENSIONS)
-        return 2 + reading + merging + 1 + 1 + batches + 1
+        situations = len(self.cursor.get("situation_plan") or []) or 1
+        return 2 + reading + merging + 1 + 1 + batches + situations + 1
 
     def _progress_values(self, phase: str, *, detail: str | None = None, calls: int = 0) -> dict[str, Any]:
         return {
@@ -430,6 +452,7 @@ class _LearnRun(JobRun):
         self.runtimes = load_learn_runtimes()
         if self.full:
             self.consolidate_runtime = load_consolidate_runtime()
+            self.situation_runtime = load_situation_runtime()
         ensure_cloud_llm_allowed(
             book,
             operation="learn_style",
@@ -467,6 +490,8 @@ class _LearnRun(JobRun):
             self._phase_protected()
         if not self._done(PHASE_TAGS):
             self._phase_tags()
+        if self.full and not self._done(PHASE_SITUATIONS):
+            self._phase_situations()
         self._phase_finalize()
 
     def _current_phase(self) -> str:
@@ -1137,14 +1162,18 @@ class _LearnRun(JobRun):
     def _target_profile_id(self) -> str | None:
         return str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
 
-    def _previous_card(self) -> PreviousCard | None:
+    def _target_profile_json(self) -> Mapping[str, Any] | None:
         target_id = self._target_profile_id()
         if not target_id:
             return None
         raw = self.session.execute(
             select(StyleReferenceProfile.profile_json).where(StyleReferenceProfile.profile_id == target_id)
         ).scalar_one_or_none()
-        if not isinstance(raw, Mapping):
+        return raw if isinstance(raw, Mapping) else None
+
+    def _previous_card(self) -> PreviousCard | None:
+        raw = self._target_profile_json()
+        if raw is None:
             return None
         previous = PreviousCard.from_card(card_from_profile_json(raw), line_states_from_profile_json(raw))
         return None if previous.empty else previous
@@ -1608,6 +1637,121 @@ class _LearnRun(JobRun):
         """单个调用放到守护线程里,等待时照样查取消 / 所有权(``JobRun.call_in_worker``)。"""
         return self.call_in_worker(fn, thread_prefix="sr_learn_call", poll_seconds=WAIT_POLL_SECONDS)
 
+    # ---- f'. situations（通读全书：按场面的写法） ------------------------------
+    def _phase_situations(self) -> None:
+        """每类常见场面一次调用（``learn_situations``）。候选按库里的数据现算（确定性，续跑算出同一份），游标只记
+        做完了哪几类与各类的句子。"""
+        began = time.monotonic()
+        self._enter(PHASE_SITUATIONS)
+        full = self.cursor.get("full") or {}
+        read_run = str(full.get("read_run_id") or self.cursor.get("run_id") or "")
+        rows = load_windows(self.session, self.book_id)
+        window_situations = {
+            int(w.window_no): [str(s) for s in (w.tags_json or {}).get("situations") or []]
+            for w in rows
+            if isinstance(w.tags_json, Mapping)
+        }
+        spots = load_finding_spots(self.session, read_run, lambda ids: quote_positions(self.session, self.book_id, ids))
+        ranked = rank_situation_findings(window_situations, spots)
+        self.cursor["situation_plan"] = [c.situation for c in ranked]
+        done = dict(self.cursor.get("situations") or {})
+        pending = [c for c in ranked if c.situation not in done]
+        card = CardAssembly.from_cursor(self.cursor["card"]).card if isinstance(self.cursor.get("card"), Mapping) else None
+        card_lines = [line.text for _dim, line in card.all_lines() if line.kind == "do"] if card is not None else []
+        previous_all = previous_situation_lines(self._target_profile_json())
+        runtime = self.situation_runtime or load_situation_runtime()
+        self._save()
+
+        def submit(pool: DaemonCallPool, candidates: SituationCandidates, stop: threading.Event) -> Future:
+            self.pre_call_check(self._node_routes([NODE_SYNTHESIZE]))
+            previous = previous_all.get(candidates.situation, {})
+            payload = situation_payload(candidates, book_title=self.book_title, card_lines=card_lines, previous=previous)
+            return pool.submit(self._situation_call, runtime, candidates, payload, previous, stop)
+
+        def apply(candidates: SituationCandidates, outcome: tuple[list[dict[str, Any]], int]) -> None:
+            lines, attempts = outcome
+            state = dict(self.cursor.get("situations") or {})
+            state[candidates.situation] = {
+                "windows": candidates.windows,
+                "findings": len(candidates.findings),
+                "lines": lines,
+            }
+            self.cursor["situations"] = state
+            self._count_call(attempts)
+            self.cursor["steps_done"] = int(self.cursor.get("steps_done") or 0) + 1
+            self._save(
+                progress=self._progress_values(
+                    PHASE_SITUATIONS,
+                    detail=f"「{candidates.situation}」{len(lines)} 句（第 {len(state)}/{len(ranked)} 类）",
+                    calls=attempts,
+                )
+            )
+
+        if pending:
+            self.run_parallel(
+                pending,
+                submit,
+                apply,
+                max_inflight=PARALLEL_CALLS,
+                poll_seconds=WAIT_POLL_SECONDS,
+                thread_prefix="sr_learn_situations",
+            )
+        state = self.cursor.get("situations") or {}
+        total = sum(len(v.get("lines") or []) for v in state.values())
+        self._mark_done(
+            PHASE_SITUATIONS,
+            began,
+            detail=f"{len(state)} 类场面、{total} 句" if ranked else "没有依据集中在某类场面里的写法",
+            step=not ranked,  # 有候选时每类落库已各记一步;没有候选算一步(总数里给它留了一步)
+        )
+
+    def _situation_call(
+        self,
+        runtime: NodeRuntime,
+        candidates: SituationCandidates,
+        payload: Mapping[str, Any],
+        previous: Mapping[str, str],
+        stop: threading.Event,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """工人线程:一类场面最多 ``SITUATION_ATTEMPTS`` 次调用。调用全失败 → 作业失败(可续跑);调用成功但一句都
+        不可用 → 带说明重问,仍没有就这一类不写(不编)。"""
+        best: list[dict[str, Any]] = []
+        calls = 0
+        errors: list[str] = []
+        extra: str | None = None
+        for attempt in retry_attempts(SITUATION_ATTEMPTS, CALL_RETRY_BACKOFF_SECONDS, stop):
+            try:
+                result = call_structured(
+                    runtime,
+                    payload,
+                    self.client,
+                    scope_id=self.book_id,
+                    step=f"learn:{self.claimed.job_id}:situations:{candidates.situation}:{attempt + 1}",
+                    extra_instruction=extra,
+                )
+            except LearnCallError as exc:
+                calls += 1
+                errors.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:300]}")
+                continue
+            calls += 1
+            lines = parse_situation_lines(result.structured, candidates, previous=previous)
+            if len(lines) > len(best):
+                best = lines
+            if best:
+                break
+            extra = (
+                "【重试说明】上一次没有一句可用：每句都要在 refs 里写它依据的发现编号（如 s3），不写阿拉伯数字与百分比，"
+                "每句不超过六十字。"
+            )
+        if not best and errors and len(errors) == calls:
+            raise LearnFailedError(
+                REASON_SITUATIONS_FAILED,
+                f"「{candidates.situation}」这类场面的写法调用失败:{errors[-1]}",
+                retryable=True,
+                details={"situation": candidates.situation, "attempts": calls, "problems": errors[-3:]},
+            )
+        return best, calls
+
     # ---- g. finalize ------------------------------------------------------
     def _ledger(self) -> dict[str, Any]:
         rows = self.session.execute(
@@ -1650,6 +1794,13 @@ class _LearnRun(JobRun):
         # 作者在画像里删掉过的自动专名(多半是误收的日常词):不再当专名、不再滤卡片、不再加回禁用词表
         dismissed = self._dismissed_terms(target_id)
         card = filter_learned_card(self.session, self.cursor, texts=texts, target_id=target_id, dismissed=dismissed)
+        situation_card = None
+        if self.full and self.cursor.get("situations"):
+            terms = [t.term for t in card.protected] + list(card.author_terms)
+            situation_card = filter_situation_card(
+                self.cursor["situations"],
+                lambda text: any(term and term in text for term in terms) or card.overlaps(text),
+            )
         voice = self._voice()
         structure = self._structure_card(voice)
         distribution = reference_distribution_for_book(self.session, self.book_id)
@@ -1680,6 +1831,7 @@ class _LearnRun(JobRun):
             planning=planning,
             sub_dimensions=sub_dimensions,
             paragraph_count=len(texts),
+            situation_card=situation_card,
             learned_from={
                 "types_revision": int(index_state.get("types_revision") or 0),
                 "root": index_state.get("root"),
@@ -1691,12 +1843,34 @@ class _LearnRun(JobRun):
                 "run_id": run_id,
                 "learned_at": utcnow(),
                 "extraction": self._extraction_record(),
-                "prompt_versions": {node: rt.prompt_version for node, rt in self.runtimes.items()},
+                "prompt_versions": {
+                    **{node: rt.prompt_version for node, rt in self.runtimes.items()},
+                    **(
+                        {
+                            "consolidate": self.consolidate_runtime.prompt_version,
+                            "situations": self.situation_runtime.prompt_version,
+                        }
+                        if self.consolidate_runtime is not None and self.situation_runtime is not None
+                        else {}
+                    ),
+                },
                 "models": {node: rt.model for node, rt in self.runtimes.items()},
             },
         )
         written = write_learned_profile(self.session, inputs, job_id=self.claimed.job_id)
-        evidence = window_evidence(self.session, self.book_id, card_line_quotes(self.session, written.card))
+        situation_lines = [
+            (f"situation:{entry['situation']}", SituationLine.model_validate(line))
+            for entry in (situation_card or {}).get("situations") or []
+            for line in entry.get("lines") or []
+        ]
+        line_quotes = card_line_quotes(self.session, written.card, extra_lines=situation_lines)
+        positions = quote_positions(self.session, self.book_id, [q for _dim, ids in line_quotes.values() for q in ids])
+        evidence = window_evidence(self.session, self.book_id, line_quotes, positions=positions)
+        # 画像页：每句的依据落在哪几章（「贯穿全书」还是「集中在第 X–Y 章」）
+        written.profile.profile_json = {
+            **dict(written.profile.profile_json or {}),
+            "line_evidence": line_coverage(line_quotes, positions),
+        }
         evidence_windows = set_window_evidence(
             self.session,
             self.book_id,
@@ -1709,6 +1883,9 @@ class _LearnRun(JobRun):
         if self.full:
             starts, records = self._learned_structure()
             result["structure"] = {"scene_starts": len(starts), "chapters": len(records)}
+            result["situations"] = {
+                entry["situation"]: len(entry["lines"]) for entry in (situation_card or {}).get("situations") or []
+            }
         self.service.progress(self.claimed, **self._progress_values(PHASE_FINALIZE, detail="完成"))
         if not self.service.succeed(self.claimed, result):
             self.session.rollback()
