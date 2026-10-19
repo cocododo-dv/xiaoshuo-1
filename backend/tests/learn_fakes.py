@@ -3,7 +3,9 @@
 按 ``request.node_id`` 分发，从不可信数据边界里读出载荷，给出**合法**的结构化输出：
 
 - 四个抽取节点：每维 2 条观察 + 1 条「作者不这么写」，每条两处引文逐字取自样本里【p】标出的段；
-- 文风卡合成：每维 1–2 条 do（refs 指向观察）、有避免的维 1 条 avoid，外加气质、规划手法、标题与概述；
+- 文风卡合成：每维 1–2 条 do（refs 指向观察）、有避免的维 1 条 avoid，外加气质、规划手法、标题与概述；载荷里有
+  上一版文风卡（``previous_card``）时每条 do 都 ``keep`` 上一版同一维同一类的第 i 句（测「在上一版上修订」）；
+- 通读全书的归并（同一个合成节点、载荷带 ``findings``）：陈述一字不差的发现归成一组；
 - 受保护专名：候选里属于 ``protected`` 的词（kind 按 ``kinds``，缺省 person）；
 - 窗口标签：每窗一项（场面 / 情绪从词表里挑、手法取手法表第一个、gist 带一个人名——测专名替换）。
 
@@ -102,20 +104,48 @@ def default_extract(payload: dict[str, Any], *, tag: str = "") -> dict[str, Any]
     return {"dimensions": out}
 
 
+def default_consolidate(payload: dict[str, Any]) -> dict[str, Any]:
+    groups: dict[tuple[str, str], list[str]] = {}
+    for finding in payload.get("findings") or []:
+        groups.setdefault((finding["kind"], finding["statement"]), []).append(finding["ref"])
+    return {
+        "model_default": "通用写法平铺直叙",
+        "devices": list(payload.get("devices") or [])[:2],
+        "distinctiveness": 0.7,
+        "groups": [
+            {"kind": kind, "statement": statement, "refs": refs, "distinctiveness": 0.6}
+            for (kind, statement), refs in groups.items()
+        ],
+    }
+
+
+def _previous_lines(payload: dict[str, Any]) -> dict[tuple[str, str], list[str]]:
+    out: dict[tuple[str, str], list[str]] = {}
+    for entry in payload.get("previous_card") or []:
+        for line in entry.get("lines") or []:
+            out.setdefault((entry["dimension"], line["kind"]), []).append(line["id"])
+    return out
+
+
 def default_card(payload: dict[str, Any]) -> dict[str, Any]:
     dims = []
+    previous = _previous_lines(payload)
     for index, dim in enumerate(payload.get("dimensions") or []):
         observations = dim.get("observations") or []
         avoid = dim.get("avoid") or []
         if not observations:
             continue
         label = dim["label"]
+        kept = previous.get((dim["dimension"], "do"), [])
         do = [
             {
-                "text": f"代替平铺直叙，{label}照作者的做法写（第{'一二'[i]}条）",
+                "text": f"代替平铺直叙，{label}照作者的做法写（第{'一二'[i]}条，换个说法）"
+                if i < len(kept)
+                else f"代替平铺直叙，{label}照作者的做法写（第{'一二'[i]}条）",
                 "refs": [obs["ref"]],
                 "mandatory": index == 0 and i == 0,
                 "distinctiveness": 0.9 - index * 0.05,
+                "keep": kept[i] if i < len(kept) else "",
             }
             for i, obs in enumerate(observations[:2])
         ]
@@ -219,7 +249,7 @@ class FakeLearnLLM(AccountedGenerateMixin):
         if node.startswith(EXTRACT_PREFIX):
             return default_extract(payload)
         if node == NODE_SYNTH:
-            return default_card(payload)
+            return default_consolidate(payload) if "findings" in payload else default_card(payload)
         if node == NODE_PROTECTED:
             terms = [
                 {"term": c["term"], "kind": self.kinds.get(c["term"], "person")}
@@ -251,6 +281,7 @@ __all__ = [
     "NODE_TAGS",
     "SimulatedCrash",
     "default_card",
+    "default_consolidate",
     "default_extract",
     "paragraphs_of",
     "payload_of",

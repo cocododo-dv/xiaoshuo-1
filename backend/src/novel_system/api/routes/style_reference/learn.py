@@ -67,6 +67,8 @@ def learn_book_style(
             force=bool(body.get("force")),
             resume=bool(body.get("resume")),
             retag=bool(body.get("retag")),
+            mode=str(body.get("mode") or "quick"),
+            reread=bool(body.get("reread")),
             op_key=op_key,
             llm_client=client,
         )

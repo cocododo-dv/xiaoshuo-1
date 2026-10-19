@@ -133,6 +133,34 @@
    维度 = 这一窗最能示范的 ≤3 个维度键，不再依赖文风卡的手法）；全书已打过就跳过（重新学习约 6 次调用），`{"retag": true}` 强制重打；
 7. `finalize` 专名与原文重合过滤卡片、沿用 ✓ / ✗、写画像，一个事务；卡片被滤空则作业失败，在用的画像不动。
 
+**两种学习方式**（2026-10-19，`POST …/learn {"mode": "quick" | "full"}`，缺省 `quick`；界面缺省选通读全书）：
+
+- **快速学习**（`quick`）就是上面七步。第 2 步的种子是书的校验和，同一本书每次读**同一组**窗口——重学只是让模型对同一份
+  材料再答一遍；它的用处是换模型 / 改提示词之后拿来对比（材料不变才比得出差别）。
+- **通读全书**（`full`）：
+  - `select` 改为按整章切批（`learn_select.plan_full_batches`）：相连的整章装进一批（≤4.8 万字），超长的章按窗口边界切成
+    几部分；章与章之间的零碎段归前一章，全书从第一个窗口读到最后一个窗口；每批按真实载荷核过抽取节点的预算，装不下把
+    上限乘 0.85 重切。按整章切是为了叙事层（节奏的起落、插叙的进出、信息什么时候放出来要看整章）；语言 / 场景层在哪种
+    切法下都看得到，主题层要的是覆盖全书——各学习目标共用这一套切法，不再按层分窗。
+  - `extract` 逐批、逐层各一次调用（载荷带 `scope`：第几批 / 共几批 / 哪几章；最多 3 个并行），每份读完即落库、记游标；
+    调用失败退避重试（3 次），某一维在这一批里空着不重问（别的批会补上）。实库《龙族》：49 批 × 4 层 = 196 次。
+  - `consolidate`（只有通读才有，`learn_consolidate`）：每维一次调用（模板 `style_ref_consolidate_findings`，走
+    `style_ref_synthesize_profile` 节点的路由，不另设节点）把各批的发现归并成组；组里的编号必须是这一维、同一类的发现，
+    一条只进一组；一组的**支持** = 它的发现出自几个不同的批，每维按支持数留观察 ≤5、避免 ≤2，落成 `status="consolidated"`
+    的发现（抽取行 `purpose="consolidate"`），证据指向成员已逐字核对过的引文（优先取自不同的批），置信度按支持占比
+    （≥三成批 high、≥一成 medium）。
+  - `synthesize` 读归并后的发现，每条带 `seen_in` / `of`（全书几批里见到过）：见得越多越是常态，`mandatory` 从这里挑。
+  - 读完、归并完才写画像；`learned_from.extraction` 记 `mode` / 批数 / 章数 / 字数 / 是否沿用。
+  - **沿用**：一次通读的身份（段落根哈希、窗口索引版本、切法版本与上限、切出来的区间、读了哪几层、各层抽取模板版本与
+    模型）记在血缘 run 行的 `coverage_json["full"]`；下一次通读身份相同就不再读书，归并身份（加上归并模板版本与模型）
+    也相同就连归并一起沿用，只重写文风卡。`{"reread": true}` 从头再读。`GET …/learn` 的 `estimate.full`（批数、调用数、
+    `reusable`）按窗口字数粗切、按身份里除切法外的部分预告能不能沿用，作业开工时按完整身份再判。
+
+**在上一版上修订**（两种方式都是）：合成的载荷带上一版文风卡（`previous_card`，每句带 id；作者 ✗ 掉的单列
+`rejected_lines`）。模型认定新的发现仍支持上一版某一句时在 `keep` 里填它的 id，`learn_card.assemble_card` 就用上一版的
+原句与原 id（`source="kept"`）——没有新证据就不改措辞，句子的 id（内容哈希）不变，作者的 ✓ / ✗ 跟着句子走；`keep` 指向
+✗ 掉的句子或新写的句子与 ✗ 掉的一字不差 → 丢（`excluded_by_author`）。结果里 `card.kept_from_previous` 是沿用的句数。
+
 建作业时就拒：书未就绪 `STYLE_REFERENCE_BOOK_NOT_READY`、正在分类 `…_BOOK_CLASSIFYING`、已在学 `…_LEARN_ALREADY_ACTIVE`、学习节点没有
 路由或模板是旧版 `…_LEARN_CONFIG_MISSING`、正文太短 `…_INPUT_TOO_SMALL`（`{"force": true}` 仍可学）（均 409）。学习在跑时重新分类一律
 409 `STYLE_REFERENCE_BOOK_LEARNING`。失败的作业只有 `error.retryable` 不为 false 时才可「继续学习」（`learn.resumable`）；
@@ -364,7 +392,7 @@ QMAI 的文风自进化：拿作者写过、模型没见过的一段原文，只
 | 模块 | 接口 |
 |---|---|
 | `books.py` | `POST /books/import-upload`（≤10 MB）· `POST /books/import-path`（要配 `NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS`，还要 `X-Admin-Token`；没配 `NOVEL_SYSTEM_ADMIN_TOKEN` 时只放行回环客户端）· `GET /runtime`（有没有模型、分类节点是否本机、推荐的 `default_cloud_policy`）· `GET /books` · `GET /books/{id}` · `GET /books/{id}/paragraphs?start=&end=`（≤80 段）· `GET /books/{id}/classification/estimate` · `POST /books/{id}/reclassify`（缺省破坏式；`{"mode":"retype"}` 就地；`{"resume":true}` 续跑）· `POST /books/{id}/classification/cancel` · `DELETE /books/{id}` · `POST /books/bulk-delete` |
-| `learn.py` | `POST /books/{id}/learn`（`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` |
+| `learn.py` | `POST /books/{id}/learn`（`{"mode":"full"}` 通读全书、缺省快速学习；`{"reread":true}` 通读时不沿用上一次；`{"resume":true}` 续跑；`{"force":true}` 正文太短仍学；`{"retag":true}` 重打窗口标签；`profile_id` 指定就地更新哪份）· `GET /books/{id}/learn`（`learn` + `estimate`（快速学习的；`full` 是通读全书的批数 / 调用数 / 能否沿用；含 `windows_to_tag`；`?retag=true` 按全书重打估）+ 各学习节点的 `routes`）· `POST /books/{id}/learn/cancel` |
 | `profiles.py` | `GET /profiles/{id}`（文风画像页，含 `judge_calibration` 校准卡；画像摘要在书库载荷里）· `POST /profiles/{id}/judge-calibration` · `POST /profiles/{id}/judge-calibration/cancel`（§4.5）· `POST /profiles/{id}/card-lines/{line_id}`（✓ / ✗）· `GET/POST /profiles/{id}/banned-terms` · `DELETE /banned-terms/{id}` · `POST /profiles/{id}/injection-preview`（本场预览，只读） |
 | `bindings.py` | `POST /profiles/{id}/apply {scope, scope_ref_id, config}`（同一目标只留一条生效绑定，旧的在 `replaced` 里说出来）· `PATCH /bindings/{id}`（维度状态按维合并）· `DELETE /bindings/{id}` · `GET /profiles/{id}/bindings` · `GET /projects/{id}/style-binding` |
 | `checks.py` | `POST /checks` · `GET /checks/{job_id}` · `POST /checks/{job_id}/cancel`（§4.4、§7） |

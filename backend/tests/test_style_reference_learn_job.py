@@ -170,7 +170,7 @@ def test_learn_job_runs_every_phase_and_writes_a_v3_profile(session, monkeypatch
     fake, job = _learn(monkeypatch, session)
     assert job.state == "succeeded", job.error_json
     cursor = job.cursor_json
-    assert cursor["phases_done"] == list(learn_job.PHASE_ORDER)
+    assert cursor["phases_done"] == list(learn_job.QUICK_PHASE_ORDER)
     # 调用:四层各一次、文风卡一次、专名一次、标签按批
     assert fake.count("style_ref_extract_") == 4
     assert fake.count(NODE_SYNTH) == 1 and fake.count(NODE_PROTECTED) == 1
@@ -227,7 +227,7 @@ def test_learn_job_runs_every_phase_and_writes_a_v3_profile(session, monkeypatch
     # 结果:计数 / 调用 / 耗时
     assert result["findings"]["total"] == 16 * 3 and result["findings"]["avoid"] == 16
     assert result["llm"]["calls"] == len(fake.calls)
-    assert set(result["seconds"]["by_phase"]) == set(learn_job.PHASE_ORDER)
+    assert set(result["seconds"]["by_phase"]) == set(learn_job.QUICK_PHASE_ORDER)
     assert result["card"]["lines"] == len(lines)
     # 记账:step 记作业 / 步骤
     steps = session.scalars(select(LlmCall.step)).all()
@@ -441,13 +441,15 @@ def test_relearn_updates_the_same_profile_in_place_and_keeps_line_states(session
         )
         db.commit()
 
-    # 第二次学习:合成不再写出被 ✓ 的那一句 → 从旧卡搬回;✗ 的状态保留
+    # 第二次学习:合成不再写出被 ✓ 的那一句(也不 keep 它)→ 从旧卡搬回;✗ 的状态保留
     def script(node, payload, _call_no):
         if node != NODE_SYNTH:
             return None
         card_out = default_card(payload)
         for entry in card_out["dimensions"]:
-            entry["do"] = [line for line in entry["do"] if line["text"] != pinned.text]
+            entry["do"] = [
+                line for line in entry["do"] if line["text"] != pinned.text and line.get("keep") != pinned.line_id
+            ]
         return card_out
 
     _use(monkeypatch, _fake(script=script))
@@ -1015,7 +1017,7 @@ def test_learn_routes_create_dispatch_cancel_and_report(client, session, monkeyp
     activity = client.get(f"{PREFIX}/activity").json()["data"]["items"]
     entry = next(item for item in activity if item.get("job_id") == data["job_id"])
     assert entry["kind"] == "learn" and entry["kind_label"] == "学习文风" and entry["title"] == "雨夜集"
-    assert entry["phases_done"] == list(learn_job.PHASE_ORDER)
+    assert entry["phases_done"] == list(learn_job.QUICK_PHASE_ORDER)
 
     # 学习作业留下的血缘：run 行标着 learn_job，每条发现至少两条证据（文风画像页的依据读的就是这些）
     session.expire_all()

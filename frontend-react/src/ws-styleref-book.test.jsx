@@ -126,6 +126,7 @@ describe("第一步 · 参考书", () => {
 describe("第二步 · 学习文风", () => {
   it("没学过：按钮 + 估算；开始后显示进度，可取消", async () => {
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     expect(byTestId("sr-learn-status").textContent).toBe("还没学");
     expect(byTestId("sr-learn-estimate").textContent).toContain("约 12 次模型调用");
     expect(byTestId("sr-portrait-empty")).toBeTruthy();
@@ -141,12 +142,49 @@ describe("第二步 · 学习文风", () => {
     expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn/cancel`, {});
   });
 
+  it("通读全书（缺省）：估算按批说；开始前一律确认，确认了发 mode=full（2026-10-19）", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await mountView();
+    expect(byTestId("sr-learn-mode-full").getAttribute("aria-checked")).toBe("true");
+    const estimate = byTestId("sr-learn-estimate").textContent;
+    expect(estimate).toContain("按整章分 5 批读完全书（12 章");
+    expect(estimate).toContain("约 44 次模型调用（逐批四层读原文 20 次、每维归并 16 次");
+    expect(byTestId("sr-learn-reread")).toBeNull();
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "job-f" } : {}));
+    await click(byTestId("sr-learn-start"));
+    await settle(20);
+    expect(confirm.mock.calls[0][0]).toContain("通读《甲书》全书学习文风？");
+    expect(confirm.mock.calls[0][0]).toContain("读完全书才更新文风画像");
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, { mode: "full" });
+  });
+
+  it("上一次通读还能用：说明这次不再读书、在上一版上修订；勾「重新通读」就按批估算并发 reread", async () => {
+    state.books = [bookRow({ profile: { ...PROFILE_SUMMARY, learn_mode: "full" } })];
+    state.learn = {
+      ...state.learn,
+      estimate: { ...state.learn.estimate, full: { ...state.learn.estimate.full, reusable: { read_at: "2026-10-19T03:00:00Z", run_id: "run-1" } } },
+    };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await mountView();
+    await openStage("learn");
+    expect(byTestId("sr-learn-done").textContent).toContain("通读全书");
+    expect(byTestId("sr-learn-estimate").textContent).toContain("这次不再读书");
+    await click(byTestId("sr-learn-reread"));
+    expect(byTestId("sr-learn-estimate").textContent).toContain("按整章分 5 批");
+    client.apiPost.mockImplementation((url) => Promise.resolve(url.endsWith("/learn") ? { job_id: "job-f2" } : {}));
+    await click(byTestId("sr-learn-start"));
+    await settle(20);
+    expect(confirm.mock.calls[0][0]).toContain("在上一版文风卡上修订");
+    expect(client.apiPost).toHaveBeenCalledWith(`${API}/books/bk-a/learn`, { mode: "full", reread: true });
+  });
+
   it("没有模型：错误说成中文，并给「去设置模型」", async () => {
     const go = vi.fn();
     client.apiPost.mockImplementation((url) => (url.endsWith("/learn")
       ? Promise.reject(Object.assign(new Error("llm required"), { code: "STYLE_REFERENCE_LLM_REQUIRED", details: { author_action: { view: "systemConfig" } } }))
       : Promise.resolve({})));
     await mountView(go);
+    await click(byTestId("sr-learn-mode-quick"));
     await click(byTestId("sr-learn-start"));
     await settle();
     expect(byTestId("sr-learn-error").textContent).toContain("这一步要用模型，但还没有接入可用的模型。");
@@ -214,6 +252,7 @@ describe("第二步 · 学习文风", () => {
     state.profile = { ...state.profile, needs_relearn: true, relearn_reason: "types_changed" };
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     expect($(".sr-step.is-active").dataset.stage).toBe("learn");
     expect(byTestId("sr-learn-relearn").textContent).toContain("段落类型已更新，建议重新学习");
     await click(byTestId("sr-learn-start"));
@@ -227,6 +266,7 @@ describe("第二步 · 学习文风", () => {
     state.books = [bookRow({ learn: failed })];
     state.learn = { ...state.learn, learn: failed };
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     expect(byTestId("sr-learn-status").textContent).toBe("学习没有完成");
     expect(byTestId("sr-learn-resume")).toBeNull();
     expect(byTestId("sr-learn-force")).toBeNull();
@@ -256,6 +296,7 @@ describe("第二步 · 学习文风", () => {
     state.books = [bookRow({ learn: failed })];
     state.learn = { ...state.learn, learn: failed };
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     expect(byTestId("sr-learn-resume")).toBeNull();
     expect(byTestId("sr-learn-last-error").textContent).toContain("正文太少");
     const force = byTestId("sr-learn-force");
@@ -269,6 +310,7 @@ describe("第二步 · 学习文风", () => {
 
   it("建作业时就被拒「正文太少」（409）：出错行说中文并给「仍然学习」，点了就地发 force", async () => {
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     const posts = [];
     client.apiPost.mockImplementation((url, body) => {
       if (!url.endsWith("/learn")) return Promise.resolve({});
@@ -289,6 +331,7 @@ describe("第二步 · 学习文风", () => {
 
   it("出错行按后端的 author_action 给按钮：resume_learning → 「继续学习」直接续跑（清理 C5）", async () => {
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     const posts = [];
     client.apiPost.mockImplementation((url, body) => {
       if (!url.endsWith("/learn")) return Promise.resolve({});
@@ -310,6 +353,7 @@ describe("第二步 · 学习文风", () => {
   it("出错行按后端的 author_action 给按钮：review_book → 「查看这本书」落到那本书的总览（清理 C5）", async () => {
     state.books = [bookRow(), bookRow({ book_id: "bk-b", title: "乙书" })];
     await mountView();
+    await click(byTestId("sr-learn-mode-quick"));
     client.apiPost.mockImplementation((url) => (url.endsWith("/learn")
       ? Promise.reject(Object.assign(new Error("not ready"), { code: "STYLE_REFERENCE_BOOK_NOT_READY", status: 409, details: { author_action: { action: "review_book", book_id: "bk-b" } } }))
       : Promise.resolve({})));

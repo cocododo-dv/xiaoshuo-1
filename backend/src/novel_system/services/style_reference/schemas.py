@@ -58,6 +58,8 @@ class ExtractionPurpose(str, Enum):
     EXTRACT = "extract"
     SUPPLEMENT_EVIDENCE = "supplement_evidence"
     FULL_RETRY = "full_retry"
+    # 2026-10-19 通读全书：各批发现按维归并后的那一行(learn_consolidate)
+    CONSOLIDATE = "consolidate"
 
 
 class ProfileStatus(str, Enum):

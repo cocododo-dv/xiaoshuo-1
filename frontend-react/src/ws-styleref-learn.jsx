@@ -1,9 +1,10 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { wsConfirm } from "./ws-notify.jsx";
-import { Notice, ProgressBar, Spinner, Tag } from "./ws-ui.jsx";
+import { Notice, ProgressBar, RadioCards, Spinner, Tag } from "./ws-ui.jsx";
 import {
-  SR_ACTIVITY_WHERE, srActivityView, srFormatWhen, srInputTooSmall, srJobErrorText, srLearnEstimateText, srModelGate, srRelearnText,
+  SR_ACTIVITY_WHERE, SR_LEARN_MODE_FULL, SR_LEARN_MODE_QUICK, srActivityView, srFormatWhen, srFullReusable, srInputTooSmall,
+  srJobErrorText, srLearnModeEstimateText, srLearnModeLabel, srModelGate, srRelearnText,
 } from "./ws-styleref-model.js";
 import {
   srActivityFor, srCancelLearn, srLearnInfo, srLoadLearn, srLoadRuntime, srRuntime, srStartLearn,
@@ -17,7 +18,11 @@ import { SrPortrait } from "./ws-styleref-portrait.jsx";
    · 开始前给估算（调用次数、每层读多少原文）；在跑时显示进度、可取消；失败 / 取消后可「继续学习」（从断点续上，
      按后端的 resumable——不可续跑的失败只给「重新学习」）；正文太短而失败（reason_code input_too_small，或建作业时
      409 STYLE_REFERENCE_INPUT_TOO_SMALL）另给「仍然学习」= force；
-   · 已经学过：重新学习是就地更新同一份画像（用在作品上的设置与你的 ✓ / ✗ 都保留）；
+   · 已经学过：重新学习是就地更新同一份画像，并且在上一版文风卡上修订（没有新证据的句子原样留下；用在作品上的设置与
+     你的 ✓ / ✗ 都保留）；
+   · 两种学习方式（2026-10-19）：「通读全书」按整章分批读完全书、每维归并后写卡（读完才更新画像；上一次通读还能用时
+     只重写文风卡，可勾「重新通读」）；「快速学习」固定读约 12 窗 / 4 万字，换模型或改提示词之后拿来对比。通读开始前
+     一律确认（调用次数多）；
    · 段落类型更新过 / 正文变过时，提示建议重新学习。
    ========================================================== */
 
@@ -34,6 +39,8 @@ export function SrLearnCard({ book, go, onAction }) {
   useSrStore("detail", "activity", "books");
   const [busy, setBusy] = React.useState(null);
   const [error, setError] = React.useState(null);
+  const [mode, setMode] = React.useState(SR_LEARN_MODE_FULL);
+  const [reread, setReread] = React.useState(false);
   React.useEffect(() => { srLoadLearn(book.id); srLoadRuntime(); }, [book.id]);
   const info = srLearnInfo(book.id);
   const data = info && info.data;
@@ -53,20 +60,27 @@ export function SrLearnCard({ book, go, onAction }) {
   /* 能不能从断点续上，听后端的 resumable：不可续跑的失败（正文太少这类）只能重新学习 */
   const resumable = unfinished && !!lastJob.resumable;
   const tooSmall = unfinished && lastJob.state === "failed" && srInputTooSmall(lastJob.error);
-  const estimateText = data ? srLearnEstimateText(data.estimate, { bookChars: book.chars }) : null;
+  const full = mode === SR_LEARN_MODE_FULL;
+  const reusable = full && data ? srFullReusable(data.estimate) : null;
+  const estimateText = data ? srLearnModeEstimateText(data.estimate, mode, { bookChars: book.chars, reread }) : null;
 
   const start = async (resume = false, { force = false } = {}) => {
     if (busy) return;
-    if (!resume && !force && profile) {
+    if (!resume && !force && (profile || full)) {
+      const keep = profile ? "会就地更新这份文风画像、在上一版文风卡上修订：用在作品上的设置和你对各句的 ✓ / ✗ 都保留。" : "";
       const ok = await wsConfirm({
-        title: `重新学习《${book.title}》的文风？`,
-        body: `${estimateText ? `${estimateText}。` : ""}会就地更新这份文风画像：用在作品上的设置和你对各句的 ✓ / ✗ 都保留。`,
-        confirmLabel: "重新学习",
+        title: full ? `通读《${book.title}》全书学习文风？` : `重新学习《${book.title}》的文风？`,
+        body: [
+          estimateText ? `${estimateText}。` : "",
+          full && !(reusable && !reread) ? "读完全书才更新文风画像；中途可以取消，之后接着读。" : "",
+          keep,
+        ].join(""),
+        confirmLabel: full ? "开始通读" : "重新学习",
       });
       if (!ok) return;
     }
     setBusy(resume ? "resume" : force ? "force" : "start"); setError(null);
-    try { await srStartLearn(book.id, { resume, force }); }
+    try { await srStartLearn(book.id, { resume, force, mode, reread: full && reread }); }
     catch (e) { setError(e); }
     finally { setBusy(null); }
   };
@@ -99,7 +113,7 @@ export function SrLearnCard({ book, go, onAction }) {
       <div className="card-head">
         <div>
           <div className="card-title">学习文风</div>
-          <div className="card-sub">模型分层读这本书的原文，写出「这位作者和通用写法哪里不一样」的文风卡，并给全书片段打上场面 / 情绪标签，起草时按这一场挑样例。</div>
+          <div className="card-sub">模型分层读这本书的原文，写出「这位作者和通用写法哪里不一样」的文风卡，并给全书片段打上场面 / 情绪标签，起草时按这一场挑样例。可以通读全书，也可以只读一组固定的样本。</div>
         </div>
         <Tag tone={status.tone} dot testId="sr-learn-status">{status.label}</Tag>
       </div>
@@ -143,9 +157,37 @@ export function SrLearnCard({ book, go, onAction }) {
           {profile && !profile.needs_relearn && (
             <p className="sr-ov-text" data-testid="sr-learn-done">
               {profile.learned_at ? `学于 ${srFormatWhen(profile.learned_at)}` : "已学好"}
+              {profile.learn_mode ? ` · ${srLearnModeLabel(profile.learn_mode)}` : ""}
               {profile.version_tag ? ` · ${profile.version_tag}` : ""}
               {profile.card_lines ? ` · 文风卡 ${profile.card_lines} 句` : ""}
             </p>
+          )}
+          <RadioCards
+            label="学习方式"
+            className="sr-learn-mode"
+            testId="sr-learn-mode"
+            value={mode}
+            onChange={setMode}
+            items={[
+              {
+                value: SR_LEARN_MODE_FULL,
+                label: "通读全书",
+                testId: "sr-learn-mode-full",
+                detail: "按整章分批读完整本书，每种写法数一数在多少批里出现过，再写文风卡；读完才算一轮。",
+              },
+              {
+                value: SR_LEARN_MODE_QUICK,
+                label: "快速学习",
+                testId: "sr-learn-mode-quick",
+                detail: "只读固定的一组样本（约 12 窗 / 4 万字，每次同一组），几分钟学完；换模型、改提示词之后拿来对比。",
+              },
+            ]}
+          />
+          {full && reusable && (
+            <label className="sr-learn-reread">
+              <input type="checkbox" data-testid="sr-learn-reread" checked={reread} onChange={(event) => setReread(event.target.checked)} />
+              <span>重新通读（不沿用上一次读出来的结果）</span>
+            </label>
           )}
           <div className="sr-learn-actions">
             {resumable && (

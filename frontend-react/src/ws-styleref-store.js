@@ -359,11 +359,16 @@ export async function srCancelClassification(bookId) {
    ========================================================== */
 /* resume：从断点续跑；force：正文很短也学（作业因 input_too_small 失败、或建作业时 409 STYLE_REFERENCE_INPUT_TOO_SMALL 之后）；
    retag：全书窗口的标签都重打（缺省只补标签版本旧了的窗） */
-export async function srStartLearn(bookId, { resume = false, force = false, retag = false } = {}) {
+/* mode：通读全书 "full" / 快速学习（缺省，不发）；续跑沿用原作业的方式，不发 mode。reread：通读全书时不沿用上一次的通读 */
+export async function srStartLearn(bookId, { resume = false, force = false, retag = false, mode = null, reread = false } = {}) {
   const body = {};
   if (resume) body.resume = true;
   if (force) body.force = true;
   if (retag) body.retag = true;
+  if (!resume && mode === "full") {
+    body.mode = "full";
+    if (reread) body.reread = true;
+  }
   const data = await apiPost(`${API}/books/${encodeURIComponent(bookId)}/learn`, body);
   if (data && data.job_id) srActivityTrack(data.job_id, { kind: "learn", book_id: bookId, title: srBookTitle(bookId) });
   srLoadLearn(bookId, { force: true });

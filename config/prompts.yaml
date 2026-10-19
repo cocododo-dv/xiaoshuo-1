@@ -553,13 +553,18 @@ templates:
   # 实测(2026-09-23,一本 190 万字的真实参考书):抽取集 11 窗 / 41,000 字,渲染后用户消息 ≈4.73 万字符,
   # 按上面的口径估 4.84 万 token → 预算 64000,留约四分之一余量(整窗卸载只在更长的窗口 / 更大的书上才会发生)。
   style_ref_extract_language:
-    version: "2026-09-23.v6"
+    version: "2026-10-19.v7"
     input_token_budget: 64000
     system_prompt: &learn_extract_system |
-      你是中文小说文风研究者。下面是一位作者的原文样本:从全书各处挑出的一组连续片段(章首、章末、对白多的、叙述多的、
-      写心理的、写动作的都有)。你的任务是把这位作者**和通用大模型写法不一样的地方**逐维写清楚——之后系统会据此让写作
-      模型**全面模仿**这位作者的手笔写新故事,所以越具体越好:作者自己的用词、口头禅、句末语气词、比喻从哪里取材、
-      句子怎么断、幽默从哪里来、紧张时怎么写,都要抓。
+      你是中文小说文风研究者。下面是一位作者的原文样本:或者是从全书各处挑出的一组连续片段(章首、章末、对白多的、
+      叙述多的、写心理的、写动作的都有),或者——数据块里有 scope 时——是系统通读全书时按顺序读到的相连几章(scope
+      写明这是全书第几批、共几批、哪几章;每个片段是一整章,position 为「整章」,太长的章分成几部分读)。你的任务是
+      把这位作者**和通用大模型写法不一样的地方**逐维写清楚——之后系统会据此让写作模型**全面模仿**这位作者的手笔写新
+      故事,所以越具体越好:作者自己的用词、口头禅、句末语气词、比喻从哪里取材、句子怎么断、幽默从哪里来、紧张时怎么写,
+      都要抓。
+
+      通读全书的一批只写这几章里真的看得到的做法:某一维在这几章里确实没有可靠证据就给空数组,不要硬凑——别的批会
+      补上;系统会把全书各批的发现归并,数一种做法在多少批里出现过。
 
       每一维要给:
         - model_default:一句话(≤60 字),通用大模型写这一维时的默认做法。例如「比喻多取自然景物,爱用仿佛、宛如」
@@ -643,7 +648,7 @@ templates:
                 items: *learn_finding_item
 
   style_ref_extract_narrative:
-    version: "2026-09-23.v6"
+    version: "2026-10-19.v7"
     input_token_budget: 64000
     system_prompt: *learn_extract_system
     task_prompt: |
@@ -656,10 +661,11 @@ templates:
         - narrative.information_density 信息密度:设定与背景怎么交代(对话里带出 / 旁白解说 / 边行动边解释);爱不爱给具体
           数字、计量、时刻;信息什么时候放出来。
       样本见数据块:windows 里每个片段带 window、chapter、position、text(每段以【p】开头)。4 个维度都要输出。
+      有 scope 时片段是整章:看整章里节奏怎么起落、插叙怎么进出、信息什么时候放出来,不要只看一两段。
     structured_schema: *learn_extract_schema
 
   style_ref_extract_scene:
-    version: "2026-09-23.v6"
+    version: "2026-10-19.v7"
     input_token_budget: 64000
     system_prompt: *learn_extract_system
     task_prompt: |
@@ -675,7 +681,7 @@ templates:
     structured_schema: *learn_extract_schema
 
   style_ref_extract_theme:
-    version: "2026-09-23.v6"
+    version: "2026-10-19.v7"
     input_token_budget: 64000
     system_prompt: *learn_extract_system
     task_prompt: |
@@ -697,7 +703,7 @@ templates:
   # 40 字引文)用户消息 ≈4.6 万字符、估 3.14 万 token;典型(每维 2 + 1 条)估 0.76 万 token → 预算 48000;装不下时
   # learn_card.fit_synthesis_payload 先减引文(2 → 1 → 0)、再减每维每类的发现条数(→ 3 → 2 → 1)。
   style_ref_synthesize_profile:
-    version: "2026-09-23.v9"
+    version: "2026-10-19.v10"
     input_token_budget: 48000
     system_prompt: |
       你是中文小说文风编辑。输入是对一位作者 16 个维度的逐维发现(每条带编号 ref 与原文短引)、系统用全书统计测出的
@@ -722,6 +728,17 @@ templates:
         - planning_guidance:≤10 行,规划一场戏时用得上的手法,格式「标签：陈述」(标签如 开场 / 收场 / 对白 / 冲突 /
           节奏 / 情绪基调 / 场面),写这位作者怎么安排一场戏。
 
+      在上一版上修订(输入里有 previous_card 时必须做):
+        - previous_card 是这位作者上一版的文风卡,每句带 id。这次不是重写,是修订:新的发现仍然支持上一版的某一句时,
+          在那一条的 keep 里填它的 id、text 照抄原句(系统以原句为准,作者对它的标记跟着走),refs 写这次支持它的发现;
+        - 不要为了换个说法改写仍然成立的句子;上一版说错了、这次的发现不支持的,就不要 keep 它;这次的发现里有上一版
+          没写到、更有辨识度的做法,另写新句(keep 填空字符串);
+        - rejected_lines 是作者否决过的说法:不要再写这些意思,换个说法也不行。
+        - 没有 previous_card 时 keep 一律填空字符串。
+
+      全书统计(发现带 seen_in / of 时):这是通读全书得来的发现,seen_in 是它在全书 of 批里的几批见到过。见到的批越多,
+      越是这位作者的常态——优先写进 do、在里面挑 mandatory;只在少数几批见到的是局部习惯,可以写进 do,但不标 mandatory。
+
       对账(必须做):
         - 互相矛盾的说法只留一个:保留证据更多、更具体的那条(例如一处说逗号用得密、另一处说逗号稀疏,看哪边的发现
           证据多、与 voice_habits 是否一致);**绝不**输出两条互相矛盾的指令。
@@ -734,7 +751,9 @@ templates:
       只输出 schema 规定的 JSON。
     task_prompt: |
       输入见数据块:book_title、dimensions(16 维;每维 label、model_default、devices、distinctiveness、observations 与
-      avoid,每条发现带 ref / statement / confidence / quotes)、voice_habits、structure_facts。
+      avoid,每条发现带 ref / statement / confidence / quotes,通读全书时另带 seen_in / of)、voice_habits、
+      structure_facts,可能还有 coverage(通读全书:共几批、几章)、previous_card(上一版文风卡)与 rejected_lines(作者
+      否决过的说法)。
       16 维全部读完再下笔。每条 do / avoid 必须在 refs 里写它依据的发现编号,系统据此把卡片连到原文证据;没有依据的句子
       会被丢弃。
     structured_schema:
@@ -770,9 +789,10 @@ templates:
                 items: &learn_card_line
                   type: object
                   additionalProperties: false
-                  required: [text, refs, mandatory, distinctiveness]
+                  required: [text, refs, mandatory, distinctiveness, keep]
                   properties:
                     text: {type: string, maxLength: 90}
+                    keep: {type: string, maxLength: 40}
                     refs:
                       type: array
                       minItems: 1
@@ -788,6 +808,66 @@ templates:
           type: array
           maxItems: 10
           items: {type: string, maxLength: 90}
+
+  # 通读全书的归并(learn_job 的 consolidate 步,2026-10-19):每维一次调用,走文风卡合成节点的路由。载荷:这一维全书
+  # 各批的发现(编号 r1…rN、类别、陈述、出自第几批)、各批写的模型默认写法与手法名。实测估计(190 万字、49 批):每维
+  # 约 150–300 条、每条 ≤160 字 → 估 1.2–3.5 万 token → 预算 48000(装不下时先去掉低置信、再去掉中置信的发现)。
+  style_ref_consolidate_findings:
+    version: "2026-10-19.v1"
+    input_token_budget: 48000
+    system_prompt: |
+      你是中文小说文风研究者。系统通读了一位作者的整本书,分成若干批读,每批读完都写下这位作者在某一维上的具体做法
+      (发现)。同一种做法在不同批里会被写成不同的说法、举不同的例子。你的任务是把这一维的全部发现归并成几组,好让系统
+      数清楚每种做法在全书多少批里出现过。
+
+      归组规则:
+        - 一组是一种具体做法。说的是同一件事的发现(哪怕措辞不同、例子不同)归进同一组;做法不同的分开,不要把两种
+          做法捏成一句。
+        - kind:observation(作者这样写)或 avoid(作者不这么写);observation 组只收 observation 发现,avoid 组只收
+          avoid 发现。
+        - statement:一句可以照着做的陈述(≤80 字)。从组里挑最具体、最准的说法,可以合写,但不能写组里的发现没说的
+          东西;可以用「」引作者的原词作例子(每处 ≤10 字)。不写统计数字、不写空泛评价(文笔优美、节奏流畅之类)、
+          不写本书的人名地名组织与设定名。
+        - refs:组里每条发现的编号(输入里的 r 开头的编号);一条发现只进一组。说法含糊、空泛、跟别的都不搭的发现可以
+          不归组。
+        - distinctiveness:0 到 1,这种做法和通用大模型的写法差得有多远。
+        - 组按「出现在多少批里」从多到少排;observation 最多 10 组,avoid 最多 4 组。
+
+      另外给出这一维的:
+        - model_default:一句话(≤60 字),通用大模型写这一维时的默认做法(参考输入的 model_defaults 归纳);
+        - devices:≤3 个手法名(≤8 字),沿用输入里出现最多的;
+        - distinctiveness:0 到 1,整体上这一维作者和通用写法差多远。
+      只输出 schema 规定的 JSON。
+    task_prompt: |
+      输入见数据块:book_title、dimension(key / label)、batches(全书一共读了几批)、model_defaults(各批写的模型默认
+      写法)、devices(各批起的手法名,按出现次数排)、findings(每条带 ref / kind / statement / batch=出自第几批)。
+      全部读完再归组;每个 ref 至多出现在一组里。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [model_default, devices, distinctiveness, groups]
+      properties:
+        model_default: {type: string, maxLength: 90}
+        devices:
+          type: array
+          maxItems: 3
+          items: {type: string, maxLength: 8}
+        distinctiveness: {type: number}
+        groups:
+          type: array
+          maxItems: 14
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, statement, refs, distinctiveness]
+            properties:
+              kind: {type: string, enum: [observation, avoid]}
+              statement: {type: string, maxLength: 160}
+              refs:
+                type: array
+                minItems: 1
+                items: {type: string}
+              distinctiveness: {type: number}
 
   # 受保护专名(learn_job 第 5 步,台账 E7)。载荷:≤360 个统计候选(词 / 次数 / 一小段上下文)+ 主题层的「作者不这么
   # 写」陈述。实测(190 万字的真实参考书):360 个候选用户消息 ≈3.4 万字符(JSON 里 ASCII 多)、估 1.6–1.7 万 token

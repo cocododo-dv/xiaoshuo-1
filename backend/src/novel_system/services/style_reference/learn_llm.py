@@ -2,7 +2,8 @@
 
 学习作业一共用 7 个节点：4 个分层抽取（沿用 ``style_ref_extract_<layer>`` 的节点 id，作者在系统配置里给它们
 配的路由照旧生效）、文风卡合成（``style_ref_synthesize_profile``）、受保护专名（``style_ref_protected_terms``）、
-窗口标签（``style_ref_tag_windows``）。
+窗口标签（``style_ref_tag_windows``）。通读全书的归并（模板 ``style_ref_consolidate_findings``）走文风卡合成节点的
+路由（:func:`load_consolidate_runtime`），不另设节点。
 
 - 路由与提示词模板**每个作业载一次**（``load_learn_runtimes``，经 ``llm_nodes.load_node_runtimes``），不在每次
   调用时重新解析；
@@ -52,6 +53,9 @@ LEARN_NODE_IDS: tuple[str, ...] = (
     NODE_TAG_WINDOWS,
 )
 
+# 通读全书的归并模板：在文风卡合成节点的路由上跑
+CONSOLIDATE_TEMPLATE = "style_ref_consolidate_findings"
+
 LEARN_CONFIG_MISSING_CODE = "STYLE_REFERENCE_LEARN_CONFIG_MISSING"
 LEARN_CALL_FAILED_CODE = "STYLE_REFERENCE_LEARN_LLM_CALL_FAILED"
 
@@ -76,13 +80,17 @@ class LearnCallResult:
     usage: dict[str, Any]
 
 
-def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, NodeRuntime]:
+def load_learn_runtimes(
+    node_ids: Sequence[str] = LEARN_NODE_IDS,
+    *,
+    template_names: Mapping[str, str] | None = None,
+) -> dict[str, NodeRuntime]:
     """载入学习节点的路由（DB node_routing 优先、yaml 兜底）与提示词模板；缺哪个都报 409（中文 + 去系统配置）。
 
     模板的输出字段与作业的解析代码随同一次发布到达（提示词只读仓库的 config/prompts.yaml），两者对得上由
     ``tests/test_style_reference_learn_units.py`` 的模板契约守着，开工时不再逐个查。"""
     try:
-        load = load_node_runtimes(node_ids)
+        load = load_node_runtimes(node_ids, template_names=template_names)
     except NodeConfigUnavailable as exc:
         raise DomainError(
             LEARN_CONFIG_MISSING_CODE,
@@ -113,6 +121,11 @@ def load_learn_runtimes(node_ids: Sequence[str] = LEARN_NODE_IDS) -> dict[str, N
             },
         )
     return dict(load.runtimes)
+
+
+def load_consolidate_runtime() -> NodeRuntime:
+    """通读全书的归并：文风卡合成节点的路由 + 归并模板（缺路由 / 模板同样 409 ``…_LEARN_CONFIG_MISSING``）。"""
+    return load_learn_runtimes((NODE_SYNTHESIZE,), template_names={NODE_SYNTHESIZE: CONSOLIDATE_TEMPLATE})[NODE_SYNTHESIZE]
 
 
 def _task_text(runtime: NodeRuntime, extra_instruction: str | None) -> str:
@@ -223,6 +236,7 @@ def call_structured(
 
 
 __all__ = [
+    "CONSOLIDATE_TEMPLATE",
     "EXTRACT_NODES",
     "LAYERS",
     "LEARN_CALL_FAILED_CODE",
@@ -235,6 +249,7 @@ __all__ = [
     "NODE_TAG_WINDOWS",
     "call_structured",
     "estimate_input_tokens",
+    "load_consolidate_runtime",
     "load_learn_runtimes",
     "payload_fits",
     "render_messages",

@@ -2,7 +2,8 @@
 
 - **样本**（``build_extraction_set``）：选窗步挑出的窗口（按段落区间，不依赖窗口号——索引重建也读同一段文字），
   只取正文段（跳过章题 / 场分隔 / 脚注 / 落款，与窗口索引同一条判断），每段前标【p】（整组样本里唯一的段号），
-  送整段正文；
+  送整段正文；通读全书的一批（``build_range_set``）同样处理，只是片段是整章（或超长章的一部分），从作业已读进
+  内存的段落里切，载荷带 ``scope``（第几批 / 共几批 / 哪几章）；
 - **一层一次调用**：每层 4 个维度，每维 ≤5 条观察 + ≤2 条「作者不这么写」，每条 ≥2 条原文引文（段号 + 逐字引文），
   外加一句「通用模型在这一维的默认写法」、≤3 个手法名（≤8 字）与辨识度估计；
 - **证据核对**（``parse_layer_output``）：引文必须是给定段落里连续、逐字一致的一小段（``evidence.py`` 的对齐器；
@@ -16,6 +17,7 @@
 from __future__ import annotations
 
 import uuid
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -161,6 +163,59 @@ def build_extraction_set(session: Session, book_id: str, selected: Sequence[Mapp
     return ExtractionSet(windows=windows, paragraphs=paragraphs, strata=strata)
 
 
+def segment_position(segment: Mapping[str, Any]) -> str:
+    parts = int(segment.get("parts") or 1)
+    return "整章" if parts <= 1 else f"整章的第 {int(segment.get('part') or 1)}/{parts} 部分"
+
+
+def build_range_set(
+    rows: Sequence[tuple[Any, Any, Any, Any]],
+    segments: Sequence[Mapping[str, Any]],
+    *,
+    window_starts: Sequence[tuple[int, int, int]] = (),
+) -> ExtractionSet:
+    """通读全书的一批：``rows`` 是全书段落 ``(paragraph_index, paragraph_type, text, paragraph_id)``（按序号），
+    ``segments`` 是这一批的段落区间（``learn_select.plan_full_batches`` 的 segments）。每个区间一个片段，``window``
+    是片段在批内的序号；``window_starts``（窗口的 ``(start, end, window_no)``，按起点排）只用来给引文记它落在哪个
+    窗口（界面按窗口找原文）。"""
+    indexes = [int(row[0]) for row in rows]
+    starts = [int(w[0]) for w in window_starts]
+    windows: list[dict[str, Any]] = []
+    paragraphs: dict[int, SetParagraph] = {}
+    number = 0
+    for block, segment in enumerate(segments, start=1):
+        low = bisect_left(indexes, int(segment["start"]))
+        high = bisect_right(indexes, int(segment["end"]))
+        lines: list[str] = []
+        for index, ptype, text, pid in rows[low:high]:
+            body = compact_ws(text)
+            if not body or non_body_kind(body) is not None:
+                continue
+            number += 1
+            slot = bisect_right(starts, int(index)) - 1
+            window_no = int(window_starts[slot][2]) if slot >= 0 and int(index) <= int(window_starts[slot][1]) else 0
+            paragraphs[number] = SetParagraph(
+                number=number,
+                paragraph_id=str(pid),
+                paragraph_index=int(index),
+                paragraph_type=str(ptype or ""),
+                window_no=window_no,
+                text=body,
+                raw_text=str(text or ""),
+            )
+            lines.append(f"【{number}】{body}")
+        if lines:
+            windows.append(
+                {
+                    "window": block,
+                    "chapter": int(segment.get("chapter") or 0),
+                    "position": segment_position(segment),
+                    "text": "\n".join(lines),
+                }
+            )
+    return ExtractionSet(windows=windows, paragraphs=paragraphs)
+
+
 # 预算装不下时先卸哪些窗:补位的典型窗 → 描写 / 动作 / 心理 → 叙述 / 对白 → 章末 / 章首
 _DROP_ORDER = ("typical", "all", "description", "action", "psychology", "narration", "dialogue", "closing", "opening")
 MIN_SET_WINDOWS = 3
@@ -184,13 +239,23 @@ def shrink_to_fit(ext_set: ExtractionSet, fits) -> tuple[ExtractionSet, list[int
     return current, dropped
 
 
-def layer_payload(ext_set: ExtractionSet, layer: str, *, book_title: str) -> dict[str, Any]:
-    return {
+def layer_payload(
+    ext_set: ExtractionSet,
+    layer: str,
+    *,
+    book_title: str,
+    scope: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """``scope``：通读全书时这一批是全书的哪一段（``{"mode": "full", "batch", "batches", "chapters"}``）。"""
+    payload: dict[str, Any] = {
         "book_title": book_title,
         "layer": layer,
         "dimensions": [{"key": dim, "label": DIMENSION_LABELS[dim]} for dim in layer_dimensions(layer)],
         "windows": ext_set.windows,
     }
+    if scope:
+        payload["scope"] = dict(scope)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -398,11 +463,14 @@ def parse_layer_output(structured: Any, layer: str, ext_set: ExtractionSet) -> L
     return parse
 
 
-def needs_retry(parse: LayerParse) -> bool:
-    """输出不成形、某一维一条观察都没通过、或被丢的发现超过三分之一 → 值得再问一次。"""
+def needs_retry(parse: LayerParse, *, every_dimension: bool = True) -> bool:
+    """输出不成形、某一维一条观察都没通过、或被丢的发现超过三分之一 → 值得再问一次。
+
+    ``every_dimension=False``（通读全书的一批）：某一维空着不算问题——两三章里可能真没有插叙、没有写景，整本书
+    读下来别的批会补上；只有输出不成形或丢得太多才重问。"""
     if parse.malformed:
         return True
-    if any(not parse.observations(dim) for dim in layer_dimensions(parse.layer)):
+    if every_dimension and any(not parse.observations(dim) for dim in layer_dimensions(parse.layer)):
         return True
     return parse.returned > 0 and parse.rejected * 3 > parse.returned
 
@@ -460,8 +528,11 @@ def persist_layer(
     parse: LayerParse,
     attempts: int,
     llm_call_id: str | None,
+    batch: int | None = None,
 ) -> dict[str, dict[str, int]]:
-    """一层的结果写进抽取 / 发现 / 引文 / 证据四张表（调用方的事务；只 flush）。返回每维计数。"""
+    """一层的结果写进抽取 / 发现 / 引文 / 证据四张表（调用方的事务；只 flush）。返回每维计数。
+
+    ``batch``：通读全书时这是第几批（记在抽取行的原始载荷里，归并步据此数一条做法在几批里出现过）。"""
     repo = StyleReferenceRepository(session)
     purpose = ExtractionPurpose.EXTRACT.value if attempts <= 1 else ExtractionPurpose.FULL_RETRY.value
     for dim in layer_dimensions(parse.layer):
@@ -524,7 +595,7 @@ def persist_layer(
                     quote_id=quote_id,
                     anchor_kind=AnchorKind.PARAGRAPH_QUOTE.value,
                 )
-        extraction.raw_payload_json = {
+        raw_payload: dict[str, Any] = {
             "model_default": meta.model_default,
             "devices": list(meta.devices),
             "distinctiveness": meta.distinctiveness,
@@ -532,6 +603,9 @@ def persist_layer(
             "attempts": int(attempts),
             "finding_meta": finding_meta,
         }
+        if batch is not None:
+            raw_payload["batch"] = int(batch)
+        extraction.raw_payload_json = raw_payload
     session.flush()
     return parse.counts()
 
@@ -547,6 +621,7 @@ __all__ = [
     "ValidEvidence",
     "ValidFinding",
     "build_extraction_set",
+    "build_range_set",
     "clean_devices",
     "layer_dimensions",
     "layer_payload",
@@ -556,5 +631,6 @@ __all__ = [
     "persist_layer",
     "retry_instruction",
     "score01",
+    "segment_position",
     "shrink_to_fit",
 ]

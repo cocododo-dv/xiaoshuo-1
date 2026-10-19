@@ -170,6 +170,7 @@ def _summary_of(row: Mapping[str, Any], marks: Mapping[str, Any] | None) -> dict
         "version_tag": row.get("version_tag"),
         "profile_version": row.get("profile_version") or None,
         "learned_at": learned.get("learned_at"),
+        "learn_mode": str((learned.get("extraction") or {}).get("mode") or "quick") if learned.get("learned_at") else None,
         "card_lines": _int(coverage.get("card_lines")),
         "findings_count": _int(coverage.get("findings_count")),
         "quotes_count": _int(coverage.get("quotes_count")),
@@ -510,8 +511,13 @@ def profile_detail(session: Session, profile: StyleReferenceProfile) -> dict[str
     extraction = learned.get("extraction") if isinstance(learned.get("extraction"), Mapping) else None
     if extraction is not None:
         learned_view["extraction"] = {
+            "mode": str(extraction.get("mode") or "quick"),
             "windows": len(extraction.get("windows") or []),
+            "batches": _int(extraction.get("batches")),
+            "chapters": _int(extraction.get("chapters")),
             "chars": _int(extraction.get("chars")),
+            "read_at": extraction.get("read_at"),
+            "reused_reading": bool(extraction.get("reused_reading")),
         }
     coverage = profile.coverage_json if isinstance(profile.coverage_json, Mapping) else {}
     return {

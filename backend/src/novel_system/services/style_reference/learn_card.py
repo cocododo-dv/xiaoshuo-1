@@ -18,6 +18,11 @@ avoid（每条引用它依据的发现 ref）、手法名、辨识度；外加�
 
 合成不再要求卡片「与声音习惯一致、不得相反」地重述声音（台账 E1 的耦合）：声音习惯是单独的块，卡片只写
 声音块说不出来的东西。
+
+**在上一版上修订**（2026-10-19）：重新学习时载荷带上一版文风卡（``previous_card``，作者 ✗ 掉的句子单列成
+``rejected_lines``）。模型认定新的发现仍支持上一版的某一句时在 ``keep`` 里填那一句的 id，``assemble_card`` 就用
+上一版的原句与原 id——没有新证据就不改措辞，作者的 ✓ / ✗ 跟着句子走；``keep`` 指向 ✗ 掉的句子 → 丢。通读全书时
+每条发现还带「在几批里见到过」（``seen_in`` / ``of``）。
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -42,6 +47,7 @@ from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
 from novel_system.services.style_reference.card import (
     CARD_LINE_MAX_CHARS,
     DIMENSION_LABELS,
+    LINE_STATE_EXCLUDED,
     CardLine,
     DimensionCard,
     DimensionEntry,
@@ -51,7 +57,7 @@ from novel_system.services.style_reference.card import (
 from novel_system.services.style_reference.cn_phrases import PUNCT_HABITS
 from novel_system.services.style_reference.learn_extract import clean_devices, score01
 from novel_system.services.style_reference.narrative_guidance import mark_forbidden_narrative_statement
-from novel_system.services.style_reference.schemas import FindingKind
+from novel_system.services.style_reference.schemas import ExtractionPurpose, FindingKind
 from novel_system.services.style_reference.text_utils import compact_ws
 from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
 
@@ -80,6 +86,9 @@ DROP_CONTRADICTION = "contradiction"
 DROP_PROTECTED = "protected_term"
 DROP_OVERLAP = "source_overlap"
 DROP_OVER_LIMIT = "over_limit"
+DROP_EXCLUDED = "excluded_by_author"
+# 归并后的发现（通读全书，learn_consolidate.STATUS_CONSOLIDATED；这里只认字面值，避免反向依赖）
+CONSOLIDATED_STATUS = "consolidated"
 
 
 # ---------------------------------------------------------------------------
@@ -97,17 +106,40 @@ class FindingRef:
     confidence: str
     quote_ids: tuple[str, ...]
     quotes: tuple[str, ...]
+    # 通读全书：这条（归并后的）发现在几批里见到过 / 全书共几批
+    support: int | None = None
+    batches: int | None = None
 
 
-def load_run_findings(session: Session, run_id: str) -> list[FindingRef]:
-    """这一轮的全部发现（按维度顺序、观察在前、落库顺序），带编号 f1…fN 与证据引文。"""
+def load_run_findings(session: Session, run_id: str, *, consolidated: bool = False) -> list[FindingRef]:
+    """这一轮的发现（按维度顺序、观察在前、落库顺序），带编号 f1…fN 与证据引文。
+
+    ``consolidated``：只要通读全书归并后的发现（带支持数）；缺省只要抽取出来的发现（快速学习的全部发现）。"""
+    status_filter = (
+        StyleReferenceFinding.status == CONSOLIDATED_STATUS
+        if consolidated
+        else or_(StyleReferenceFinding.status.is_(None), StyleReferenceFinding.status != CONSOLIDATED_STATUS)
+    )
     findings = list(
         session.scalars(
             select(StyleReferenceFinding)
-            .where(StyleReferenceFinding.run_id == run_id)
+            .where(StyleReferenceFinding.run_id == run_id, status_filter)
             .order_by(StyleReferenceFinding.created_at, StyleReferenceFinding.finding_id)
         )
     )
+    support: dict[str, tuple[int, int]] = {}
+    if consolidated:
+        for row in session.scalars(
+            select(StyleReferenceExtraction).where(
+                StyleReferenceExtraction.run_id == run_id,
+                StyleReferenceExtraction.purpose == ExtractionPurpose.CONSOLIDATE.value,
+            )
+        ):
+            payload = row.raw_payload_json if isinstance(row.raw_payload_json, Mapping) else {}
+            batches = int(payload.get("batches") or 0)
+            for finding_id, meta in (payload.get("finding_meta") or {}).items():
+                if isinstance(meta, Mapping):
+                    support[str(finding_id)] = (int(meta.get("support") or 0), batches)
     evidence_rows = session.execute(
         select(StyleReferenceEvidence.finding_id, StyleReferenceQuote.quote_id, StyleReferenceQuote.quote_text)
         .join(StyleReferenceQuote, StyleReferenceQuote.quote_id == StyleReferenceEvidence.quote_id)
@@ -137,6 +169,8 @@ def load_run_findings(session: Session, run_id: str) -> list[FindingRef]:
                 confidence=str(finding.confidence or "medium"),
                 quote_ids=tuple(quote_id for quote_id, _text in pairs),
                 quotes=tuple(text for _quote_id, text in pairs),
+                support=support[str(finding.finding_id)][0] if str(finding.finding_id) in support else None,
+                batches=support[str(finding.finding_id)][1] if str(finding.finding_id) in support else None,
             )
         )
     return refs
@@ -149,12 +183,14 @@ class DimensionMetaRow:
     distinctiveness: float | None = None
 
 
-def load_dimension_meta(session: Session, run_id: str) -> dict[str, DimensionMetaRow]:
-    """抽取行里记的每维「模型默认写法 / 手法名 / 辨识度」。"""
+def load_dimension_meta(session: Session, run_id: str, *, consolidated: bool = False) -> dict[str, DimensionMetaRow]:
+    """抽取行里记的每维「模型默认写法 / 手法名 / 辨识度」（``consolidated``：只看通读全书归并那一行）。"""
     meta: dict[str, DimensionMetaRow] = {}
+    purpose = StyleReferenceExtraction.purpose == ExtractionPurpose.CONSOLIDATE.value
+    not_consolidate = or_(StyleReferenceExtraction.purpose.is_(None), ~purpose)
     for row in session.scalars(
         select(StyleReferenceExtraction)
-        .where(StyleReferenceExtraction.run_id == run_id)
+        .where(StyleReferenceExtraction.run_id == run_id, purpose if consolidated else not_consolidate)
         .order_by(StyleReferenceExtraction.created_at)
     ):
         payload = row.raw_payload_json if isinstance(row.raw_payload_json, Mapping) else {}
@@ -186,6 +222,8 @@ def synthesis_payload(
     structure_facts: Sequence[str],
     quotes_per_finding: int = SYNTH_QUOTES_PER_FINDING,
     max_findings_per_kind: int | None = None,
+    previous: "PreviousCard | None" = None,
+    coverage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     by_dim: dict[str, list[FindingRef]] = defaultdict(list)
     for finding in findings:
@@ -199,15 +237,19 @@ def synthesis_payload(
             selected = [f for f in items if f.kind == kind]
             if max_findings_per_kind is not None:
                 selected = selected[: max(0, int(max_findings_per_kind))]
-            return [
-                {
+            out = []
+            for f in selected:
+                row: dict[str, Any] = {
                     "ref": f.ref,
                     "statement": f.statement,
                     "confidence": f.confidence,
                     "quotes": [_short(q, SYNTH_QUOTE_MAX_CHARS) for q in f.quotes[: max(0, quotes_per_finding)]],
                 }
-                for f in selected
-            ]
+                if f.support is not None and f.batches:
+                    row["seen_in"] = int(f.support)
+                    row["of"] = int(f.batches)
+                out.append(row)
+            return out
 
         dimensions.append(
             {
@@ -220,12 +262,55 @@ def synthesis_payload(
                 "avoid": rows(FindingKind.FORBIDDEN_PATTERN.value),
             }
         )
-    return {
+    payload: dict[str, Any] = {
         "book_title": book_title,
         "dimensions": dimensions,
         "voice_habits": [str(line) for line in voice_habits if str(line).strip()],
         "structure_facts": [str(line) for line in structure_facts if str(line).strip()],
     }
+    if coverage:
+        payload["coverage"] = dict(coverage)
+    if previous is not None and not previous.empty:
+        payload["previous_card"] = previous.payload()
+        if previous.rejected:
+            payload["rejected_lines"] = list(previous.rejected)
+    return payload
+
+
+@dataclass(frozen=True)
+class PreviousCard:
+    """上一版文风卡里还能沿用的句子（作者没 ✗ 掉的，按 id）与作者 ✗ 掉的句子。"""
+
+    lines: Mapping[str, tuple[str, CardLine]]  # line_id → (维度, 句子)
+    rejected: tuple[str, ...] = ()
+    rejected_ids: frozenset[str] = frozenset()
+
+    @property
+    def empty(self) -> bool:
+        return not self.lines and not self.rejected
+
+    def payload(self) -> list[dict[str, Any]]:
+        by_dim: dict[str, list[dict[str, str]]] = defaultdict(list)
+        for line_id, (dim, line) in self.lines.items():
+            by_dim[dim].append({"id": line_id, "kind": line.kind, "text": line.text})
+        return [{"dimension": dim, "lines": by_dim[dim]} for dim in ALL_DIMENSIONS if dim in by_dim]
+
+    @classmethod
+    def from_card(cls, card: DimensionCard | None, states: Mapping[str, str] | None) -> "PreviousCard":
+        if card is None:
+            return cls(lines={})
+        states = dict(states or {})
+        lines: dict[str, tuple[str, CardLine]] = {}
+        rejected: list[str] = []
+        rejected_ids: set[str] = set()
+        for dim, line in card.all_lines():
+            if states.get(line.line_id) == LINE_STATE_EXCLUDED:
+                rejected_ids.add(line.line_id)
+                if line.text not in rejected:
+                    rejected.append(line.text)
+            elif line.line_id and line.line_id not in lines:
+                lines[line.line_id] = (dim, line)
+        return cls(lines=lines, rejected=tuple(rejected), rejected_ids=frozenset(rejected_ids))
 
 
 def fit_synthesis_payload(build: Callable[..., dict[str, Any]], fits: Callable[[dict[str, Any]], bool]) -> tuple[dict[str, Any], str]:
@@ -296,6 +381,8 @@ class CardAssembly:
     planning_guidance: list[str] = field(default_factory=list)
     dropped: dict[str, int] = field(default_factory=dict)
     line_count: int = 0
+    # 沿用上一版原句的句数（``keep``）
+    kept: int = 0
 
     def drop(self, reason: str, count: int = 1) -> None:
         self.dropped[reason] = self.dropped.get(reason, 0) + count
@@ -308,6 +395,7 @@ class CardAssembly:
             "planning_guidance": list(self.planning_guidance),
             "dropped": dict(self.dropped),
             "line_count": self.line_count,
+            "kept": self.kept,
         }
 
     @classmethod
@@ -320,6 +408,7 @@ class CardAssembly:
             planning_guidance=[str(x) for x in raw.get("planning_guidance") or []],
             dropped={str(k): int(v) for k, v in (raw.get("dropped") or {}).items()},
             line_count=int(raw.get("line_count") or 0),
+            kept=int(raw.get("kept") or 0),
         )
 
 
@@ -329,9 +418,14 @@ def assemble_card(
     meta: Mapping[str, DimensionMetaRow],
     *,
     generated_at: str,
+    previous: PreviousCard | None = None,
 ) -> CardAssembly:
-    """模型的文风卡输出 → 规范的 ``DimensionCard``（丢不认识的维、无依据 / 带统计数字 / 超长的行；见模块文档）。"""
+    """模型的文风卡输出 → 规范的 ``DimensionCard``（丢不认识的维、无依据 / 带统计数字 / 超长的行；见模块文档）。
+
+    ``previous``：``keep`` 填了上一版同一维、同一类的句子 id → 用上一版的原句与原 id（``source="kept"``）；
+    指向作者 ✗ 掉的句子 → 丢。"""
     result = CardAssembly(card=None)
+    previous = previous or PreviousCard(lines={})
     if not isinstance(structured, Mapping):
         return result
     by_ref = {f.ref: f for f in findings}
@@ -356,7 +450,14 @@ def assemble_card(
             for item in raw.get(field_name) if isinstance(raw.get(field_name), list) else []:
                 if not isinstance(item, Mapping):
                     continue
-                text = _clean_line(item.get("text"))
+                keep = str(item.get("keep") or "").strip()
+                if keep in previous.rejected_ids:
+                    result.drop(DROP_EXCLUDED)
+                    continue
+                kept_line = previous.lines.get(keep)
+                if kept_line is not None and (kept_line[0] != dim or kept_line[1].kind != kind):
+                    kept_line = None
+                text = kept_line[1].text if kept_line is not None else _clean_line(item.get("text"))
                 if not text:
                     continue
                 fitted = _fit_length(text, CARD_LINE_MAX_CHARS)
@@ -375,12 +476,20 @@ def assemble_card(
                     continue
                 quote_ids = list(dict.fromkeys(q for f in refs for q in f.quote_ids))[:6]
                 distinct = score01(item.get("distinctiveness"))
+                line_id = line_id_for(dim, fitted)
+                if line_id in previous.rejected_ids:
+                    result.drop(DROP_EXCLUDED)
+                    continue
+                if any(line.line_id == line_id for line in lines):
+                    continue
+                if kept_line is not None:
+                    result.kept += 1
                 lines.append(
                     CardLine(
-                        line_id=line_id_for(dim, fitted),
+                        line_id=line_id,
                         text=fitted,
                         kind=kind,  # type: ignore[arg-type]
-                        source="synthesis",
+                        source="kept" if kept_line is not None else "synthesis",
                         evidence_quote_ids=quote_ids,
                         finding_ids=[f.finding_id for f in refs],
                         distinctiveness=distinct if distinct is not None else dim_distinct,
@@ -677,6 +786,7 @@ def filter_card(
         planning_guidance=planning,
         dropped=merged,
         line_count=len(card.all_lines()) if card is not None else 0,
+        kept=assembly.kept,
     )
     return result, dropped
 
@@ -739,9 +849,19 @@ def derive_narrative_guidance(card: DimensionCard | None, *, limit: int = NARRAT
     return lines
 
 
-def sub_dimension_summary(session: Session, run_id: str) -> dict[str, dict[str, Any]]:
-    """每维观察 / 避免条数、证据引文数（按证据计，台账 E10）与置信度——只进 run / 画像的 ``coverage_json``（2026-09-24 起画像不再写 ``sub_dimensions`` 键）。"""
-    findings = list(session.scalars(select(StyleReferenceFinding).where(StyleReferenceFinding.run_id == run_id)))
+def sub_dimension_summary(session: Session, run_id: str, *, consolidated: bool = False) -> dict[str, dict[str, Any]]:
+    """每维观察 / 避免条数、证据引文数（按证据计，台账 E10）与置信度——只进 run / 画像的 ``coverage_json``（2026-09-24 起画像不再写 ``sub_dimensions`` 键）。
+    ``consolidated``：只数通读全书归并后的发现（与 :func:`load_run_findings` 同一个口径）。"""
+    status_filter = (
+        StyleReferenceFinding.status == CONSOLIDATED_STATUS
+        if consolidated
+        else or_(StyleReferenceFinding.status.is_(None), StyleReferenceFinding.status != CONSOLIDATED_STATUS)
+    )
+    findings = list(
+        session.scalars(
+            select(StyleReferenceFinding).where(StyleReferenceFinding.run_id == run_id, status_filter)
+        )
+    )
     evidence_counts: dict[str, int] = defaultdict(int)
     for finding_id, _quote_id in session.execute(
         select(StyleReferenceEvidence.finding_id, StyleReferenceEvidence.quote_id).where(
@@ -785,6 +905,7 @@ __all__ = [
     "FindingRef",
     "MARK_THRESHOLDS",
     "MIN_CARD_LINES",
+    "PreviousCard",
     "assemble_card",
     "carry_line_states",
     "derive_narrative_guidance",

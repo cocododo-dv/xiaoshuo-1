@@ -292,6 +292,7 @@
  "test_style_reference_injection_preview_endpoint.py": 7.3,
  "test_style_reference_jobs.py": 1.65,
  "test_style_reference_judge.py": 4.0,
+ "test_style_reference_learn_full.py": 20.0,
  "test_style_reference_learn_job.py": 44.82,
  "test_style_reference_learn_units.py": 2.96,
  "test_style_reference_library_routes.py": 8.13,

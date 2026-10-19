@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -43,15 +44,26 @@ from novel_system.services.style_reference.jobs import (
     StyleJobService,
     heartbeat_is_stale,
 )
+from novel_system.services.style_reference.learn_consolidate import find_reusable_reading, reading_signature
 from novel_system.services.style_reference.learn_llm import (
+    EXTRACT_NODES,
     LAYERS,
     LEARN_NODE_IDS,
+    load_consolidate_runtime,
     load_learn_runtimes,
+)
+from novel_system.services.style_reference.learn_select import (
+    FULL_BATCH_MAX_CHARS,
+    FULL_PLAN_VERSION,
+    chapter_spans,
+    plan_full_batches,
+    window_meta,
 )
 from novel_system.services.style_reference.learn_tags import plan_tag_batches
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.tags import TAGS_VERSION
 from novel_system.services.style_reference.windows import (
+    WINDOW_INDEX_VERSION,
     index_marker,
     load_windows,
 )
@@ -64,6 +76,8 @@ CURSOR_VERSION = 1
 PHASE_WINDOWS = "windows"
 PHASE_SELECT = "select"
 PHASE_EXTRACT = "extract"
+# 通读全书才有：全书各批的发现按维归并（快速学习跳过）
+PHASE_CONSOLIDATE = "consolidate"
 PHASE_SYNTHESIZE = "synthesize"
 PHASE_PROTECTED = "protected"
 PHASE_TAGS = "tags"
@@ -72,21 +86,32 @@ PHASE_ORDER: tuple[str, ...] = (
     PHASE_WINDOWS,
     PHASE_SELECT,
     PHASE_EXTRACT,
+    PHASE_CONSOLIDATE,
     PHASE_SYNTHESIZE,
     PHASE_PROTECTED,
     PHASE_TAGS,
     PHASE_FINALIZE,
 )
+# 快速学习没有归并步
+QUICK_PHASE_ORDER: tuple[str, ...] = tuple(phase for phase in PHASE_ORDER if phase != PHASE_CONSOLIDATE)
 PHASE_LABELS: dict[str, str] = {
     PHASE_WINDOWS: "整理全书样例窗口",
     PHASE_SELECT: "挑选学习样本",
     PHASE_EXTRACT: "逐层读原文",
+    PHASE_CONSOLIDATE: "归并全书的发现",
     PHASE_SYNTHESIZE: "写文风卡",
     PHASE_PROTECTED: "识别本书专名",
     PHASE_TAGS: "给全书片段打标签",
     PHASE_FINALIZE: "写入画像",
 }
+# 通读全书时这几步换个说法
+FULL_PHASE_LABELS: dict[str, str] = {PHASE_SELECT: "按整章切批", PHASE_EXTRACT: "逐批读原文"}
 LAYER_LABELS: dict[str, str] = {"language": "语言层", "narrative": "叙事层", "scene": "场景层", "theme": "主题层"}
+
+# 学习方式：快速学习（约 12 窗 / 4 万字，同一本书永远是同一组，用来比较模型 / 提示词的改动）、通读全书
+MODE_QUICK = "quick"
+MODE_FULL = "full"
+LEARN_MODES: tuple[str, ...] = (MODE_QUICK, MODE_FULL)
 
 LEARN_FAILED_CODE = "STYLE_REFERENCE_LEARN_FAILED"
 LEARN_ALREADY_ACTIVE_CODE = "STYLE_REFERENCE_LEARN_ALREADY_ACTIVE"
@@ -99,6 +124,7 @@ INPUT_TOO_SMALL_CODE = "STYLE_REFERENCE_INPUT_TOO_SMALL"
 REASON_INPUT_TOO_SMALL = "input_too_small"
 REASON_EXTRACT_FAILED = "extract_failed"
 REASON_NO_FINDINGS = "no_findings"
+REASON_CONSOLIDATE_FAILED = "consolidate_failed"
 REASON_SYNTHESIZE_FAILED = "synthesize_failed"
 REASON_PROTECTED_FAILED = "protected_terms_failed"
 REASON_TAGGING_FAILED = "tagging_failed"
@@ -220,12 +246,16 @@ def start_learn_job(
     force: bool = False,
     resume: bool = False,
     retag: bool = False,
+    mode: str = MODE_QUICK,
+    reread: bool = False,
     op_key: str | None = None,
     llm_client: Any | None = None,
 ) -> StyleReferenceJob:
     """建（或续）这本书的学习作业（调用方提交后派发）。检查见模块文档与各错误码。
 
-    ``retag``：给全书每个窗口重打标签（缺省只补标签版本不是当前版本的窗口）。"""
+    ``retag``：给全书每个窗口重打标签（缺省只补标签版本不是当前版本的窗口）；``mode``：``quick`` 快速学习 /
+    ``full`` 通读全书（续跑沿用原作业的方式）；``reread``：通读全书时不沿用上一次读完的通读。"""
+    mode = MODE_FULL if mode == MODE_FULL else MODE_QUICK
     book = _book_or_404(session, book_id)
     if str(book.status or "") != "ready":
         raise DomainError(
@@ -254,6 +284,8 @@ def start_learn_job(
         )
     # 节点路由 / 提示词模板缺失:建作业之前就 409(不建一个注定在工人里失败的作业);作业开工时再查一次
     load_learn_runtimes()
+    if mode == MODE_FULL:
+        load_consolidate_runtime()
     ensure_cloud_llm_allowed(book, operation="learn_style", node_ids=LEARN_NODE_IDS, llm_client=llm_client)
     skipped = _skipped_layers(book, force=force)
     if len(skipped) == len(LAYERS):
@@ -313,6 +345,8 @@ def start_learn_job(
             "force": bool(force),
             "retag": bool(retag),
             "skipped_layers": skipped,
+            "mode": mode,
+            "reread": bool(reread) and mode == MODE_FULL,
         },
         phase="queued",
         exclusive_with=(JOB_KIND_CLASSIFY,),
@@ -407,16 +441,83 @@ def tag_plan_input(rows: Sequence[Any]) -> list[tuple[int, int]]:
     return [(int(w.window_no), int(w.chars or 0)) for w in rows]
 
 
+def _full_estimate(
+    session: Session,
+    book: StyleReferenceBook,
+    rows: Sequence[Any],
+    *,
+    layers: Sequence[str],
+    tag_calls: int,
+    marker: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """通读全书的估算：按窗口字数粗切批（作业按正文段精确切、按预算核，批数可能略多）；上一次通读多半能沿用时给
+    ``reusable``（读于何时、归并能不能一起沿用——估算不知道切法细节，作业开工时按完整身份再判）。"""
+    if not rows:
+        return None
+    metas = [window_meta(w) for w in rows]
+    starts = sorted((m.start_index, m.chars) for m in metas)
+    keys = [start for start, _chars in starts]
+
+    def chars_of(start: int, end: int) -> int:
+        return sum(chars for _s, chars in starts[bisect_left(keys, start) : bisect_right(keys, end)])
+
+    spans = chapter_spans(metas)
+    plan = plan_full_batches(spans, chars_of, max_chars=FULL_BATCH_MAX_CHARS)
+    reusable: dict[str, Any] | None = None
+    try:
+        runtimes = load_learn_runtimes()
+        consolidate = load_consolidate_runtime()
+    except DomainError:
+        runtimes, consolidate = {}, None
+    if runtimes and consolidate is not None:
+        signature = reading_signature(
+            {
+                "root": str(marker.get("root") or ""),
+                "index_version": WINDOW_INDEX_VERSION,
+                "plan_version": FULL_PLAN_VERSION,
+                "layers": sorted(str(layer) for layer in layers),
+                "prompts": {
+                    str(EXTRACT_NODES[layer]): str(runtimes[EXTRACT_NODES[layer]].prompt_version)
+                    for layer in sorted(layers)
+                },
+                "models": {
+                    str(EXTRACT_NODES[layer]): list(runtimes[EXTRACT_NODES[layer]].route_key) for layer in sorted(layers)
+                },
+            }
+        )
+        found = find_reusable_reading(session, book.book_id, signature=signature)
+        if found.read_run_id:
+            reusable = {"read_at": found.read_at, "run_id": found.read_run_id}
+    reading_calls = len(plan) * len(layers)
+    return {
+        "batches": len(plan),
+        "chapters": len(spans),
+        "chars": sum(int(batch["chars"]) for batch in plan),
+        "calls": {
+            "extract": reading_calls,
+            "consolidate": 16,
+            "synthesize": 1,
+            "protected": 1,
+            "tags": tag_calls,
+        },
+        "est_calls": reading_calls + 16 + 2 + tag_calls,
+        "est_input_chars": sum(int(batch["chars"]) for batch in plan) * len(layers),
+        "reusable": reusable,
+    }
+
+
 def estimate_learning(session: Session, book: StyleReferenceBook, *, retag: bool = False) -> dict[str, Any]:
     """学一次要多少次调用 / 多少字的输入（窗口索引是最新的才给出标签批数，否则按全书字数粗估）。
 
-    标签只算还要打的窗口(``windows_to_tag``;全部是当前版本时 ``tags`` 批数为 0),``retag`` 按全书算。"""
+    标签只算还要打的窗口(``windows_to_tag``;全部是当前版本时 ``tags`` 批数为 0),``retag`` 按全书算。
+    顶层是快速学习的估算；``full`` 是通读全书的（窗口索引还没建时为 None）。"""
     marker = index_marker(book.stats_json) or {}
     rows = load_windows(session, book.book_id) if marker else []
     to_tag = windows_needing_tags(rows, retag=retag)
     windows = [(int(w.window_no), int(w.chars or 0)) for w in to_tag]
     batches = plan_tag_batches(windows) if windows else []
     tag_chars = sum(min(chars, 3000) for _no, chars in windows)
+    layers = [layer for layer in LAYERS if layer not in _skipped_layers(book, force=False)] or list(LAYERS)
     return {
         "book_id": book.book_id,
         "windows": len(rows) or None,
@@ -433,6 +534,7 @@ def estimate_learning(session: Session, book: StyleReferenceBook, *, retag: bool
             "tags_total": tag_chars or None,
         },
         "retries_not_included": True,
+        "full": _full_estimate(session, book, rows, layers=layers, tag_calls=len(batches), marker=marker),
     }
 
 
@@ -459,6 +561,7 @@ __all__ = [
     "LearnFailedError",
     "PHASE_LABELS",
     "PHASE_ORDER",
+    "QUICK_PHASE_ORDER",
     "RUN_DISPATCH_STATE",
     "active_learn_job",
     "cancel_learn",

@@ -17,6 +17,18 @@
 7. ``finalize``  专名与原文重合过滤卡片、沿用作者的 ✓ / ✗、写画像（v3 键）与受保护专名行、结果（计数 / 调用 /
                  token / 耗时）——一个事务：先条件写作业行拿写锁，再重读画像合并行状态（拼装与写库在 ``learn_finalize``）。
 
+**通读全书**（2026-10-19，``params.mode="full"``；缺省 ``quick`` 是上面的快速学习）：
+
+- ``select`` 改为按整章切批（``learn_select.plan_full_batches``；每批都按真实载荷核过抽取节点的预算，装不下就把
+  上限收紧重切），算出这次通读的「身份」，找得到读完了的同一身份的通读就沿用（``learn_consolidate``；
+  ``params.reread`` 强制重读）；
+- ``extract`` 逐批、逐层各一次调用（最多 3 个并行；调用失败退避重试，某一维在这一批里空着不重问），每份读完即落库、
+  记游标——取消 / 重启后只补没读的；
+- ``consolidate``（只有通读才有）每维一次调用把各批的发现归并成几条，记下每条在几批里见到过；
+- ``synthesize`` 读归并后的发现（带支持数）；读完、归并完才写画像——读到一半不动作者正在用的画像。
+
+两种方式的文风卡合成都在上一版上修订（``learn_card.PreviousCard``）：没有新证据就不改原句。
+
 每次调用前按节点的实际路由查书的云策略。LLM 客户端在作业开始时按当前配置取（:func:`resolve_learn_client`，测试在
 这里打桩；调用的退避 / 等待节拍同样在本模块，测试可调）。处理器的脚手架（检查点、并行调用循环、终态收尾）在
 ``job_runtime.JobRun``，与分类 / 对照检查共用。
@@ -28,6 +40,7 @@ import logging
 import threading
 import time
 import uuid
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -44,8 +57,14 @@ from novel_system.db.models import (
     StyleReferenceRun,
     utcnow,
 )
+from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
 from novel_system.services.style_reference.book_text import non_body_kind
-from novel_system.services.style_reference.card import DIMENSION_CARD_VERSION
+from novel_system.services.style_reference.card import (
+    DIMENSION_CARD_VERSION,
+    DIMENSION_LABELS,
+    card_from_profile_json,
+    line_states_from_profile_json,
+)
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.fidelity import reference_distribution_for_book
 from novel_system.services.style_reference.job_runtime import (
@@ -61,6 +80,7 @@ from novel_system.services.style_reference.jobs import (
 from novel_system.services.style_reference.learn_card import (
     MIN_CARD_LINES,
     CardAssembly,
+    PreviousCard,
     assemble_card,
     fit_synthesis_payload,
     json_clean,
@@ -70,11 +90,28 @@ from novel_system.services.style_reference.learn_card import (
     sub_dimension_summary,
     synthesis_payload,
 )
+from novel_system.services.style_reference.learn_consolidate import (
+    Consolidation,
+    Reusable,
+    better,
+    consolidate_payload,
+    consolidation_identity,
+    find_reusable_reading,
+    fit_consolidate_payload,
+    identity_hash,
+    load_raw_findings,
+    parse_consolidation,
+    persist_consolidated,
+    reading_identity,
+)
+from novel_system.services.style_reference.learn_consolidate import needs_retry as consolidation_needs_retry
+from novel_system.services.style_reference.learn_consolidate import retry_instruction as consolidation_retry_instruction
 from novel_system.services.style_reference.learn_extract import (
     POSITION_LABELS,
     ExtractionSet,
     LayerParse,
     build_extraction_set,
+    build_range_set,
     layer_payload,
     merge_layer_parses,
     needs_retry,
@@ -92,7 +129,11 @@ from novel_system.services.style_reference.learn_finalize import (
 )
 from novel_system.services.style_reference.learn_job import (
     CURSOR_VERSION,
+    FULL_PHASE_LABELS,
     LAYER_LABELS,
+    MODE_FULL,
+    MODE_QUICK,
+    PHASE_CONSOLIDATE,
     PHASE_EXTRACT,
     PHASE_FINALIZE,
     PHASE_LABELS,
@@ -102,6 +143,8 @@ from novel_system.services.style_reference.learn_job import (
     PHASE_SYNTHESIZE,
     PHASE_TAGS,
     PHASE_WINDOWS,
+    QUICK_PHASE_ORDER,
+    REASON_CONSOLIDATE_FAILED,
     REASON_EXTRACT_FAILED,
     REASON_INPUT_TOO_SMALL,
     REASON_NO_FINDINGS,
@@ -122,10 +165,19 @@ from novel_system.services.style_reference.learn_llm import (
     NODE_TAG_WINDOWS,
     LearnCallError,
     call_structured,
+    load_consolidate_runtime,
     load_learn_runtimes,
     payload_fits,
 )
-from novel_system.services.style_reference.learn_select import STRATUM_LABELS, select_extraction_windows
+from novel_system.services.style_reference.learn_select import (
+    FULL_BATCH_MAX_CHARS,
+    FULL_PLAN_VERSION,
+    STRATUM_LABELS,
+    batch_chapter_label,
+    chapter_spans,
+    plan_full_batches,
+    select_extraction_windows,
+)
 from novel_system.services.style_reference.learn_tags import (
     TagBatchMismatch,
     clip_window_text,
@@ -146,6 +198,8 @@ from novel_system.services.style_reference.schemas import FindingKind
 from novel_system.services.style_reference.structure_card import compute_structure_card
 from novel_system.services.style_reference.structure_render import render_structure_card_parts
 from novel_system.services.style_reference.tags import TAGS_VERSION
+from novel_system.services.style_reference.text_utils import compact_ws
+from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
 from novel_system.services.style_reference.voice_signature import (
     VOICE_SIGNATURE_VERSION,
     compute_voice_signature,
@@ -167,6 +221,25 @@ EXTRACT_ATTEMPTS = 2  # 1 次 + 1 次带问题清单的重试(两次的有效发
 SYNTH_ATTEMPTS = 2
 PROTECTED_ATTEMPTS = 2
 TAG_ATTEMPTS = 3  # 1 次 + 2 次退避重试
+# 通读全书：一份（一批 × 一层）、一维归并最多几次调用（调用失败退避重试；输出有问题带问题清单重问）
+FULL_EXTRACT_ATTEMPTS = 3
+CONSOLIDATE_ATTEMPTS = 3
+# 切批时按真实载荷核预算：装不下就把上限乘这个系数重切，最多几轮
+FULL_PLAN_SHRINK = 0.85
+FULL_PLAN_SHRINK_ROUNDS = 6
+# 交给「本书专名」步骤的主题层「不这么写」陈述最多几条（通读全书时各批加起来会很多）
+PROTECTED_AVOID_MAX = 40
+# 血缘 run 行 coverage_json["full"] 里记的键（沿用上一次通读靠它们）
+RUN_FULL_KEYS = (
+    "identity",
+    "reading_hash",
+    "consolidation_hash",
+    "read_run_id",
+    "consolidated_run_id",
+    "read_complete",
+    "consolidated",
+    "read_at",
+)
 CALL_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 15.0)
 WAIT_POLL_SECONDS = 2.0
 
@@ -198,6 +271,9 @@ class _LearnRun(JobRun):
         self.params = dict(claimed.params or {})
         self.cursor: dict[str, Any] = dict(claimed.cursor or {})
         self.runtimes: dict[str, NodeRuntime] = {}
+        self.consolidate_runtime: NodeRuntime | None = None
+        self.mode = MODE_FULL if str(self.params.get("mode") or "") == MODE_FULL else MODE_QUICK
+        self._window_starts_cache: list[tuple[int, int, int]] | None = None
         self.book_title = ""
         # 这本书的段落（序号、类型、正文、id）与去掉章题 / 副文本后的正文：一次学习各读一遍、算一遍（声音签名、
         # 结构卡、专名候选、定稿的原文重合过滤都用它）。学习与分类在同一本书上互斥，段落不会在学习中途变。
@@ -279,17 +355,31 @@ class _LearnRun(JobRun):
         if step:
             self.cursor["steps_done"] = int(self.cursor.get("steps_done") or 0) + 1
 
+    @property
+    def full(self) -> bool:
+        return self.mode == MODE_FULL
+
     def _steps_total(self) -> int:
         layers = self.cursor.get("layers") or list(LAYERS)
         batches = len(((self.cursor.get("tags") or {}).get("batches") or [])) or int(
             (self.cursor.get("index") or {}).get("tag_batches") or 0
         )
-        return 2 + len(layers) + 1 + 1 + batches + 1
+        if not self.full:
+            return 2 + len(layers) + 1 + 1 + batches + 1
+        full = self.cursor.get("full") or {}
+        plan = (self.cursor.get("plan") or {}).get("batches") or []
+        reading = 1 if full.get("reused_reading") else max(1, len(plan) * len(layers))
+        merging = 1 if full.get("reused_consolidation") else len(ALL_DIMENSIONS)
+        return 2 + reading + merging + 1 + 1 + batches + 1
 
     def _progress_values(self, phase: str, *, detail: str | None = None, calls: int = 0) -> dict[str, Any]:
         return {
             "phase": phase,
-            "phase_label": f"学习文风 · {PHASE_LABELS.get(phase, phase)}",
+            "phase_label": (
+                f"通读全书 · {FULL_PHASE_LABELS.get(phase) or PHASE_LABELS.get(phase, phase)}"
+                if self.full
+                else f"学习文风 · {PHASE_LABELS.get(phase, phase)}"
+            ),
             "done": int(self.cursor.get("steps_done") or 0),
             "total": self._steps_total(),
             "detail": detail,
@@ -320,6 +410,8 @@ class _LearnRun(JobRun):
             raise LLMRequiredError(operation="learn_style")
         self.client = client
         self.runtimes = load_learn_runtimes()
+        if self.full:
+            self.consolidate_runtime = load_consolidate_runtime()
         ensure_cloud_llm_allowed(
             book,
             operation="learn_style",
@@ -328,6 +420,7 @@ class _LearnRun(JobRun):
         )
         skipped = [str(layer) for layer in self.params.get("skipped_layers") or []]
         self.cursor.setdefault("layers", [layer for layer in LAYERS if layer not in skipped])
+        self.cursor.setdefault("mode", self.mode)
         run_id = self.cursor.get("run_id")
 
         def reopen_run() -> None:
@@ -345,9 +438,11 @@ class _LearnRun(JobRun):
         if not self._done(PHASE_WINDOWS):
             self._phase_windows()
         if not self._done(PHASE_SELECT):
-            self._phase_select()
+            self._phase_plan() if self.full else self._phase_select()
         if not self._done(PHASE_EXTRACT):
-            self._phase_extract()
+            self._phase_read() if self.full else self._phase_extract()
+        if self.full and not self._done(PHASE_CONSOLIDATE):
+            self._phase_consolidate()
         if not self._done(PHASE_SYNTHESIZE):
             self._phase_synthesize()
         if not self._done(PHASE_PROTECTED):
@@ -357,7 +452,8 @@ class _LearnRun(JobRun):
         self._phase_finalize()
 
     def _current_phase(self) -> str:
-        return next((phase for phase in PHASE_ORDER if not self._done(phase)), PHASE_FINALIZE)
+        phases = PHASE_ORDER if self.full else QUICK_PHASE_ORDER
+        return next((phase for phase in phases if not self._done(phase)), PHASE_FINALIZE)
 
     # ---- a. windows -------------------------------------------------------
     def _phase_windows(self) -> None:
@@ -420,6 +516,24 @@ class _LearnRun(JobRun):
         run_id = f"sr_run_{uuid.uuid4().hex[:12]}"
         self.cursor["run_id"] = run_id
         selection = dict(self.cursor.get("selection") or {})
+        if self.full:
+            full = dict(self.cursor.get("full") or {})
+            full["read_run_id"] = full.get("read_run_id") or run_id
+            self.cursor["full"] = full
+            plan = dict(self.cursor.get("plan") or {})
+            coverage: dict[str, Any] = {
+                "learn_job_id": self.claimed.job_id,
+                "mode": MODE_FULL,
+                "plan_batches": len(plan.get("batches") or []),
+                "plan_chars": int(plan.get("chars") or 0),
+                "full": {key: full.get(key) for key in RUN_FULL_KEYS},
+            }
+        else:
+            coverage = {
+                "learn_job_id": self.claimed.job_id,
+                "extraction_windows": [item["window_no"] for item in selection.get("windows") or []],
+                "extraction_chars": int(selection.get("chars") or 0),
+            }
 
         def write() -> None:
             self.session.add(
@@ -430,11 +544,7 @@ class _LearnRun(JobRun):
                     phase="extract",
                     dispatch_state=RUN_DISPATCH_STATE,
                     requested_layers_json=list(self.cursor.get("layers") or LAYERS),
-                    coverage_json={
-                        "learn_job_id": self.claimed.job_id,
-                        "extraction_windows": [item["window_no"] for item in selection.get("windows") or []],
-                        "extraction_chars": int(selection.get("chars") or 0),
-                    },
+                    coverage_json=coverage,
                     heartbeat_at=utcnow(),
                     retryable=False,
                     started_at=utcnow(),
@@ -503,40 +613,62 @@ class _LearnRun(JobRun):
 
     def _extract_layer(self, layer: str, ext_set: ExtractionSet, stop: threading.Event) -> _LayerOutcome:
         """工人线程:一层最多两次调用;第二次带问题清单,两次的有效发现合并(台账 E5)。"""
-        runtime = self.runtimes[EXTRACT_NODES[layer]]
         payload = layer_payload(ext_set, layer, book_title=self.book_title)
+        return self._extract_call(layer, ext_set, payload, stop, attempts=EXTRACT_ATTEMPTS, step_key=layer)
+
+    def _extract_call(
+        self,
+        layer: str,
+        ext_set: ExtractionSet,
+        payload: Mapping[str, Any],
+        stop: threading.Event,
+        *,
+        attempts: int,
+        step_key: str,
+        backoff: Sequence[float] = (),
+        every_dimension: bool = True,
+        details: Mapping[str, Any] | None = None,
+    ) -> _LayerOutcome:
+        """工人线程:一份抽取最多 ``attempts`` 次调用;重问带问题清单,各次的有效发现合并。"""
+        runtime = self.runtimes[EXTRACT_NODES[layer]]
         valid: LayerParse | None = None
-        attempts = 0
+        calls = 0
         last_call: str | None = None
         errors: list[str] = []
-        for attempt in retry_attempts(EXTRACT_ATTEMPTS, (), stop):
+        for attempt in retry_attempts(attempts, backoff, stop):
             try:
                 result = call_structured(
                     runtime,
                     payload,
                     self.client,
                     scope_id=self.book_id,
-                    step=f"learn:{self.claimed.job_id}:extract:{layer}:{attempt + 1}",
+                    step=f"learn:{self.claimed.job_id}:extract:{step_key}:{attempt + 1}",
                     extra_instruction=retry_instruction(valid) if valid is not None else None,
                 )
             except LearnCallError as exc:
-                attempts += 1
+                calls += 1
                 errors.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:300]}")
                 continue
-            attempts += 1
+            calls += 1
             last_call = result.llm_call_id
             parse = parse_layer_output(result.structured, layer, ext_set)
             valid = parse if valid is None else merge_layer_parses(valid, parse)
-            if not needs_retry(valid):
+            if not needs_retry(valid, every_dimension=every_dimension):
                 break
         if valid is None:
             raise LearnFailedError(
                 REASON_EXTRACT_FAILED,
                 f"{LAYER_LABELS.get(layer, layer)}的抽取调用失败:{errors[-1] if errors else ''}",
                 retryable=True,
-                details={"layer": layer, "node_id": runtime.node_id, "attempts": attempts, "problems": errors},
+                details={
+                    **dict(details or {}),
+                    "layer": layer,
+                    "node_id": runtime.node_id,
+                    "attempts": calls,
+                    "problems": errors,
+                },
             )
-        return _LayerOutcome(layer=layer, parse=valid, attempts=attempts, llm_call_id=last_call, dropped_windows=[])
+        return _LayerOutcome(layer=layer, parse=valid, attempts=calls, llm_call_id=last_call, dropped_windows=[])
 
     def _apply_layer(self, run_id: str, outcome: _LayerOutcome) -> None:
         """作业线程:游标(条件写) → 四张表 → 进度,一次提交。"""
@@ -572,6 +704,469 @@ class _LearnRun(JobRun):
                 calls=outcome.attempts,
             ),
         )
+
+    # ---- b'. plan（通读全书：按整章切批） ----------------------------------
+    def _body_chars_of(self) -> Callable[[int, int], int]:
+        """段落区间 → 正文字数（与样本同一条判断：空白压缩、跳过章题 / 分隔 / 副文本）。"""
+        rows = self._paragraph_rows()
+        indexes = [int(row[0]) for row in rows]
+        prefix = [0]
+        for _index, _ptype, text, _pid in rows:
+            body = compact_ws(text)
+            prefix.append(prefix[-1] + (len(body) if body and non_body_kind(body) is None else 0))
+
+        def chars_of(start: int, end: int) -> int:
+            return prefix[bisect_right(indexes, int(end))] - prefix[bisect_left(indexes, int(start))]
+
+        return chars_of
+
+    def _window_starts(self) -> list[tuple[int, int, int]]:
+        if self._window_starts_cache is None:
+            rows = load_windows(self.session, self.book_id)
+            self._window_starts_cache = sorted(
+                (int(w.start_index), int(w.end_index), int(w.window_no)) for w in rows
+            )
+        return self._window_starts_cache
+
+    def _batch_set(self, batch: Mapping[str, Any]) -> ExtractionSet:
+        return build_range_set(self._paragraph_rows(), batch.get("segments") or [], window_starts=self._window_starts())
+
+    def _scope(self, batch: Mapping[str, Any], batches: int) -> dict[str, Any]:
+        return {
+            "mode": MODE_FULL,
+            "batch": int(batch.get("no") or 0) + 1,
+            "batches": int(batches),
+            "chapters": batch_chapter_label(batch),
+        }
+
+    def _batch_fits(self, batch: Mapping[str, Any], layers: Sequence[str], batches: int) -> bool:
+        ext_set = self._batch_set(batch)
+        scope = self._scope(batch, batches)
+        return all(
+            payload_fits(
+                self.runtimes[EXTRACT_NODES[layer]],
+                layer_payload(ext_set, layer, book_title=self.book_title, scope=scope),
+            )
+            for layer in layers
+        )
+
+    def _phase_plan(self) -> None:
+        began = time.monotonic()
+        self._enter(PHASE_SELECT)
+        rows = load_windows(self.session, self.book_id)
+        if not rows:
+            rows = ensure_window_index(self.session, self.book_id, commit=True)
+        spans = chapter_spans(rows)
+        chars_of = self._body_chars_of()
+        layers = list(self.cursor.get("layers") or LAYERS)
+        max_chars = FULL_BATCH_MAX_CHARS
+        plan: list[dict[str, Any]] = []
+        for _round in range(FULL_PLAN_SHRINK_ROUNDS):
+            plan = plan_full_batches(spans, chars_of, max_chars=max_chars)
+            if all(self._batch_fits(batch, layers, len(plan)) for batch in plan):
+                break
+            max_chars = int(max_chars * FULL_PLAN_SHRINK)
+        if not plan:
+            raise LearnFailedError(
+                REASON_INPUT_TOO_SMALL,
+                "这本书切不出一批可以通读的正文。",
+                retryable=False,
+                details={"book_id": self.book_id},
+            )
+        total = sum(int(batch["chars"]) for batch in plan)
+        index_state = dict(self.cursor.get("index") or {})
+        identity = reading_identity(
+            root=str(index_state.get("root") or ""),
+            index_version=str(index_state.get("index_version") or WINDOW_INDEX_VERSION),
+            plan_version=FULL_PLAN_VERSION,
+            max_chars=max_chars,
+            plan=plan,
+            layers=layers,
+            prompts={EXTRACT_NODES[layer]: self.runtimes[EXTRACT_NODES[layer]].prompt_version for layer in layers},
+            models={EXTRACT_NODES[layer]: list(self.runtimes[EXTRACT_NODES[layer]].route_key) for layer in layers},
+        )
+        reading_hash = identity_hash(identity)
+        consolidate = self.consolidate_runtime
+        consolidation_hash = identity_hash(
+            consolidation_identity(
+                reading_hash,
+                prompt_version=consolidate.prompt_version if consolidate is not None else "",
+                model=list(consolidate.route_key) if consolidate is not None else [],
+            )
+        )
+        reuse = (
+            Reusable()
+            if self.params.get("reread")
+            else find_reusable_reading(
+                self.session, self.book_id, reading_hash=reading_hash, consolidation_hash=consolidation_hash
+            )
+        )
+        self.cursor["plan"] = {
+            "version": FULL_PLAN_VERSION,
+            "max_chars": max_chars,
+            "batches": plan,
+            "chars": total,
+            "chapters": len(spans),
+        }
+        self.cursor["full"] = {
+            "identity": identity,
+            "reading_hash": reading_hash,
+            "consolidation_hash": consolidation_hash,
+            "read_run_id": reuse.read_run_id,
+            "consolidated_run_id": reuse.consolidated_run_id,
+            "read_complete": bool(reuse.read_run_id),
+            "consolidated": bool(reuse.consolidated_run_id),
+            "read_at": reuse.read_at,
+            "reused_reading": bool(reuse.read_run_id),
+            "reused_consolidation": bool(reuse.consolidated_run_id),
+        }
+        detail = f"全书 {len(plan)} 批 / {total} 字（{len(spans)} 章）"
+        if reuse.read_run_id:
+            detail += "，沿用上一次通读" + ("与归并" if reuse.consolidated_run_id else "")
+        self._mark_done(PHASE_SELECT, began, detail=detail)
+
+    # ---- c'. read（通读全书：逐批、逐层） -----------------------------------
+    def _run_full_write(self, run_id: str) -> Callable[[], None]:
+        full = dict(self.cursor.get("full") or {})
+
+        def write() -> None:
+            run = self.session.get(StyleReferenceRun, run_id)
+            if run is not None:
+                run.coverage_json = {
+                    **dict(run.coverage_json or {}),
+                    "full": {key: full.get(key) for key in RUN_FULL_KEYS},
+                }
+
+        return write
+
+    def _phase_read(self) -> None:
+        began = time.monotonic()
+        run_id = self._ensure_run()
+        full = dict(self.cursor.get("full") or {})
+        plan = list((self.cursor.get("plan") or {}).get("batches") or [])
+        if full.get("reused_reading"):
+            self._enter(PHASE_EXTRACT, detail="沿用上一次通读")
+            self._mark_done(PHASE_EXTRACT, began, detail=f"沿用上一次通读（{len(plan)} 批）")
+            return
+        layers = list(self.cursor.get("layers") or LAYERS)
+        done = set(str(key) for key in self.cursor.get("units_done") or [])
+        units = [
+            (int(batch["no"]), layer)
+            for batch in plan
+            for layer in layers
+            if f"{int(batch['no'])}:{layer}" not in done
+        ]
+        self._enter(PHASE_EXTRACT, detail=f"已读 {len(done)}/{len(plan) * len(layers)} 份")
+        by_no = {int(batch["no"]): batch for batch in plan}
+        sets: dict[int, ExtractionSet] = {}
+
+        def submit(pool: DaemonCallPool, unit: tuple[int, str], stop: threading.Event) -> Future:
+            no, layer = unit
+            self.pre_call_check(self._node_routes([EXTRACT_NODES[layer]]))
+            if no not in sets:
+                if len(sets) >= PARALLEL_CALLS + 1:
+                    sets.pop(min(sets))
+                sets[no] = self._batch_set(by_no[no])
+            ext_set = sets[no]
+            payload = layer_payload(ext_set, layer, book_title=self.book_title, scope=self._scope(by_no[no], len(plan)))
+            return pool.submit(
+                self._extract_call,
+                layer,
+                ext_set,
+                payload,
+                stop,
+                attempts=FULL_EXTRACT_ATTEMPTS,
+                step_key=f"{layer}.b{no + 1}",
+                backoff=CALL_RETRY_BACKOFF_SECONDS,
+                every_dimension=False,
+                details={"batch": no + 1, "chapters": batch_chapter_label(by_no[no])},
+            )
+
+        def apply(unit: tuple[int, str], outcome: _LayerOutcome) -> None:
+            self._apply_unit(run_id, unit, outcome, by_no, len(layers))
+
+        if units:
+            self.run_parallel(
+                units,
+                submit,
+                apply,
+                max_inflight=PARALLEL_CALLS,
+                poll_seconds=WAIT_POLL_SECONDS,
+                thread_prefix="sr_learn_read",
+            )
+        totals = dict(self.cursor.get("extract_totals") or {})
+        if int(totals.get("findings") or 0) == 0:
+            raise LearnFailedError(
+                REASON_NO_FINDINGS,
+                "通读全书没有一条通过证据核对的发现(引文必须逐字取自原文);检查模型后「继续学习」。",
+                retryable=True,
+            )
+        full.update({"read_complete": True, "read_run_id": run_id, "read_at": utcnow()})
+        self.cursor["full"] = full
+        self._record_done(PHASE_EXTRACT, began, step=False)
+        self._save(
+            write=self._run_full_write(run_id),
+            progress=self._progress_values(
+                PHASE_EXTRACT, detail=f"读完 {len(plan)} 批，{int(totals.get('findings') or 0)} 条发现"
+            ),
+        )
+
+    def _apply_unit(
+        self,
+        run_id: str,
+        unit: tuple[int, str],
+        outcome: _LayerOutcome,
+        by_no: Mapping[int, Mapping[str, Any]],
+        layer_count: int,
+    ) -> None:
+        """作业线程:一份(一批 × 一层)的结果——游标(条件写) → 四张表 → 进度,一次提交。"""
+        no, layer = unit
+        done = [str(key) for key in self.cursor.get("units_done") or []]
+        done.append(f"{no}:{layer}")
+        self.cursor["units_done"] = done
+        totals = dict(self.cursor.get("extract_totals") or {})
+        totals["findings"] = int(totals.get("findings") or 0) + len(outcome.parse.findings)
+        totals["returned"] = int(totals.get("returned") or 0) + outcome.parse.returned
+        totals["rejected"] = int(totals.get("rejected") or 0) + outcome.parse.rejected
+        self.cursor["extract_totals"] = totals
+        self._count_call(outcome.attempts)
+        self.cursor["steps_done"] = int(self.cursor.get("steps_done") or 0) + 1
+
+        def write() -> None:
+            persist_layer(
+                self.session,
+                book_id=self.book_id,
+                run_id=run_id,
+                parse=outcome.parse,
+                attempts=outcome.attempts,
+                llm_call_id=outcome.llm_call_id,
+                batch=no,
+            )
+
+        batches = len(by_no)
+        self._save(
+            write=write,
+            progress=self._progress_values(
+                PHASE_EXTRACT,
+                detail=(
+                    f"第 {no + 1}/{batches} 批 · {LAYER_LABELS.get(layer, layer)}（{batch_chapter_label(by_no[no])}）"
+                    f" · 已读 {len(done)}/{batches * layer_count} 份"
+                ),
+                calls=outcome.attempts,
+            ),
+        )
+
+    # ---- c''. consolidate（通读全书：每维归并） -----------------------------
+    def _phase_consolidate(self) -> None:
+        began = time.monotonic()
+        run_id = self._ensure_run()
+        full = dict(self.cursor.get("full") or {})
+        if full.get("reused_consolidation"):
+            self._enter(PHASE_CONSOLIDATE, detail="沿用上一次归并")
+            self._mark_done(PHASE_CONSOLIDATE, began, detail="沿用上一次归并")
+            return
+        read_run = str(full.get("read_run_id") or run_id)
+        raw, metas = load_raw_findings(self.session, read_run)
+        batches = len((self.cursor.get("plan") or {}).get("batches") or [])
+        done_dims = set(str(d) for d in self.cursor.get("consolidated_dims") or [])
+        dims = [dim for dim in ALL_DIMENSIONS if raw.get(dim)]
+        pending = [dim for dim in dims if dim not in done_dims]
+        self._enter(PHASE_CONSOLIDATE, detail=f"第 {len(done_dims) + 1}/{len(dims)} 维")
+        runtime = self.consolidate_runtime
+        if runtime is None:  # pragma: no cover — _run 载过
+            runtime = self.consolidate_runtime = load_consolidate_runtime()
+
+        def submit(pool: DaemonCallPool, dim: str, stop: threading.Event) -> Future:
+            self.pre_call_check(self._node_routes([NODE_SYNTHESIZE]))
+            payload, sent, dropped = fit_consolidate_payload(
+                lambda items: consolidate_payload(
+                    dim, items, metas.get(dim), book_title=self.book_title, batches=batches
+                ),
+                raw[dim],
+                lambda candidate: payload_fits(runtime, candidate),
+            )
+            return pool.submit(self._consolidate_dim, runtime, dim, payload, sent, dropped, stop)
+
+        def apply(dim: str, outcome: tuple[Consolidation, int, str | None, int]) -> None:
+            result, attempts, llm_call_id, dropped = outcome
+            done = [str(d) for d in self.cursor.get("consolidated_dims") or []]
+            done.append(dim)
+            self.cursor["consolidated_dims"] = done
+            self._count_call(attempts)
+            self.cursor["steps_done"] = int(self.cursor.get("steps_done") or 0) + 1
+
+            def write() -> None:
+                persist_consolidated(
+                    self.session,
+                    book_id=self.book_id,
+                    run_id=run_id,
+                    result=result,
+                    batches=batches,
+                    attempts=attempts,
+                    llm_call_id=llm_call_id,
+                    dropped_low_confidence=dropped,
+                )
+
+            self._save(
+                write=write,
+                progress=self._progress_values(
+                    PHASE_CONSOLIDATE,
+                    detail=f"{DIMENSION_LABELS.get(dim, dim)}归并完（第 {len(done)}/{len(dims)} 维）",
+                    calls=attempts,
+                ),
+            )
+
+        if pending:
+            self.run_parallel(
+                pending,
+                submit,
+                apply,
+                max_inflight=PARALLEL_CALLS,
+                poll_seconds=WAIT_POLL_SECONDS,
+                thread_prefix="sr_learn_merge",
+            )
+        merged = load_run_findings(self.session, run_id, consolidated=True)
+        if not any(f.kind == FindingKind.OBSERVATION.value for f in merged):
+            raise LearnFailedError(
+                REASON_CONSOLIDATE_FAILED,
+                "全书的发现归并之后一条观察都没有留下;检查模型后「继续学习」。",
+                retryable=True,
+            )
+        full.update({"consolidated": True, "consolidated_run_id": run_id})
+        self.cursor["full"] = full
+        self._record_done(PHASE_CONSOLIDATE, began, step=False)
+        self._save(
+            write=self._run_full_write(run_id),
+            progress=self._progress_values(PHASE_CONSOLIDATE, detail=f"归并成 {len(merged)} 条发现"),
+        )
+
+    def _consolidate_dim(
+        self,
+        runtime: NodeRuntime,
+        dim: str,
+        payload: Mapping[str, Any],
+        sent: Sequence[Any],
+        dropped: int,
+        stop: threading.Event,
+    ) -> tuple[Consolidation, int, str | None, int]:
+        """工人线程:一维的归并,最多 ``CONSOLIDATE_ATTEMPTS`` 次调用(调用失败退避;有问题带问题清单重问,留最好的一次)。"""
+        best: Consolidation | None = None
+        calls = 0
+        last_call: str | None = None
+        errors: list[str] = []
+        extra: str | None = None
+        for attempt in retry_attempts(CONSOLIDATE_ATTEMPTS, CALL_RETRY_BACKOFF_SECONDS, stop):
+            try:
+                result = call_structured(
+                    runtime,
+                    payload,
+                    self.client,
+                    scope_id=self.book_id,
+                    step=f"learn:{self.claimed.job_id}:consolidate:{dim}:{attempt + 1}",
+                    extra_instruction=extra,
+                )
+            except LearnCallError as exc:
+                calls += 1
+                errors.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:300]}")
+                continue
+            calls += 1
+            last_call = result.llm_call_id
+            parsed = parse_consolidation(result.structured, dim, sent)
+            best = better(best, parsed)
+            if not consolidation_needs_retry(parsed):
+                break
+            extra = consolidation_retry_instruction(parsed)
+        if best is None or best.malformed:
+            raise LearnFailedError(
+                REASON_CONSOLIDATE_FAILED,
+                f"{DIMENSION_LABELS.get(dim, dim)}的归并调用失败:"
+                + (errors[-1] if errors else "模型的输出没有通过核对"),
+                retryable=True,
+                details={"dimension": dim, "attempts": calls, "problems": errors[-3:]},
+            )
+        return best, calls, last_call, dropped
+
+    # ---- 两种方式共用：发现从哪一轮来、上一版卡、专名步骤的陈述、learned_from -------------
+    def _findings_source(self) -> tuple[str, bool]:
+        """文风卡合成 / 定稿读哪一轮的发现：快速学习 = 本轮的抽取发现；通读全书 = 归并后的发现（可能沿用上一次）。"""
+        run_id = str(self.cursor.get("run_id") or "")
+        if not self.full:
+            return run_id, False
+        full = self.cursor.get("full") or {}
+        return str(full.get("consolidated_run_id") or run_id), True
+
+    def _target_profile_id(self) -> str | None:
+        return str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
+
+    def _previous_card(self) -> PreviousCard | None:
+        target_id = self._target_profile_id()
+        if not target_id:
+            return None
+        raw = self.session.execute(
+            select(StyleReferenceProfile.profile_json).where(StyleReferenceProfile.profile_id == target_id)
+        ).scalar_one_or_none()
+        if not isinstance(raw, Mapping):
+            return None
+        previous = PreviousCard.from_card(card_from_profile_json(raw), line_states_from_profile_json(raw))
+        return None if previous.empty else previous
+
+    def _synthesis_coverage(self) -> dict[str, Any] | None:
+        if not self.full:
+            return None
+        plan = self.cursor.get("plan") or {}
+        return {
+            "mode": MODE_FULL,
+            "batches": len(plan.get("batches") or []),
+            "chapters": int(plan.get("chapters") or 0),
+        }
+
+    def _theme_avoid_statements(self) -> list[str]:
+        """交给「本书专名」步骤的主题层「不这么写」陈述（里面常带本书的设定名）：通读全书时取各批原始的（去重，
+        ≤``PROTECTED_AVOID_MAX`` 条），快速学习取本轮的。"""
+        if self.full:
+            full = self.cursor.get("full") or {}
+            source = str(full.get("read_run_id") or self.cursor.get("run_id") or "")
+        else:
+            source = str(self.cursor.get("run_id") or "")
+        statements: list[str] = []
+        seen: set[str] = set()
+        for finding in load_run_findings(self.session, source):
+            if finding.kind != FindingKind.FORBIDDEN_PATTERN.value or not finding.dimension.startswith("theme."):
+                continue
+            key = normalize_text_for_matching(finding.statement)
+            if key in seen:
+                continue
+            seen.add(key)
+            statements.append(finding.statement)
+            if len(statements) >= PROTECTED_AVOID_MAX:
+                break
+        return statements
+
+    def _extraction_record(self) -> dict[str, Any]:
+        """``learned_from.extraction``：这次学了什么（快速学习的窗口 / 通读全书的批）。"""
+        if not self.full:
+            selection = dict(self.cursor.get("selection") or {})
+            return {
+                "mode": MODE_QUICK,
+                "windows": [item["window_no"] for item in selection.get("windows") or []],
+                "chars": int(selection.get("chars") or 0),
+                "dropped_windows": list((self.cursor.get("extract") or {}).get("dropped_windows") or []),
+            }
+        plan = dict(self.cursor.get("plan") or {})
+        full = dict(self.cursor.get("full") or {})
+        return {
+            "mode": MODE_FULL,
+            "batches": len(plan.get("batches") or []),
+            "chars": int(plan.get("chars") or 0),
+            "chapters": int(plan.get("chapters") or 0),
+            "max_chars": int(plan.get("max_chars") or 0),
+            "plan_version": plan.get("version") or FULL_PLAN_VERSION,
+            "read_run_id": full.get("read_run_id"),
+            "consolidated_run_id": full.get("consolidated_run_id"),
+            "read_at": full.get("read_at"),
+            "reused_reading": bool(full.get("reused_reading")),
+            "reused_consolidation": bool(full.get("reused_consolidation")),
+        }
 
     # ---- d. synthesize ----------------------------------------------------
     def _voice(self) -> dict[str, Any]:
@@ -650,9 +1245,11 @@ class _LearnRun(JobRun):
     def _phase_synthesize(self) -> None:
         began = time.monotonic()
         self._enter(PHASE_SYNTHESIZE)
-        run_id = str(self.cursor.get("run_id") or "")
-        findings = load_run_findings(self.session, run_id)
-        meta = load_dimension_meta(self.session, run_id)
+        source_run, consolidated = self._findings_source()
+        findings = load_run_findings(self.session, source_run, consolidated=consolidated)
+        meta = load_dimension_meta(self.session, source_run, consolidated=consolidated)
+        previous = self._previous_card()
+        coverage = self._synthesis_coverage()
         voice = self._voice()
         structure = self._structure_card(voice)
         facts: list[str] = []
@@ -667,6 +1264,8 @@ class _LearnRun(JobRun):
                 book_title=self.book_title,
                 voice_habits=voice.get("habits") or [],
                 structure_facts=facts,
+                previous=previous,
+                coverage=coverage,
                 **kw,
             ),
             lambda candidate: payload_fits(runtime, candidate),
@@ -693,7 +1292,7 @@ class _LearnRun(JobRun):
                 errors.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:300]}")
                 continue
             attempts += 1
-            assembly = assemble_card(result.structured, findings, meta, generated_at=utcnow())
+            assembly = assemble_card(result.structured, findings, meta, generated_at=utcnow(), previous=previous)
             card, dropped = reconcile_card(assembly.card, voice_features=voice.get("features") or {})
             assembly.card = card
             assembly.line_count = len(card.all_lines()) if card is not None else 0
@@ -717,8 +1316,15 @@ class _LearnRun(JobRun):
                 details={"attempts": attempts, "problems": errors[-3:], "dropped": best.dropped if best else {}},
             )
         self.cursor["card"] = best.to_cursor()
-        self.cursor["synthesis"] = {"attempts": attempts, "fit_stage": stage, "findings": len(findings)}
-        self._mark_done(PHASE_SYNTHESIZE, began, detail=f"{best.line_count} 句", calls=attempts)
+        self.cursor["synthesis"] = {
+            "attempts": attempts,
+            "fit_stage": stage,
+            "findings": len(findings),
+            "kept": best.kept,
+            "previous_lines": len(previous.lines) if previous is not None else 0,
+        }
+        detail = f"{best.line_count} 句" + (f"（沿用上一版 {best.kept} 句）" if previous is not None else "")
+        self._mark_done(PHASE_SYNTHESIZE, began, detail=detail, calls=attempts)
 
     # ---- e. protected terms -----------------------------------------------
     def _phase_protected(self) -> None:
@@ -727,12 +1333,7 @@ class _LearnRun(JobRun):
         texts = self._prose_texts()
         corpus = "\n".join(texts)
         candidates = proper_noun_candidates(texts)
-        run_id = str(self.cursor.get("run_id") or "")
-        avoid_statements = [
-            f.statement
-            for f in load_run_findings(self.session, run_id)
-            if f.kind == FindingKind.FORBIDDEN_PATTERN.value and f.dimension.startswith("theme.")
-        ]
+        avoid_statements = self._theme_avoid_statements()
         runtime = self.runtimes[NODE_PROTECTED_TERMS]
         items = [c.payload() for c in candidates]
 
@@ -968,18 +1569,18 @@ class _LearnRun(JobRun):
         run_id = str(self.cursor.get("run_id") or "")
         book = self.book()
         texts = self._prose_texts()
-        target_id = str(self.params.get("profile_id") or self.claimed.profile_id or "") or None
+        target_id = self._target_profile_id()
         # 作者在画像里删掉过的自动专名(多半是误收的日常词):不再当专名、不再滤卡片、不再加回禁用词表
         dismissed = self._dismissed_terms(target_id)
         card = filter_learned_card(self.session, self.cursor, texts=texts, target_id=target_id, dismissed=dismissed)
         voice = self._voice()
         structure = self._structure_card(voice)
         distribution = reference_distribution_for_book(self.session, self.book_id)
-        findings = load_run_findings(self.session, run_id)
+        source_run, consolidated = self._findings_source()
+        findings = load_run_findings(self.session, source_run, consolidated=consolidated)
         planning = planning_lines(card, findings)
-        sub_dimensions = sub_dimension_summary(self.session, run_id)
+        sub_dimensions = sub_dimension_summary(self.session, source_run, consolidated=consolidated)
         index_state = dict(self.cursor.get("index") or {})
-        selection = dict(self.cursor.get("selection") or {})
         ledger = self._ledger()
         self._record_done(PHASE_FINALIZE, began)
 
@@ -1012,11 +1613,7 @@ class _LearnRun(JobRun):
                 "job_id": self.claimed.job_id,
                 "run_id": run_id,
                 "learned_at": utcnow(),
-                "extraction": {
-                    "windows": [item["window_no"] for item in selection.get("windows") or []],
-                    "chars": int(selection.get("chars") or 0),
-                    "dropped_windows": list((self.cursor.get("extract") or {}).get("dropped_windows") or []),
-                },
+                "extraction": self._extraction_record(),
                 "prompt_versions": {node: rt.prompt_version for node, rt in self.runtimes.items()},
                 "models": {node: rt.model for node, rt in self.runtimes.items()},
             },

@@ -360,6 +360,44 @@ export function srLearnEstimateText(estimate, { bookChars = null } = {}) {
   return [`至少 ${Number(calls.extract || 4) + 2} 次模型调用，另加给全书片段打标签（整理完窗口才知道要几批）`, read].filter(Boolean).join("，");
 }
 
+/* 学习方式（2026-10-19）：通读全书 = 按整章分批读完全书、每维归并后写卡；快速学习 = 固定的约 12 窗 / 4 万字（同一本书
+   每次读同一组，换模型 / 改提示词之后拿来对比）。估算的顶层是快速学习，estimate.full 是通读全书 */
+export const SR_LEARN_MODE_FULL = "full";
+export const SR_LEARN_MODE_QUICK = "quick";
+
+export function srLearnModeLabel(mode) {
+  return mode === SR_LEARN_MODE_FULL ? "通读全书" : "快速学习";
+}
+
+/* 上一次通读还能沿用时：这次只重写文风卡（专名 1 次 + 文风卡 1 次 + 要补的标签批） */
+export function srFullReusable(estimate) {
+  const full = estimate && estimate.full;
+  return full && full.reusable ? full.reusable : null;
+}
+
+export function srFullEstimateText(estimate, { reread = false } = {}) {
+  const full = estimate && estimate.full;
+  if (!full) return "整理完窗口才知道全书要分几批";
+  const calls = full.calls || {};
+  const tags = Number(calls.tags) || 0;
+  const tagText = tags ? `、给全书片段打标签 ${tags} 批` : "";
+  const reusable = !reread ? srFullReusable(estimate) : null;
+  if (reusable) {
+    const when = reusable.read_at ? `（${srFormatWhen(reusable.read_at)}）` : "";
+    return `上一次通读${when}的结果还能用：这次不再读书，在上一版文风卡上修订，约 ${2 + tags} 次模型调用（归并结果不能沿用时另加每维归并 16 次）`;
+  }
+  return [
+    `按整章分 ${full.batches} 批读完全书（${full.chapters} 章、约 ${srFormatChars(full.chars)}）`,
+    `约 ${full.est_calls} 次模型调用（逐批四层读原文 ${calls.extract} 次、每维归并 ${calls.consolidate || 16} 次、写文风卡 1 次、识别本书专名 1 次${tagText}）`,
+    "重试不计在内",
+  ].join("，");
+}
+
+export function srLearnModeEstimateText(estimate, mode, { bookChars = null, reread = false } = {}) {
+  if (!estimate) return null;
+  return mode === SR_LEARN_MODE_FULL ? srFullEstimateText(estimate, { reread }) : srLearnEstimateText(estimate, { bookChars });
+}
+
 /* 为什么建议重新学习 */
 const SR_RELEARN_TEXT = {
   types_changed: "段落类型已更新，建议重新学习：挑样本、打标签都要看段落类型。",

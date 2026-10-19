@@ -60,6 +60,10 @@ class LearnRequest(StrictRequestModel):
     resume: bool = False
     force: bool = False
     retag: bool = False
+    # 学习方式：quick 快速学习（约 12 窗 / 4 万字，缺省）/ full 通读全书（按整章分批读完全书、归并后成卡）
+    mode: Literal["quick", "full"] = "quick"
+    # 通读全书时不沿用上一次读完的通读，从头再读
+    reread: bool = False
 
 
 class CardLineStateRequest(StrictRequestModel):

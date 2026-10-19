@@ -353,12 +353,34 @@ def learn_result_summary(
     card = written.card
     card_lines = card.all_lines() if card is not None else []
     profile = written.profile
+    plan = dict(cursor.get("plan") or {})
+    full = dict(cursor.get("full") or {})
+    extract_totals = dict(cursor.get("extract_totals") or {})
+    synthesis = dict(cursor.get("synthesis") or {})
+    mode = str(cursor.get("mode") or "quick")
     return {
         "profile_id": profile.profile_id,
         "profile_created": written.created,
         "version_tag": profile.version_tag,
         "run_id": inputs.run_id,
         "book_id": str(inputs.book.book_id),
+        "mode": mode,
+        # 通读全书：读了几批 / 几份、读出几条、归并成几条、是不是沿用了上一次的通读 / 归并
+        "reading": (
+            {
+                "batches": len(plan.get("batches") or []),
+                "chars": int(plan.get("chars") or 0),
+                "chapters": int(plan.get("chapters") or 0),
+                "units": len(cursor.get("units_done") or []),
+                "raw_findings": int(extract_totals.get("findings") or 0),
+                "consolidated_findings": len(findings),
+                "reused_reading": bool(full.get("reused_reading")),
+                "reused_consolidation": bool(full.get("reused_consolidation")),
+                "read_at": full.get("read_at"),
+            }
+            if mode == "full"
+            else None
+        ),
         "windows": {
             "index": int(index_state.get("window_count") or 0),
             "extraction": len(selection.get("windows") or []),
@@ -383,6 +405,8 @@ def learn_result_summary(
             "mandatory": sum(1 for _d, line in card_lines if line.mandatory),
             "temperament": len(card.temperament) if card is not None else 0,
             "carried_pins": written.carried,
+            "kept_from_previous": int(synthesis.get("kept") or 0),
+            "previous_lines": int(synthesis.get("previous_lines") or 0),
             "dropped": dict(inputs.card.assembly.dropped),
             "filtered_at_finalize": inputs.card.filtered,
         },

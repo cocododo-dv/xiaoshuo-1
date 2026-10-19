@@ -93,7 +93,13 @@ export function resetState() {
     projectBinding: { project_id: "w1", binding: null, profile: null, book: null },
     profileBindings: [],
     activity: [],
-    learn: { learn: null, estimate: { est_calls: 12, calls: { extract: 4, tags: 6 }, est_input_chars: { extract_per_call: 44000 } } },
+    learn: {
+      learn: null,
+      estimate: {
+        est_calls: 12, calls: { extract: 4, tags: 6 }, est_input_chars: { extract_per_call: 44000 },
+        full: { batches: 5, chapters: 12, chars: 210000, est_calls: 44, calls: { extract: 20, consolidate: 16, synthesize: 1, protected: 1, tags: 6 }, reusable: null },
+      },
+    },
     estimate: { est_calls: 120, est_input_tokens: 350000, est_output_tokens: 9000, est_minutes: 75, parallel: 3 },
     profile: JSON.parse(JSON.stringify(PROFILE_DETAIL)),
     projectFidelity: {},

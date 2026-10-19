@@ -11,6 +11,12 @@ v3 所有层读**同一组连续窗口**（约 12 窗 / 4 万字），从全书�
 3. 字数：累计到目标字数就停，任何一窗都不让总数超过上限；整本书的窗口加起来不超过上限时全要。
 
 结果按原书顺序排列。只读窗口的元数据（章号、位置、字数、对白占比、段型构成、典型度），不读正文。
+
+**通读全书**（2026-10-19，``mode="full"``）不挑样本：全书按章切成若干批（:func:`plan_full_batches`），每批是**相连的
+整章**（一章超过一批的上限才按窗口边界切成几部分），四层逐批读完才算一轮。按整章切是为了叙事层：节奏的快慢切换、
+插叙的进出、信息什么时候放出来，都要看整章才看得出来；语言 / 场景层在哪种切法下都看得到，主题层要的是覆盖全书
+（「反复出现」由归并步按批数统计）。批的范围记段落区间（与快速学习一样不依赖窗口号）；字数由调用方给
+（作业按正文段精确算，估算按窗口字数粗算）。
 """
 
 from __future__ import annotations
@@ -209,13 +215,125 @@ def select_extraction_windows(
     return Selection(windows=ordered, strata=strata, chars=chars)
 
 
+# ---------------------------------------------------------------------------
+# 通读全书：按整章切批
+# ---------------------------------------------------------------------------
+
+FULL_PLAN_VERSION = "full_chapters_v1"
+# 一批正文的字数上限：抽取模板的输入预算 64000（估计按 CJK 一字一 token ×1.1）装得下 4.8 万字正文 + 段号 + 提示词；
+# 作业仍按真实载荷核一遍，装不下就把上限收紧重切（``learn_run``）
+FULL_BATCH_MAX_CHARS = 48_000
+
+
+@dataclass(frozen=True)
+class ChapterSpan:
+    """一章的段落区间（从这一章第一个窗口的起点，到下一章第一个窗口之前）与它的窗口（切部分用）。"""
+
+    chapter_no: int
+    start: int
+    end: int
+    windows: tuple[tuple[int, int], ...]  # (start_index, end_index)，按原书顺序
+
+
+def chapter_spans(rows: Sequence[Any]) -> list[ChapterSpan]:
+    """窗口行 → 每章的段落区间（章与章之间的零碎段归前一章，全书从第一个窗口读到最后一个窗口）。"""
+    windows = sorted((w if isinstance(w, WindowMeta) else window_meta(w) for w in rows), key=lambda w: w.window_no)
+    groups: list[tuple[int, list[WindowMeta]]] = []
+    for w in windows:
+        if groups and groups[-1][0] == w.chapter_no:
+            groups[-1][1].append(w)
+        else:
+            groups.append((w.chapter_no, [w]))
+    spans: list[ChapterSpan] = []
+    for index, (chapter_no, members) in enumerate(groups):
+        start = members[0].start_index
+        end = groups[index + 1][1][0].start_index - 1 if index + 1 < len(groups) else max(w.end_index for w in members)
+        spans.append(
+            ChapterSpan(
+                chapter_no=chapter_no,
+                start=start,
+                end=max(start, end),
+                windows=tuple((w.start_index, w.end_index) for w in members),
+            )
+        )
+    return spans
+
+
+def _chapter_parts(span: ChapterSpan, chars_of: Callable[[int, int], int], max_chars: int) -> list[tuple[int, int]]:
+    """一章超过上限时按窗口边界切成几段相连的部分（每部分尽量装满；第一部分从章首起、最后一部分到章尾止）。"""
+    if chars_of(span.start, span.end) <= max_chars or len(span.windows) <= 1:
+        return [(span.start, span.end)]
+    parts: list[tuple[int, int]] = []
+    part_start = span.start
+    for index, (_w_start, w_end) in enumerate(span.windows):
+        if index == len(span.windows) - 1:
+            parts.append((part_start, span.end))
+            break
+        next_end = span.windows[index + 1][1]
+        if chars_of(part_start, next_end) > max_chars:
+            parts.append((part_start, w_end))
+            part_start = w_end + 1
+    return parts
+
+
+def plan_full_batches(
+    spans: Sequence[ChapterSpan],
+    chars_of: Callable[[int, int], int],
+    *,
+    max_chars: int = FULL_BATCH_MAX_CHARS,
+) -> list[dict[str, Any]]:
+    """全书的批（确定性）：相连的整章依次装进一批，装满（再加一章就超过 ``max_chars``）就开下一批；超长的章切成
+    几部分，各占一批。返回游标形状 ``[{"no", "chars", "segments": [{"chapter", "start", "end", "part", "parts", "chars"}]}]``。"""
+    segments: list[dict[str, Any]] = []
+    for span in spans:
+        parts = _chapter_parts(span, chars_of, max_chars)
+        for number, (start, end) in enumerate(parts, start=1):
+            chars = int(chars_of(start, end))
+            if chars <= 0:
+                continue
+            segments.append(
+                {"chapter": span.chapter_no, "start": start, "end": end, "part": number, "parts": len(parts), "chars": chars}
+            )
+    batches: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+    total = 0
+    for segment in segments:
+        if current and total + segment["chars"] > max_chars:
+            batches.append({"segments": current, "chars": total})
+            current, total = [], 0
+        current.append(segment)
+        total += segment["chars"]
+    if current:
+        batches.append({"segments": current, "chars": total})
+    return [{"no": number, **batch} for number, batch in enumerate(batches)]
+
+
+def batch_chapter_label(batch: Mapping[str, Any]) -> str:
+    """一批读的是哪几章（「第 3–5 章」「第 12 章（第 2/3 部分）」）。"""
+    segments = list(batch.get("segments") or [])
+    if not segments:
+        return ""
+    first, last = segments[0], segments[-1]
+    if len(segments) == 1 and int(first.get("parts") or 1) > 1:
+        return f"第 {first['chapter']} 章（第 {first['part']}/{first['parts']} 部分）"
+    if first["chapter"] == last["chapter"]:
+        return f"第 {first['chapter']} 章"
+    return f"第 {first['chapter']}–{last['chapter']} 章"
+
+
 __all__ = [
+    "ChapterSpan",
+    "FULL_BATCH_MAX_CHARS",
+    "FULL_PLAN_VERSION",
     "MAX_CHARS",
     "STRATUM_LABELS",
     "Selection",
     "TARGET_CHARS",
     "TARGET_WINDOWS",
     "WindowMeta",
+    "batch_chapter_label",
+    "chapter_spans",
+    "plan_full_batches",
     "select_extraction_windows",
     "window_meta",
 ]
