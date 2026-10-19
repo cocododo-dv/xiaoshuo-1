@@ -78,6 +78,7 @@ class SetParagraph:
     window_no: int
     text: str  # 送给模型的正文(空白压缩过)
     raw_text: str = ""  # 库里的原文:引文坐标按它记
+    block: int = 0  # 通读全书:这一段在批里第几个片段(章)——结构核对用(每章第一段不算换场)
 
     @property
     def source_text(self) -> str:
@@ -202,6 +203,7 @@ def build_range_set(
                 window_no=window_no,
                 text=body,
                 raw_text=str(text or ""),
+                block=block,
             )
             lines.append(f"【{number}】{body}")
         if lines:

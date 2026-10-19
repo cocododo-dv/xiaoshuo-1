@@ -8,8 +8,9 @@
   标签（蓝图给的 ``situation_tags``，没有就由 :func:`derive_situation_tags` 从场景设计推）+ 对白 / 概述倾向 +
   窗数 k + 维度状态 + 改稿维 + 近期偏差维；
 - **配额**（k=12，其它 k 按比例）：章首 / 章末位置匹配 ≤3；场面标签匹配 ≈4；维度示范 ≈2（目标维 = 绑定里的
-  重点维 ∪ 改稿维 ∪ 近期常见偏差维，按窗口标签的 ``dimensions``——这一窗最能示范的 ≤3 维——重合挑，2026-09-24
-  O1 起窗口标签不再有书特有的「手法」）；对白密的场（或概述场）让一半窗口有相应的质地；其余在**全书**按典型度
+  重点维 ∪ 改稿维 ∪ 近期常见偏差维，按窗口的示范维重合挑——学习定稿写进去的**示范证据**（文风卡各句的逐字引文
+  落在这一窗的维，``learn_evidence``，2026-10-19）优先，没有证据的窗用标签的 ``dimensions``（模型判断的这一窗最能
+  示范的 ≤3 维）；2026-09-24 O1 起窗口标签不再有书特有的「手法」）；对白密的场（或概述场）让一半窗口有相应的质地；其余在**全书**按典型度
   加权、按种子抽样——一章至多一窗，不够再放宽（先不相邻，再任意）。没打标签的窗（学习作业还没跑、或还是 v1
   标签）不计入标签 / 维度配额，由典型度抽样补足；
 - **冻结**：结果写进 ``style_reference_scene_windows``（``selection_key`` = sha256(bundle_id 或 "live" |
@@ -62,6 +63,7 @@ from novel_system.services.style_reference.inject.request import (
 )
 from novel_system.services.style_reference.tags import MAX_SITUATIONS, normalize_situation_tags
 from novel_system.services.style_reference.windows import (
+    EVIDENCE_TAGS_KEY,
     WINDOW_INDEX_VERSION,
     dominant_type,
     ensure_window_index,
@@ -470,6 +472,7 @@ def load_index(
     windows: list[IndexWindow] = []
     for no, start, end, chapter, position, chars, paragraphs, dialogue, typical, tags, type_mix in rows:
         tags = tags if isinstance(tags, Mapping) else {}
+        evidence = tags.get(EVIDENCE_TAGS_KEY) if isinstance(tags.get(EVIDENCE_TAGS_KEY), Mapping) else {}
         windows.append(
             IndexWindow(
                 window_no=int(no),
@@ -482,7 +485,7 @@ def load_index(
                 dialogue_share=float(dialogue or 0.0),
                 typicality=float(typical or 0.0),
                 situations=tuple(str(s) for s in tags.get("situations") or () if str(s or "").strip()),
-                dimensions=_dimension_keys(tags.get("dimensions")),
+                dimensions=_dimension_keys(evidence.get("dimensions")) or _dimension_keys(tags.get("dimensions")),
                 paragraph_type=dominant_type(type_mix),
             )
         )

@@ -506,10 +506,52 @@ def set_window_tags(
         window = windows.get(window_no)
         if window is None:
             continue
-        window.tags_json = normalize_window_tags(raw_tags)
+        tags = normalize_window_tags(raw_tags)
+        previous = window.tags_json if isinstance(window.tags_json, Mapping) else {}
+        if isinstance(previous.get(EVIDENCE_TAGS_KEY), Mapping):
+            # 重打标签不丢学习定稿写的示范证据(set_window_evidence)
+            tags[EVIDENCE_TAGS_KEY] = dict(previous[EVIDENCE_TAGS_KEY])
+        window.tags_json = tags
         window.tags_version = str(tags_version)
         window.updated_at = now
         written += 1
+    session.flush()
+    return written
+
+
+# 2026-10-19 示范窗索引:学习定稿时把文风卡每句的逐字引文落到窗口上(learn_evidence),写在标签旁边
+EVIDENCE_TAGS_KEY = "evidence"
+
+
+def set_window_evidence(
+    session: Session,
+    book_id: str,
+    evidence_by_window_no: Mapping[int, Mapping[str, Any]],
+    *,
+    profile_id: str,
+    version: str,
+) -> int:
+    """把示范证据写进当前索引各窗的 ``tags_json["evidence"]``（没有证据的窗清掉旧证据），返回有证据的窗数。只 flush。"""
+    written = 0
+    now = utcnow()
+    for window in load_windows(session, book_id):
+        tags = dict(window.tags_json) if isinstance(window.tags_json, Mapping) else {}
+        evidence = evidence_by_window_no.get(int(window.window_no))
+        if evidence:
+            tags[EVIDENCE_TAGS_KEY] = {
+                "version": str(version),
+                "profile_id": str(profile_id),
+                "dimensions": list(evidence.get("dimensions") or []),
+                "counts": dict(evidence.get("counts") or {}),
+                "lines": list(evidence.get("lines") or []),
+            }
+            written += 1
+        elif EVIDENCE_TAGS_KEY in tags:
+            tags.pop(EVIDENCE_TAGS_KEY)
+        else:
+            continue
+        window.tags_json = tags
+        window.updated_at = now
     session.flush()
     return written
 
@@ -532,6 +574,8 @@ __all__ = [
     "index_marker",
     "load_windows",
     "marker_is_current",
+    "EVIDENCE_TAGS_KEY",
+    "set_window_evidence",
     "set_window_tags",
     "window_texts",
     "window_position",

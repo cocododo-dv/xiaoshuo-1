@@ -648,7 +648,7 @@ templates:
                 items: *learn_finding_item
 
   style_ref_extract_narrative:
-    version: "2026-10-19.v7"
+    version: "2026-10-19.v8"
     input_token_budget: 64000
     system_prompt: *learn_extract_system
     task_prompt: |
@@ -662,7 +662,66 @@ templates:
           数字、计量、时刻;信息什么时候放出来。
       样本见数据块:windows 里每个片段带 window、chapter、position、text(每段以【p】开头)。4 个维度都要输出。
       有 scope 时片段是整章:看整章里节奏怎么起落、插叙怎么进出、信息什么时候放出来,不要只看一两段。
-    structured_schema: *learn_extract_schema
+
+      另外顺带记下这几章的结构(只在数据块里有 scope 时做;没有 scope 时 scene_starts 与 chapters 都给空数组):
+        - scene_starts:这几章里**新的一场**从哪一段开始——时间跳了、地点换了、视点换了,或另起一件事。每项
+          {p: 新一场第一段的段号, shift: 时间 | 地点 | 视点 | 事件}(选最主要的那一种转换)。每章的第一段是章的开头,
+          不算换场;同一场里的小停顿也不算。
+        - chapters:position 为「整章」的每个片段各一项:window(片段号)、function(这一章在全书里主要做什么:
+          铺垫 | 推进 | 冲突 | 高潮 | 揭示 | 回收 | 过渡 | 日常)、hook(章末怎么收:悬念未解 | 反转 | 新威胁登场 |
+          情绪落点 | 平稳收束 | 预告下一步)、threads(这一章交织着几条情节线,1–6)、povs(这一章有几个视点人物,1–6)。
+        只写段号、类别与数字,不写人名、地名与情节。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [dimensions, scene_starts, chapters]
+      properties:
+        dimensions:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [dimension, model_default, devices, distinctiveness, observations, avoid]
+            properties:
+              dimension: {type: string}
+              model_default: {type: string, maxLength: 80}
+              devices:
+                type: array
+                maxItems: 3
+                items: {type: string, maxLength: 8}
+              distinctiveness: {type: number}
+              observations:
+                type: array
+                maxItems: 5
+                items: *learn_finding_item
+              avoid:
+                type: array
+                maxItems: 2
+                items: *learn_finding_item
+        scene_starts:
+          type: array
+          maxItems: 80
+          items:
+            type: object
+            additionalProperties: false
+            required: [p, shift]
+            properties:
+              p: {type: integer}
+              shift: {type: string, enum: [时间, 地点, 视点, 事件]}
+        chapters:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [window, function, hook, threads, povs]
+            properties:
+              window: {type: integer}
+              function: {type: string, enum: [铺垫, 推进, 冲突, 高潮, 揭示, 回收, 过渡, 日常]}
+              hook: {type: string, enum: [悬念未解, 反转, 新威胁登场, 情绪落点, 平稳收束, 预告下一步]}
+              threads: {type: integer, minimum: 1, maximum: 6}
+              povs: {type: integer, minimum: 1, maximum: 6}
 
   style_ref_extract_scene:
     version: "2026-10-19.v7"

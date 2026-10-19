@@ -56,6 +56,10 @@
 （分类每成功一次 +1）、`classification_provenance`（`llm` / `legacy_heuristic` + 一致率）、`window_index`（窗口表的有效标记：根哈希或索引版本
 变了整组重建，类型或测量核变了就地重算、保留标签）、`scene_breaks`（导入时记下的场界）。窗口标签（`tags_json`，`window_tags_v2`）=
 场面 / 情绪 / **维度**（这一窗最能示范的 ≤3 个维度键）/ 梗概，与文风卡无关：重新学习时已有 v2 标签的窗口不再重打。
+**示范证据**（`tags_json["evidence"]`，2026-10-19，`learn_evidence`）：学习定稿时把文风卡每句依据的逐字引文（通读全书
+时展开到归并前各批的全部引文）落到窗口上，按维计数——一维在一窗里至少 2 处引文才算这一窗示范了它，每窗留前 3 维，
+另记示范了哪几句卡（`version` / `profile_id` / `dimensions` / `counts` / `lines`）。选窗（`inject.selection.load_index`）
+挑「示范某一维」的窗时有证据的窗用证据维，没有的窗用标签维；重打标签保留证据，索引重建时随窗口一起清空。
 
 **画像 `profile_json` v3**（`learn_job._profile_json`）：
 
@@ -65,7 +69,7 @@
 | `card_line_states` | 作者对每句的 ✓（`pinned`，每场都带）/ ✗（`excluded`，不再用）；不让画像失效，重新学习时沿用 |
 | `voice` | 测量核声音特征 + 具体习惯句（作者自己的高频词与大致频率）+ 作者自身的参照分布 |
 | `voice_signature` | **过渡别名**：与 `voice` 同源、不带分布。运行时契约的画像白名单与刻意复沓旗标 `deliberate_repetition` 的读者（新鲜度预算、场景诊断）还在用——保留 |
-| `structure_card` / `planning_guidance` / `narrative_guidance` | 结构画像（章长、开合类型、章首章尾样例、场长、章题样式）、场景手法、叙事机制 |
+| `structure_card` / `planning_guidance` / `narrative_guidance` | 结构画像（章长、开合类型、章首章尾样例、场长、章题样式；通读全书后另有量出来的场与 `chapter_craft` 章法）、场景手法、叙事机制 |
 | `qualitative_summary` | 概述（v2 的 `metrics_baseline` / `sub_dimensions` 已随指标包络一起删除，旧画像里的残留键不再读） |
 | `reference_basis` / `learned_from` / `protected_terms_version` | 学自哪本书；学时的类型版本与根哈希（据此提示「段落类型已更新 / 正文变过，建议重新学习」）；专名集合指纹 |
 
@@ -151,6 +155,13 @@
     （≥三成批 high、≥一成 medium）。
   - `synthesize` 读归并后的发现，每条带 `seen_in` / `of`（全书几批里见到过）：见得越多越是常态，`mandatory` 从这里挑。
   - 读完、归并完才写画像；`learned_from.extraction` 记 `mode` / 批数 / 章数 / 字数 / 是否沿用。
+  - **顺带学的结构**（`learn_structure`）：叙事层那次调用同时交这一批的 `scene_starts`（新的一场从哪一段开始、靠时间 /
+    地点 / 视点 / 事件哪种转换；每章第一段不算）与 `chapters`（每个整章片段：这一章的功能、章末怎么收、交织几条线、
+    几个视点；只收类别与数字，不收人名情节）。逐份记进游标、读完记进 run 行（`coverage_json["full"]["structure"]`，
+    沿用通读时一起沿用）。结构画像据此（书本身没有空行分场时）改用量出来的场：`scene_break_style="learned"`、每章场数
+    与场长分布、`scene_shift_distribution`——「一场多长」（`structure_card.reference_scene_scale`）与分章的参考场数
+    （`snowflake_chaptering.scale`）按 `scene_sizes_measured` 用它；各章章法汇成 `chapter_craft`（功能与章末收法的占比、
+    每章几条线 / 几个视点、高潮章之间隔几章），渲染进 `[结构画像]` 块（规划、文风卡合成、画像页都看得到）。
   - **沿用**：一次通读的身份（段落根哈希、窗口索引版本、切法版本与上限、切出来的区间、读了哪几层、各层抽取模板版本与
     模型）记在血缘 run 行的 `coverage_json["full"]`；下一次通读身份相同就不再读书，归并身份（加上归并模板版本与模型）
     也相同就连归并一起沿用，只重写文风卡。`{"reread": true}` 从头再读。`GET …/learn` 的 `estimate.full`（批数、调用数、

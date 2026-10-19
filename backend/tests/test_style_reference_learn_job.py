@@ -578,7 +578,7 @@ def test_every_window_is_tagged_in_parallel_batches_and_gists_are_masked(session
     assert fake.max_inflight[NODE_TAGS] <= learn_run.PARALLEL_CALLS
     for window in windows:
         tags = window.tags_json
-        assert set(tags) == {"situations", "moods", "dimensions", "gist"}  # v2 形状：没有 devices
+        assert set(tags) - {"evidence"} == {"situations", "moods", "dimensions", "gist"}  # v2 形状：没有 devices（evidence 是定稿写的示范证据）
         assert set(tags["situations"]) <= set(SITUATION_TAGS) and tags["situations"] == ["日常闲谈"]
         assert set(tags["moods"]) <= set(MOOD_TAGS)
         assert tags["dimensions"] == ["scene.dialogue", "language.rhetoric"]  # 16 个键之外的丢掉、去重

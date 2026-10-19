@@ -460,7 +460,8 @@ def test_a_crash_while_reading_or_merging_resumes_without_redoing_finished_work(
         if crash_node == NODE_SYNTH and "findings" not in payload:
             return None
         state["seen"] += 1
-        if state["seen"] == 2:
+        # 3 个并行:第 4 次调用要等前面至少一份落库才会派发——崩的时候一定有做完的
+        if state["seen"] == (4 if crash_node == NODE_SYNTH else 2):
             state["crashed"] = True
             return "crash"
         return None
@@ -548,3 +549,176 @@ def test_learn_route_takes_the_mode_and_reports_both_estimates(client, session, 
     detail = client.get(f"{PREFIX}/profiles/{info['learn']['profile_id']}").json()["data"]["profile"]
     assert detail["learned_from"]["extraction"]["mode"] == "full"
     assert detail["learned_from"]["extraction"]["batches"] == load_job(job_id).result_json["reading"]["batches"]
+
+
+# ---------------------------------------------------------------- 顺带学的结构与示范窗（2026-10-19）
+
+
+def _range_set():
+    rows = [(i, "narration", f"第{i}段，林昭在雨城的旧信里找到一句话。", f"p{i}") for i in range(12)]
+    segments = [
+        {"chapter": 7, "start": 0, "end": 5, "part": 1, "parts": 1},
+        {"chapter": 8, "start": 6, "end": 11, "part": 1, "parts": 2},
+    ]
+    return build_range_set(rows, segments)
+
+
+def test_structure_output_keeps_only_real_scene_turns_and_whole_chapter_records() -> None:
+    from novel_system.services.style_reference.learn_structure import parse_structure_output
+
+    ext_set = _range_set()
+    structured = {
+        "scene_starts": [
+            {"p": 3, "shift": "地点"},
+            {"p": 1, "shift": "时间"},  # 第 7 章的第一段:章的开头,不算换场
+            {"p": 7, "shift": "视点"},  # 第 8 章(切过的章)的第一段
+            {"p": 9, "shift": "回忆"},  # 不在词表
+            {"p": 40, "shift": "地点"},  # 不在这一批
+            {"p": 10, "shift": "事件"},
+            {"p": 3, "shift": "时间"},  # 重复
+        ],
+        "chapters": [
+            {"window": 1, "function": "高潮", "hook": "反转", "threads": 9, "povs": 0},
+            {"window": 2, "function": "推进", "hook": "悬念未解", "threads": 2, "povs": 1},  # 不是整章
+            {"window": 1, "function": "铺垫", "hook": "平稳收束", "threads": 1, "povs": 1},  # 同一片段第二次
+            {"window": 3, "function": "推进", "hook": "反转", "threads": 1, "povs": 1},  # 没这个片段
+        ],
+    }
+    out = parse_structure_output(structured, ext_set)
+    assert out["scene_starts"] == [[2, "地点"], [9, "事件"]]
+    assert out["chapters"] == [{"chapter": 7, "function": "高潮", "hook": "反转", "threads": 6, "povs": 1}]
+    assert parse_structure_output({"scene_starts": "x"}, ext_set) == {"scene_starts": [], "chapters": []}
+
+
+def test_learned_scenes_measure_scene_lengths_and_chapter_craft_sums_up_the_chapters() -> None:
+    from novel_system.services.style_reference.learn_structure import chapter_craft, learned_scene_stats, merge_batches
+
+    starts, records = merge_batches(
+        {
+            "1": {"scene_starts": [[30, "时间"]], "chapters": [{"chapter": 2, "function": "高潮", "hook": "反转", "threads": 3, "povs": 2}]},
+            "0": {
+                "scene_starts": [[5, "地点"], [8, "地点"]],
+                "chapters": [
+                    {"chapter": 1, "function": "铺垫", "hook": "悬念未解", "threads": 2, "povs": 1},
+                ],
+            },
+            "2": {"scene_starts": [], "chapters": [
+                {"chapter": 3, "function": "推进", "hook": "悬念未解", "threads": 2, "povs": 1},
+                {"chapter": 4, "function": "高潮", "hook": "悬念未解", "threads": 1, "povs": 1},
+            ]},
+        }
+    )
+    assert starts == [(5, "地点"), (8, "地点"), (30, "时间")]
+    assert [r["chapter"] for r in records] == [1, 2, 3, 4]
+    stats = learned_scene_stats([(1, 0, 19), (2, 20, 39), (3, 40, 49)], starts, lambda a, b: (b - a + 1) * 100)
+    assert stats["scene_break_style"] == "learned" and stats["scene_chapters_read"] == 3
+    assert stats["scene_break_chapters"] == 2
+    # 第 1 章 3 场(500 / 300 / 1200 字)、第 2 章 2 场(1000 / 1000)、第 3 章 1 场(1000)
+    assert stats["scenes_per_chapter"]["median"] == 2 and stats["scene_chars"]["median"] == 1000
+    assert stats["scene_shift_distribution"] == {"时间": 0.333, "地点": 0.667}
+    craft = chapter_craft(records)
+    assert craft["chapters_read"] == 4
+    assert craft["function_distribution"] == {"高潮": 0.5, "铺垫": 0.25, "推进": 0.25}
+    assert list(craft["hook_distribution"]) == ["悬念未解", "反转"]
+    assert craft["climax_gap"] == 2 and craft["threads_per_chapter"]["median"] == 2
+    assert chapter_craft([]) is None and learned_scene_stats([], starts, lambda a, b: 1) is None
+
+
+def test_learned_scenes_drive_the_scene_scale_and_the_planning_block() -> None:
+    from novel_system.services.style_reference.structure_card import reference_scene_scale, scene_sizes_measured
+    from novel_system.services.style_reference.structure_render import render_structure_card_parts
+
+    card = {
+        "chapter_count": 10,
+        "has_chapter_markers": True,
+        "chapter_chars": {"median": 18000, "p10": 9000, "p90": 33000},
+        "paragraphs_per_chapter": {"median": 240, "p10": 100, "p90": 500},
+        "scene_break_style": "learned",
+        "scene_chapters_read": 10,
+        "scenes_per_chapter": {"median": 4, "p10": 2, "p90": 7},
+        "scene_chars": {"median": 4200, "p10": 1500, "p90": 9000},
+        "scene_shift_distribution": {"地点": 0.5, "时间": 0.3, "视点": 0.2},
+        "chapter_craft": {
+            "chapters_read": 10,
+            "function_distribution": {"推进": 0.5, "高潮": 0.2, "铺垫": 0.2, "日常": 0.1},
+            "hook_distribution": {"悬念未解": 0.6, "反转": 0.3, "平稳收束": 0.1},
+            "threads_per_chapter": {"median": 2, "p10": 1, "p90": 3},
+            "povs_per_chapter": {"median": 1, "p10": 1, "p90": 2},
+            "climax_gap": 4,
+        },
+    }
+    assert scene_sizes_measured(card) and not scene_sizes_measured({"scene_break_style": "none"})
+    scale = reference_scene_scale(card, scenes_in_chapter=3)
+    assert scale["basis"] == "learned_scene_breaks" and scale["raw_scene_chars"] == 4200
+    block, _samples = render_structure_card_parts({"structure_card": card}, include_samples=False)
+    assert "- 场：通读时按时间 / 地点 / 视点 / 事件的转换切出（10 章），每章约 4 场" in block
+    assert "换场多靠地点 50%、时间 30%、视点 20%" in block
+    assert "- 章的功能（通读 10 章）：推进 50%、高潮 20%、铺垫 20%、日常 10%；高潮章之间约隔 4 章" in block
+    assert "- 章末怎么收：悬念未解 60%、反转 30%、平稳收束 10%" in block
+    assert "- 一章之内：通常交织 2 条线（p90 3）、1 个视点人物（p90 2）" in block
+    assert "每章约 4 场、场长约 4,200 字" in block
+
+
+def test_full_learn_also_learns_scene_turns_chapter_craft_and_where_each_dimension_is_shown(session, monkeypatch) -> None:
+    from novel_system.services.style_reference.inject.selection import load_index
+    from novel_system.services.style_reference.windows import set_window_tags
+
+    seed(session)
+    fake, job = _learn(monkeypatch, mode="full")
+    assert job.state == "succeeded", job.error_json
+    # 叙事层顺带交的结构:每批记进游标、读完记进 run 行
+    units = job.cursor_json["structure_units"]
+    assert sorted(units) == ["0", "1", "2"]
+    run = session.get(StyleReferenceRun, job.result_json["run_id"])
+    assert run.coverage_json["full"]["structure"] == units
+    assert job.result_json["structure"] == {"scene_starts": 6, "chapters": 6}
+    narrative = [p for node, p in fake.payloads if node == "style_ref_extract_narrative"]
+    assert len(narrative) == 3
+    structure = _profile(job.result_json["profile_id"]).profile_json["structure_card"]
+    assert structure["scene_break_style"] == "learned" and structure["scene_chapters_read"] == 6
+    assert structure["scenes_per_chapter"]["median"] == 2
+    craft = structure["chapter_craft"]
+    assert craft["chapters_read"] == 6 and craft["function_distribution"] == {"推进": 0.833, "高潮": 0.167}
+    assert craft["hook_distribution"] == {"悬念未解": 0.5, "反转": 0.5}
+    # 文风卡合成看得到这些结构事实
+    card_payload = next(p for node, p in fake.payloads if node == NODE_SYNTH and "findings" not in p)
+    assert any(fact.startswith("章末怎么收") for fact in card_payload["structure_facts"])
+    # 示范窗:有证据的窗,选窗索引用证据维
+    windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == BOOK)).all()
+    with_evidence = [w for w in windows if (w.tags_json or {}).get("evidence")]
+    assert with_evidence and job.result_json["windows"]["with_evidence"] == len(with_evidence)
+    sample = with_evidence[0].tags_json["evidence"]
+    assert sample["version"] == "evidence_v1" and sample["profile_id"] == job.result_json["profile_id"]
+    assert sample["lines"] and all(n >= 1 for n in sample["counts"].values())
+    index, _root, _notices = load_index(session, BOOK, build=False)
+    by_no = {w.window_no: w for w in index}
+    for window in with_evidence:
+        evidence_dims = tuple(window.tags_json["evidence"]["dimensions"])
+        expected = evidence_dims or tuple(window.tags_json.get("dimensions") or ())
+        assert by_no[window.window_no].dimensions == expected
+    # 重打标签不丢证据
+    target = with_evidence[0]
+    set_window_tags(session, BOOK, {target.window_no: {"situations": ["日常闲谈"], "moods": ["平静"], "dimensions": []}}, tags_version="t")
+    session.commit()
+    session.refresh(target)
+    assert target.tags_json["evidence"] == sample and target.tags_json["situations"] == ["日常闲谈"]
+
+    # 沿用这次通读时结构一起沿用,不再调叙事层
+    fake2, second = _learn(monkeypatch, mode="full")
+    assert second.state == "succeeded", second.error_json
+    assert fake2.count(EXTRACT) == 0
+    again = _profile(second.result_json["profile_id"]).profile_json["structure_card"]
+    assert again["chapter_craft"] == craft and again["scene_chars"] == structure["scene_chars"]
+
+
+def test_quick_learn_writes_evidence_for_the_windows_it_read_and_learns_no_structure(session, monkeypatch) -> None:
+    seed(session)
+    fake, job = _learn(monkeypatch)
+    assert job.state == "succeeded", job.error_json
+    narrative = next(p for node, p in fake.payloads if node == "style_ref_extract_narrative")
+    assert "scope" not in narrative
+    structure = _profile(job.result_json["profile_id"]).profile_json["structure_card"]
+    assert structure["scene_break_style"] == "none" and "chapter_craft" not in structure
+    assert "structure" not in job.result_json
+    windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == BOOK)).all()
+    assert job.result_json["windows"]["with_evidence"] == sum(1 for w in windows if (w.tags_json or {}).get("evidence")) > 0

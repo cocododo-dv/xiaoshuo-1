@@ -20,6 +20,7 @@ from novel_system.services.style_reference.structure_card import (
     STRUCTURE_SAMPLES_PER_SIDE,
     STRUCTURE_TITLE_MAX_CHARS,
     STRUCTURE_TITLE_SAMPLES,
+    scene_sizes_measured,
 )
 from novel_system.services.style_reference.untrusted_data import secure_reference_block
 from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
@@ -190,6 +191,7 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
     person_line = _person_line(card.get("person"))
     if person_line:
         lines.append(person_line)
+    lines.extend(_craft_lines(card.get("chapter_craft")))
     hint = []
     if chapter_count > 1:
         hint.append(
@@ -197,7 +199,7 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
             f"（{_fmt_int(chapter_chars.get('p10'))}–{_fmt_int(chapter_chars.get('p90'))} 字为常态）、"
             f"约 {_fmt_int(per_chapter.get('median'))} 段"
         )
-    if str(card.get("scene_break_style") or "") == "explicit":
+    if scene_sizes_measured(card):
         scenes = card.get("scenes_per_chapter") if isinstance(card.get("scenes_per_chapter"), Mapping) else {}
         scene_chars = card.get("scene_chars") if isinstance(card.get("scene_chars"), Mapping) else {}
         hint.append(
@@ -255,9 +257,56 @@ def _scene_line(card: Mapping[str, Any]) -> str:
             f"{_fmt_int(scenes.get('median'))} 场（p10 {_fmt_int(scenes.get('p10'))} · p90 {_fmt_int(scenes.get('p90'))}）；"
             f"场长中位 {_fmt_int(scene_chars.get('median'))} 字（p10 {_fmt_int(scene_chars.get('p10'))} · p90 {_fmt_int(scene_chars.get('p90'))}）"
         )
+    if style == "learned":
+        scenes = card.get("scenes_per_chapter") if isinstance(card.get("scenes_per_chapter"), Mapping) else {}
+        scene_chars = card.get("scene_chars") if isinstance(card.get("scene_chars"), Mapping) else {}
+        shifts = _share_list(card.get("scene_shift_distribution"), limit=3)
+        return (
+            f"- 场：通读时按时间 / 地点 / 视点 / 事件的转换切出（{_fmt_int(card.get('scene_chapters_read'))} 章），每章约 "
+            f"{_fmt_int(scenes.get('median'))} 场（p10 {_fmt_int(scenes.get('p10'))} · p90 {_fmt_int(scenes.get('p90'))}）；"
+            f"场长中位 {_fmt_int(scene_chars.get('median'))} 字（p10 {_fmt_int(scene_chars.get('p10'))} · p90 {_fmt_int(scene_chars.get('p90'))}）"
+            + (f"；换场多靠{shifts}" if shifts else "")
+        )
     if int(card.get("chapter_count") or 0) > 0:
         return "- 场：无显式场分隔；场的长度按章长与段数规划"
     return ""
+
+
+def _share_list(distribution: Any, *, limit: int) -> str:
+    """``{类别: 占比}`` → 「悬念未解 40%、反转 20%」（按占比从多到少，至多 ``limit`` 项，不足 5% 的不写）。"""
+    if not isinstance(distribution, Mapping):
+        return ""
+    items = sorted(
+        ((str(k), float(v)) for k, v in distribution.items() if isinstance(v, (int, float)) and float(v) >= 0.05),
+        key=lambda item: -item[1],
+    )[:limit]
+    return "、".join(f"{name} {_pct(value)}" for name, value in items)
+
+
+def _craft_lines(craft: Any) -> list[str]:
+    """章法（通读全书时学的，``learn_structure.chapter_craft``）→ 规划用的几行：章的功能、章末怎么收、每章几条线
+    几个视点、高潮隔几章。没有 → 空。"""
+    if not isinstance(craft, Mapping) or int(craft.get("chapters_read") or 0) <= 0:
+        return []
+    lines: list[str] = []
+    functions = _share_list(craft.get("function_distribution"), limit=4)
+    if functions:
+        gap = craft.get("climax_gap")
+        lines.append(
+            f"- 章的功能（通读 {_fmt_int(craft.get('chapters_read'))} 章）：{functions}"
+            + (f"；高潮章之间约隔 {_fmt_int(gap)} 章" if isinstance(gap, int) and gap > 0 else "")
+        )
+    hooks = _share_list(craft.get("hook_distribution"), limit=4)
+    if hooks:
+        lines.append(f"- 章末怎么收：{hooks}")
+    threads = craft.get("threads_per_chapter") if isinstance(craft.get("threads_per_chapter"), Mapping) else {}
+    povs = craft.get("povs_per_chapter") if isinstance(craft.get("povs_per_chapter"), Mapping) else {}
+    if int(threads.get("median") or 0) > 0 or int(povs.get("median") or 0) > 0:
+        lines.append(
+            f"- 一章之内：通常交织 {_fmt_int(threads.get('median'))} 条线（p90 {_fmt_int(threads.get('p90'))}）、"
+            f"{_fmt_int(povs.get('median'))} 个视点人物（p90 {_fmt_int(povs.get('p90'))}）"
+        )
+    return lines
 
 
 def _fit_lines(lines: Sequence[str], max_chars: int) -> str:

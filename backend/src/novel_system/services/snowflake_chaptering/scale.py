@@ -20,6 +20,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.snowflake_chaptering.algorithms import hinge_min_chapters
 from novel_system.services.style_policy import style_policy_live
 from novel_system.services.style_reference.planning_context import reference_titles_payload
+from novel_system.services.style_reference.structure_card import scene_sizes_measured
 from novel_system.services.value_coercion import int_or_default
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ def _reference_chapter_scale_hint(session: Session, project_id: str) -> dict[str
     if chapter_median <= 0:
         return None
     scene_median = 0
-    if str(card.get("scene_break_style") or "") == "explicit":
+    if scene_sizes_measured(card):
         scene_median = int((card.get("scene_chars") or {}).get("median") or 0)
     typical_scene = scene_median or _REFERENCE_DEFAULT_SCENE_CHARS
     scenes_per_chapter = max(1, min(_REFERENCE_MAX_SCENES_PER_CHAPTER, int(round(chapter_median / typical_scene))))

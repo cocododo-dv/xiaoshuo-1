@@ -26,6 +26,11 @@
   记游标——取消 / 重启后只补没读的；
 - ``consolidate``（只有通读才有）每维一次调用把各批的发现归并成几条，记下每条在几批里见到过；
 - ``synthesize`` 读归并后的发现（带支持数）；读完、归并完才写画像——读到一半不动作者正在用的画像。
+- 顺带学的结构（``learn_structure``）：叙事层的调用同时交这一批的换场点与各章章法，逐份记进游标、读完记进血缘 run 行
+  （沿用通读时一起沿用）；结构画像据此量真实场长（``scene_break_style="learned"``，书本身有空行分场时不改）、
+  加 ``chapter_craft``。
+
+两种方式定稿时都把文风卡各句的逐字引文落到窗口上（``learn_evidence``，示范窗索引，选窗按它挑示范某一维的窗）。
 
 两种方式的文风卡合成都在上一版上修订（``learn_card.PreviousCard``）：没有新证据就不改原句。
 
@@ -106,6 +111,7 @@ from novel_system.services.style_reference.learn_consolidate import (
 )
 from novel_system.services.style_reference.learn_consolidate import needs_retry as consolidation_needs_retry
 from novel_system.services.style_reference.learn_consolidate import retry_instruction as consolidation_retry_instruction
+from novel_system.services.style_reference.learn_evidence import EVIDENCE_VERSION, card_line_quotes, window_evidence
 from novel_system.services.style_reference.learn_extract import (
     POSITION_LABELS,
     ExtractionSet,
@@ -185,6 +191,12 @@ from novel_system.services.style_reference.learn_tags import (
     plan_tag_batches,
     tag_payload,
 )
+from novel_system.services.style_reference.learn_structure import (
+    chapter_craft,
+    learned_scene_stats,
+    merge_batches,
+    parse_structure_output,
+)
 from novel_system.services.style_reference.llm_nodes import NodeRuntime
 from novel_system.services.style_reference.measure import KERNEL_VERSION
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
@@ -210,6 +222,7 @@ from novel_system.services.style_reference.windows import (
     ensure_window_index,
     index_marker,
     load_windows,
+    set_window_evidence,
     window_texts,
 )
 
@@ -227,11 +240,14 @@ CONSOLIDATE_ATTEMPTS = 3
 # 切批时按真实载荷核预算：装不下就把上限乘这个系数重切，最多几轮
 FULL_PLAN_SHRINK = 0.85
 FULL_PLAN_SHRINK_ROUNDS = 6
+# 顺带交换场点与章法的那一层(它本来就读整章)
+STRUCTURE_LAYER = "narrative"
 # 交给「本书专名」步骤的主题层「不这么写」陈述最多几条（通读全书时各批加起来会很多）
 PROTECTED_AVOID_MAX = 40
 # 血缘 run 行 coverage_json["full"] 里记的键（沿用上一次通读靠它们）
 RUN_FULL_KEYS = (
     "identity",
+    "structure",
     "reading_hash",
     "consolidation_hash",
     "read_run_id",
@@ -261,6 +277,8 @@ class _LayerOutcome:
     attempts: int
     llm_call_id: str | None
     dropped_windows: list[int]
+    # 通读全书叙事层顺带交的换场点与章法(learn_structure.parse_structure_output)
+    structure: dict[str, Any] | None = None
 
 
 class _LearnRun(JobRun):
@@ -628,10 +646,12 @@ class _LearnRun(JobRun):
         backoff: Sequence[float] = (),
         every_dimension: bool = True,
         details: Mapping[str, Any] | None = None,
+        with_structure: bool = False,
     ) -> _LayerOutcome:
         """工人线程:一份抽取最多 ``attempts`` 次调用;重问带问题清单,各次的有效发现合并。"""
         runtime = self.runtimes[EXTRACT_NODES[layer]]
         valid: LayerParse | None = None
+        structure: dict[str, Any] | None = None
         calls = 0
         last_call: str | None = None
         errors: list[str] = []
@@ -653,6 +673,11 @@ class _LearnRun(JobRun):
             last_call = result.llm_call_id
             parse = parse_layer_output(result.structured, layer, ext_set)
             valid = parse if valid is None else merge_layer_parses(valid, parse)
+            if with_structure:
+                found = parse_structure_output(result.structured, ext_set)
+                size = len(found["chapters"]) + len(found["scene_starts"])
+                if structure is None or size > len(structure["chapters"]) + len(structure["scene_starts"]):
+                    structure = found
             if not needs_retry(valid, every_dimension=every_dimension):
                 break
         if valid is None:
@@ -668,7 +693,9 @@ class _LearnRun(JobRun):
                     "problems": errors,
                 },
             )
-        return _LayerOutcome(layer=layer, parse=valid, attempts=calls, llm_call_id=last_call, dropped_windows=[])
+        return _LayerOutcome(
+            layer=layer, parse=valid, attempts=calls, llm_call_id=last_call, dropped_windows=[], structure=structure
+        )
 
     def _apply_layer(self, run_id: str, outcome: _LayerOutcome) -> None:
         """作业线程:游标(条件写) → 四张表 → 进度,一次提交。"""
@@ -880,6 +907,7 @@ class _LearnRun(JobRun):
                 backoff=CALL_RETRY_BACKOFF_SECONDS,
                 every_dimension=False,
                 details={"batch": no + 1, "chapters": batch_chapter_label(by_no[no])},
+                with_structure=layer == STRUCTURE_LAYER,
             )
 
         def apply(unit: tuple[int, str], outcome: _LayerOutcome) -> None:
@@ -901,7 +929,14 @@ class _LearnRun(JobRun):
                 "通读全书没有一条通过证据核对的发现(引文必须逐字取自原文);检查模型后「继续学习」。",
                 retryable=True,
             )
-        full.update({"read_complete": True, "read_run_id": run_id, "read_at": utcnow()})
+        full.update(
+            {
+                "read_complete": True,
+                "read_run_id": run_id,
+                "read_at": utcnow(),
+                "structure": dict(self.cursor.get("structure_units") or {}),
+            }
+        )
         self.cursor["full"] = full
         self._record_done(PHASE_EXTRACT, began, step=False)
         self._save(
@@ -929,6 +964,10 @@ class _LearnRun(JobRun):
         totals["returned"] = int(totals.get("returned") or 0) + outcome.parse.returned
         totals["rejected"] = int(totals.get("rejected") or 0) + outcome.parse.rejected
         self.cursor["extract_totals"] = totals
+        if outcome.structure is not None:
+            units = dict(self.cursor.get("structure_units") or {})
+            units[str(no)] = outcome.structure
+            self.cursor["structure_units"] = units
         self._count_call(outcome.attempts)
         self.cursor["steps_done"] = int(self.cursor.get("steps_done") or 0) + 1
 
@@ -1239,8 +1278,46 @@ class _LearnRun(JobRun):
         card = json_clean(card)
         card.pop("chapters", None)
         card.pop("chapters_listed", None)
+        if self.full:
+            card.update(self._learned_structure_keys(card))
         self.cursor["structure_card"] = card
         return card
+
+    def _learned_structure(self) -> tuple[list[tuple[int, str]], list[dict[str, Any]]]:
+        """这次通读学到的（或沿用的那次通读学到的）换场点与各章章法。"""
+        full = self.cursor.get("full") or {}
+        batches: Mapping[str, Any] | None = None
+        if full.get("reused_reading") and full.get("read_run_id"):
+            run = self.session.get(StyleReferenceRun, str(full["read_run_id"]))
+            coverage = run.coverage_json if run is not None and isinstance(run.coverage_json, Mapping) else {}
+            batches = ((coverage.get("full") or {}) if isinstance(coverage.get("full"), Mapping) else {}).get("structure")
+        else:
+            batches = self.cursor.get("structure_units")
+        return merge_batches(batches if isinstance(batches, Mapping) else {})
+
+    def _chapter_ranges(self) -> list[tuple[int, int, int]]:
+        """切批里每章的段落区间 ``(章号, 起段, 止段)``（切成几部分的章合起来）。"""
+        ranges: dict[int, list[int]] = {}
+        for batch in (self.cursor.get("plan") or {}).get("batches") or []:
+            for segment in batch.get("segments") or []:
+                chapter = int(segment.get("chapter") or 0)
+                bounds = ranges.setdefault(chapter, [int(segment["start"]), int(segment["end"])])
+                bounds[0] = min(bounds[0], int(segment["start"]))
+                bounds[1] = max(bounds[1], int(segment["end"]))
+        return [(chapter, a, b) for chapter, (a, b) in sorted(ranges.items(), key=lambda item: item[1][0])]
+
+    def _learned_structure_keys(self, card: Mapping[str, Any]) -> dict[str, Any]:
+        """结构画像要加 / 改的键：书本身没有空行分场时用切出来的场量场长；各章章法汇成 ``chapter_craft``。"""
+        starts, records = self._learned_structure()
+        keys: dict[str, Any] = {}
+        if starts and str(card.get("scene_break_style") or "") != "explicit":
+            stats = learned_scene_stats(self._chapter_ranges(), starts, self._body_chars_of())
+            if stats:
+                keys.update(stats)
+        craft = chapter_craft(records)
+        if craft:
+            keys["chapter_craft"] = craft
+        return keys
 
     def _phase_synthesize(self) -> None:
         began = time.monotonic()
@@ -1619,7 +1696,19 @@ class _LearnRun(JobRun):
             },
         )
         written = write_learned_profile(self.session, inputs, job_id=self.claimed.job_id)
+        evidence = window_evidence(self.session, self.book_id, card_line_quotes(self.session, written.card))
+        evidence_windows = set_window_evidence(
+            self.session,
+            self.book_id,
+            evidence,
+            profile_id=written.profile.profile_id,
+            version=EVIDENCE_VERSION,
+        )
         result = learn_result_summary(inputs, written, cursor=self.cursor, ledger=ledger)
+        result["windows"]["with_evidence"] = evidence_windows
+        if self.full:
+            starts, records = self._learned_structure()
+            result["structure"] = {"scene_starts": len(starts), "chapters": len(records)}
         self.service.progress(self.claimed, **self._progress_values(PHASE_FINALIZE, detail="完成"))
         if not self.service.succeed(self.claimed, result):
             self.session.rollback()

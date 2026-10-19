@@ -87,6 +87,15 @@ def chapter_titles_summary(titles: Sequence[str]) -> dict[str, Any]:
     return summary
 
 
+# 场长是量出来的:导入时的空行分场(explicit),或通读全书时模型切出来的场(learned,learn_structure)
+MEASURED_SCENE_STYLES = ("explicit", "learned")
+
+
+def scene_sizes_measured(card: Mapping[str, Any] | None) -> bool:
+    """结构画像里的每章场数 / 场长是量出来的(不是推算的)。"""
+    return isinstance(card, Mapping) and str(card.get("scene_break_style") or "") in MEASURED_SCENE_STYLES
+
+
 def reference_scene_scale(
     card: Mapping[str, Any] | None,
     *,
@@ -95,7 +104,8 @@ def reference_scene_scale(
 ) -> dict[str, Any] | None:
     """参考作者「一场多长」的推算(2026-09-22 结构跟随参考书)。
 
-    有显式场界的书直接用场长中位;没有的书(多数)按 **章长中位 ÷ 本作品这一章的场数** 推——
+    场长是量出来的书(导入时的显式场界,或通读全书时切出来的场,:func:`scene_sizes_measured`)直接用场长中位;
+    没有的书按 **章长中位 ÷ 本作品这一章的场数** 推——
     读者感受到的是章的体量,本作品一章切几场是作者的分章决定,两者相除就是这本书的场该有的尺度。
     单章书(章长 = 全书)不推。结果封顶 ``ceiling``、保底 ``REFERENCE_SCENE_CHARS_FLOOR``。
     """
@@ -104,12 +114,11 @@ def reference_scene_scale(
     chapter_chars = card.get("chapter_chars") if isinstance(card.get("chapter_chars"), Mapping) else {}
     chapter_median = int(chapter_chars.get("median") or 0)
     scene_chars = card.get("scene_chars") if isinstance(card.get("scene_chars"), Mapping) else {}
-    explicit_median = (
-        int(scene_chars.get("median") or 0) if str(card.get("scene_break_style") or "") == "explicit" else 0
-    )
+    explicit_median = int(scene_chars.get("median") or 0) if scene_sizes_measured(card) else 0
     scenes = max(1, int(scenes_in_chapter or 0))
     if explicit_median > 0:
-        basis, derived = "explicit_scene_breaks", explicit_median
+        basis = "learned_scene_breaks" if str(card.get("scene_break_style")) == "learned" else "explicit_scene_breaks"
+        derived = explicit_median
     elif chapter_median > 0:
         basis, derived = "chapter_median_over_scenes", int(round(chapter_median / scenes))
     else:
@@ -347,6 +356,8 @@ def compute_structure_card(
 
 
 __all__ = [
+    "MEASURED_SCENE_STYLES",
+    "scene_sizes_measured",
     "REFERENCE_SCENE_CHARS_CEILING",
     "REFERENCE_SCENE_CHARS_FLOOR",
     "STRUCTURE_CARD_VERSION",
