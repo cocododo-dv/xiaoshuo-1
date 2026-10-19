@@ -114,3 +114,29 @@ class CheckRequest(BaseModel):
     scene_id: str | None = Field(default=None, max_length=255)
     profile_id: str | None = Field(default=None, max_length=255)
     project_id: str | None = Field(default=None, max_length=255)
+
+
+class RatchetArmBody(StrictRequestModel):
+    """配置对比的一套配置；不填的项 = 现在的配置（风格稿路由的模型、绑定的样例窗数、样例在 user 末尾）。"""
+
+    model: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    windows: Annotated[int, Field(ge=0, le=16)] | None = None
+    placement: Literal["user_tail", "system"] | None = None
+    rep: Annotated[int, Field(ge=1, le=99)] | None = None
+
+
+class RatchetStartRequest(StrictRequestModel):
+    a: RatchetArmBody | None = None
+    b: RatchetArmBody | None = None
+    passages: Annotated[int, Field(ge=2, le=8)] | None = None
+
+
+class RatchetVoteBody(StrictRequestModel):
+    best: Literal["甲", "乙", "丙"] | None = None
+    worst: Literal["甲", "乙", "丙"] | None = None
+
+
+class RatchetVotesRequest(StrictRequestModel):
+    votes: dict[Annotated[str, Field(max_length=8)], RatchetVoteBody] = Field(default_factory=dict, max_length=16)
+    # 同时揭晓答案与结论（之后选择不再能改）
+    reveal: bool = False

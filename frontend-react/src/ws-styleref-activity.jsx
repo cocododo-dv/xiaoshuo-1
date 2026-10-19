@@ -7,6 +7,7 @@ import {
   srCancelCalibration, srCancelClassification, srCancelLearn, srResumeClassification, srStartLearn, srSubscribe,
 } from "./ws-styleref-store.js";
 import { fidCancelCheckJob, fidCheckByJob, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
+import { srCancelRatchet } from "./ws-styleref-ratchet-store.js";
 import { srNotifyError, srProgressTone, useSrStore } from "./ws-styleref-ui.jsx";
 
 /* ==========================================================
@@ -25,6 +26,7 @@ export function srRunningFor(bookId) {
     classify: view(srActivityFor(bookId, "classify")),
     learn: view(srActivityFor(bookId, "learn")),
     check: view(srActivityFor(bookId, "check")),
+    ratchet: view(srActivityFor(bookId, "ratchet")),
   };
 }
 
@@ -72,6 +74,10 @@ export function SrActivityPanel({ onOpenBook }) {
       await srCancelCalibration(e.profile_id);
       return;
     }
+    if (e.kind === "ratchet") {
+      await srCancelRatchet(e.profile_id);
+      return;
+    }
     await (e.kind === "learn" ? srCancelLearn(e.book_id) : srCancelClassification(e.book_id));
   });
   /* 正文太短而失败的学习：仍然学（force）。新作业是另一个 id 时把旧的这条收起 */
@@ -111,7 +117,7 @@ export function SrActivityPanel({ onOpenBook }) {
     const active = srActivityActive(e);
     const isBookJob = e.kind === "learn" || e.kind === "classify";
     const canCancel = active && e.cancellable !== false && !e.cancel_requested
-      && (e.kind === "check" ? !!e.job_id : e.kind === "calibrate" ? !!e.profile_id : (isBookJob && !!e.book_id));
+      && (e.kind === "check" ? !!e.job_id : e.kind === "calibrate" || e.kind === "ratchet" ? !!e.profile_id : (isBookJob && !!e.book_id));
     const canResume = !active && !!e.book_id && !!e.resumable && isBookJob;
     const canForceLearn = !active && e.kind === "learn" && e.status === "failed" && !!e.book_id && srInputTooSmall(e.error);
     const localCheck = e.kind === "check" && !active ? fidCheckByJob(e.job_id) : null;
@@ -148,7 +154,11 @@ export function SrActivityPanel({ onOpenBook }) {
                 type="button"
                 className="btn btn-quiet btn-sm"
                 data-testid="sr-activity-open"
-                onClick={() => { onOpenBook(e.book_id, e.kind === "check" ? "check" : null, e.kind === "check" ? e.job_id : null); srActivityDismiss(e.key); }}
+                onClick={() => {
+                  const target = e.kind === "check" || e.kind === "ratchet" ? e.kind : null;
+                  onOpenBook(e.book_id, target, target ? e.job_id : null);
+                  srActivityDismiss(e.key);
+                }}
               >打开</button>
             )}
             {!active && (

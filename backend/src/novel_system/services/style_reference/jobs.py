@@ -78,7 +78,9 @@ JOB_KIND_LEARN = "learn"
 JOB_KIND_CHECK = "check"
 # 2026-10-14：校准参考评审（judge_calibration）——学习文风成功后自动排一个，评审模型换过后可手动再跑
 JOB_KIND_CALIBRATE = "calibrate"
-JOB_KINDS = (JOB_KIND_CLASSIFY, JOB_KIND_LEARN, JOB_KIND_CHECK, JOB_KIND_CALIBRATE)
+# 2026-10-18：风格棘轮（ratchet / ratchet_job）——两套起草配置各按留出原文的情节写一遍，比谁更像；界面「配置对比」排的
+JOB_KIND_RATCHET = "ratchet"
+JOB_KINDS = (JOB_KIND_CLASSIFY, JOB_KIND_LEARN, JOB_KIND_CHECK, JOB_KIND_CALIBRATE, JOB_KIND_RATCHET)
 
 STATE_QUEUED = "queued"
 STATE_RUNNING = "running"
@@ -659,7 +661,15 @@ _KIND_LABELS = {
     JOB_KIND_LEARN: "学习文风",
     JOB_KIND_CHECK: "对照检查",
     JOB_KIND_CALIBRATE: "校准评审",
+    JOB_KIND_RATCHET: "配置对比",
 }
+
+
+def _activity_result(job: StyleReferenceJob) -> dict[str, Any] | None:
+    """活动条目带的结果：配置对比一概不带（盲读的正文几万字由它自己的接口取；结论在作者揭晓之前不给），其余原样。"""
+    if not job.result_json or job.kind == JOB_KIND_RATCHET:
+        return None
+    return dict(job.result_json)
 
 
 def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -> dict[str, Any]:
@@ -701,7 +711,7 @@ def job_activity_entry(job: StyleReferenceJob, *, now: datetime | None = None) -
         "resumable": job_resumable(job),
         "cancel_requested": bool(job.cancel_requested),
         "error": dict(job.error_json) if job.error_json else None,
-        "result": dict(job.result_json) if job.result_json else None,
+        "result": _activity_result(job),
         "created_at": job.created_at,
         "started_at": job.started_at,
         "finished_at": job.finished_at,
@@ -826,7 +836,7 @@ def _session_factory():
 
 
 def _lane_for(kind: str | None) -> str:
-    return _LANE_CHECK if kind in (JOB_KIND_CHECK, JOB_KIND_CALIBRATE) else _LANE_LONG
+    return _LANE_CHECK if kind in (JOB_KIND_CHECK, JOB_KIND_CALIBRATE, JOB_KIND_RATCHET) else _LANE_LONG
 
 
 def dispatch_job(job_id: str, *, kind: str | None = None) -> bool:

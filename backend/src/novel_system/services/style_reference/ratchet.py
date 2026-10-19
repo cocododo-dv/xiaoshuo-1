@@ -1048,8 +1048,13 @@ def execute_run(
     now: datetime | None = None,
     execute: Callable[..., Any] = execute_accounted_call,
     progress: Callable[[str], None] = lambda _message: None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    check_continue: Callable[[], None] | None = None,
 ) -> RunResult:
-    """照计划跑：缺的要点先提炼（不成的段丢掉）、缺的稿子补写、量、判、写报告与盲读页。"""
+    """照计划跑：缺的要点先提炼（不成的段丢掉）、缺的稿子补写、量、判、写报告与盲读页。
+
+    ``progress``：一行文字（命令行打印）；``on_progress(done, total, label)``：结构化进度（后台作业写进度条）；
+    ``check_continue``：每次模型调用之前调一次（后台作业据此响应取消 / 进程退出）。"""
     subject = plan.subject
     try:
         ensure_cloud_llm_allowed(subject.book, operation=OPERATION, node_ids=(DRAFT_NODE_ID,), llm_client=llm_client)
@@ -1062,17 +1067,29 @@ def execute_run(
     started = now or datetime.now(UTC)
     new_calls: list[str] = []
     skipped: list[int] = []
+    steps = {"done": 0, "total": len(plan.plots_needed) + sum(len(plan.drafts_needed(arm)) for arm in plan.arms)}
+
+    def step(label: str) -> None:
+        if check_continue is not None:
+            check_continue()
+        progress(label)
+        if on_progress is not None:
+            on_progress(steps["done"], steps["total"], label)
+
     session.commit()
     _save_suite(plan)
     for passage in list(plan.plots_needed):
-        progress(f"提炼情节要点：第 {passage.window_no} 窗（第 {passage.chapter_no} 章，{passage.chars} 字）")
+        step(f"提炼情节要点：第 {passage.window_no} 窗（第 {passage.chapter_no} 章，{passage.chars} 字）")
         plot, call_ids = extract_plot(
             llm_client, plan.arms[0].route, plot_template, passage, scope_id=plan.suite_id, execute=execute
         )
+        steps["done"] += 1
         new_calls.extend(call_ids)
         _save_passage(plan, passage, plot, call_ids)
         if plot is None:
             skipped.append(passage.window_no)
+            # 这一段不比了：它原本要写的稿子不再算进总步数
+            steps["total"] -= sum(1 for arm in plan.arms if passage.window_no not in plan.drafts.get(arm.key, {}))
             continue
         plan.plots[passage.window_no] = plot
     usable = [passage for passage in plan.passages if passage.window_no in plan.plots]
@@ -1085,10 +1102,11 @@ def execute_run(
         for passage in usable:
             if passage.window_no in cache:
                 continue
-            progress(f"配置 {arm.label} 起草：第 {passage.window_no} 窗")
+            step(f"配置 {arm.label} 起草：第 {passage.window_no} 窗")
             prompt = build_draft_prompt(session, arm, passage, plan.plots[passage.window_no], exclude=plan.exclude)
             session.commit()
             text, call_ids = draft_passage(llm_client, arm, prompt, scope_id=plan.suite_id, execute=execute)
+            steps["done"] += 1
             new_calls.extend(call_ids)
             record = {
                 "arm": dict(arm.signature),
@@ -1272,6 +1290,97 @@ def _write_run_files(plan: Plan, result: RunResult, passages: Sequence[Passage],
     )
 
 
+# ---------------------------------------------------------------------------
+# 给界面用的（后台作业 ``ratchet_job`` 把这些存进作业行）
+# ---------------------------------------------------------------------------
+
+
+def default_out_dir() -> Path:
+    """套件目录的上级：仓库根下的 ``.codex-run/style-ratchet``（命令行工具与界面共用同一份缓存与噪声记录）。"""
+    return Path(__file__).resolve().parents[5] / ".codex-run" / "style-ratchet"
+
+
+def arm_spec_from_body(label: str, body: Mapping[str, Any] | None) -> ArmSpec:
+    """界面送来的一套配置（``{model, windows, placement, rep}``，都可不填 = 现在的配置）→ :class:`ArmSpec`。
+    界面不能指定提示词文件。"""
+    body = body or {}
+    model = str(body.get("model") or "").strip() or None
+    windows = body.get("windows")
+    if windows is not None and not (isinstance(windows, int) and 0 <= windows <= SAMPLE_WINDOWS_MAX):
+        raise RatchetError(f"配置 {label} 的样例窗数要是 0–{SAMPLE_WINDOWS_MAX} 的整数。")
+    placement = None
+    if body.get("placement"):
+        placement = PLACEMENT_ALIASES.get(str(body["placement"]).lower())
+        if placement is None:
+            raise RatchetError(f"配置 {label} 的样例位置只能是 user_tail 或 system。")
+    rep = body.get("rep") or 1
+    if not isinstance(rep, int) or rep < 1:
+        raise RatchetError(f"配置 {label} 的「第几份」要是正整数。")
+    return ArmSpec(label=label, model=model, sample_windows=windows, placement=placement, rep=rep)
+
+
+def arm_view(arm: ResolvedArm) -> dict[str, Any]:
+    return {
+        "label": arm.label,
+        "key": arm.key,
+        "describe": arm.describe(),
+        "model": arm.model,
+        "windows": int(arm.policy.sample_windows),
+        "placement": arm.placement,
+        "rep": int(arm.spec.rep),
+    }
+
+
+def reading_payload(plan: Plan, result: RunResult) -> list[dict[str, Any]]:
+    """盲读的每一段：情节、原文字数、三份文字按甲乙丙排好，以及答案（界面在作者读完之前不揭晓）。"""
+    arm_a, arm_b = plan.arms
+    compared = {int(row["window_no"]) for row in result.rows}
+    out: list[dict[str, Any]] = []
+    for index, passage in enumerate([p for p in plan.passages if p.window_no in compared], start=1):
+        order = _reading_order(result.run_id, passage.window_no)
+        texts = {
+            "original": passage.text,
+            "A": plan.drafts[arm_a.key][passage.window_no]["text"],
+            "B": plan.drafts[arm_b.key][passage.window_no]["text"],
+        }
+        out.append(
+            {
+                "index": index,
+                "window_no": passage.window_no,
+                "chapter_no": passage.chapter_no,
+                "chars": passage.chars,
+                "beats": list(plan.plots[passage.window_no].get("beats") or []),
+                "texts": [{"label": label, "text": texts[source].strip()} for label, source in zip(READING_LABELS, order)],
+                "key": {label: source for label, source in zip(READING_LABELS, order)},
+            }
+        )
+    return out
+
+
+def result_summary(plan: Plan, result: RunResult) -> dict[str, Any]:
+    """一次比较的结论与数字（不含正文）：活动面板与历史清单读它。"""
+    return {
+        "ratchet": RATCHET_VERSION,
+        "run_id": result.run_id,
+        "suite_id": plan.suite_id,
+        "arms": {"A": arm_view(plan.arms[0]), "B": arm_view(plan.arms[1])},
+        "verdict": result.verdict.to_json(),
+        "headline": result.headline(),
+        "same_config": result.same_config,
+        "epsilon_source": result.epsilon_source,
+        "noise": round(result.noise, 4) if result.same_config else None,
+        "rows": result.rows,
+        "skipped": result.skipped,
+        "usage": result.usage,
+        "run_dir": str(result.run_dir),
+    }
+
+
+def noise_records(out_dir: Path) -> dict[str, Any]:
+    """``noise.json`` 的原样内容（没有 → 空）。"""
+    noise = _read_json(Path(out_dir) / NOISE_FILE)
+    return dict(noise) if isinstance(noise, Mapping) else {}
+
 __all__ = [
     "ArmSpec",
     "DEFAULT_EPSILON",
@@ -1290,9 +1399,12 @@ __all__ = [
     "SCOPE_TYPE",
     "Subject",
     "Verdict",
+    "arm_spec_from_body",
+    "arm_view",
     "base_key",
     "build_draft_prompt",
     "decide",
+    "default_out_dir",
     "draft_passage",
     "draft_snapshot",
     "effective_epsilon",
@@ -1301,16 +1413,19 @@ __all__ = [
     "feature_distance",
     "leaked_share",
     "ledger_usage",
+    "noise_records",
     "normalize_plot",
     "parse_arm",
     "pick_passages",
     "plan_run",
     "plot_text",
     "record_noise",
+    "reading_payload",
     "render_reading_sheet",
     "render_report",
     "resolve_arm",
     "resolve_subject",
+    "result_summary",
     "score_draft",
     "suite_id_for",
 ]

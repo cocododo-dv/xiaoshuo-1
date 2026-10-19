@@ -19,11 +19,12 @@ import { SrOverview } from "./ws-styleref-overview.jsx";
 import { SrLearn } from "./ws-styleref-learn.jsx";
 import { SrApply } from "./ws-styleref-apply.jsx";
 import { SrCheck } from "./ws-styleref-check.jsx";
+import { SrRatchet } from "./ws-styleref-ratchet.jsx";
 
 /* ==========================================================
    风格参考 —— 参考书 → 学习文风 → 用于作品 → 对照检查
    这个文件只是页面外壳：左栏书库（≤1280 收进页头「参考书库」对话框）、页头（书名、进度徽标、更多）、
-   三步（外加随时可用的「对照检查」）的步骤条与切换、导入对话框。各步在 ws-styleref-*.jsx，请求与缓存在 ws-styleref-store.js，说法与判断在
+   三步（外加随时可用的「对照检查」「配置对比」）的步骤条与切换、导入对话框。各步在 ws-styleref-*.jsx，请求与缓存在 ws-styleref-store.js，说法与判断在
    ws-styleref-model.js。纯 ESM，不写 window。
    ========================================================== */
 
@@ -34,8 +35,9 @@ export function WsStyleRef({ go }) {
   const [stage, setStage] = React.useState(null);
   const [importOpen, setImportOpen] = React.useState(false);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
-  /* 从「参考书活动」打开的一次对照检查：把作业 id 交给「对照检查」页认领，认领过就清掉 */
+  /* 从「参考书活动」打开的一次对照检查 / 配置对比：把作业 id 交给那一页认领，认领过就清掉 */
   const [checkJob, setCheckJob] = React.useState(null);
+  const [ratchetJob, setRatchetJob] = React.useState(null);
   const bodyRef = React.useRef(null);
   const [workTick, setWorkTick] = React.useState(0);
   const work = srActiveWork();
@@ -100,7 +102,8 @@ export function WsStyleRef({ go }) {
   const selectBook = (id, targetStage = null, jobId = null) => {
     setSwitcherOpen(false);
     setImportOpen(false);
-    if (jobId) setCheckJob(String(jobId));
+    if (jobId && targetStage === "ratchet") setRatchetJob(String(jobId));
+    else if (jobId) setCheckJob(String(jobId));
     if (id === bookId) { if (targetStage) setStage(targetStage); return; }
     setBookId(id);
     setStage(targetStage);
@@ -176,6 +179,9 @@ export function WsStyleRef({ go }) {
               {stage === "apply" && <SrApply key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} />}
               {stage === "check" && (
                 <SrCheck key={`${book.id}|${workId}`} book={book} go={selectStage} onAction={onAction} adoptJobId={checkJob} onAdopted={() => setCheckJob(null)} />
+              )}
+              {stage === "ratchet" && (
+                <SrRatchet key={book.id} book={book} onAction={onAction} adoptJobId={ratchetJob} onAdopted={() => setRatchetJob(null)} />
               )}
             </div>
           </section>
@@ -270,7 +276,7 @@ function SrStageHeader({ book, librarySwitch, onDelete }) {
 /* 步骤条：参考书 → 学习文风 → 用于作品 → 对照检查；每步的状态来自真实数据 */
 function SrStepper({ stage, states, onSelect }) {
   return (
-    <nav className="sr-stepper" aria-label="参考书 → 学习文风 → 用于作品 → 对照检查">
+    <nav className="sr-stepper" aria-label="参考书 → 学习文风 → 用于作品 → 对照检查 · 配置对比">
       {SR_STAGES.map((s, i) => {
         const Ic = I[s.icon] || I.Dot;
         const active = stage === s.id;

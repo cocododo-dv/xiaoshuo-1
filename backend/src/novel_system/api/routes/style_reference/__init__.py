@@ -6,7 +6,8 @@
 - ``profiles``:文风画像详情、文风卡行 ✓ / ✗、禁用词、本场预览(注入预览 dryrun);
 - ``bindings``:直接绑定(用于作品)、改配置、解除、一部作品现在用的是哪一份;
 - ``activity``:参考书活动清单(作业表);
-- ``checks``:对照检查(作业表 kind=check:建 / 读 / 取消)。
+- ``checks``:对照检查(作业表 kind=check:建 / 读 / 取消);
+- ``ratchet``:配置对比(风格棘轮,作业表 kind=ratchet:总览 / 预估 / 建 / 取消 / 详情 / 盲读选择)。
 
 不含公开 inject 写接口:注入契约是本场预览端点返回的块与起草提示本身。
 测试在包上打桩运行时模型客户端(``_get_llm_client_and_enabled``)与作业派发(``dispatch_job``);子模块经
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from novel_system.api.routes.style_reference import activity, bindings, books, checks, learn, profiles
+from novel_system.api.routes.style_reference import activity, bindings, books, checks, learn, profiles, ratchet
 from novel_system.api.routes.style_reference._common import (
     PATH_PREFIX,
     ROUTE_TAGS,
@@ -27,7 +28,7 @@ from novel_system.api.requests.style_reference import ApplyProfileRequest, Bindi
 from novel_system.services.style_reference.jobs import dispatch_job
 
 router = APIRouter()
-for _module in (books, activity, learn, profiles, bindings, checks):
+for _module in (books, activity, learn, profiles, bindings, checks, ratchet):
     router.include_router(_module.router)
 
 __all__ = [
@@ -43,5 +44,6 @@ __all__ = [
     "dispatch_job",
     "learn",
     "profiles",
+    "ratchet",
     "router",
 ]

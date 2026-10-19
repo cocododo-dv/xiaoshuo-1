@@ -28,6 +28,7 @@ const NODE_TESTS = [
   "src/ws-snow-model.test.js",
   "src/ws-snow-scene-id.test.jsx",
   "src/ws-styleref-model.test.js",
+  "src/ws-styleref-ratchet-model.test.js",
   "src/ws-styleref-structure.test.js",
   "src/ws-writer-ai.test.js",
 ];

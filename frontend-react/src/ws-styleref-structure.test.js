@@ -11,12 +11,13 @@ const family = fs.readdirSync(srcDir).filter((name) => /^ws-styleref[\w-]*\.(js|
 const imports = (source) => [...source.matchAll(/^import\s[^;]*?from\s+["']([^"']+)["']/gm)].map((m) => m[1]);
 
 describe("风格参考前端的模块边界", () => {
-  it("一族文件都在：外壳、store、说法、界面零件与各步（2026-10-14 加画像页的评审校准卡）", () => {
+  it("一族文件都在：外壳、store、说法、界面零件与各步（2026-10-14 加画像页的评审校准卡；10-18 加配置对比三件）", () => {
     expect(family.sort()).toEqual([
       "ws-styleref-activity.jsx", "ws-styleref-apply.jsx", "ws-styleref-calibration.jsx", "ws-styleref-check.jsx",
       "ws-styleref-fidelity.jsx",
       "ws-styleref-learn.jsx", "ws-styleref-library.jsx", "ws-styleref-model.js", "ws-styleref-overview.jsx",
-      "ws-styleref-portrait.jsx", "ws-styleref-scene-preview.jsx", "ws-styleref-store-activity.js",
+      "ws-styleref-portrait.jsx", "ws-styleref-ratchet-model.js", "ws-styleref-ratchet-store.js", "ws-styleref-ratchet.jsx",
+      "ws-styleref-scene-preview.jsx", "ws-styleref-store-activity.js",
       "ws-styleref-store-core.js", "ws-styleref-store.js", "ws-styleref-ui.jsx", "ws-styleref.jsx",
     ]);
   });
@@ -26,10 +27,16 @@ describe("风格参考前端的模块边界", () => {
     expect(imports(read("ws-styleref-store-core.js")).sort()).toEqual(["./lib/client.js", "./ws-styleref-model.js"]);
     // 活动表：lib/poll.js（看页面可见性的轮询）+ 底座
     expect(imports(read("ws-styleref-store-activity.js")).sort()).toEqual(["./lib/client.js", "./lib/poll.js", "./ws-styleref-model.js", "./ws-styleref-store-core.js"]);
-    // 写操作与门面：lib/ids.js（导入键的随机后缀）+ 底座 + 活动表；底座不 import 活动表（读完书库补登作业走登记口）
+    // 写操作与门面：lib/ids.js（导入键的随机后缀）+ 底座 + 活动表 + 配置对比（只为测试时一并清空）；底座不 import 活动表
+    // （读完书库补登作业走登记口）
     expect(imports(read("ws-styleref-store.js")).sort()).toEqual([
-      "./lib/client.js", "./lib/ids.js", "./ws-styleref-model.js", "./ws-styleref-store-activity.js", "./ws-styleref-store-core.js",
+      "./lib/client.js", "./lib/ids.js", "./ws-styleref-model.js", "./ws-styleref-ratchet-store.js", "./ws-styleref-store-activity.js",
+      "./ws-styleref-store-core.js",
     ]);
+    // 配置对比：底座 + 活动表（开跑后登记活动条目），不回头 import 门面
+    expect(imports(read("ws-styleref-ratchet-store.js")).sort()).toEqual(["./lib/client.js", "./ws-styleref-store-activity.js", "./ws-styleref-store-core.js"]);
+    // 配置对比的说法：纯函数，什么都不 import
+    expect(imports(read("ws-styleref-ratchet-model.js"))).toEqual([]);
     // lib/messages.js：「后端原话能不能给作者看」的纯函数（对照检查的 model 也用它），无状态、无副作用；
     // lib/format.js：时间与数字文案（纯函数）；labels/catalog.js：章 / 场的全站叫法（选一场的下拉框用）
     expect(imports(read("ws-styleref-model.js")).sort()).toEqual(["./labels/catalog.js", "./labels/style-reference.js", "./lib/format.js", "./lib/messages.js"]);

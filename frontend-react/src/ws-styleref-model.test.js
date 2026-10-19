@@ -280,11 +280,12 @@ describe("一本书走到哪一步", () => {
   });
 
   it("步骤条：分类没完成时学习等前一步；没画像时用于作品、对照检查等前一步；落点是第一个没做完的步", () => {
-    expect(srStageStates(book({ rawStatus: "ingesting" }))).toEqual({ book: "running", learn: "blocked", apply: "blocked", check: "blocked" });
+    expect(srStageStates(book({ rawStatus: "ingesting" }))).toEqual({ book: "running", learn: "blocked", apply: "blocked", check: "blocked", ratchet: "blocked" });
     expect(srStageStates(book({ provenance: { source: "legacy_heuristic" } })).book).toBe("attention");
     const learned = srStageStates(book({ profile: profile() }), { workId: "w1" });
-    expect(learned).toEqual({ book: "done", learn: "done", apply: "todo", check: "open" });
+    expect(learned).toEqual({ book: "done", learn: "done", apply: "todo", check: "open", ratchet: "open" });
     expect(srStageStates(book({ profile: profile() }), { running: { check: { percentText: "33%" } } }).check).toBe("running");
+    expect(srStageStates(book({ profile: profile() }), { running: { ratchet: { percentText: "10%" } } }).ratchet).toBe("running");
     expect(srLandingStage(learned)).toBe("apply");
     // 对照检查不是要做完的一步：前三步都做完了也不落在它上面
     expect(srLandingStage({ book: "done", learn: "done", apply: "done", check: "open" })).toBe("apply");

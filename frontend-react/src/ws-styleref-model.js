@@ -460,15 +460,16 @@ export const SR_STAGES = [
   { id: "learn", name: "学习文风", icon: "Sparkles" },
   { id: "apply", name: "用于作品", icon: "Pen" },
   { id: "check", name: "对照检查", icon: "Target", tool: true },
+  { id: "ratchet", name: "配置对比", icon: "Sliders", tool: true },
 ];
 
 export const SR_STAGE_STATE_LABEL = {
   done: "已完成", running: "进行中", attention: "需处理", todo: "未开始", blocked: "等前一步", open: "随时可查",
 };
 
-/* running：{ classify, learn, check }（活动表里这本书正在跑的作业） */
+/* running：{ classify, learn, check, ratchet }（活动表里这本书正在跑的作业） */
 export function srStageStates(book, { running = {}, workId = null } = {}) {
-  const states = { book: "done", learn: "todo", apply: "todo", check: "blocked" };
+  const states = { book: "done", learn: "todo", apply: "todo", check: "blocked", ratchet: "blocked" };
   if (!book) return states;
   const raw = book.rawStatus;
   if (running.classify || raw === "ingesting") states.book = "running";
@@ -488,6 +489,9 @@ export function srStageStates(book, { running = {}, workId = null } = {}) {
   if (!profile) states.check = "blocked";
   else if (running.check) states.check = "running";
   else states.check = "open";
+  if (!profile) states.ratchet = "blocked";
+  else if (running.ratchet) states.ratchet = "running";
+  else states.ratchet = "open";
   return states;
 }
 
@@ -743,6 +747,9 @@ const SR_MODEL_GATE_TEXT = {
   },
   check: {
     no_llm: "还没有接入模型：对照检查要由模型对着原文样例评审。",
+  },
+  ratchet: {
+    no_llm: "还没有接入模型：配置对比要由模型提炼情节要点、照着起草。",
   },
   import: {
     no_llm: "先接入模型：导入之后要用模型给每一段分类",

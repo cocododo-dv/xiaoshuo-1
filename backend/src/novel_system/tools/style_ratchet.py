@@ -37,7 +37,8 @@ from novel_system.tools._cli import open_checked_session
 
 TOOL = "style_ratchet"
 REPO_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_OUT_DIR = REPO_ROOT / ".codex-run" / "style-ratchet"
+# 与界面（风格参考 → 配置对比）共用同一份缓存与噪声记录
+DEFAULT_OUT_DIR = R.default_out_dir()
 SECRET_FILE = REPO_ROOT / ".codex-run" / "config.secret"
 FAILED_EXIT_CODE = 1
 

@@ -17,6 +17,7 @@ from novel_system.services.style_reference.jobs import (
     JOB_KIND_CHECK,
     JOB_KIND_CLASSIFY,
     JOB_KIND_LEARN,
+    JOB_KIND_RATCHET,
     register_job_handler,
     register_maintenance_task,
 )
@@ -31,6 +32,7 @@ def install_workers() -> None:
         judge_calibration,
         learn_job,
         learn_run,
+        ratchet_job,
     )
 
     register_job_handler(
@@ -54,6 +56,11 @@ def install_workers() -> None:
         JOB_KIND_CALIBRATE,
         judge_calibration.run_calibration_job,
         resumable=judge_calibration.calibration_never_resumes,
+    )
+    register_job_handler(
+        JOB_KIND_RATCHET,
+        ratchet_job.run_ratchet_job,
+        resumable=ratchet_job.ratchet_never_resumes,
     )
     # 清扫线程启动时跑一次、之后每 24 小时一次；登记的是模块里的函数，它们在调用时才取 cleanup_metric_events /
     # prune_style_jobs（测试在 cleanup 上打桩）

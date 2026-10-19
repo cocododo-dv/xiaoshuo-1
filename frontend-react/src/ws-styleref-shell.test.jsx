@@ -28,7 +28,7 @@ setupStyleRefSuite(workHolder);
 describe("页面外壳", () => {
   it("三步：参考书 → 学习文风 → 用于作品，外加随时可用的「对照检查」；没学过的书落在「学习文风」；旧界面的叫法都不在", async () => {
     await mountView();
-    expect($$(".sr-step").map((b) => b.dataset.stage)).toEqual(["book", "learn", "apply", "check"]);
+    expect($$(".sr-step").map((b) => b.dataset.stage)).toEqual(["book", "learn", "apply", "check", "ratchet"]);
     expect($('.sr-step[data-stage="check"]').getAttribute("aria-label")).toBe("对照检查（等前一步）");
     expect($(".sr-step.is-active").dataset.stage).toBe("learn");
     const text = document.body.textContent;

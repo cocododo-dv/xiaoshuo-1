@@ -7,6 +7,7 @@ import {
   srMarkBookDeleted, srResetCoreForTests, srSetBooks, srSyncBooks,
 } from "./ws-styleref-store-core.js";
 import { srActivityForgetBook, srActivityPoke, srActivityTrack, srResetActivityForTests } from "./ws-styleref-store-activity.js";
+import { srResetRatchetForTests } from "./ws-styleref-ratchet-store.js";
 
 /* ==========================================================
    风格参考 · store（2026-09-23 v3 重建；2026-09-30 拆成三块，审计 F05-15）
@@ -442,4 +443,5 @@ export async function srFetchClassifyEstimate(bookId) {
 export function srResetForTests() {
   srResetCoreForTests();
   srResetActivityForTests();
+  srResetRatchetForTests();
 }

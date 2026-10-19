@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from novel_system.db.models import LlmCall
+from novel_system.db.models import LlmCall, StyleReferenceJob
 from novel_system.services.style_reference import policy as policy_module
 from novel_system.services.style_reference import ratchet as R
 from novel_system.services.style_reference.fidelity import build_reference_distribution
@@ -82,6 +82,8 @@ class _FakeRatchetLLM(AccountedGenerateMixin):
         self.leak_once = leak_once
         self.thin_for = thin_for
         self.requests: list = []
+        # 起草调用之前调一下（测试在这里插一个取消）
+        self.on_draft = None
 
     def generate(self, request):  # noqa: ANN001
         self.requests.append(request)
@@ -103,6 +105,8 @@ class _FakeRatchetLLM(AccountedGenerateMixin):
                 "ending": "两人各自走开",
             }
         else:
+            if self.on_draft is not None:
+                self.on_draft()
             rng = random.Random(f"{request.model}:{len(self.requests)}")
             if request.model == "close":
                 text = "\n".join(_prose(rng, rng.randint(30, 70)) for _ in range(40))
@@ -318,3 +322,188 @@ def test_the_tool_dry_run_prints_the_plan_and_neither_calls_a_model_nor_writes(s
     assert not out_dir.exists()
     assert session.query(LlmCall).count() == 0
     assert tool.main(["--profile", profile_id, "--b", "windws=4", "--out-dir", str(out_dir)]) == 2
+
+
+# ---------------------------------------------------------------------------
+# 界面：配置对比作业（ratchet_job）与它的接口
+# ---------------------------------------------------------------------------
+
+API = "/api/v2/style-reference"
+
+
+@pytest.fixture
+def ratchet_ui(monkeypatch, tmp_path):
+    """配置对比作业：套件目录落在 tmp_path，作业与路由拿同一个假模型，派发不自动跑（测试自己 run_job_inline）。"""
+    from novel_system.services.style_reference import ratchet_job as RJ
+
+    fake = _FakeRatchetLLM()
+    monkeypatch.setattr(R, "default_out_dir", lambda: tmp_path)
+    monkeypatch.setattr(RJ, "resolve_client", lambda: (fake, True))
+    monkeypatch.setattr("novel_system.api.routes.style_reference.ratchet.llm_client_and_enabled", lambda: (fake, True))
+    monkeypatch.setattr("novel_system.api.routes.style_reference._common.dispatch", lambda job_id: None)
+    return fake
+
+
+def _run_ui_job(client, profile_id: str, body: dict) -> str:
+    from novel_system.services.style_reference.jobs import run_job_inline
+
+    started = client.post(f"{API}/profiles/{profile_id}/ratchet", json=body)
+    assert started.status_code == 200, started.text
+    job_id = started.json()["data"]["job_id"]
+    run_job_inline(job_id)
+    return job_id
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_the_page_runs_a_comparison_and_keeps_the_answer_and_the_numbers_until_the_author_reveals(
+    client, session, ratchet_ui
+) -> None:
+    _book, profile_id = _seed(session, "ui")
+    overview = client.get(f"{API}/profiles/{profile_id}/ratchet").json()["data"]
+    assert overview["available"] is True and overview["current"]["windows"] == 6 and overview["runs"] == []
+
+    job_id = _run_ui_job(client, profile_id, {"a": {"model": "far"}, "b": {"model": "close"}, "passages": 3})
+    assert len(ratchet_ui.requests) == 9
+
+    detail = client.get(f"{API}/ratchet-runs/{job_id}").json()["data"]
+    assert detail["job"]["status"] == "succeeded" and detail["job"]["steps"] == {"done": 9, "total": 9}
+    assert detail["job"]["result"] is None, "活动条目不带结论也不带正文"
+    assert detail["revealed"] is False and len(detail["reading"]) == 3
+    for item in detail["reading"]:
+        assert "key" not in item and [t["label"] for t in item["texts"]] == list(R.READING_LABELS)
+        assert len(item["beats"]) == 6
+    assert "verdict" not in detail["summary"] and "rows" not in detail["summary"], "逐段字数就能对出哪份是哪份"
+    assert detail["entry"]["headline"] is None and detail["entry"]["winner"] is None
+    listed = client.get(f"{API}/profiles/{profile_id}/ratchet").json()["data"]["runs"]
+    assert [run["job_id"] for run in listed] == [job_id] and listed[0]["headline"] is None
+
+    # 原文一定在三份里：找到它在哪一份，再给每段排名（最像 = 原文，最不像 = 对白腔的 A）
+    session.expire_all()
+    stored = session.get(StyleReferenceJob, job_id).result_json
+    votes = {}
+    for item in stored["reading"]:
+        by_source = {source: label for label, source in item["key"].items()}
+        votes[str(item["index"])] = {"best": by_source["original"], "worst": by_source["A"]}
+    same = client.put(f"{API}/ratchet-runs/{job_id}/votes", json={"votes": {"1": {"best": "甲", "worst": "甲"}}})
+    assert same.status_code == 422 and same.json()["error"]["code"] == "STYLE_RATCHET_VOTES_INVALID"
+    unknown = client.put(f"{API}/ratchet-runs/{job_id}/votes", json={"votes": {"9": {"best": "甲"}}})
+    assert unknown.status_code == 422
+    saved = client.put(f"{API}/ratchet-runs/{job_id}/votes", json={"votes": votes})
+    assert saved.status_code == 200 and saved.json()["data"]["revealed"] is False
+    assert client.get(f"{API}/ratchet-runs/{job_id}").json()["data"]["entry"]["reading"] == {"done": 3, "total": 3}
+
+    revealed = client.put(f"{API}/ratchet-runs/{job_id}/votes", json={"votes": votes, "reveal": True})
+    assert revealed.status_code == 200 and revealed.json()["data"]["revealed"] is True
+    detail = client.get(f"{API}/ratchet-runs/{job_id}").json()["data"]
+    assert detail["summary"]["verdict"]["winner"] == "B" and len(detail["summary"]["rows"]) == 3
+    assert all(sorted(item["key"].values()) == ["A", "B", "original"] for item in detail["reading"])
+    assert detail["entry"]["winner"] == "B" and detail["entry"]["headline"].startswith("B 更像")
+    assert detail["entry"]["reading"] == {"done": 3, "total": 3, "prefer": {"A": 0, "B": 3, "tie": 0}, "original_best": 3}
+    changed = dict(votes, **{"1": {"best": votes["1"]["worst"], "worst": votes["1"]["best"]}})
+    late = client.put(f"{API}/ratchet-runs/{job_id}/votes", json={"votes": changed})
+    assert late.status_code == 409, "揭晓之后的选择不是盲的"
+    assert client.put(f"{API}/ratchet-runs/{job_id}/votes", json={"votes": {}, "reveal": True}).status_code == 200
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_the_preview_counts_the_calls_from_the_cache_and_creates_no_job(client, session, ratchet_ui) -> None:
+    _book, profile_id = _seed(session, "uiprev")
+    body = {"a": {"model": "far"}, "b": {"model": "close"}, "passages": 3}
+    fresh = client.post(f"{API}/profiles/{profile_id}/ratchet/preview", json=body).json()["data"]
+    assert fresh["calls"] == 9 and fresh["plot_calls"] == 3 and fresh["draft_calls"] == {"A": 3, "B": 3}
+    assert fresh["same_config"] is False and fresh["input_chars_estimate"] > 0
+    assert session.query(StyleReferenceJob).count() == 0 and session.query(LlmCall).count() == 0
+
+    _run_ui_job(client, profile_id, body)
+    # 换一个对手：要点与 A 的稿子都在缓存里，只写 B 的 3 段
+    again = client.post(
+        f"{API}/profiles/{profile_id}/ratchet/preview", json={**body, "b": {"model": "close", "windows": 2}}
+    ).json()["data"]
+    assert again["calls"] == 3 and again["draft_calls"] == {"A": 0, "B": 3}
+    assert all(passage["plot_cached"] for passage in again["passages"])
+    aa = client.post(
+        f"{API}/profiles/{profile_id}/ratchet/preview", json={"a": {"model": "close"}, "b": {"model": "close", "rep": 2}, "passages": 3}
+    ).json()["data"]
+    assert aa["same_config"] is True
+    bad = client.post(f"{API}/profiles/{profile_id}/ratchet/preview", json={"b": {"windows": 99}})
+    assert bad.status_code == 422
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_one_comparison_per_book_at_a_time_and_cancel_needs_an_active_one(client, session, ratchet_ui) -> None:
+    _book, profile_id = _seed(session, "uionce")
+    started = client.post(f"{API}/profiles/{profile_id}/ratchet", json={"b": {"windows": 2}})
+    assert started.status_code == 200, started.text
+    again = client.post(f"{API}/profiles/{profile_id}/ratchet", json={})
+    assert again.status_code == 409 and again.json()["error"]["code"] == "STYLE_RATCHET_ALREADY_ACTIVE"
+    active = client.get(f"{API}/profiles/{profile_id}/ratchet").json()["data"]["active"]
+    assert active["job_id"] == started.json()["data"]["job_id"] and active["kind_label"] == "配置对比"
+    cancelled = client.post(f"{API}/profiles/{profile_id}/ratchet/cancel", json={})
+    assert cancelled.status_code == 200 and cancelled.json()["data"]["finished"] is True
+    none_left = client.post(f"{API}/profiles/{profile_id}/ratchet/cancel", json={})
+    assert none_left.status_code == 409 and none_left.json()["error"]["code"] == "STYLE_RATCHET_NOT_ACTIVE"
+    overview = client.get(f"{API}/profiles/{profile_id}/ratchet").json()["data"]
+    assert overview["active"] is None and overview["runs"][0]["status"] == "cancelled"
+    assert client.get(f"{API}/ratchet-runs/nope").status_code == 404
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_a_cancel_during_the_run_stops_before_the_next_model_call(client, session, ratchet_ui) -> None:
+    from novel_system.services.style_reference.jobs import StyleJobService
+
+    _book, profile_id = _seed(session, "uicancel")
+    started = client.post(f"{API}/profiles/{profile_id}/ratchet", json={"a": {"model": "far"}, "b": {"model": "close"}, "passages": 3})
+    job_id = started.json()["data"]["job_id"]
+
+    def cancel_once() -> None:
+        with _session_factory() as other:
+            StyleJobService(other).request_cancel(job_id)
+            other.commit()
+        ratchet_ui.on_draft = None
+
+    from novel_system.services.style_reference.jobs import _session_factory, run_job_inline
+
+    ratchet_ui.on_draft = cancel_once
+    run_job_inline(job_id)
+    session.expire_all()
+    job = session.get(StyleReferenceJob, job_id)
+    assert job.state == "cancelled"
+    drafts = [r for r in ratchet_ui.requests if "plot outline" not in r.messages[0]["content"]]
+    assert len(drafts) == 1, "取消之后不再起草下一段"
+
+
+@pytest.mark.usefixtures("style_workers", "local_routes")
+def test_the_page_says_why_it_cannot_compare_a_profile_without_a_book(client, session) -> None:
+    overview = client.get(f"{API}/profiles/nope/ratchet").json()["data"]
+    assert overview["available"] is False and overview["reason"]
+    refused = client.post(f"{API}/profiles/nope/ratchet/preview", json={})
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "STYLE_RATCHET_REFUSED"
+
+
+def test_comparison_jobs_are_never_pruned(session) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from novel_system.services.style_reference.cleanup import prune_style_jobs
+    from novel_system.services.style_reference.jobs import JOB_KIND_RATCHET
+
+    old = (datetime.now(UTC) - timedelta(days=400)).isoformat()
+    _book, profile_id = _seed(session, "uiprune")
+    for index in range(3):
+        session.add(
+            StyleReferenceJob(
+                job_id=f"rt_old_{index}",
+                kind=JOB_KIND_RATCHET,
+                book_id=_book,
+                profile_id=profile_id,
+                state="succeeded",
+                created_at=old,
+                finished_at=old,
+                params_json={},
+                progress_json={},
+                cursor_json={},
+            )
+        )
+    session.commit()
+    prune_style_jobs(session)
+    session.commit()
+    assert session.query(StyleReferenceJob).filter(StyleReferenceJob.kind == JOB_KIND_RATCHET).count() == 3

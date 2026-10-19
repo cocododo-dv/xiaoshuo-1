@@ -321,6 +321,7 @@ def prune_style_jobs(
     - 结束了的对照检查作业留 ``check_days`` 天（按结束时间；读数照旧留在读数表里，「像不像」的走势不受影响）；
     - 分类 / 学习作业每本书每种只留最近一个（按创建时间，与书卡读的是同一个）：书卡、「继续学习」/「继续分类」都只看
       最近一个，更早的没有界面会读；
+    - 配置对比（棘轮）作业一个不删：它就是对比的历史记录，「配置对比」页列出全部（2026-10-18）；
     - 没结束的作业一个不删；还在活动面板上的（``jobs.RECENT_FINISHED_SECONDS`` 之内结束的）也不删；
     - 留下的已结束作业，参数按这类作业登记的结束规则换好（对照检查：送检的原文换成哈希与字数）——规则上线之前
       就结束了的旧行也在这里补上。
@@ -329,6 +330,7 @@ def prune_style_jobs(
 
     from novel_system.services.style_reference.jobs import (
         JOB_KIND_CHECK,
+        JOB_KIND_RATCHET,
         RECENT_FINISHED_SECONDS,
         TERMINAL_STATES,
         finished_params,
@@ -354,7 +356,7 @@ def prune_style_jobs(
     expired_checks: list[str] = []
     superseded: list[str] = []
     for job_id, kind, book_id, state, _created, finished in rows:
-        if state not in TERMINAL_STATES:
+        if state not in TERMINAL_STATES or kind == JOB_KIND_RATCHET:
             continue
         finished_at = str(finished or "")
         if kind == JOB_KIND_CHECK:

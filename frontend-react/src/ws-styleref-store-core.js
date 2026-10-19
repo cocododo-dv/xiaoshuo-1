@@ -36,7 +36,7 @@ export function srActiveWorkId() {
    imported：导入成功（detail = { bookId, jobId }）。模块内的订阅者集合（与 lib/store-utils 的 createSubscribers
    同一个口径：逐个调用、单个出错被吞掉），通知时把 { type, detail } 交给订阅者——读法与原来的 window 事件一样。 */
 const srChannels = {
-  books: new Set(), detail: new Set(), activity: new Set(), finished: new Set(), imported: new Set(),
+  books: new Set(), detail: new Set(), activity: new Set(), finished: new Set(), imported: new Set(), ratchet: new Set(),
 };
 
 export function srEmit(channel, detail) {

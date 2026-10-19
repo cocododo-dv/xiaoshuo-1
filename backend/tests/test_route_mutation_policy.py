@@ -16,6 +16,7 @@ MUTATION_METHODS = {"post", "put", "patch", "delete"}
 IDEMPOTENCY_BOUNDARIES = {"mutate"}
 READ_ONLY_POST_EXEMPTIONS = {
     ("style_reference/profiles.py", "dryrun_injection_preview"),
+    ("style_reference/ratchet.py", "preview_ratchet"),
 }
 
 

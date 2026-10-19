@@ -148,7 +148,7 @@
 .sr-stage-empty-card { padding: 8px; max-width: 1080px; }
 
 /* ---------- 参考书（概览） ---------- */
-.sr-overview, .sr-learn, .sr-apply, .sr-portrait, .sr-check { display: flex; flex-direction: column; gap: 16px; max-width: 1080px; }
+.sr-overview, .sr-learn, .sr-apply, .sr-portrait, .sr-check, .sr-ratchet { display: flex; flex-direction: column; gap: 16px; max-width: 1080px; }
 .sr-ov-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .sr-ov-live { padding: 2px 0 0; }
 .sr-ov-text { margin: 0 0 10px; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--ink-2); }
@@ -325,6 +325,52 @@
 .sr-check-running-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); }
 .sr-check-result { display: flex; flex-direction: column; gap: 16px; }
 .sr-check-lines { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-1); }
+
+/* ---------- 配置对比（ws-styleref-ratchet.jsx）：控件全用共享件（RadioCards / Segmented / Tabs / StatTile、
+   「用于作品」的 .sr-windows 滑杆、像不像的 .fid-table），这里只管两栏、盲读三栏与历史行的排布 ---------- */
+.sr-ratchet-back { align-self: flex-start; }
+.sr-ratchet-muted { font-size: var(--fs-xs); color: var(--ink-3); }
+.sr-ratchet-running { display: flex; align-items: center; gap: 8px; }
+.sr-ratchet-form { display: flex; flex-direction: column; gap: 16px; }
+.sr-ratchet-form .card-head { margin-bottom: 0; }
+.sr-ratchet-arms { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px; }
+.sr-ratchet-side { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px; border: 1px solid var(--line-1); border-radius: var(--r-lg); background: var(--paper-1); }
+.sr-ratchet-side-title { font-family: var(--font-serif); font-size: var(--fs-lg); font-weight: 600; color: var(--ink-1); }
+.sr-ratchet-side-title span { margin-left: 8px; font-family: var(--font-sans); font-size: var(--fs-xs); font-weight: 400; color: var(--ink-3); }
+.sr-ratchet-arm { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.sr-ratchet-field { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.sr-ratchet-field .label, .sr-ratchet-arm .sr-windows-label { display: inline-flex; align-items: center; gap: 6px; }
+.sr-ratchet-field .select, .sr-ratchet-field .input { width: 100%; }
+.sr-ratchet-stats { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 32px; }
+.sr-ratchet-noise, .sr-ratchet-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sr-ratchet-noise li { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; font-size: var(--fs-sm); color: var(--ink-2); }
+.sr-ratchet-noise-what { flex: 1 1 260px; min-width: 0; }
+.sr-ratchet-run { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 14px; border: 1px solid var(--line-1); border-radius: var(--r-md); background: var(--paper-0); color: var(--ink-1); text-align: left; font: inherit; cursor: pointer; transition: border-color var(--t-fast), background var(--t-fast); }
+.sr-ratchet-run:hover:not(:disabled) { border-color: var(--line-2); background: var(--paper-1); }
+.sr-ratchet-run:disabled { cursor: default; opacity: 0.7; }
+.sr-ratchet-run-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.sr-ratchet-run-title { font-size: var(--fs-md); font-weight: 600; color: var(--ink-1); overflow-wrap: anywhere; }
+.sr-ratchet-run-meta { font-size: var(--fs-xs); color: var(--ink-3); }
+.sr-ratchet-run-go { flex: 0 0 auto; color: var(--ink-3); }
+.sr-ratchet-armlist { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 12px 0 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.sr-ratchet-armlist dt { font-weight: 600; color: var(--ink-2); }
+.sr-ratchet-armlist dd { margin: 0; overflow-wrap: anywhere; }
+.sr-ratchet-readout { margin: 14px 0 0; color: var(--ink-1); }
+.sr-ratchet-passage { display: flex; flex-direction: column; gap: 12px; }
+.sr-ratchet-passage-meta { display: flex; flex-direction: column; gap: 6px; }
+.sr-ratchet-beats { font-size: var(--fs-sm); color: var(--ink-2); }
+.sr-ratchet-beats summary { cursor: pointer; color: var(--ink-3); }
+.sr-ratchet-beats ol { margin: 6px 0 0; padding-left: 20px; line-height: var(--lh-ui); }
+.sr-ratchet-texts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px; align-items: start; }
+.sr-ratchet-text { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--line-1); border-radius: var(--r-lg); background: var(--paper-0); overflow: hidden; transition: border-color var(--t-fast), box-shadow var(--t-fast); }
+.sr-ratchet-text.is-best { border-color: var(--ok); box-shadow: inset 0 3px 0 var(--ok); }
+.sr-ratchet-text.is-worst { border-color: var(--danger); box-shadow: inset 0 3px 0 var(--danger); }
+.sr-ratchet-text-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-1); background: var(--paper-1); }
+.sr-ratchet-text-label { font-family: var(--font-serif); font-size: var(--fs-xl); font-weight: 600; line-height: var(--lh-tight); color: var(--ink-1); }
+.sr-ratchet-vote { margin-left: auto; }
+.sr-ratchet-prose { padding: 14px 16px; font-size: var(--fs-md); line-height: var(--lh-prose); color: var(--ink-1); max-height: 70vh; overflow-y: auto; }
+.sr-ratchet-prose p { margin: 0 0 0.6em; text-indent: 2em; }
+.sr-ratchet-reveal { margin: 0; padding-top: 16px; }
 
 /* ---------- 导入对话框（WsDialog） ---------- */
 .sr-import-dialog.ws-dialog { width: min(720px, 100%); }
