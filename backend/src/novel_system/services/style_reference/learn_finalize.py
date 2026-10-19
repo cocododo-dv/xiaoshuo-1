@@ -50,6 +50,7 @@ from novel_system.services.style_reference.protected_terms import (
     replace_protected_terms,
 )
 from novel_system.services.style_reference.schemas import FindingKind
+from novel_system.services.style_reference.learn_foreshadow import FORESHADOW_LINES_KEY
 from novel_system.services.style_reference.situation_card import SITUATION_CARD_KEY
 from novel_system.services.style_reference.structure_render import derive_planning_guidance
 from novel_system.services.style_reference.validation.plagiarism import BookNgramIndex
@@ -89,6 +90,8 @@ class FinalizeInputs:
     learned_from: Mapping[str, Any] = field(default_factory=dict)
     # 通读全书的按场面写法（已过滤；learn_situations.filter_situation_card），没有 → None
     situation_card: Mapping[str, Any] | None = None
+    # 通读全书的伏笔手法句（已过滤；learn_foreshadow），原句与 id 存画像供下次修订；None = 这次没学（快速学习）
+    foreshadow_lines: Sequence[Mapping[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +283,11 @@ def write_learned_profile(session: Session, inputs: FinalizeInputs, *, job_id: s
         profile_json[DISMISSED_KEY] = sorted(dismissed)
     if inputs.situation_card:
         profile_json[SITUATION_CARD_KEY] = dict(inputs.situation_card)
+    if inputs.foreshadow_lines is not None:
+        profile_json[FORESHADOW_LINES_KEY] = [
+            {"line_id": str(line["line_id"]), "text": str(line["text"]), "source": str(line.get("source") or "")}
+            for line in inputs.foreshadow_lines
+        ]
     card_lines = card.all_lines() if card is not None else []
     sub_dimensions = inputs.sub_dimensions
     findings = inputs.findings

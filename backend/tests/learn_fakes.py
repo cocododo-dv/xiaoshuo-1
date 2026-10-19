@@ -7,7 +7,9 @@
   上一版文风卡（``previous_card``）时每条 do 都 ``keep`` 上一版同一维同一类的第 i 句（测「在上一版上修订」）；
 - 通读全书的归并（同一个合成节点、载荷带 ``findings``）：陈述一字不差的发现归成一组；
 - 按场面的写法（同一个合成节点、载荷带 ``situation``）：前两条发现各写一句（refs 指向它），有上一版的就 keep；
-- 叙事层在载荷有 ``scope`` 时顺带交结构：每个片段中间那一段换场（地点），每个整章片段一条章法（章号是 4 的倍数 =
+- 伏笔配对（载荷带 ``plants``）：收的 setup 与埋的 gist 一字不差就配上；伏笔手法（载荷带 ``pairs``）：一句，refs 指向
+  第一对，有上一版的就 keep；
+- 叙事层在载荷有 ``scope`` 时顺带交结构（另每个片段埋一处「疑问」，第 2 章起每个整章片段收前一章的疑问）：每个片段中间那一段换场（地点），每个整章片段一条章法（章号是 4 的倍数 =
   高潮，其余推进；单数章悬念未解、双数章反转；2 条线、1 个视点）；
 - 受保护专名：候选里属于 ``protected`` 的词（kind 按 ``kinds``，缺省 person）；
 - 窗口标签：每窗一项（场面 / 情绪从词表里挑、手法取手法表第一个、gist 带一个人名——测专名替换）。
@@ -109,14 +111,19 @@ def default_extract(payload: dict[str, Any], *, tag: str = "") -> dict[str, Any]
 
 def default_structure(payload: dict[str, Any]) -> dict[str, Any]:
     if not payload.get("scope"):
-        return {"scene_starts": [], "chapters": []}
-    starts, chapters = [], []
+        return {"scene_starts": [], "chapters": [], "plants": [], "payoffs": []}
+    starts, chapters, plants, payoffs = [], [], [], []
     for window in payload.get("windows") or []:
         numbers = [int(m.group(1)) for line in str(window.get("text") or "").split("\n") if (m := _PARA_RE.match(line))]
         if len(numbers) >= 4:
             starts.append({"p": numbers[len(numbers) // 2], "shift": "地点"})
+        chapter = int(window.get("chapter") or 0)
+        plants.append({"window": window["window"], "kind": "悬念提问", "gist": f"第{chapter}章留下的疑问"})
+        if window.get("position") == "整章" and chapter >= 2:
+            payoffs.append(
+                {"window": window["window"], "style": "揭晓真相", "gist": f"揭开第{chapter - 1}章的疑问", "setup": f"第{chapter - 1}章留下的疑问"}
+            )
         if window.get("position") == "整章":
-            chapter = int(window.get("chapter") or 0)
             chapters.append(
                 {
                     "window": window["window"],
@@ -126,7 +133,32 @@ def default_structure(payload: dict[str, Any]) -> dict[str, Any]:
                     "povs": 1,
                 }
             )
-    return {"scene_starts": starts, "chapters": chapters}
+    return {"scene_starts": starts, "chapters": chapters, "plants": plants, "payoffs": payoffs}
+
+
+def default_foreshadow_match(payload: dict[str, Any]) -> dict[str, Any]:
+    by_gist = {p["gist"]: p["id"] for p in payload.get("plants") or []}
+    return {
+        "matches": [
+            {"payoff": r["id"], "plant": by_gist[r["setup"]]} for r in payload.get("payoffs") or [] if r.get("setup") in by_gist
+        ]
+    }
+
+
+def default_foreshadow_craft(payload: dict[str, Any]) -> dict[str, Any]:
+    pairs = payload.get("pairs") or []
+    previous = payload.get("previous_lines") or []
+    if not pairs:
+        return {"lines": []}
+    return {
+        "lines": [
+            {
+                "text": "伏笔多半藏在一句玩笑里，下一章就让它变成正事",
+                "refs": [pairs[0]["id"]],
+                "keep": previous[0]["id"] if previous else "",
+            }
+        ]
+    }
 
 
 def default_situation(payload: dict[str, Any]) -> dict[str, Any]:
@@ -295,6 +327,10 @@ class FakeLearnLLM(AccountedGenerateMixin):
         if node == NODE_SYNTH:
             if "situation" in payload:
                 return default_situation(payload)
+            if "plants" in payload:
+                return default_foreshadow_match(payload)
+            if "pairs" in payload:
+                return default_foreshadow_craft(payload)
             return default_consolidate(payload) if "findings" in payload else default_card(payload)
         if node == NODE_PROTECTED:
             terms = [
@@ -328,6 +364,8 @@ __all__ = [
     "SimulatedCrash",
     "default_card",
     "default_consolidate",
+    "default_foreshadow_craft",
+    "default_foreshadow_match",
     "default_situation",
     "default_structure",
     "default_extract",

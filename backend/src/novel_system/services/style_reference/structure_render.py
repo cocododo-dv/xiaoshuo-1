@@ -192,6 +192,7 @@ def _card_lines(card: Mapping[str, Any]) -> list[str]:
     if person_line:
         lines.append(person_line)
     lines.extend(_craft_lines(card.get("chapter_craft")))
+    lines.extend(_foreshadow_lines(card.get("foreshadowing")))
     hint = []
     if chapter_count > 1:
         hint.append(
@@ -270,6 +271,38 @@ def _scene_line(card: Mapping[str, Any]) -> str:
     if int(card.get("chapter_count") or 0) > 0:
         return "- 场：无显式场分隔；场的长度按章长与段数规划"
     return ""
+
+
+def _foreshadow_lines(stats: Any) -> list[str]:
+    """伏笔与回收（通读全书时配对统计的，``learn_foreshadow.foreshadow_stats``）→ 规划用的几行。没有 → 空。"""
+    if not isinstance(stats, Mapping) or int(stats.get("planted") or 0) <= 0:
+        return []
+    distance = stats.get("distance") if isinstance(stats.get("distance"), Mapping) else {}
+    lines = [
+        f"- 伏笔（通读 {_fmt_int(stats.get('chapters_read'))} 章）：埋下 {_fmt_int(stats.get('planted'))} 处、"
+        f"回收 {_pct(stats.get('paid_share'))}"
+        + (
+            f"；从埋到收中位隔 {_fmt_int(distance.get('median'))} 章（p10 {_fmt_int(distance.get('p10'))} · "
+            f"p90 {_fmt_int(distance.get('p90'))}），同一章就收的 {_pct(stats.get('same_chapter_share'))}、"
+            f"隔十章以上的 {_pct(stats.get('long_range_share'))}"
+            if int(stats.get("pairs") or 0) > 0
+            else ""
+        )
+    ]
+    kinds = _share_list(stats.get("plant_kinds"), limit=4)
+    styles = _share_list(stats.get("payoff_styles"), limit=3)
+    if kinds or styles:
+        lines.append(
+            "- 伏笔种类："
+            + (kinds or "—")
+            + (f"；回收方式：{styles}" if styles else "")
+        )
+    open_counts = stats.get("open_per_chapter") if isinstance(stats.get("open_per_chapter"), Mapping) else {}
+    if int(open_counts.get("median") or 0) > 0:
+        lines.append(
+            f"- 同时悬着的伏笔：每章末约 {_fmt_int(open_counts.get('median'))} 处（p90 {_fmt_int(open_counts.get('p90'))}）"
+        )
+    return lines
 
 
 def _share_list(distribution: Any, *, limit: int) -> str:

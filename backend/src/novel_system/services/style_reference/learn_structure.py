@@ -8,6 +8,8 @@
   现在按切出来的场量真实场长；
 - **章法** ``chapters``：每个整章片段这一章主要做什么（铺垫 / 推进 / 冲突 / 高潮 / 揭示 / 回收 / 过渡 / 日常）、
   章末怎么收、交织几条线、几个视点。只收类别与数字，不收人名、情节——这些进规划提示，不能带出原书的内容。
+- **伏笔** ``plants`` / ``payoffs``（第四轮）：这几章埋下了什么、回收了前面的什么——类别 + 一句情节梗概。梗概只留在
+  游标与 run 行里给全书配对用（``learn_foreshadow``），不进任何写作 / 规划提示。
 
 本模块是纯函数：:func:`parse_structure_output` 核对一批的输出（段号必须在这一批里、每章第一段不算换场、只认整章
 片段与词表里的类别），:func:`learned_scene_stats` 按切出来的场算每章场数与场长，:func:`chapter_craft` 把各章的
@@ -29,6 +31,9 @@ CHAPTER_HOOKS: tuple[str, ...] = ("悬念未解", "反转", "新威胁登场", "
 MAX_THREADS = 6
 MAX_POVS = 6
 WHOLE_CHAPTER = "整章"
+PLANT_KINDS: tuple[str, ...] = ("物件", "台词", "人物细节", "悬念提问", "预言暗示", "场景细节", "反常举动")
+PAYOFF_STYLES: tuple[str, ...] = ("揭晓真相", "反转", "物件再现", "台词呼应", "人物兑现", "情感回收")
+GIST_MAX_CHARS = 40
 
 
 def _as_int(value: Any) -> int | None:
@@ -49,7 +54,7 @@ def parse_structure_output(structured: Any, ext_set: Any) -> dict[str, Any]:
 
     不抛异常：段号不在这一批里、是某章第一段（那是章的开头，不是换场）、类别不在词表里的项一律丢掉；章法只认
     ``position`` 为「整章」的片段，同一片段只收一次。"""
-    out: dict[str, Any] = {"scene_starts": [], "chapters": []}
+    out: dict[str, Any] = {"scene_starts": [], "chapters": [], "plants": [], "payoffs": []}
     if not isinstance(structured, Mapping):
         return out
     paragraphs = getattr(ext_set, "paragraphs", {}) or {}
@@ -99,7 +104,39 @@ def parse_structure_output(structured: Any, ext_set: Any) -> dict[str, Any]:
                 "povs": max(1, min(MAX_POVS, povs)) if povs is not None else None,
             }
         )
+    for field_name, kind_key, vocabulary in (("plants", "kind", PLANT_KINDS), ("payoffs", "style", PAYOFF_STYLES)):
+        for item in structured.get(field_name) if isinstance(structured.get(field_name), list) else []:
+            if not isinstance(item, Mapping):
+                continue
+            block_no = _as_int(item.get("window"))
+            block = blocks.get(block_no) if block_no is not None else None
+            kind = str(item.get(kind_key) or "").strip()
+            gist = " ".join(str(item.get("gist") or "").split())[:GIST_MAX_CHARS]
+            if block is None or kind not in vocabulary or not gist:
+                continue
+            record = {"chapter": int(block.get("chapter") or 0), kind_key: kind, "gist": gist}
+            if field_name == "payoffs":
+                record["setup"] = " ".join(str(item.get("setup") or "").split())[:GIST_MAX_CHARS]
+            out[field_name].append(record)
     return out
+
+
+def merge_threads(batches: Mapping[str, Mapping[str, Any]] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """各批记下的伏笔与回收 → 全书按原书顺序编号（埋 P1…、收 R1…）。"""
+    plants: list[dict[str, Any]] = []
+    payoffs: list[dict[str, Any]] = []
+    for _batch, structure in sorted((batches or {}).items(), key=lambda item: int(item[0])):
+        if not isinstance(structure, Mapping):
+            continue
+        plants.extend(dict(p) for p in structure.get("plants") or [] if isinstance(p, Mapping))
+        payoffs.extend(dict(r) for r in structure.get("payoffs") or [] if isinstance(r, Mapping))
+    plants.sort(key=lambda p: int(p.get("chapter") or 0))
+    payoffs.sort(key=lambda r: int(r.get("chapter") or 0))
+    for number, plant in enumerate(plants, start=1):
+        plant["id"] = f"P{number}"
+    for number, payoff in enumerate(payoffs, start=1):
+        payoff["id"] = f"R{number}"
+    return plants, payoffs
 
 
 def merge_batches(batches: Mapping[str, Mapping[str, Any]] | None) -> tuple[list[tuple[int, str]], list[dict[str, Any]]]:
@@ -208,6 +245,10 @@ __all__ = [
     "SCENE_SHIFTS",
     "chapter_craft",
     "learned_scene_stats",
+    "GIST_MAX_CHARS",
+    "PAYOFF_STYLES",
+    "PLANT_KINDS",
     "merge_batches",
+    "merge_threads",
     "parse_structure_output",
 ]

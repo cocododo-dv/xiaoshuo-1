@@ -50,6 +50,7 @@ from novel_system.services.style_reference.learn_llm import (
     LAYERS,
     LEARN_NODE_IDS,
     load_consolidate_runtime,
+    load_foreshadow_runtimes,
     load_learn_runtimes,
     load_situation_runtime,
 )
@@ -80,6 +81,8 @@ PHASE_SELECT = "select"
 PHASE_EXTRACT = "extract"
 # 通读全书才有：全书各批的发现按维归并（快速学习跳过）
 PHASE_CONSOLIDATE = "consolidate"
+# 通读全书才有：全书的伏笔与回收配对、统计、手法（结构画像要用，排在写文风卡之前）
+PHASE_FORESHADOW = "foreshadow"
 PHASE_SYNTHESIZE = "synthesize"
 PHASE_PROTECTED = "protected"
 PHASE_TAGS = "tags"
@@ -91,21 +94,23 @@ PHASE_ORDER: tuple[str, ...] = (
     PHASE_SELECT,
     PHASE_EXTRACT,
     PHASE_CONSOLIDATE,
+    PHASE_FORESHADOW,
     PHASE_SYNTHESIZE,
     PHASE_PROTECTED,
     PHASE_TAGS,
     PHASE_SITUATIONS,
     PHASE_FINALIZE,
 )
-# 快速学习没有归并步、没有按场面的写法
+# 快速学习没有归并、伏笔与按场面的写法
 QUICK_PHASE_ORDER: tuple[str, ...] = tuple(
-    phase for phase in PHASE_ORDER if phase not in (PHASE_CONSOLIDATE, PHASE_SITUATIONS)
+    phase for phase in PHASE_ORDER if phase not in (PHASE_CONSOLIDATE, PHASE_FORESHADOW, PHASE_SITUATIONS)
 )
 PHASE_LABELS: dict[str, str] = {
     PHASE_WINDOWS: "整理全书样例窗口",
     PHASE_SELECT: "挑选学习样本",
     PHASE_EXTRACT: "逐层读原文",
     PHASE_CONSOLIDATE: "归并全书的发现",
+    PHASE_FORESHADOW: "配对伏笔与回收",
     PHASE_SYNTHESIZE: "写文风卡",
     PHASE_PROTECTED: "识别本书专名",
     PHASE_TAGS: "给全书片段打标签",
@@ -137,6 +142,7 @@ REASON_SYNTHESIZE_FAILED = "synthesize_failed"
 REASON_PROTECTED_FAILED = "protected_terms_failed"
 REASON_TAGGING_FAILED = "tagging_failed"
 REASON_SITUATIONS_FAILED = "situations_failed"
+REASON_FORESHADOW_FAILED = "foreshadow_failed"
 REASON_CARD_FILTERED_EMPTY = "card_filtered_empty"
 
 RUN_DISPATCH_STATE = "learn_job"
@@ -296,6 +302,7 @@ def start_learn_job(
     if mode == MODE_FULL:
         load_consolidate_runtime()
         load_situation_runtime()
+        load_foreshadow_runtimes()
     ensure_cloud_llm_allowed(book, operation="learn_style", node_ids=LEARN_NODE_IDS, llm_client=llm_client)
     skipped = _skipped_layers(book, force=force)
     if len(skipped) == len(LAYERS):
@@ -519,8 +526,9 @@ def _full_estimate(
             "protected": 1,
             "tags": tag_calls,
             "situations": situation_calls,
+            "foreshadow": 2,
         },
-        "est_calls": reading_calls + 16 + 2 + tag_calls + situation_calls,
+        "est_calls": reading_calls + 16 + 2 + tag_calls + situation_calls + 2,
         "est_input_chars": sum(int(batch["chars"]) for batch in plan) * len(layers),
         "reusable": reusable,
     }

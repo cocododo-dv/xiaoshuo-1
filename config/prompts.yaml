@@ -648,7 +648,7 @@ templates:
                 items: *learn_finding_item
 
   style_ref_extract_narrative:
-    version: "2026-10-19.v8"
+    version: "2026-10-19.v9"
     input_token_budget: 64000
     system_prompt: *learn_extract_system
     task_prompt: |
@@ -670,11 +670,17 @@ templates:
         - chapters:position 为「整章」的每个片段各一项:window(片段号)、function(这一章在全书里主要做什么:
           铺垫 | 推进 | 冲突 | 高潮 | 揭示 | 回收 | 过渡 | 日常)、hook(章末怎么收:悬念未解 | 反转 | 新威胁登场 |
           情绪落点 | 平稳收束 | 预告下一步)、threads(这一章交织着几条情节线,1–6)、povs(这一章有几个视点人物,1–6)。
-        只写段号、类别与数字,不写人名、地名与情节。
+        - plants:这几章里**埋下**的伏笔——当下没有交代清楚、看得出后面要用的东西:window(片段号)、kind(物件 | 台词 |
+          人物细节 | 悬念提问 | 预言暗示 | 场景细节 | 反常举动)、gist(一句话说埋了什么,≤40 字)。
+        - payoffs:这几章里**回收**前文伏笔的地方——揭晓、呼应、兑现:window、style(揭晓真相 | 反转 | 物件再现 |
+          台词呼应 | 人物兑现 | 情感回收)、gist(一句话说这里收了什么,≤40 字)、setup(它回收的是前面什么样的铺垫,≤40 字)。
+        只记真正的伏笔与回收,一般的情节推进不算;每批各至多 10 项。
+        scene_starts 与 chapters 只写段号、类别与数字,不写人名、地名与情节;plants / payoffs 的 gist 与 setup 可以写
+        情节(系统只用来把全书的伏笔与回收配对,不会进写作提示)。
     structured_schema:
       type: object
       additionalProperties: false
-      required: [dimensions, scene_starts, chapters]
+      required: [dimensions, scene_starts, chapters, plants, payoffs]
       properties:
         dimensions:
           type: array
@@ -722,6 +728,29 @@ templates:
               hook: {type: string, enum: [悬念未解, 反转, 新威胁登场, 情绪落点, 平稳收束, 预告下一步]}
               threads: {type: integer, minimum: 1, maximum: 6}
               povs: {type: integer, minimum: 1, maximum: 6}
+        plants:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [window, kind, gist]
+            properties:
+              window: {type: integer}
+              kind: {type: string, enum: [物件, 台词, 人物细节, 悬念提问, 预言暗示, 场景细节, 反常举动]}
+              gist: {type: string, maxLength: 60}
+        payoffs:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [window, style, gist, setup]
+            properties:
+              window: {type: integer}
+              style: {type: string, enum: [揭晓真相, 反转, 物件再现, 台词呼应, 人物兑现, 情感回收]}
+              gist: {type: string, maxLength: 60}
+              setup: {type: string, maxLength: 60}
 
   style_ref_extract_scene:
     version: "2026-10-19.v7"
@@ -971,6 +1000,81 @@ templates:
                 type: array
                 minItems: 1
                 maxItems: 6
+                items: {type: string}
+              keep: {type: string, maxLength: 40}
+
+  # 通读全书的伏笔配对(learn_job 的 foreshadow 步,2026-10-19 第四轮):全书各批记下的「埋」与「收」(各带一句梗概),
+  # 一次(装不下预算就把「收」分几次)配对,走文风卡合成节点的路由。190 万字估 ≤500 埋 + ≤500 收,每项 ≤60 字。
+  style_ref_foreshadow_match:
+    version: "2026-10-19.v1"
+    input_token_budget: 48000
+    system_prompt: |
+      你是小说结构编辑。系统通读了一本书,每读几章就记下这几章**埋下**的伏笔(plants:章号、类别、一句梗概)与**回收**
+      前文的地方(payoffs:章号、回收方式、一句梗概、它回收的是什么样的铺垫)。你的任务是把每一处「收」配到它回收的
+      那一处「埋」上。
+
+      规则:
+        - 每处 payoff 至多配一处 plant;plant 的章号不能晚于 payoff 的章号;
+        - 一处 plant 可以被几处 payoff 呼应;
+        - 只在梗概确实对得上(同一件物件、同一个疑问、同一句话、同一个人的同一件事)时才配;对不上就不配,不要硬凑;
+        - 编号照抄输入里的 id(P 开头的是埋,R 开头的是收)。
+      只输出 schema 规定的 JSON。
+    task_prompt: |
+      输入见数据块:book_title、plants(id / chapter / kind / gist)、payoffs(id / chapter / style / gist / setup)。
+      全部读完再配对,每一对写 {payoff: R…, plant: P…}。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [matches]
+      properties:
+        matches:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [payoff, plant]
+            properties:
+              payoff: {type: string}
+              plant: {type: string}
+
+  # 通读全书的伏笔手法:按配好的对子(≤60 对,近收远收都有)与统计写 ≤4 句「这位作者怎么埋、怎么收」,在上一版上修订。
+  style_ref_foreshadow_craft:
+    version: "2026-10-19.v1"
+    input_token_budget: 24000
+    system_prompt: |
+      你是中文小说结构编辑。输入是一位作者整本书里配好的伏笔与回收(每对带编号、埋的类别与梗概、收的方式与梗概、
+      隔了几章)和全书的统计。请写 2–4 句「这位作者怎么埋伏笔、怎么回收」——之后规划新故事时,系统会照这几句安排伏笔。
+
+      要求:
+        - 只写**可以迁移到别的故事**的手法:埋在什么地方、用什么包装(当作闲笔、玩笑、细节)、隔多远收、收的时候怎么
+          让读者恍然(反转、呼应、物件再现)、同时悬着几条……不写这本书的人名、地名、组织、设定名与具体情节;
+        - 每句 ≤60 字,refs 列出它依据的对子编号(如 t3、t12,至少一个);
+        - 不写阿拉伯数字与百分比,频率用「常」「多半」「偶尔」这类说法;
+        - 在上一版上修订:previous_lines 里的某一句仍然被这些对子支持时,在 keep 里填它的 id、text 照抄原句;
+          新写的句子 keep 填空字符串;
+        - 对子太少、看不出手法时,lines 给空数组,不要编造。
+      只输出 schema 规定的 JSON。
+    task_prompt: |
+      输入见数据块:book_title、stats(埋了多少、回收几成、隔几章、种类与回收方式的占比、每章末同时悬着几处)、
+      pairs(id / distance / plant_kind / plant / payoff_style / payoff)、previous_lines(上一版的句子,每句带 id)。
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [text, refs, keep]
+            properties:
+              text: {type: string, maxLength: 90}
+              refs:
+                type: array
+                minItems: 1
+                maxItems: 8
                 items: {type: string}
               keep: {type: string, maxLength: 40}
 

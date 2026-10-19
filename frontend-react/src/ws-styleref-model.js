@@ -381,6 +381,8 @@ export function srFullEstimateText(estimate, { reread = false } = {}) {
   const calls = full.calls || {};
   const tags = Number(calls.tags) || 0;
   const tagText = tags ? `、给全书片段打标签 ${tags} 批` : "";
+  const extra = (Number(calls.situations) || 0) + (Number(calls.foreshadow) || 0);
+  const extraText = extra ? `、按场面的写法与伏笔约 ${extra} 次` : "";
   const reusable = !reread ? srFullReusable(estimate) : null;
   if (reusable) {
     const when = reusable.read_at ? `（${srFormatWhen(reusable.read_at)}）` : "";
@@ -388,7 +390,7 @@ export function srFullEstimateText(estimate, { reread = false } = {}) {
   }
   return [
     `按整章分 ${full.batches} 批读完全书（${full.chapters} 章、约 ${srFormatChars(full.chars)}）`,
-    `约 ${full.est_calls} 次模型调用（逐批四层读原文 ${calls.extract} 次、每维归并 ${calls.consolidate || 16} 次、写文风卡 1 次、识别本书专名 1 次${tagText}）`,
+    `约 ${full.est_calls} 次模型调用（逐批四层读原文 ${calls.extract} 次、每维归并 ${calls.consolidate || 16} 次、写文风卡 1 次、识别本书专名 1 次${extraText}${tagText}）`,
     "重试不计在内",
   ].join("，");
 }

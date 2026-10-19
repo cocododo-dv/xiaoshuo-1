@@ -126,6 +126,15 @@ def _learn(monkeypatch, fake: FakeLearnLLM | None = None, **kwargs) -> tuple[Fak
     return fake, load_job(job_id)
 
 
+def _is_card(payload: dict) -> bool:
+    """合成节点上跑的五种调用里，写文风卡的那一种（归并 findings / 场面 situation / 伏笔配对 plants / 伏笔手法 pairs 之外）。"""
+    return not any(key in payload for key in ("findings", "situation", "plants", "pairs"))
+
+
+def _is_merge(payload: dict) -> bool:
+    return "findings" in payload and "situation" not in payload
+
+
 def _profile(profile_id: str) -> StyleReferenceProfile:
     with SessionLocal() as db:
         profile = db.get(StyleReferenceProfile, profile_id)
@@ -318,8 +327,8 @@ def test_full_learn_reads_every_batch_merges_by_dimension_and_writes_the_profile
     # 每批 × 每层各一次;每维一次归并(16 维都有发现);合成 / 专名各一次
     assert fake.count(EXTRACT) == 3 * 4
     synth_payloads = [p for node, p in fake.payloads if node == NODE_SYNTH]
-    merges = [p for p in synth_payloads if "findings" in p]
-    cards = [p for p in synth_payloads if "findings" not in p]
+    merges = [p for p in synth_payloads if _is_merge(p)]
+    cards = [p for p in synth_payloads if _is_card(p)]
     assert len(merges) == 16 and len(cards) == 1
     # 抽取载荷带 scope,所有批合起来读到了全书每一段正文
     extract_payloads = [p for node, p in fake.payloads if node.startswith(EXTRACT)]
@@ -412,10 +421,13 @@ def test_a_second_full_learn_reuses_the_reading_and_the_merge_and_revises_the_ca
     assert second.state == "succeeded", second.error_json
     assert fake.count(EXTRACT) == 0
     synth = [p for node, p in fake.payloads if node == NODE_SYNTH]
-    assert len(synth) == 1 and "findings" not in synth[0]
+    cards = [p for p in synth if _is_card(p)]
+    # 不再读书、不再归并、伏笔配对也沿用:只重写文风卡(与每次都在上一版上修订的伏笔手法)
+    assert len(cards) == 1 and not any(_is_merge(p) or "plants" in p for p in synth)
     assert second.cursor_json["full"]["reused_reading"] and second.cursor_json["full"]["reused_consolidation"]
+    assert second.cursor_json["foreshadow"]["reused"] is True
     # 修订:上一版的句子都带去了,假模型 keep 了每维的 do → 原句、原 id,✓ 跟着走
-    previous_ids = {line["id"] for entry in synth[0]["previous_card"] for line in entry["lines"]}
+    previous_ids = {line["id"] for entry in cards[0]["previous_card"] for line in entry["lines"]}
     assert pinned.line_id in previous_ids
     profile = _profile(profile_id)
     new_card = card_from_profile_json(profile.profile_json)
@@ -439,7 +451,7 @@ def test_a_second_full_learn_reuses_the_reading_and_the_merge_and_revises_the_ca
     # reread:从头再读、再归并
     fake3, third = _learn(monkeypatch, mode="full", reread=True)
     assert third.state == "succeeded", third.error_json
-    assert fake3.count(EXTRACT) == 12 and sum(1 for n, p in fake3.payloads if n == NODE_SYNTH and "findings" in p) == 16
+    assert fake3.count(EXTRACT) == 12 and sum(1 for n, p in fake3.payloads if n == NODE_SYNTH and _is_merge(p)) == 16
 
 
 def _stale(job_id: str) -> None:
@@ -457,7 +469,7 @@ def test_a_crash_while_reading_or_merging_resumes_without_redoing_finished_work(
     def script(node, payload, _call_no):
         if node != crash_node or state["crashed"]:
             return None
-        if crash_node == NODE_SYNTH and "findings" not in payload:
+        if crash_node == NODE_SYNTH and not _is_merge(payload):
             return None
         state["seen"] += 1
         # 3 个并行:第 4 次调用要等前面至少一份落库才会派发——崩的时候一定有做完的
@@ -492,7 +504,7 @@ def test_a_crash_while_reading_or_merging_resumes_without_redoing_finished_work(
         done_dims = set(stuck.cursor_json.get("consolidated_dims") or [])
         assert done_dims
         assert not any(n.startswith(EXTRACT) for n, _p in after)
-        merged_again = {p["dimension"]["key"] for n, p in after if n == NODE_SYNTH and "findings" in p}
+        merged_again = {p["dimension"]["key"] for n, p in after if n == NODE_SYNTH and _is_merge(p)}
         assert not (merged_again & done_dims) and len(merged_again) == 16 - len(done_dims)
     merged = session.scalars(
         select(StyleReferenceFinding).where(
@@ -587,7 +599,7 @@ def test_structure_output_keeps_only_real_scene_turns_and_whole_chapter_records(
     out = parse_structure_output(structured, ext_set)
     assert out["scene_starts"] == [[2, "地点"], [9, "事件"]]
     assert out["chapters"] == [{"chapter": 7, "function": "高潮", "hook": "反转", "threads": 6, "povs": 1}]
-    assert parse_structure_output({"scene_starts": "x"}, ext_set) == {"scene_starts": [], "chapters": []}
+    assert parse_structure_output({"scene_starts": "x"}, ext_set) == {"scene_starts": [], "chapters": [], "plants": [], "payoffs": []}
 
 
 def test_learned_scenes_measure_scene_lengths_and_chapter_craft_sums_up_the_chapters() -> None:
@@ -681,7 +693,7 @@ def test_full_learn_also_learns_scene_turns_chapter_craft_and_where_each_dimensi
     assert craft["chapters_read"] == 6 and craft["function_distribution"] == {"推进": 0.833, "高潮": 0.167}
     assert craft["hook_distribution"] == {"悬念未解": 0.5, "反转": 0.5}
     # 文风卡合成看得到这些结构事实
-    card_payload = next(p for node, p in fake.payloads if node == NODE_SYNTH and "findings" not in p)
+    card_payload = next(p for node, p in fake.payloads if node == NODE_SYNTH and _is_card(p))
     assert any(fact.startswith("章末怎么收") for fact in card_payload["structure_facts"])
     # 示范窗:有证据的窗,选窗索引用证据维
     windows = session.scalars(select(StyleReferenceWindow).where(StyleReferenceWindow.book_id == BOOK)).all()
@@ -881,3 +893,163 @@ def test_full_learn_writes_situation_lines_coverage_and_serves_every_example(cli
     new_entry = _profile(profile_id).profile_json["situation_card"]["situations"][0]
     assert [line["line_id"] for line in new_entry["lines"]] == [line["line_id"] for line in entry["lines"]]
     assert all(line["source"] == "kept" for line in new_entry["lines"])
+
+
+# ---------------------------------------------------------------- 伏笔与回收（2026-10-19 第四轮）
+
+
+def _threads():
+    plants = [
+        {"id": "P1", "chapter": 1, "kind": "悬念提问", "gist": "旧信里少了一页"},
+        {"id": "P2", "chapter": 2, "kind": "物件", "gist": "案卷里夹着一把钥匙"},
+        {"id": "P3", "chapter": 5, "kind": "台词", "gist": "林昭说雨城从不下雪"},
+        {"id": "P4", "chapter": 6, "kind": "悬念提问", "gist": "谁在门外敲了三下"},
+    ]
+    payoffs = [
+        {"id": "R1", "chapter": 2, "style": "揭晓真相", "gist": "少的那页在抽屉底", "setup": "旧信缺页"},
+        {"id": "R2", "chapter": 14, "style": "物件再现", "gist": "钥匙打开了地下室", "setup": "钥匙"},
+        {"id": "R3", "chapter": 5, "style": "台词呼应", "gist": "当天就下了雪", "setup": "不下雪"},
+        {"id": "R4", "chapter": 3, "style": "反转", "gist": "配到更晚的埋上", "setup": "?"},
+    ]
+    return plants, payoffs
+
+
+def test_matches_are_checked_and_statistics_come_from_the_pairs() -> None:
+    from novel_system.services.style_reference.learn_foreshadow import foreshadow_stats, parse_matches
+
+    plants, payoffs = _threads()
+    matches = parse_matches(
+        {
+            "matches": [
+                {"payoff": "r1", "plant": "p1"},
+                {"payoff": "R2", "plant": "P2"},
+                {"payoff": "R3", "plant": "P3"},
+                {"payoff": "R4", "plant": "P4"},  # 埋在收之后:不认
+                {"payoff": "R1", "plant": "P2"},  # 同一处收第二次:不认
+                {"payoff": "R9", "plant": "P1"},  # 没这处收
+            ]
+        },
+        plants,
+        payoffs,
+    )
+    assert matches == {"R1": "P1", "R2": "P2", "R3": "P3"}
+    stats = foreshadow_stats(plants, payoffs, matches, chapters_read=[1, 2, 3, 5, 6, 14])
+    assert stats["planted"] == 4 and stats["pairs"] == 3 and stats["paid_share"] == 0.75
+    assert stats["distance"] == {"median": 1, "p10": 0, "p90": 10}
+    assert stats["same_chapter_share"] == 0.333 and stats["long_range_share"] == 0.333
+    assert list(stats["plant_kinds"]) == ["悬念提问", "物件", "台词"]
+    assert stats["payoff_styles"] == {"揭晓真相": 0.333, "物件再现": 0.333, "台词呼应": 0.333}
+    # 章末悬着:1 章 P1;2 章 P2(P1 已收);3 章 P2;5 章 P2(P3 当章收);6 章 P2、P4;14 章 P4
+    assert stats["open_per_chapter"]["median"] == 1 and stats["open_per_chapter"]["p90"] == 2
+    assert foreshadow_stats([], payoffs, {}, chapters_read=[1]) is None
+
+
+def test_payoffs_are_sent_in_chunks_that_fit_and_craft_lines_are_grounded() -> None:
+    from novel_system.services.style_reference.learn_foreshadow import (
+        craft_pairs,
+        match_chunks,
+        merge_planning,
+        parse_craft_lines,
+    )
+
+    plants, payoffs = _threads()
+    chunks = match_chunks(plants, payoffs, lambda payload: len(payload["payoffs"]) <= 2, book_title="雨城旧信")
+    assert [[r["id"] for r in chunk] for chunk in chunks] == [["R1", "R2"], ["R3", "R4"]]
+    pairs = craft_pairs(plants, payoffs, {"R1": "P1", "R2": "P2", "R3": "P3"}, limit=2)
+    assert [p["distance"] for p in pairs] == [0, 1]  # 按隔的章数排,均匀取
+    lines = parse_craft_lines(
+        {
+            "lines": [
+                {"text": "伏笔：把关键物件写成随手一笔", "refs": ["t1"], "keep": ""},
+                {"text": "隔3章就收", "refs": ["t2"], "keep": ""},  # 阿拉伯数字
+                {"text": "没有依据", "refs": ["t9"], "keep": ""},
+                {"text": "换个说法", "refs": ["T2"], "keep": "cl_prev"},
+            ]
+        },
+        [p["id"] for p in pairs],
+        previous={"cl_prev": "疑问当章提出、当章就给半个答案"},
+    )
+    assert [(line["text"], line["source"]) for line in lines] == [
+        ("把关键物件写成随手一笔", "synthesis"),
+        ("疑问当章提出、当章就给半个答案", "kept"),
+    ]
+    assert lines[1]["line_id"] == "cl_prev"
+    planning = [f"开场：第{i}句" for i in range(10)]
+    merged = merge_planning(planning, lines, cap=10)
+    assert len(merged) == 10 and merged[-2:] == ["伏笔：把关键物件写成随手一笔", "伏笔：疑问当章提出、当章就给半个答案"]
+    assert merge_planning(["开场：一", "伏笔：旧的"], lines[:1], cap=10) == ["开场：一", "伏笔：把关键物件写成随手一笔"]
+
+
+def test_the_planning_block_tells_how_the_author_plants_and_pays_off() -> None:
+    from novel_system.services.style_reference.structure_render import render_structure_card_parts
+
+    card = {
+        "chapter_count": 60,
+        "has_chapter_markers": True,
+        "chapter_chars": {"median": 18000, "p10": 9000, "p90": 33000},
+        "foreshadowing": {
+            "chapters_read": 60, "planted": 240, "payoffs": 190, "pairs": 170, "paid_share": 0.7,
+            "distance": {"median": 3, "p10": 0, "p90": 18},
+            "same_chapter_share": 0.25, "long_range_share": 0.15,
+            "plant_kinds": {"悬念提问": 0.4, "物件": 0.2, "台词": 0.2, "人物细节": 0.1, "反常举动": 0.1},
+            "payoff_styles": {"揭晓真相": 0.5, "反转": 0.3, "物件再现": 0.2},
+            "open_per_chapter": {"median": 6, "p10": 2, "p90": 11},
+        },
+    }
+    block, _samples = render_structure_card_parts({"structure_card": card}, include_samples=False)
+    assert (
+        "- 伏笔（通读 60 章）：埋下 240 处、回收 70%；从埋到收中位隔 3 章（p10 0 · p90 18），同一章就收的 25%、隔十章以上的 15%"
+        in block
+    )
+    assert "- 伏笔种类：悬念提问 40%、物件 20%、台词 20%、人物细节 10%；回收方式：揭晓真相 50%、反转 30%、物件再现 20%" in block
+    assert "- 同时悬着的伏笔：每章末约 6 处（p90 11）" in block
+
+
+def test_full_learn_pairs_plants_with_payoffs_and_turns_them_into_planning_lines(session, monkeypatch) -> None:
+    seed(session)
+    fake, job = _learn(monkeypatch, mode="full")
+    assert job.state == "succeeded", job.error_json
+    assert job.cursor_json["phases_done"] == list(learn_job.PHASE_ORDER)
+    matches_calls = [p for node, p in fake.payloads if node == NODE_SYNTH and "plants" in p]
+    assert len(matches_calls) == 1 and len(matches_calls[0]["plants"]) == 6 and len(matches_calls[0]["payoffs"]) == 5
+    craft_calls = [p for node, p in fake.payloads if node == NODE_SYNTH and "pairs" in p]
+    assert len(craft_calls) == 1 and craft_calls[0]["previous_lines"] == []
+    assert all(pair["distance"] == 1 for pair in craft_calls[0]["pairs"])
+    pj = _profile(job.result_json["profile_id"]).profile_json
+    stats = pj["structure_card"]["foreshadowing"]
+    assert stats["planted"] == 6 and stats["pairs"] == 5 and stats["paid_share"] == 0.833
+    assert stats["distance"]["median"] == 1 and stats["open_per_chapter"]["median"] == 1
+    assert pj["planning_guidance"][-1] == "伏笔：伏笔多半藏在一句玩笑里，下一章就让它变成正事"
+    assert [line["text"] for line in pj["foreshadow_lines"]] == ["伏笔多半藏在一句玩笑里，下一章就让它变成正事"]
+    assert job.result_json["foreshadow"] == {"pairs": 5, "lines": 1, "reused_matches": False}
+    # 情节梗概不进画像
+    assert "留下的疑问" not in str(pj)
+    # 文风卡合成看得到伏笔统计
+    card_payload = next(p for node, p in fake.payloads if node == NODE_SYNTH and _is_card(p))
+    assert any(fact.startswith("伏笔（通读") for fact in card_payload["structure_facts"])
+    run = session.get(StyleReferenceRun, job.result_json["run_id"])
+    assert len(run.coverage_json["full"]["foreshadow"]["matches"]) == 5
+
+    # 再学一次:配对沿用(不再调配对),手法在上一版上修订(原句原 id)
+    fake2, second = _learn(monkeypatch, mode="full")
+    assert second.state == "succeeded", second.error_json
+    assert not any("plants" in p for node, p in fake2.payloads if node == NODE_SYNTH)
+    craft2 = next(p for node, p in fake2.payloads if node == NODE_SYNTH and "pairs" in p)
+    assert [line["id"] for line in craft2["previous_lines"]] == [pj["foreshadow_lines"][0]["line_id"]]
+    pj2 = _profile(second.result_json["profile_id"]).profile_json
+    assert pj2["foreshadow_lines"][0]["line_id"] == pj["foreshadow_lines"][0]["line_id"]
+    assert pj2["foreshadow_lines"][0]["source"] == "kept" and second.result_json["foreshadow"]["reused_matches"] is True
+
+
+def test_a_craft_line_naming_the_books_own_people_never_reaches_the_profile(session, monkeypatch) -> None:
+    seed(session)
+
+    def script(node, payload, _call_no):
+        if node == NODE_SYNTH and "pairs" in payload:
+            return {"lines": [{"text": "林昭的谜团总在下一章解开", "refs": [payload["pairs"][0]["id"]], "keep": ""}]}
+        return None
+
+    fake, job = _learn(monkeypatch, FakeLearnLLM(script=script, protected=("林昭",)), mode="full")
+    assert job.state == "succeeded", job.error_json
+    pj = _profile(job.result_json["profile_id"]).profile_json
+    assert pj["foreshadow_lines"] == [] and not any(line.startswith("伏笔：") for line in pj["planning_guidance"])

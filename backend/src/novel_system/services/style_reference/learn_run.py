@@ -118,6 +118,18 @@ from novel_system.services.style_reference.learn_evidence import (
     quote_positions,
     window_evidence,
 )
+from novel_system.services.style_reference.learn_foreshadow import (
+    chapters_read_from,
+    craft_pairs,
+    craft_payload,
+    foreshadow_stats,
+    match_chunks,
+    match_payload,
+    merge_planning,
+    parse_craft_lines,
+    parse_matches,
+    previous_foreshadow_lines,
+)
 from novel_system.services.style_reference.learn_situations import (
     SituationCandidates,
     filter_situation_card,
@@ -157,6 +169,7 @@ from novel_system.services.style_reference.learn_job import (
     PHASE_CONSOLIDATE,
     PHASE_EXTRACT,
     PHASE_FINALIZE,
+    PHASE_FORESHADOW,
     PHASE_LABELS,
     PHASE_ORDER,
     PHASE_PROTECTED,
@@ -168,6 +181,7 @@ from novel_system.services.style_reference.learn_job import (
     QUICK_PHASE_ORDER,
     REASON_CONSOLIDATE_FAILED,
     REASON_EXTRACT_FAILED,
+    REASON_FORESHADOW_FAILED,
     REASON_INPUT_TOO_SMALL,
     REASON_NO_FINDINGS,
     REASON_PROTECTED_FAILED,
@@ -189,6 +203,7 @@ from novel_system.services.style_reference.learn_llm import (
     LearnCallError,
     call_structured,
     load_consolidate_runtime,
+    load_foreshadow_runtimes,
     load_learn_runtimes,
     load_situation_runtime,
     payload_fits,
@@ -213,6 +228,7 @@ from novel_system.services.style_reference.learn_structure import (
     chapter_craft,
     learned_scene_stats,
     merge_batches,
+    merge_threads,
     parse_structure_output,
 )
 from novel_system.services.style_reference.llm_nodes import NodeRuntime
@@ -226,7 +242,10 @@ from novel_system.services.style_reference.protected_terms import (
 )
 from novel_system.services.style_reference.schemas import FindingKind
 from novel_system.services.style_reference.structure_card import compute_structure_card
-from novel_system.services.style_reference.structure_render import render_structure_card_parts
+from novel_system.services.style_reference.structure_render import (
+    PLANNING_GUIDANCE_MAX_LINES,
+    render_structure_card_parts,
+)
 from novel_system.services.style_reference.tags import TAGS_VERSION
 from novel_system.services.style_reference.text_utils import compact_ws
 from novel_system.services.style_reference.validation.plagiarism import normalize_text_for_matching
@@ -260,6 +279,8 @@ FULL_PLAN_SHRINK = 0.85
 FULL_PLAN_SHRINK_ROUNDS = 6
 # 一类场面的写法最多几次调用(调用失败退避;没写出可用的句子带说明重问一次)
 SITUATION_ATTEMPTS = 3
+# 伏笔配对 / 手法一次调用最多几次(调用失败重试;手法一句都不可用带说明重问)
+FORESHADOW_ATTEMPTS = 3
 # 顺带交换场点与章法的那一层(它本来就读整章)
 STRUCTURE_LAYER = "narrative"
 # 交给「本书专名」步骤的主题层「不这么写」陈述最多几条（通读全书时各批加起来会很多）
@@ -267,6 +288,7 @@ PROTECTED_AVOID_MAX = 40
 # 血缘 run 行 coverage_json["full"] 里记的键（沿用上一次通读靠它们）
 RUN_FULL_KEYS = (
     "identity",
+    "foreshadow",
     "structure",
     "reading_hash",
     "consolidation_hash",
@@ -311,6 +333,7 @@ class _LearnRun(JobRun):
         self.runtimes: dict[str, NodeRuntime] = {}
         self.consolidate_runtime: NodeRuntime | None = None
         self.situation_runtime: NodeRuntime | None = None
+        self.foreshadow_runtimes: tuple[NodeRuntime, NodeRuntime] | None = None
         self.mode = MODE_FULL if str(self.params.get("mode") or "") == MODE_FULL else MODE_QUICK
         self._window_starts_cache: list[tuple[int, int, int]] | None = None
         self.book_title = ""
@@ -410,7 +433,7 @@ class _LearnRun(JobRun):
         reading = 1 if full.get("reused_reading") else max(1, len(plan) * len(layers))
         merging = 1 if full.get("reused_consolidation") else len(ALL_DIMENSIONS)
         situations = len(self.cursor.get("situation_plan") or []) or 1
-        return 2 + reading + merging + 1 + 1 + batches + situations + 1
+        return 2 + reading + merging + 1 + 1 + 1 + batches + situations + 1
 
     def _progress_values(self, phase: str, *, detail: str | None = None, calls: int = 0) -> dict[str, Any]:
         return {
@@ -453,6 +476,7 @@ class _LearnRun(JobRun):
         if self.full:
             self.consolidate_runtime = load_consolidate_runtime()
             self.situation_runtime = load_situation_runtime()
+            self.foreshadow_runtimes = load_foreshadow_runtimes()
         ensure_cloud_llm_allowed(
             book,
             operation="learn_style",
@@ -484,6 +508,8 @@ class _LearnRun(JobRun):
             self._phase_read() if self.full else self._phase_extract()
         if self.full and not self._done(PHASE_CONSOLIDATE):
             self._phase_consolidate()
+        if self.full and not self._done(PHASE_FORESHADOW):
+            self._phase_foreshadow()
         if not self._done(PHASE_SYNTHESIZE):
             self._phase_synthesize()
         if not self._done(PHASE_PROTECTED):
@@ -1236,6 +1262,151 @@ class _LearnRun(JobRun):
             "reused_consolidation": bool(full.get("reused_consolidation")),
         }
 
+    # ---- c'''. foreshadow（通读全书：伏笔与回收） -----------------------------
+    def _phase_foreshadow(self) -> None:
+        """配对全书的埋与收（装不下预算就分几次送「收」）→ 统计 → 手法句（``learn_foreshadow``）。配对按这次通读的身份
+        记进 run 行，沿用通读、模板与模型都没变时连配对一起沿用；手法句每次在上一版上修订。"""
+        began = time.monotonic()
+        self._enter(PHASE_FORESHADOW)
+        plants, payoffs = merge_threads(self._structure_batches())
+        state = dict(self.cursor.get("foreshadow") or {})
+        full = dict(self.cursor.get("full") or {})
+        match_runtime, craft_runtime = self.foreshadow_runtimes or load_foreshadow_runtimes()
+        match_hash = identity_hash(
+            {
+                "reading": full.get("reading_hash"),
+                "prompt": match_runtime.prompt_version,
+                "model": list(match_runtime.route_key),
+            }
+        )
+        calls = 0
+        if "matches" not in state:
+            reused = self._reused_foreshadow_matches(match_hash)
+            if reused is not None:
+                state.update({"matches": reused, "reused": True})
+            elif plants and payoffs:
+                chunks = match_chunks(
+                    plants, payoffs, lambda payload: payload_fits(match_runtime, payload), book_title=self.book_title
+                )
+                matches = dict(state.get("partial") or {})
+                for index, chunk in enumerate(chunks):
+                    if index < int(state.get("chunks_done") or 0):
+                        continue
+                    found, attempts = self._foreshadow_call(
+                        match_runtime,
+                        match_payload(plants, chunk, book_title=self.book_title),
+                        step=f"match{index + 1}",
+                        parse=lambda structured, chunk=chunk: parse_matches(structured, plants, chunk),
+                    )
+                    calls += attempts
+                    matches.update(found)
+                    state.update({"partial": matches, "chunks_done": index + 1, "chunks": len(chunks)})
+                    self.cursor["foreshadow"] = state
+                    self._count_call(attempts)
+                    self._save(
+                        progress=self._progress_values(
+                            PHASE_FORESHADOW, detail=f"配对第 {index + 1}/{len(chunks)} 组", calls=attempts
+                        )
+                    )
+                state["matches"] = matches
+            else:
+                state["matches"] = {}
+            state.pop("partial", None)
+            full["foreshadow"] = {"hash": match_hash, "matches": state["matches"]}
+            self.cursor["full"] = full
+            self.cursor["foreshadow"] = state
+            run_id = str(self.cursor.get("run_id") or "")
+            self._save(write=self._run_full_write(run_id) if run_id else None)
+        plan_batches = (self.cursor.get("plan") or {}).get("batches") or []
+        stats = foreshadow_stats(plants, payoffs, state["matches"], chapters_read=chapters_read_from(plan_batches))
+        state["stats"] = stats
+        if "lines" not in state:
+            pairs = craft_pairs(plants, payoffs, state["matches"])
+            lines: list[dict[str, Any]] = []
+            if stats and pairs:
+                previous = previous_foreshadow_lines(self._target_profile_json())
+                lines, attempts = self._foreshadow_call(
+                    craft_runtime,
+                    craft_payload(stats, pairs, book_title=self.book_title, previous=previous),
+                    step="craft",
+                    parse=lambda structured: parse_craft_lines(structured, [p["id"] for p in pairs], previous=previous),
+                    retry_when_empty=True,
+                )
+                calls += attempts
+                self._count_call(attempts)
+            state["lines"] = lines
+        self.cursor["foreshadow"] = state
+        detail = (
+            f"埋 {stats['planted']} 处、配上 {stats['pairs']} 对、手法 {len(state['lines'])} 句"
+            if stats
+            else "这本书里没有记下伏笔"
+        )
+        self._mark_done(PHASE_FORESHADOW, began, detail=detail)
+
+    def _reused_foreshadow_matches(self, match_hash: str) -> dict[str, str] | None:
+        """沿用通读时：那次通读的 run 行里记的配对，身份（通读 + 配对模板 + 模型）相同就沿用。"""
+        full = self.cursor.get("full") or {}
+        if not (full.get("reused_reading") and full.get("read_run_id")):
+            return None
+        run = self.session.get(StyleReferenceRun, str(full["read_run_id"]))
+        coverage = run.coverage_json if run is not None and isinstance(run.coverage_json, Mapping) else {}
+        saved = ((coverage.get("full") or {}) if isinstance(coverage.get("full"), Mapping) else {}).get("foreshadow")
+        if not isinstance(saved, Mapping) or saved.get("hash") != match_hash:
+            return None
+        matches = saved.get("matches")
+        return {str(k): str(v) for k, v in matches.items()} if isinstance(matches, Mapping) else None
+
+    def _foreshadow_call(
+        self,
+        runtime: NodeRuntime,
+        payload: Mapping[str, Any],
+        *,
+        step: str,
+        parse: Callable[[Any], Any],
+        retry_when_empty: bool = False,
+    ) -> tuple[Any, int]:
+        """一次伏笔调用（配对 / 手法），最多 ``FORESHADOW_ATTEMPTS`` 次：调用失败重试，全失败 → 作业失败（可续跑）；
+        ``retry_when_empty`` 时没解析出东西带说明重问。"""
+        best: Any = None
+        calls = 0
+        errors: list[str] = []
+        extra: str | None = None
+        for attempt in range(FORESHADOW_ATTEMPTS):
+            self.pre_call_check(self._node_routes([NODE_SYNTHESIZE]))
+            try:
+                result = self._call_in_worker(
+                    lambda extra=extra, attempt=attempt: call_structured(
+                        runtime,
+                        payload,
+                        self.client,
+                        scope_id=self.book_id,
+                        step=f"learn:{self.claimed.job_id}:foreshadow:{step}:{attempt + 1}",
+                        extra_instruction=extra,
+                    )
+                )
+            except LearnCallError as exc:
+                calls += 1
+                errors.append(f"attempt {attempt + 1}: {exc.code}: {exc.message[:300]}")
+                continue
+            calls += 1
+            parsed = parse(result.structured)
+            if best is None or len(parsed) > len(best):
+                best = parsed
+            if best or not retry_when_empty:
+                break
+            extra = (
+                "【重试说明】上一次没有一句可用：每句都要在 refs 里写它依据的对子编号（如 t3），只写手法，不写阿拉伯数字、"
+                "人名与情节，每句不超过六十字。"
+            )
+        if best is None:
+            raise LearnFailedError(
+                REASON_FORESHADOW_FAILED,
+                "伏笔与回收的调用失败:" + (errors[-1] if errors else ""),
+                retryable=True,
+                details={"step": step, "attempts": calls, "problems": errors[-3:]},
+            )
+        return best, calls
+
     # ---- d. synthesize ----------------------------------------------------
     def _voice(self) -> dict[str, Any]:
         cached = self.cursor.get("voice")
@@ -1312,17 +1483,21 @@ class _LearnRun(JobRun):
         self.cursor["structure_card"] = card
         return card
 
-    def _learned_structure(self) -> tuple[list[tuple[int, str]], list[dict[str, Any]]]:
-        """这次通读学到的（或沿用的那次通读学到的）换场点与各章章法。"""
+    def _structure_batches(self) -> Mapping[str, Any]:
+        """这次通读（或沿用的那次通读）各批顺带记下的结构：换场点、章法、伏笔与回收。"""
         full = self.cursor.get("full") or {}
-        batches: Mapping[str, Any] | None = None
+        batches: Any = None
         if full.get("reused_reading") and full.get("read_run_id"):
             run = self.session.get(StyleReferenceRun, str(full["read_run_id"]))
             coverage = run.coverage_json if run is not None and isinstance(run.coverage_json, Mapping) else {}
             batches = ((coverage.get("full") or {}) if isinstance(coverage.get("full"), Mapping) else {}).get("structure")
         else:
             batches = self.cursor.get("structure_units")
-        return merge_batches(batches if isinstance(batches, Mapping) else {})
+        return batches if isinstance(batches, Mapping) else {}
+
+    def _learned_structure(self) -> tuple[list[tuple[int, str]], list[dict[str, Any]]]:
+        """这次通读学到的（或沿用的那次通读学到的）换场点与各章章法。"""
+        return merge_batches(self._structure_batches())
 
     def _chapter_ranges(self) -> list[tuple[int, int, int]]:
         """切批里每章的段落区间 ``(章号, 起段, 止段)``（切成几部分的章合起来）。"""
@@ -1346,6 +1521,9 @@ class _LearnRun(JobRun):
         craft = chapter_craft(records)
         if craft:
             keys["chapter_craft"] = craft
+        foreshadowing = (self.cursor.get("foreshadow") or {}).get("stats")
+        if isinstance(foreshadowing, Mapping):
+            keys["foreshadowing"] = dict(foreshadowing)
         return keys
 
     def _phase_synthesize(self) -> None:
@@ -1794,19 +1972,27 @@ class _LearnRun(JobRun):
         # 作者在画像里删掉过的自动专名(多半是误收的日常词):不再当专名、不再滤卡片、不再加回禁用词表
         dismissed = self._dismissed_terms(target_id)
         card = filter_learned_card(self.session, self.cursor, texts=texts, target_id=target_id, dismissed=dismissed)
+        terms = [t.term for t in card.protected] + list(card.author_terms)
+
+        def blocked(text: str) -> bool:
+            return any(term and term in text for term in terms) or card.overlaps(text)
+
         situation_card = None
         if self.full and self.cursor.get("situations"):
-            terms = [t.term for t in card.protected] + list(card.author_terms)
-            situation_card = filter_situation_card(
-                self.cursor["situations"],
-                lambda text: any(term and term in text for term in terms) or card.overlaps(text),
-            )
+            situation_card = filter_situation_card(self.cursor["situations"], blocked)
+        foreshadow_lines = [
+            dict(line)
+            for line in (self.cursor.get("foreshadow") or {}).get("lines") or []
+            if isinstance(line, Mapping) and not blocked(str(line.get("text") or ""))
+        ] if self.full else []
         voice = self._voice()
         structure = self._structure_card(voice)
         distribution = reference_distribution_for_book(self.session, self.book_id)
         source_run, consolidated = self._findings_source()
         findings = load_run_findings(self.session, source_run, consolidated=consolidated)
         planning = planning_lines(card, findings)
+        if foreshadow_lines:
+            planning = merge_planning(planning, foreshadow_lines, cap=PLANNING_GUIDANCE_MAX_LINES)
         sub_dimensions = sub_dimension_summary(self.session, source_run, consolidated=consolidated)
         index_state = dict(self.cursor.get("index") or {})
         ledger = self._ledger()
@@ -1832,6 +2018,7 @@ class _LearnRun(JobRun):
             sub_dimensions=sub_dimensions,
             paragraph_count=len(texts),
             situation_card=situation_card,
+            foreshadow_lines=foreshadow_lines if self.full else None,
             learned_from={
                 "types_revision": int(index_state.get("types_revision") or 0),
                 "root": index_state.get("root"),
@@ -1849,6 +2036,14 @@ class _LearnRun(JobRun):
                         {
                             "consolidate": self.consolidate_runtime.prompt_version,
                             "situations": self.situation_runtime.prompt_version,
+                            **(
+                                {
+                                    "foreshadow_match": self.foreshadow_runtimes[0].prompt_version,
+                                    "foreshadow_craft": self.foreshadow_runtimes[1].prompt_version,
+                                }
+                                if self.foreshadow_runtimes is not None
+                                else {}
+                            ),
                         }
                         if self.consolidate_runtime is not None and self.situation_runtime is not None
                         else {}
@@ -1883,6 +2078,12 @@ class _LearnRun(JobRun):
         if self.full:
             starts, records = self._learned_structure()
             result["structure"] = {"scene_starts": len(starts), "chapters": len(records)}
+            foreshadow = self.cursor.get("foreshadow") or {}
+            result["foreshadow"] = {
+                "pairs": len(foreshadow.get("matches") or {}),
+                "lines": len(foreshadow_lines),
+                "reused_matches": bool(foreshadow.get("reused")),
+            }
             result["situations"] = {
                 entry["situation"]: len(entry["lines"]) for entry in (situation_card or {}).get("situations") or []
             }

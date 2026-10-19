@@ -68,6 +68,7 @@
 | `dimension_card` | 文风卡（`card.DimensionCard`）：16 维按辨识度排，每维一句概括、通用模型的默认写法、1–3 条「这位作者这样写」（`do`）与「作者不这么写」（`avoid`，每句带证据引文，允许 ≤11 字的原话作例子）、手法名（画像页显示）、可测特征；顶层 `temperament`（气质，至多 4 条必须体现） |
 | `card_line_states` | 作者对每句的 ✓（`pinned`，每场都带）/ ✗（`excluded`，不再用）；不让画像失效，重新学习时沿用 |
 | `situation_card` | 按场面的写法（通读全书才有，`situation_card` 模块）：`{"version", "situations": [{"situation", "windows", "lines": [{"line_id", "text", "finding_ids", "evidence_quote_ids", "source"}]}]}`；进冻结契约，起草时这一场的场面对上了才带 |
+| `foreshadow_lines` | 伏笔手法句的原句与 id（通读全书才有，`learn_foreshadow`）：`[{"line_id", "text", "source"}]`；规划用的是 `planning_guidance` 里「伏笔：」开头的那几句，这里只为下次在上一版上修订 |
 | `line_evidence` | 每句（文风卡句与场面句）的依据落在哪几章：`{line_id: {"quotes", "chapters": [[章, 引文数], …]}}`；只给画像页（「贯穿全书」「集中在第 X–Y 章」），不进契约 |
 | `voice` | 测量核声音特征 + 具体习惯句（作者自己的高频词与大致频率）+ 作者自身的参照分布 |
 | `voice_signature` | **过渡别名**：与 `voice` 同源、不带分布。运行时契约的画像白名单与刻意复沓旗标 `deliberate_repetition` 的读者（新鲜度预算、场景诊断）还在用——保留 |
@@ -165,6 +166,16 @@
     与场长分布、`scene_shift_distribution`——「一场多长」（`structure_card.reference_scene_scale`）与分章的参考场数
     （`snowflake_chaptering.scale`）按 `scene_sizes_measured` 用它；各章章法汇成 `chapter_craft`（功能与章末收法的占比、
     每章几条线 / 几个视点、高潮章之间隔几章），渲染进 `[结构画像]` 块（规划、文风卡合成、画像页都看得到）。
+  - **伏笔与回收**（`foreshadow` 步，排在归并之后、写文风卡之前，`learn_foreshadow`）：叙事层那次调用另交这一批的
+    `plants`（埋下了什么：物件 / 台词 / 人物细节 / 悬念提问 / 预言暗示 / 场景细节 / 反常举动 + 一句梗概）与 `payoffs`
+    （回收了前文的什么：揭晓真相 / 反转 / 物件再现 / 台词呼应 / 人物兑现 / 情感回收 + 梗概 + 它回收的是什么样的铺垫），
+    随结构一起记进游标与 run 行。读完后全书的埋 P1…与收 R1…交给模型配对（模板 `style_ref_foreshadow_match`，装不下
+    预算就把「收」分几次送；每处收至多配一处埋、埋不晚于收），配对按「通读身份 + 模板 + 模型」记进 run 行，沿用通读时
+    一起沿用。由配对确定性地算 `structure_card.foreshadowing`（埋了多少、几成回收、从埋到收隔几章、同章就收 / 隔十章
+    以上的占比、埋与收的类别占比、每章末同时悬着几处），渲染进 `[结构画像]`；再一次调用（`style_ref_foreshadow_craft`，
+    ≤60 对、近收远收均匀取）写 ≤4 句「怎么埋、怎么收」，在上一版上修订（`keep`，原句存 `foreshadow_lines`），定稿时
+    过文风卡同一道过滤，至多 3 句以「伏笔：」开头进 `planning_guidance`（规划手法共 10 句，合成的句从后往前让位）。
+    情节梗概只在载荷里给模型配对 / 归纳，不进画像与任何写作 / 规划提示。
   - **按场面的写法**（`situations` 步，排在 `tags` 之后，`learn_situations`）：窗口的场面标签 × 各批原始发现的引文——
     一条发现落在某类场面窗口里的引文占比，比这类场面占全书窗口的比例高出 1.5 倍以上、且至少 2 处，就算这类场面的
     特别做法；至少 8 窗的场面才做，每类按「集中度 × 条数」送 ≤40 条，一次调用（模板 `style_ref_situation_lines`，走
