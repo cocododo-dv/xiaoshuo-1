@@ -77,6 +77,7 @@ def test_injection_budget_reads_the_repo_file() -> None:
             "judge_min_separation": 2.0,
             "judge_min_dimension_separation": 1.0,
             "judge_calibration_anchors": 3,
+            "judge_samples": 3,
         },
     )
 

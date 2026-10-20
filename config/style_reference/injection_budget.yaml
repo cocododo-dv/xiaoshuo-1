@@ -41,7 +41,9 @@ style_first_reference_scene_chars_max: 5000
 # judge_min_separation:校准时作者原文与它们的普通改写,平均分至少差这么多(原始 10 分制)评审才算分得清;
 #   差不到 → 评审「不可用」,它的分不据以补丁、不据以退回。
 # judge_min_dimension_separation:某一维至少差这么多,这一维的分才作数。
-# judge_calibration_anchors:校准用几段原文(各配一段普通改写;调用数 = 3 × 它)。
+# judge_calibration_anchors:校准用几段原文(各配一段普通改写;调用数 = 它 + 2 × 它 × judge_samples)。
+# judge_samples(2026-10-20):作者看的评审(对照检查)与校准锚点各问几次、每维取中位数(并发,1–5)。实库同一份正文
+#   单问一次,折算后的总分在 6.0–9.0 之间跳;起草流程里的软 QC 仍问一次(放行由成对比较兜底)。
 fidelity:
   style_step_max_percentile: 90
   revision_min_improvement: 0.03
@@ -51,6 +53,7 @@ fidelity:
   judge_min_separation: 2.0
   judge_min_dimension_separation: 1.0
   judge_calibration_anchors: 3
+  judge_samples: 3
 
 # 跨场景连续性(bundle_builder.load_continuity_budget):上一场成稿尾部作 [前文声音锚] 的字数上限
 # (只在 neutral_first / 无绑定时进 bundle;style_first 下作者自己的稿子不当声音参照)。

@@ -290,6 +290,39 @@ def test_scene_check_job_created_with_the_client_project_still_files_under_the_s
     assert _reading_of(job.job_id).project_id == scene.project_id
 
 
+def test_a_scene_check_judges_the_text_the_writer_shows(session, monkeypatch) -> None:
+    """2026-10-20：一场「现在的正文」= 写作台上的那份。以前终稿优先——作者在写作台改过之后，检查查的仍是改前的终稿，
+    评审的改法也钉不到写作台的段落上。空白作者稿（写作台预热的白纸）不算，退回终稿。"""
+    from novel_system.services.author_drafts import AuthorDraftService
+
+    scene, profile_id = _scene_with_final(session, "chk_writer_text")
+    service = AuthorDraftService(session)
+    draft = service.ensure("scene", scene.scene_id, actor_ref="writer")["draft"]
+    service.save(draft["draft_id"], {"content": "<p></p>", "base_revision_no": draft["revision_no"]}, actor_ref="writer")
+    session.commit()
+    _content, ref = check_job.scene_current_text(session, scene.scene_id)
+    assert ref == "final_scene:final_chk_writer_text", "白纸作者稿不算正文"
+
+    edited = "<p>作者在写作台改过的这一段：潮水退去以后，他把灯放下。</p>" * 20
+    draft = service.ensure("scene", scene.scene_id, actor_ref="writer")["draft"]
+    service.save(draft["draft_id"], {"content": edited, "base_revision_no": draft["revision_no"]}, actor_ref="writer")
+    session.commit()
+    content, ref = check_job.scene_current_text(session, scene.scene_id)
+    assert content == edited and ref.startswith("author_draft:")
+
+    fake = _FakeJudge()
+    job = check_job.start_check_job(session, scene_id=scene.scene_id, profile_id=profile_id, llm_client=fake, llm_enabled=True)
+    session.commit()
+    register_job_handler(JOB_KIND_CHECK, check_job.run_check_job)
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (fake, True))
+    run_job_inline(job.job_id)
+    reading = _reading_of(job.job_id)
+    assert reading.draft_ref.startswith("author_draft:")
+    judged = fake.requests[0].messages[1]["content"]
+    assert "作者在写作台改过的这一段" in judged and "<p>" not in judged
+    assert reading.reading_json["visible_sha256"] == check_job.readings.visible_text_sha256(edited)
+
+
 # ---------------------------------------------------------------------------
 # 2026-09-24 §8 C1：取消对照检查（与分类 / 学习的取消同形）
 # ---------------------------------------------------------------------------
@@ -468,11 +501,17 @@ class _HundredScaleJudge(_FakeJudge):
 def test_check_job_reads_the_judge_on_the_template_scale(session, monkeypatch) -> None:
     """作业里评审按模板刻度读：答 6 记 6.0；答 60（0–100）没有一个分在刻度内 → 作业失败，不记读数。"""
     good_id = _start_check(session, "c3_good")
-    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_FakeJudge(), True))
+    fake = _FakeJudge()
+    monkeypatch.setattr(check_job, "resolve_check_client", lambda: (fake, True))
     run_job_inline(good_id)
     reading = _reading_of(good_id)
     # 只有对白一维有分：总分 = 6.0（模型自报的 7 不算）
     assert reading.judge_json["overall"] == 6.0 and reading.judge_json["dimensions"]["scene.dialogue"]["score"] == 6.0
+    # 2026-10-20：同一份提示问三次、每维取中位；读数记下问了几次，作业进度记三次调用
+    assert len(fake.requests) == 3 and len({request.messages[0]["content"] for request in fake.requests}) == 1
+    assert reading.judge_json["samples"] == 3 and reading.judge_json["dimensions"]["scene.dialogue"]["spread"] == 0.0
+    with SessionLocal() as db:
+        assert db.get(StyleReferenceJob, good_id).progress_json["llm_calls"] == 3
 
     bad_id = _start_check(session, "c3_bad")
     monkeypatch.setattr(check_job, "resolve_check_client", lambda: (_HundredScaleJudge(), True))

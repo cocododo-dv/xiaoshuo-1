@@ -181,8 +181,9 @@ export function fidJudgeState(judge) {
 }
 
 /* 评审（软质检的参考评审 / 对照检查）：
-   { overall, rawOverall, summary, state, stateView, dims: { dim: { score, raw, note, fix } } } 或 null。
-   score = 作数的分（校准后的；这一维分不清 / 评审不可用时为 null），raw = 模型原始分 */
+   { overall, rawOverall, summary, state, stateView, passScore, samples, dims: { dim: { score, raw, note, fix, spread } } }
+   或 null。score = 作数的分（校准后的；这一维分不清 / 评审不可用时为 null），raw = 模型原始分；samples = 问了几次
+   （对照检查同一份提示问三次、每维取中位，2026-10-20；起草流程里的软 QC 问一次），spread = 几次原始分的最高减最低 */
 export function fidJudgeView(judge) {
   if (!judge || typeof judge !== "object") return null;
   const dims = {};
@@ -196,15 +197,37 @@ export function fidJudgeView(judge) {
       raw,
       note: obj ? String(obj.note || "") : "",
       fix: obj ? String(obj.fix || "") : "",
+      spread: obj ? num(obj.spread) : null,
     };
   });
   const overall = num(judge.overall);
   const rawOverall = num(judge.raw_overall);
   if (overall == null && rawOverall == null && !Object.keys(dims).length) return null;
   const state = fidJudgeState(judge);
+  const samples = num(judge.samples);
   return {
     overall, rawOverall, summary: String(judge.summary || ""), dims, state, stateView: FID_JUDGE_STATES[state],
+    passScore: num(judge.pass_score), samples: samples != null && samples >= 1 ? Math.round(samples) : 1,
   };
+}
+
+/* 及格线怎么写：整数不带小数（「6 分以下」），否则一位小数 */
+export function fidPassText(line) {
+  const value = num(line);
+  if (value == null) return "6";
+  return Number.isInteger(value) ? String(value) : fidScoreText(value);
+}
+
+/* 评审里低于及格线、给了改法的几维（分从低到高）：对照检查的结果页与写作台深改「风格对照」是同一份——
+   [{ dimension, label, score, note, fix }]。没有及格线（旧记录）按 6 分算 */
+export function fidFixDims(judge) {
+  const view = fidJudgeView(judge);
+  if (!view) return [];
+  const line = view.passScore != null ? view.passScore : 6;
+  return Object.entries(view.dims)
+    .filter(([, entry]) => entry.score != null && entry.score < line && entry.fix)
+    .map(([dimension, entry]) => ({ dimension, label: styleDimensionLabel(dimension), score: entry.score, note: entry.note, fix: entry.fix }))
+    .sort((a, b) => a.score - b.score || STYLE_DIMENSIONS.indexOf(a.dimension) - STYLE_DIMENSIONS.indexOf(b.dimension));
 }
 
 /* 评审里分最低的几维（起草台上的简表） */
@@ -218,9 +241,9 @@ export function fidWeakestDims(judge, limit = 3) {
     .slice(0, limit);
 }
 
-/* 16 维按层：[{ layer, label, rows: [{ dimension, label, measured, judged, judgedRaw, note, state }] }]
+/* 16 维按层：[{ layer, label, rows: [{ dimension, label, measured, judged, judgedRaw, note, fix, state }] }]
    measured：确定性读数（只有能按字数统计的几维有）；judged：作数的评审分（校准后的；不作数时 null）；judgedRaw：
-   模型原始分；state：给这部作品设的维度状态 */
+   模型原始分；fix：评审给这一维的改法（引一句原文说在哪里）；state：给这部作品设的维度状态 */
 export function fidDimensionGroups(reading, judge, { states = null } = {}) {
   const measured = (reading && reading.dimension_scores) || {};
   const view = fidJudgeView(judge);
@@ -234,6 +257,7 @@ export function fidDimensionGroups(reading, judge, { states = null } = {}) {
       judged: view && view.dims[dim] ? view.dims[dim].score : null,
       judgedRaw: view && view.dims[dim] ? view.dims[dim].raw : null,
       note: view && view.dims[dim] ? view.dims[dim].note : "",
+      fix: view && view.dims[dim] ? view.dims[dim].fix : "",
       state: (states && states[dim]) || "normal",
     })),
   }));

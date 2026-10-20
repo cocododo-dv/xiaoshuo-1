@@ -327,8 +327,8 @@ Retired and ignored except for one startup warning: the LLM quota / cost / auto-
   approval nor export. Reopening needs a reason and cascades revocation.
 - Story memory (`story_memory.py`, `story_editorial.py`): prompts read working memory (canon + unreviewed
   extractions), digests + derived thread ledger, accepted editorial notes; hard QC / final gate: canon.
-- One diagnosis record (`scene_diagnosis`, stable `signal_id`); ignore lists hold signal ids and are honoured by 文学质量
-  and the final gate; writes that change findings return `diagnosis_rollup`.
+- One diagnosis record (`scene_diagnosis`, stable `signal_id`; 对照检查 findings join as `style`); ignore lists hold
+  signal ids and are honoured by 文学质量 and the final gate; writes that change findings return `diagnosis_rollup`.
 - Style reference: jobs are owner-token fenced and a process exit requeues them; `StylePolicy` is the only binding
   decision, `binding_config.normalize_binding_config` the only config interpreter, `judge.py` the only judge,
   `readings.record_fidelity_reading` the only readings writer, `reference_copy_gate.py` the only copy gate (≥ 12 shared

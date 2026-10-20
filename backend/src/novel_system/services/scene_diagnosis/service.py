@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterGoal, SceneCard, WriterEvaluation
+from novel_system.services.hash_engine import sha256_text
 from novel_system.services.literary_quality.calibration_source import (
     BoundProfile,
     bound_profile_for_policy,
@@ -23,6 +24,7 @@ from novel_system.services.scene_diagnosis.findings import (
     evaluation_findings,
     finding_counts,
     finding_sort_key,
+    style_findings,
 )
 from novel_system.services.scene_diagnosis.serialize import serialize_passage_review
 from novel_system.services.scene_diagnosis.text import DiagnosisText
@@ -257,6 +259,9 @@ class SceneDiagnosisService:
 
         review_row = context.latest_evaluation(scene.scene_id, NEAR_FINAL_RUBRIC_ID)
         ai_row = context.latest_evaluation(scene.scene_id, LITERARY_REVISION_RUBRIC_ID)
+        policy = self.style_policy(scene)
+        style_row = context.style_check(scene.scene_id, policy.profile_id) if policy.bound else None
+        style_status = self._style_status(style_row, text)
         passage_rows = context.passage_rows(scene.scene_id)
         if chapter_row is None and scene.chapter_id:
             chapter_row = context.latest_evaluation(scene.chapter_id, LITERARY_REVISION_RUBRIC_ID, object_type="chapter")
@@ -273,6 +278,12 @@ class SceneDiagnosisService:
                     item
                     for item in evaluation_findings(chapter_row, text, source="ai", label_for=AI_DIMENSION_LABELS, origin_kind="chapter")
                     if item.get("evidence") is not None
+                )
+            if style_row is not None:
+                findings.extend(
+                    style_findings(
+                        style_row, text, current=style_status == "current", dimension_states=policy.dimension_states
+                    )
                 )
 
         opinions: dict[str, dict[str, Any]] = {}
@@ -325,6 +336,7 @@ class SceneDiagnosisService:
                 "created_at": ai_row.created_at if ai_row is not None else None,
                 "source_text_ref": ai_row.source_text_ref if ai_row is not None else None,
             },
+            "style": self._style_block(style_row, style_status, bound=bool(policy.bound)),
             "review": {
                 "status": self._evaluation_status(review_row, text, context),
                 "evaluation_id": review_row.evaluation_id if review_row is not None else None,
@@ -339,6 +351,41 @@ class SceneDiagnosisService:
                 "decision_log": list(scene.deep_review_decision_log_json or []),
                 "ignored_issue_keys": sorted(ignored),
             },
+        }
+
+    @staticmethod
+    def _style_status(row: Any, text: DiagnosisText) -> str:
+        """最近一次对照检查查的是不是现在这份字：``not_run`` / ``current`` / ``stale``（改前的检查）。按可见文字比
+        （读数记的 ``visible_sha256``；旧读数只有原文哈希，按原文比）。"""
+
+        if row is None:
+            return "not_run"
+        if text.layer == "none":
+            return "stale"
+        reading_json = row.reading_json if isinstance(row.reading_json, dict) else {}
+        visible = reading_json.get("visible_sha256")
+        if visible:
+            return "current" if visible == text.sha256 else "stale"
+        return "current" if row.text_sha256 == sha256_text(text.content) else "stale"
+
+    @staticmethod
+    def _style_block(row: Any, status: str, *, bound: bool) -> dict[str, Any]:
+        """深改面板里「风格对照」那一块：最近一次对照检查的口径与总分（发现本身在 findings 里）。"""
+
+        judge = row.judge_json if row is not None and isinstance(row.judge_json, dict) else {}
+        calibration = judge.get("calibration") if isinstance(judge.get("calibration"), dict) else {}
+        return {
+            "bound": bound,
+            "status": status if bound else "unbound",
+            "reading_id": row.reading_id if row is not None else None,
+            "created_at": row.created_at if row is not None else None,
+            "draft_ref": row.draft_ref if row is not None else None,
+            "overall": judge.get("overall"),
+            "raw_overall": judge.get("raw_overall"),
+            "pass_score": judge.get("pass_score"),
+            "judge_state": calibration.get("state") if judge else None,
+            "samples": judge.get("samples") or (1 if judge else None),
+            "summary": judge.get("summary") or "",
         }
 
     def payload(self, scene_id: str) -> dict[str, Any]:

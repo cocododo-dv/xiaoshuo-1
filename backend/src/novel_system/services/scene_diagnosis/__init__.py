@@ -12,7 +12,10 @@
 * ``source``：``rules``（规则维度，``literary_quality`` 包）/ ``craft``（段落节奏：贴邻叠句、
   段落偏长、句首重复——从浏览器本地规则搬到服务端）/ ``review``（起草台的准定稿评审）/
   ``ai``（写作台的 AI 深评：整场一次、「AI 看这一处」的局部深评、成稿中心「AI 通读本章」
-  里落到这一场的发现——``origin.kind`` 区分 ``scene`` / ``passage`` / ``chapter``）。
+  里落到这一场的发现——``origin.kind`` 区分 ``scene`` / ``passage`` / ``chapter``）/ ``style``（风格对照，
+  2026-10-20：这一场按绑定画像最近一次「对照检查」——参考评审几次取中位——里低于及格线、给了改法的维，每维一条；
+  证据是改法里引的那句原文；起草流程的软 QC 评审只问一次，不进清单。载荷的 ``style`` 块说这次检查是不是对着现在
+  这份字）。
 * ``signal_id`` 稳定：规则按「命中了什么」取 id（`literary_quality.rule_signal_id`），节奏按
   段落开头与命中文本，评审 / 深评按维度 + 证据。作者的「忽略」记在 ``SceneCard`` 的
   ``deep_review_ignored_keys_json`` 里，按 id 生效，并反向作用到文学质量视图与成稿门。
@@ -69,6 +72,7 @@ from novel_system.services.scene_diagnosis.findings import (
     finding_counts,
     finding_sort_key,
     rule_findings,
+    style_findings,
 )
 from novel_system.services.scene_diagnosis.serialize import (
     serialize_passage_review,
@@ -155,6 +159,7 @@ __all__ = [
     "passage_scope",
     "rule_calibration_from_reference",
     "rule_findings",
+    "style_findings",
     "serialize_passage_review",
     "serialize_patch_candidate",
     "summarize_counts",

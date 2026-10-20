@@ -5,10 +5,13 @@ import {
   fidErrorInfo, fidJobView, fidJudgeView, fidPatchView, fidRankText, fidReadingStates, fidScoreText, fidStyleStepView,
   fidVerdict, fidWeakestDims,
 } from "./ws-fidelity-model.js";
-import { fidCheck, fidLoadScene, fidResumeCheck, fidScene, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
 import {
-  FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityJudgeState, FidelityMeter,
+  fidCheck, fidLoadScene, fidResumeCheck, fidScene, fidSceneCheckKey, fidStartCheck, useFidelityStore,
+} from "./ws-fidelity-store.js";
+import {
+  FidelityDimensionTable, FidelityErrorLine, FidelityFixList, FidelityGaps, FidelityJudgeState, FidelityMeter,
 } from "./ws-fidelity-ui.jsx";
+import { writerIntents } from "./ws-view-intents.js";
 
 const { useEffect } = React;
 
@@ -19,11 +22,13 @@ const { useEffect } = React;
    → 修改稿 → 补丁留没留（没有更像就退回）→ 终稿；参考评审分最低的几维与说明；和作者不一样的地方。
    本地没有这次运行的记录时，用这一场的读数接口（GET /api/v1/scenes/{id}/style-fidelity）补。
    「对照检查」对这一场现在的正文跑一次检查作业（风格参考同一个作业），结果记在这一场的读数里。
+   2026-10-20：起草流程里的评审只问一次（同一份正文单问一次，分数能在 6 到 9 之间跳），这里照实标「起草时评审一次」；
+   对照检查问三次、每维取中位，结果列「要改的几维」与改法，「去写作台按这些改」进写作台深改的「风格对照」。
    数字的意思：把参考作者自己书里的段落按像不像作者本人排成 100 位（第 1 位最像），稿子排第几位。
    ========================================================== */
 
 export function sceneCheckKey(sceneId) {
-  return `scene:${sceneId}`;
+  return fidSceneCheckKey(sceneId);
 }
 
 /* 这次运行的一串（或读数接口补出来的一串）：{ first, step, revision, patch, final, judge } */
@@ -80,7 +85,7 @@ function DecisionRow({ label, view, testId }) {
   );
 }
 
-function CheckBlock({ sceneId, bound, manual, go }) {
+function CheckBlock({ sceneId, bound, manual, go, writerSid = null }) {
   const key = sceneCheckKey(sceneId);
   const entry = fidCheck(key);
   const busy = !!entry && (entry.phase === "starting" || entry.phase === "running");
@@ -121,10 +126,17 @@ function CheckBlock({ sceneId, bound, manual, go }) {
               <dd>
                 {judge.overall != null ? <FidelityMeter score={judge.overall} label="参考评审总分" /> : `原始 ${fidScoreText(judge.rawOverall)}`}
                 <FidelityJudgeState view={judge} testId="scene-fidelity-manual-judge-state" />
+                <span className="scn2-fid-sub">{judge.samples > 1 ? `${judge.samples} 次取中位` : "评审一次"}</span>
               </dd>
             </div>
           )}
           {judge && judge.summary && <p className="scn2-fid-note">{judge.summary}</p>}
+          <FidelityFixList
+            judge={manual.judge}
+            limit={3}
+            onWriter={writerSid && go ? () => go("writer", writerIntents(writerSid, { source: "style" })) : null}
+            testId="scene-fidelity-fixes"
+          />
         </div>
       ) : (!busy && !(entry && entry.phase === "failed") && (
         <p className="scn2-fid-note">{bound ? "还没对这一场做过对照检查。" : "这一场现在没有用参考书的文风，没法对照。"}</p>
@@ -133,7 +145,7 @@ function CheckBlock({ sceneId, bound, manual, go }) {
   );
 }
 
-export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null }) {
+export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null, writerSid = null }) {
   useFidelityStore();
   const runKey = runFidelity
     ? [runFidelity.first_draft, runFidelity.revision, runFidelity.final].map((r) => (r && r.reading_id) || "").join("|")
@@ -177,10 +189,11 @@ export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null }) {
       {judge && (
         <div className="scn2-fid-judge" data-testid="scene-fidelity-judge">
           <div className="scn2-fid-row">
-            <dt>评审</dt>
+            <dt title="起草流程里的评审只问一次：同一份正文单问一次，分数能差两三分。要可靠的结论和改法，用下面的对照检查">起草时评审</dt>
             <dd>
-              {judge.overall != null ? <FidelityMeter score={judge.overall} label="参考评审总分" /> : "—"}
+              {judge.overall != null ? <FidelityMeter score={judge.overall} label="起草时评审总分" /> : "—"}
               <FidelityJudgeState view={judge} testId="scene-fidelity-judge-state" />
+              <span className="scn2-fid-sub">{judge.samples > 1 ? `${judge.samples} 次取中位` : "一次"}</span>
             </dd>
           </div>
           {weakest.length > 0 && (
@@ -203,7 +216,7 @@ export function SceneFidelityPanel({ sceneId, runFidelity = null, go = null }) {
           <FidelityDimensionTable reading={latest} judge={judgeSource} states={fidReadingStates(latest)} />
         </details>
       )}
-      <CheckBlock sceneId={sceneId} bound={bound} manual={manual} go={go} />
+      <CheckBlock sceneId={sceneId} bound={bound} manual={manual} go={go} writerSid={writerSid} />
     </section>
   );
 }

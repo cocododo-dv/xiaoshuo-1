@@ -64,10 +64,12 @@ function clearViewIntents(view) {
    · sid：先定位到这一场（ws:writer-scene）；
    · deep / signalId：进这一场的深改姿态，signalId 让深改面板到了诊断就选中这一条（隐含 deep）。没有 sid
      （章级结果没有单一场景可去）时不带姿态，是空数组：只回写作台；
+   · source：进深改、清单筛到这个来源（对照检查做完「去写作台按这些改」给 "style"；隐含 deep）；
    · posture：调用方点名的姿态（待办卡动作上带的、起草台「去写作台」给的），没有 sid 也照样带上。 */
-function writerIntents(sid, { deep = false, signalId = "", posture = "" } = {}) {
+function writerIntents(sid, { deep = false, signalId = "", source = "", posture = "" } = {}) {
   const intents = sid ? [{ type: "ws:writer-scene", detail: sid }] : [];
   if (sid && signalId) intents.push({ type: "ws:writer-posture", detail: { posture: "deep", signal_id: signalId } });
+  else if (sid && source) intents.push({ type: "ws:writer-posture", detail: { posture: "deep", source } });
   else if (sid && deep) intents.push({ type: "ws:writer-posture", detail: "deep" });
   else if (posture) intents.push({ type: "ws:writer-posture", detail: posture });
   return intents;

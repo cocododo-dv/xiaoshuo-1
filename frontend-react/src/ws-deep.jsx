@@ -9,14 +9,15 @@ import {
 } from "./ws-deep-prefs.js";
 import { useWrInert } from "./ws-writer-hooks.js";
 import { findingLabel, findingSeverityLabel, findingSeverityTone } from "./labels/finding.js";
+import { DxStyleBlock } from "./ws-deep-style.jsx";
 import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
    ws-deep — 写作台深改面板（2026-09-22 场景诊断统一）
    ----------------------------------------------------------
    诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把规则维度体检（QUALITY_DIMENSIONS）、段落节奏
-   （贴邻叠句 / 段落偏长 / 句首重复——原先是这里三条本地正则）、起草台的准定稿评审和 AI 深评
-   合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
+   （贴邻叠句 / 段落偏长 / 句首重复——原先是这里三条本地正则）、起草台的准定稿评审、AI 深评和风格参考的
+   对照检查（风格对照，2026-10-20；那一块在 ws-deep-style.jsx）合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
    evidence{paragraph_index,start,end,excerpt}），文学质量视图读的也是这份，所以一条发现从那边
    点过来，这里就是同一条。
    · wrDxFetch / wrDxRunAi     取诊断 / 跑「AI 深评」（POST 同一路径；无模型时后端 409，这里给「去系统设置」）
@@ -35,8 +36,9 @@ const WR_DX_SOURCES = {
   craft: "节奏",
   review: "起草评审",
   ai: "AI 深评",
+  style: "风格对照",
 };
-const WR_DX_SOURCE_ORDER = ["rules", "craft", "review", "ai"];
+const WR_DX_SOURCE_ORDER = ["rules", "craft", "review", "ai", "style"];
 const WR_DX_LENS = { story: "故事", character: "人物", prose: "文字", reader: "读者", theme: "主题" };
 const WR_DX_ORIGIN = { passage: "局部", chapter: "通读" };
 const WR_DX_VERDICT = {
@@ -299,6 +301,9 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
         {diagnosis && !noText && (
           <DxAiBlock ai={diagnosis.ai} busy={aiBusy} error={aiError} onRun={onRunAi} onRetry={onRunAi} onOpenSettings={onOpenSettings} />
         )}
+        {diagnosis && !noText && diagnosis.style && (
+          <DxStyleBlock style={diagnosis.style} sceneId={diagnosis.scene_id} onChecked={onRescan} />
+        )}
 
         {diagnosis && diagnosis.style_bound && (
           <Notice tone="info" className="wr-dxd-notice">
@@ -406,7 +411,7 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
         )}
 
         <div className="wr-dxd-note">
-          诊断只指出问题、不替你改字：规则体检、节奏提示和起草台的评审随时可看，AI 深评要用模型。
+          诊断只指出问题、不替你改字：规则体检、节奏提示和起草台的评审随时可看，AI 深评与风格对照要用模型。
           忽略过的条目不再提示，也不会再出现在文学质量和成稿中心里；点「已忽略」里的恢复可以找回。
           {syncNote ? <> {syncNote}</> : null}
         </div>

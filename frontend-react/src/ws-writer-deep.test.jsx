@@ -97,8 +97,23 @@ function diagnosisPayload(findings = [ECHO], extra = {}) {
   };
 }
 
-/* diagnosis：GET 的答复；aiRun：POST（AI 深评）的答复或要抛的错误；patch：改写接口的答复 */
-async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch = null, passage = null } = {}) {
+/* 风格对照（对照检查的评审并进诊断，2026-10-20）：改法引的「能听见潮水」在第 1 段 */
+const STYLE_FINDING = {
+  signal_id: "style:theme.emotional_tone:abcd1234", source: "style", dimension: "theme.emotional_tone", label: "情感基调",
+  lens: null, severity: "revision", issue: "写到潮水时语调忽然庄重。", recommendation: "在「能听见潮水」处，用一句自嘲压住抒情。",
+  why: "对照检查：这一维 5.6 / 10，6 分以上算像（已按作者原文校准，评审 3 次取中位）。",
+  evidence: { excerpt: "能听见潮水", paragraph_index: 0, start: 9, end: 14 }, context: "能听见潮水",
+  ignored: false, stale: false, house_taste: false, related: null, opinion: null,
+  origin: { kind: "style", reading_id: "sfr-1", created_at: "2026-10-20T06:00:00Z", score: 5.6, pass_score: 6, samples: 3 },
+  patch: { candidate_category: "local_patch", revision_strategy: "在「能听见潮水」处，用一句自嘲压住抒情。" },
+};
+const STYLE_BLOCK = {
+  bound: true, status: "current", reading_id: "sfr-1", created_at: "2026-10-20T06:00:00Z", draft_ref: "author_draft:d1:rev1",
+  overall: 6.4, raw_overall: 7, pass_score: 6, judge_state: "calibrated", samples: 3, summary: "",
+};
+
+/* diagnosis：GET 的答复；aiRun：POST（AI 深评）的答复或要抛的错误；patch：改写接口的答复；check：发起对照检查的答复 */
+async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch = null, passage = null, check = null } = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client);
   const baseGet = client.apiGet.getMockImplementation();
@@ -122,6 +137,7 @@ async function loadWriter({ diagnosis = diagnosisPayload(), aiRun = null, patch 
       return Promise.resolve(patch || { candidate: { patch_id: "p1", replacement_options: [{ option_id: "o1", replacement_text: "门外很安静，静得能听见潮水。" }] } });
     }
     if (/\/passage-patch-candidates\//.test(target)) return Promise.resolve({});
+    if (/\/style-reference\/checks$/.test(target)) return Promise.resolve(typeof check === "function" ? check(body) : (check || {}));
     return Promise.resolve({});
   });
   /* 偏好 PATCH：像服务端那样把身体回显、修订号 +1（默认的 {} 会把本机忽略清单冲成空） */
@@ -620,6 +636,43 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     const counts = summary.WsDiagnosis.sceneCounts("s1");
     expect(counts).toMatchObject({ open: 1, ignored: 1 });
     void WsDiagnosis;
+  });
+
+  it("从对照检查带着 source=style 过来：清单筛到风格对照、停在它的第一条；那一块说检查的口径；就地重新检查，跑完重新取诊断", async () => {
+    let gets = 0;
+    const diagnosis = () => {
+      gets += 1;
+      return diagnosisPayload([ECHO, STYLE_FINDING], { style_bound: true, style: gets > 1 ? { ...STYLE_BLOCK, reading_id: "sfr-2" } : STYLE_BLOCK });
+    };
+    let posted = null;
+    const check = (body) => {
+      posted = body;
+      return {
+        job_id: "job-s", job: { job_id: "job-s", kind: "check", status: "succeeded", finished_at: "2026-10-20T06:05:00Z" },
+        reading: { reading_id: "sfr-2", scene_id: "s1", project_id: "prj-main", judge: { overall: 6.6, samples: 3 } },
+      };
+    };
+    const { WriterRoom, WrDocs } = await loadWriter({ diagnosis, check });
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+
+    await act(async () => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: { posture: "deep", source: "style" } })));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.textContent).toContain("写到潮水时语调忽然庄重"), T);
+    const on = drawer.querySelector('.wr-dxd-chip[aria-pressed="true"]');
+    expect(on.textContent).toContain("风格对照");
+    expect(drawer.textContent).not.toContain("贴邻重复。");
+    expect(drawer.querySelector('.wr-dxd-row[aria-pressed="true"]').textContent).toContain("风格对照");
+    expect(drawer.textContent).toContain("改法：在「能听见潮水」处，用一句自嘲压住抒情。");
+    expect(host.querySelector('mark.wr-dx.is-active[data-dx="style:theme.emotional_tone:abcd1234"]').textContent).toBe("能听见潮水");
+    const meta = drawer.querySelector('[data-testid="dx-style-meta"]').textContent;
+    expect(meta).toContain("评审 6.4（6 分以上算像，已校准，3 次取中位）");
+    expect(meta).toContain("对着现在这份正文");
+
+    await click(drawer.querySelector('[data-testid="dx-style-check"]'));
+    await vi.waitFor(() => expect(posted).toEqual({ scene_id: "s1" }), T);
+    await vi.waitFor(() => expect(gets).toBe(2), T);
   });
 
   it("有参考绑定：面板说规则已按参考书校准、本场放过了哪些词；常态 / 常见的发现在行上标出来", async () => {

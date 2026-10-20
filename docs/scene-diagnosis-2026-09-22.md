@@ -145,3 +145,17 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 真实项目（『龙族』绑定，实库只读探针）：收尾按 96 个章末校准（`endings_source = units`）；常态维度 6 个（意象同质 / 句式单调 / 重复动作 / 意象场复用 / 说明式对白 / 过度解释动机），常见 3 个（抉择压力 / 收束驱动 / 模型腔——48 个窗口下抉择压力曾被判成常态，96 个窗口的 Wilson 下界把它放到「常见」）；那一场 25 段的作者稿按密度放过 13 个词（手 ×9、光 ×4、眼 ×4、冷 ×3……），规则发现 1 条修订 + 2 条审美 + 2 条提示。
 
 测试：`tests/test_scene_diagnosis_round3.py` 的统计助手、学阈值、分档与画像声明、收尾来源四个用例 + 绑定场用例（无标题段、靠场界）+ 章 rollup 路由；前端 `ws-chapter-run.test.jsx`（完成一场就刷新）、`ws-diagnosis-summary.test.js`（`refreshChapter`）、`ws-writer-deep.test.jsx`（放过的词与常态 / 常见标记）。部署：无迁移、无提示词改动。
+
+## 9. 风格对照（2026-10-20）：对照检查进同一份诊断
+
+作者的原话：「风格参考里面的对照检查做完了好像也就是做完了，有问题我好像也无从下手；写作深改台里面也有一个诊断，成稿中心里面也有诊断，我感觉有点乱」。
+
+核对的结果（实库只读）：对照检查的评审每一维必填「怎么改」（`fix`：引一句原文说在哪里，再照样例的手法说怎么改），读数里存着、起草流程的补丁也在用，但界面一处都不显示；检查的读数记在风格参考自己的表（`style_fidelity_readings`）里，场景诊断不认，所以写作台没有「按这条改写 / 忽略」。CH01_SC10：同一份正文检查给了 15 条改法，深改清单里的 8 条（7 条规则、1 条起草评审）和它们一条都对不上。成稿中心的「诊断」页签与写作台深改读的本来就是同一份记录（它多的是「AI 通读本章」与章级判断）。
+
+**来源 `style`（风格对照）。** `SceneDiagnosisService.diagnose_scene` 取这一场按**当前绑定画像**最近一次对照检查的读数（`source = manual_check`，`vocabulary.STYLE_FINDING_READING_SOURCE`；`DiagnosisContext.style_checks` 一次批量取齐），`findings.style_findings` 把评审里**作数的分低于及格线、给了改法**的维各做成一条发现：`label` 是维的中文名，`issue` 是评审说明，`recommendation` 是改法，`why` 说分数、及格线、口径与问了几次，`evidence` 钉到改法（其次说明）里引的那句原文所在的编辑器段落（「」『』“” 里 ≥2 字的引文，`locate_in_paragraphs`），`origin {kind: style, reading_id, score, pass_score, samples}`，`signal_id = style:<维>:<钉住的那句的摘要>`（重查指着同一处，忽略过的仍是忽略）。不出发现的：达标的维、没给改法的维、分不清 / 评审不可用（校准说分不清作者）的维、作品设成「不学」的维（按现在的设置，检查之后改的也算）、别的画像的检查、起草流程里软 QC 的评审（只问一次，噪声太大，见 `docs/style-reference.md` §7a「几次取中位」）。严重度一律 `revision`；不进成稿门（像不像不挡批准）。
+
+**新旧。** 载荷多一块 `style {bound, status: not_run | current | stale | unbound, reading_id, created_at, draft_ref, overall, raw_overall, pass_score, judge_state, samples, summary}`。`current` 按可见文字判：读数记 `reading_json.visible_sha256`（与 `DiagnosisText.sha256` 同一个口径——写作台把终稿的纯文本存成 `<p>` 段落，原文哈希变了、可见文字没变，仍是对着现在这份字）；旧读数只有原文哈希，按原文比。`stale` 时引文还在正文里的照常钉住，找不到的标 `stale`。对照检查查的「这一场现在的正文」也改成写作台上看到的那份（有字的作者稿 → 终稿 → 最近的草稿；`check_job.scene_current_text`），检查与诊断对着同一份字。
+
+**界面。** 写作台深改：来源筛选多「风格对照」；顶上一块（`ws-deep-style.jsx`）说最近一次检查的分、及格线、口径、问了几次与新旧，按钮「对照检查 / 重新检查」就地发起（与起草台共用一个作业键 `fidSceneCheckKey`），跑完读数 id 变了就重新取诊断。风格页的对照检查结果先列「要改的几维」（`FidelityFixList`：低于及格线、给了改法的维，分从低到高；按维的表里每维也带改法），查的是作品里的一场时给「去写作台按这些改」（`writerIntents(sid, {source: "style"})`：深改清单筛到风格对照、停在第一条）；起草台证据栏的对照检查同样。起草流程里的评审照实标「起草时评审 · 一次」。有的改法其实是在改内容（把参考书的题材往作者的故事上搬），所以不做一键全改：一条条由作者挑，不要的忽略。
+
+测试：`tests/test_scene_diagnosis_style.py`（发现的形状与钉段、达标 / 没改法 / 分不清的维不出、重查 id 不变、改稿后过时与引文丢失、存成 HTML 仍是同一份字、忽略与计数、只认绑定画像的对照检查、评审不可用）、`tests/test_style_reference_check_job.py`（检查写作台上的那份正文、记可见文字哈希）；前端 `ws-writer-deep.test.jsx`（带 source 进深改、风格对照块、就地检查后重新取诊断）、`ws-styleref-check.test.jsx`（要改的几维、去写作台、贴文字没有去处）、`ws-fidelity-model.test.js`（`fidFixDims`）。部署：无迁移、无提示词改动。

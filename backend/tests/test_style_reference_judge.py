@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,7 @@ from sqlalchemy import select
 
 from novel_system.db.models import AttemptTracker, QcReport, StyleReferenceJob, StyleReferenceProfile
 from novel_system.services.prompt_builder import load_prompt_templates
+from novel_system.services.errors import DomainError
 from novel_system.services.qc_validator import validate_qc_report
 from novel_system.services.style_reference import judge as J
 from novel_system.services.style_reference import judge_calibration as JC
@@ -29,6 +31,7 @@ from novel_system.services.style_reference import policy as policy_module
 from novel_system.services.style_reference import style_step as S
 from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS
 from novel_system.services.style_reference.jobs import JOB_KIND_CALIBRATE, StyleJobService, run_job_inline
+from novel_system.services.style_reference.untrusted_data import UNTRUSTED_SYSTEM_INSTRUCTION
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.style_reference_inject_helpers import seed_reference
 
@@ -97,6 +100,119 @@ def test_the_unified_template_requires_all_sixteen_dimensions_and_never_asks_for
     assert "style_ref_check_judge" not in load_prompt_templates()
     soft = load_prompt_templates()["soft_qc"].structured_schema["properties"]
     assert "dimension_scores" not in soft and "style_score" not in soft, "软 QC 模板只剩润色口径"
+
+
+# ---------------------------------------------------------------------------
+# 几次取中位（2026-10-20：同一份正文单问一次，折算后的总分在 6 到 9 之间跳）
+# ---------------------------------------------------------------------------
+
+
+def _judged(scores: dict[str, float], *, default: float = 7.0, summary: str = "", note_tag: str = "") -> J.JudgeScores:
+    structured = _structured(scores, default=default)
+    for dim, entry in structured["dimensions"].items():
+        entry["note"] = f"{dim} 说明{note_tag}"
+        entry["fix"] = f"{dim} 改法{note_tag}"
+    structured["summary"] = summary
+    parsed = J.parse_judge_output(structured)
+    assert parsed is not None
+    return parsed
+
+
+def test_several_judgements_combine_by_the_median_of_each_dimension() -> None:
+    low = _judged({"theme.motifs": 3.9, "narrative.perspective": 4.8}, default=6.6, summary="低", note_tag="#低")
+    mid = _judged({"theme.motifs": 4.6, "narrative.perspective": 6.3}, default=7.0, summary="中", note_tag="#中")
+    high = _judged({"theme.motifs": 7.3, "narrative.perspective": 8.6}, default=8.4, summary="高", note_tag="#高")
+    combined = J.combine_judge_samples([high, low, mid])
+    assert combined.samples == 3
+    assert combined.dimensions["theme.motifs"].score == 4.6 and combined.dimensions["narrative.perspective"].score == 6.3
+    assert combined.dimensions["scene.dialogue"].score == 7.0, "其余维：6.6 / 7.0 / 8.4 的中位"
+    assert combined.dimensions["theme.motifs"].note.endswith("#中") and combined.dimensions["theme.motifs"].fix.endswith("#中")
+    assert combined.spreads["theme.motifs"] == 3.4 and combined.spreads["narrative.perspective"] == 3.8
+    assert combined.summary == "中", "总评取均分居中的那一次"
+    assert J.combine_judge_samples([mid]) is mid, "只问一次：原样"
+    # 离中位数不远（1 分以内）的几次里，优先用引了原文的改法——它才钉得到写作台的段落上
+    def motif(score: float, fix: str, note: str = "") -> J.JudgeScores:
+        structured = _structured(default=7.0)
+        structured["dimensions"]["theme.motifs"] = {"score": score, "applicable": True, "note": note, "fix": fix}
+        return J.parse_judge_output(structured)
+
+    plain_fix = motif(5.0, "在描写许望进门时补一笔旧雨伞", "没引原文")
+    quoted = motif(5.6, "在「那封旧信」处补一笔旧雨伞", "引了原文")
+    picked = J.combine_judge_samples([plain_fix, quoted, motif(8.0, "远")]).dimensions["theme.motifs"]
+    assert picked.score == 5.6 and picked.fix == "在「那封旧信」处补一笔旧雨伞"
+    picked = J.combine_judge_samples([plain_fix, motif(5.2, "在描写林昭时", "中位"), motif(9.0, "在「那封旧信」处改", "离得远")])
+    assert picked.dimensions["theme.motifs"].note == "中位", "引了原文但分数离中位数太远的那次不用"
+    # 一维算不算「有证据」：至少一半的回答这么说
+    silent = _structured(default=7.0)
+    silent["dimensions"]["scene.dialogue"] = {"score": 0, "applicable": False, "note": "没有对白", "fix": ""}
+    no_dialogue = J.parse_judge_output(silent)
+    assert J.combine_judge_samples([no_dialogue, no_dialogue, mid]).dimensions["scene.dialogue"].applicable is False
+    assert J.combine_judge_samples([no_dialogue, mid, high]).dimensions["scene.dialogue"].score == 7.7, "7.0 与 8.4 的中位"
+    # 记录带上问了几次与每维的差距；校准折算照旧按中位数算
+    verdict = J.apply_calibration(combined, calibration=None, state=J.STATE_MISSING, dimension_states=None, thresholds=THRESHOLDS)
+    record = J.judge_record(verdict, source="manual_check")
+    assert record["samples"] == 3 and record["dimensions"]["theme.motifs"]["spread"] == 3.4
+    assert record["dimensions"]["theme.motifs"]["raw"] == 4.6
+
+
+class _PanelClient(AccountedGenerateMixin):
+    """评审替身：按调用先后给出不同的分；``fail`` 里的序号这一次抛错（模拟中转超时）。"""
+
+    def __init__(self, overall_by_call: list[float], fail: tuple[int, ...] = ()) -> None:
+        self.overall_by_call = overall_by_call
+        self.fail = set(fail)
+        self.requests: list = []
+        self._lock = threading.Lock()
+
+    def generate(self, request):  # noqa: ANN001
+        with self._lock:
+            index = len(self.requests)
+            self.requests.append(request)
+        if index in self.fail:
+            raise RuntimeError("relay timeout")
+        structured = _structured(default=self.overall_by_call[index % len(self.overall_by_call)])
+        return SimpleNamespace(
+            structured_output=structured, text=json.dumps(structured, ensure_ascii=False), usage={}, finish_reason="stop",
+            provider="fake", model="fake", response_format="json_object", request_id=None, raw_response={},
+        )
+
+
+def _panel(client, *, samples: int = 3):
+    from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
+    from novel_system.services.style_reference.llm_nodes import NodeRuntime
+
+    template = load_prompt_templates()[J.JUDGE_TEMPLATE]
+    route = SimpleNamespace(
+        model="fake", temperature=0.2, max_output_tokens=4000, response_format="json_object", provider="openai_compatible",
+        reasoning_level="off", api_mode="chat",
+    )
+    return JC.call_judge_panel(
+        client,
+        NodeRuntime(node_id=J.JUDGE_NODE_ID, route=route, template=template),
+        system_prefix="[STYLE_REFERENCE]\n样例\n[/STYLE_REFERENCE]\n",
+        text="他把灯芯拨小了些。" * 20,
+        context=LLMCallContext(scope_type="style_reference_check", scope_id="panel", node_id=J.JUDGE_NODE_ID, step="check"),
+        execute=execute_accounted_call,
+        samples=samples,
+    )
+
+
+def test_the_judge_panel_asks_several_times_and_survives_a_failed_call(session) -> None:
+    client = _PanelClient([6.0, 9.0, 7.0])
+    scores, call_ids = _panel(client)
+    assert len(client.requests) == 3 and len(call_ids) == 3
+    assert scores.samples == 3 and scores.dimensions["scene.dialogue"].score == 7.0
+    assert len({request.messages[0]["content"] for request in client.requests}) == 1, "几次问的是同一份提示"
+    flaky = _PanelClient([6.0, 9.0, 7.0], fail=(1,))
+    scores, call_ids = _panel(flaky)
+    assert len(flaky.requests) == 3 and len(call_ids) == 2 and scores.samples == 2
+    assert scores.dimensions["scene.dialogue"].score == 6.5, "答成的两次（6 与 7）取中位"
+    with pytest.raises(DomainError) as failed:
+        _panel(_PanelClient([7.0], fail=(0, 1, 2)))
+    assert failed.value.status_code == 502
+    single = _PanelClient([6.0])
+    scores, call_ids = _panel(single, samples=1)
+    assert len(single.requests) == 1 and scores.samples == 1
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +422,10 @@ def test_calibration_job_scores_originals_against_plain_rewrites_and_stores_the_
     profile_id, job = _run_calibration(session, monkeypatch, "cal_ok", fake)
     assert job.state == "succeeded", job.error_json
     assert job.result_json["status"] == "usable" and job.result_json["separation"] == 5.0
-    assert len(fake.requests) == 9, "3 次改写 + 6 次评审"
+    assert len(fake.requests) == 21, "3 次改写 + 6 段文字各评审 3 次（取中位）"
     nodes = [request.node_id for request in fake.requests]
-    assert nodes.count(J.NEUTRALIZE_NODE_ID) == 3 and nodes.count(J.JUDGE_NODE_ID) == 6
+    assert nodes.count(J.NEUTRALIZE_NODE_ID) == 3 and nodes.count(J.JUDGE_NODE_ID) == 18
+    assert job.progress_json["llm_calls"] == 21
     profile = session.get(StyleReferenceProfile, profile_id)
     stored = J.stored_calibration(profile.profile_json)
     assert stored is not None and stored["positive_mean"] == 8.5 and stored["negative_mean"] == 3.5
@@ -332,9 +449,9 @@ def test_a_condensed_plain_rewrite_is_retried_once_with_the_length_spelled_out(s
     _profile_id, job = _run_calibration(session, monkeypatch, "cal_retry", fake)
     assert job.state == "succeeded", job.error_json
     rewrites = [r.messages[-1]["content"] for r in fake.requests if "## Passage" in r.messages[-1]["content"]]
-    assert len(rewrites) == 4 and len(fake.requests) == 10, "3 段改写 + 1 次重试 + 6 次评审"
+    assert len(rewrites) == 4 and len(fake.requests) == 22, "3 段改写 + 1 次重试 + 6 段文字各评审 3 次"
     assert "must have at least" in rewrites[0] and "previous rewrite was far too short" in rewrites[1]
-    assert job.progress_json["llm_calls"] == 10
+    assert job.progress_json["llm_calls"] == 22
 
 
 @pytest.mark.usefixtures("style_workers", "local_routes")
@@ -471,6 +588,26 @@ def test_bound_soft_qc_uses_the_unified_judge_without_scene_context_and_the_code
     assert judge_entry["dimensions"]["scene.dialogue"]["raw"] == 4.0 and judge_entry["source"] == "soft_qc"
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "soft_qc")).scalars().one()
     assert attempt.details_json["reference_judge"] == judge_entry
+
+
+def test_the_drafting_judge_and_the_check_send_the_same_prompt_and_schema(session, monkeypatch) -> None:
+    """2026-10-20 实库：起草流程的评审少了不可信数据约束那一句、结构约束的名字也不同——同一份稿子两边拿到的提示差
+    186 个字，而校准量的是作业侧那一份。现在按字相同。"""
+    from tests.support.style_gate import run_soft_qc
+
+    _carry_reference(monkeypatch)
+    _profile_id, text = _bound_soft_scene(session, "judge_same_prompt")
+    runner = _Runner(_structured(default=8.0))
+    run_soft_qc(session, runner, text)
+    call = runner.calls[0]
+    template = load_prompt_templates()[J.JUDGE_TEMPLATE]
+    prefix = "[STYLE_REFERENCE]\n[风格样例]合成样例[/风格样例]\n[/STYLE_REFERENCE]\n"
+    system, user = (message["content"] for message in JC.judge_messages(prefix, template, text))
+    assert call["prompt"]["system_prompt"] == system
+    assert call["user_prompt"] == user
+    assert system.endswith("\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION), "两边都由不可信数据约束收尾"
+    sent_schema = {"name": call["prompt"]["template_name"], "schema": call["prompt"]["structured_schema"]}
+    assert sent_schema == J.judge_response_schema(template)
 
 
 def test_bound_soft_qc_scores_by_the_calibration_and_waives_when_the_judge_is_unusable(session, monkeypatch) -> None:

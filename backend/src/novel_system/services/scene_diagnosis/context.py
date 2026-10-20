@@ -7,7 +7,8 @@
 * 正文：当前作者稿与运行终稿各一次批量查询（``scene_text`` 的批量版本，取行的规则与单行查询逐条相同）；
 * 评审行：这组场与它们的章在两种评审口径下各自最新的一行（没被退位的顶层行），一次查询；
 * 局部深评行（没被退位的，按时间）与 AI 深评的各镜头行各一次；
-* 评审看的冻结正文（``final_scene:`` / ``source_draft:`` 引用）各一次。
+* 评审看的冻结正文（``final_scene:`` / ``source_draft:`` 引用）各一次；
+* 风格参考对照检查的读数（带评审的，按时间倒序）一次——风格对照发现从这一场绑定的画像最新的一条来。
 
 取出来的行都是会话里的对象；载荷只读它们。上下文不跨写入复用：写了新评审行之后另取一份。
 """
@@ -21,13 +22,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import FinalScene, SceneCard, SceneDraft, WriterEvaluation
+from novel_system.db.models import FinalScene, SceneCard, SceneDraft, StyleFidelityReading, WriterEvaluation
 from novel_system.services.manuscript_html import manuscript_paragraphs, plain_manuscript_text
 from novel_system.services.scene_diagnosis.text import DiagnosisText
 from novel_system.services.scene_diagnosis.vocabulary import (
     LITERARY_REVISION_PASSAGE_RUBRIC_ID,
     LITERARY_REVISION_RUBRIC_ID,
     NEAR_FINAL_RUBRIC_ID,
+    STYLE_FINDING_READING_SOURCE,
 )
 from novel_system.services.scene_text import current_author_drafts, pointed_final_scenes
 from novel_system.services.style_reference.text_utils import compact_ws
@@ -94,6 +96,7 @@ class DiagnosisContext:
     passages: dict[str, list[WriterEvaluation]] = field(default_factory=dict)
     lenses: dict[str, list[WriterEvaluation]] = field(default_factory=dict)
     frozen: dict[str, Any] = field(default_factory=dict)
+    style_checks: dict[str, list[StyleFidelityReading]] = field(default_factory=dict)
     _reviewed: dict[str, str | None] = field(default_factory=dict)
 
     @classmethod
@@ -149,6 +152,18 @@ class DiagnosisContext:
                 .order_by(WriterEvaluation.lens.asc(), WriterEvaluation.evaluation_id.asc())
             ).scalars():
                 context.lenses.setdefault(str(row.parent_evaluation_id), []).append(row)
+        if scene_ids:
+            for reading in session.execute(
+                select(StyleFidelityReading)
+                .where(
+                    StyleFidelityReading.scene_id.in_(scene_ids),
+                    StyleFidelityReading.source == STYLE_FINDING_READING_SOURCE,
+                )
+                .order_by(StyleFidelityReading.created_at.desc(), StyleFidelityReading.reading_id.desc())
+            ).scalars():
+                judge = reading.judge_json if isinstance(reading.judge_json, dict) else None
+                if judge and judge.get("dimensions"):
+                    context.style_checks.setdefault(str(reading.scene_id), []).append(reading)
         context._load_frozen(session)
         return context
 
@@ -181,6 +196,13 @@ class DiagnosisContext:
 
     def lens_rows(self, parent_id: str) -> list[WriterEvaluation]:
         return list(self.lenses.get(parent_id, []))
+
+    def style_check(self, scene_id: str, profile_id: str | None) -> StyleFidelityReading | None:
+        """这一场按这份画像最近的一次对照检查（带评审的）；没绑定 / 没查过 → None。"""
+
+        if not profile_id:
+            return None
+        return next((row for row in self.style_checks.get(scene_id, []) if row.profile_id == profile_id), None)
 
     def reviewed_text(self, ref: str | None) -> str | None:
         """评审看的冻结正文（压缩空白后的可见文字）；引用不是冻结正文、或那一行已经没了 → None。"""

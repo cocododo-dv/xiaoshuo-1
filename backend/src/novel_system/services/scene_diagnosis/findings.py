@@ -1,16 +1,19 @@
-"""各来源 → 统一发现：规则维度（``literary_quality``）、段落节奏（原写作台本地规则）、评审 / 深评行里的发现；
-计数与排序；同一场同一份字的规则 / 节奏发现在进程里缓存（规则维度一场约 30 ms，全书计数一次跑几十场）。"""
+"""各来源 → 统一发现：规则维度（``literary_quality``）、段落节奏（原写作台本地规则）、评审 / 深评行里的发现、风格参考
+对照检查的评审（``style``）；计数与排序；同一场同一份字的规则 / 节奏发现在进程里缓存（规则维度一场约 30 ms，全书计数
+一次跑几十场）。"""
 
 from __future__ import annotations
 
 import copy
 import hashlib
+import re
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import Any
 
 from novel_system.cache_registry import register_cache_reset
-from novel_system.db.models import WriterEvaluation
+from novel_system.db.models import StyleFidelityReading, WriterEvaluation
 from novel_system.services.literary_quality import (
     DEFAULT_RULE_CALIBRATION,
     SEVERITY_RANK,
@@ -27,7 +30,7 @@ from novel_system.services.scene_diagnosis.calibration import (
     CraftCalibration,
     same_opening_hit,
 )
-from novel_system.services.scene_diagnosis.text import DiagnosisText, locate
+from novel_system.services.scene_diagnosis.text import DiagnosisText, locate, locate_in_paragraphs
 from novel_system.services.scene_diagnosis.vocabulary import (
     AI_DIMENSION_LABELS,
     CRAFT_LABELS,
@@ -40,6 +43,8 @@ from novel_system.services.scene_diagnosis.vocabulary import (
     SOURCE_LABELS,
     candidate_category_for_dimension,
 )
+from novel_system.services.style_reference.card import DIMENSION_LABELS as STYLE_DIMENSION_LABELS
+from novel_system.services.style_reference.binding_config import ALL_DIMENSIONS as STYLE_DIMENSIONS, DIMENSION_EXCLUDE
 from novel_system.services.style_reference.text_utils import compact_ws
 
 # 进程里最多记住这么多场的规则 / 节奏发现（每场只留最新一份）
@@ -389,6 +394,93 @@ def evaluation_findings(
                 "origin": origin,
                 "opinion": None,
                 "patch": _patch_hint(dimension, recommendation),
+            }
+        )
+    return findings
+
+
+# 评审的说明 / 改法里引的原文（「…」『…』“…”）：改法要求「引一句原文（至多 20 字）说在哪里」
+_QUOTE_RE = re.compile(r"「([^」]{2,60})」|『([^』]{2,60})』|“([^”]{2,60})”")
+# 评审口径的中文名（读数里记的 calibration.state）
+_JUDGE_STATE_WORDS = {"calibrated": "已按作者原文校准", "missing": "模型原始分", "stale": "模型原始分（校准已过期）"}
+
+
+def _quotes(*texts: str) -> list[str]:
+    found: list[str] = []
+    for value in texts:
+        for match in _QUOTE_RE.finditer(str(value or "")):
+            quote = compact_ws(next(group for group in match.groups() if group))
+            if len(quote) >= 2 and quote not in found:
+                found.append(quote)
+    return found
+
+
+def style_findings(
+    row: StyleFidelityReading,
+    text: DiagnosisText,
+    *,
+    current: bool,
+    dimension_states: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """一次对照检查的评审 → 风格对照发现：作数的分低于及格线、给了改法的维各一条（「不学」的维不出；评审不可用 /
+    分不作数的维不出）。证据 = 改法（其次说明）里引的那句原文，钉到编辑器段落；读数查的不是现在这份字（``current``
+    为假）且那句已找不到 → ``stale``。``signal_id`` 按「维 + 钉住的那句」取：重查指着同一处时，忽略过的仍是忽略。"""
+
+    judge = row.judge_json if isinstance(row.judge_json, Mapping) else {}
+    calibration = judge.get("calibration") if isinstance(judge.get("calibration"), Mapping) else {}
+    state = str(calibration.get("state") or "missing")
+    if state == "unusable":
+        return []
+    try:
+        pass_score = float(judge.get("pass_score"))
+    except (TypeError, ValueError):
+        return []
+    dims = judge.get("dimensions") if isinstance(judge.get("dimensions"), Mapping) else {}
+    states = dict(dimension_states or {})
+    samples = int(judge.get("samples") or 1)
+    findings: list[dict[str, Any]] = []
+    for dim in STYLE_DIMENSIONS:
+        entry = dims.get(dim)
+        if not isinstance(entry, Mapping) or states.get(dim) == DIMENSION_EXCLUDE or entry.get("applicable") is False:
+            continue
+        score = entry.get("score")
+        fix = str(entry.get("fix") or "").strip()
+        if not isinstance(score, (int, float)) or score >= pass_score or not fix:
+            continue
+        note = str(entry.get("note") or "").strip()
+        quotes = _quotes(fix, note)
+        evidence = next((hit for hit in (locate_in_paragraphs(text.paragraphs, quote) for quote in quotes) if hit), None)
+        anchor = (evidence or {}).get("excerpt") or (quotes[0] if quotes else "")
+        label = STYLE_DIMENSION_LABELS.get(dim, dim)
+        why = f"对照检查：这一维 {float(score):.1f} / 10，{pass_score:g} 分以上算像（{_JUDGE_STATE_WORDS.get(state, state)}"
+        why += f"，评审 {samples} 次取中位）。" if samples > 1 else "）。"
+        findings.append(
+            {
+                "signal_id": f"style:{dim}:{_digest(anchor or fix)}",
+                "source": "style",
+                "dimension": dim,
+                "label": label,
+                "lens": None,
+                "severity": "revision",
+                "issue": note or f"{label}离参考作者还远。",
+                "recommendation": fix,
+                "why": why,
+                "evidence": evidence,
+                "context": anchor[:160],
+                "ignored": False,
+                "stale": (not current) and bool(quotes) and evidence is None,
+                "house_taste": False,
+                "related": None,
+                "origin": {
+                    "kind": "style",
+                    "reading_id": row.reading_id,
+                    "created_at": row.created_at,
+                    "score": float(score),
+                    "pass_score": pass_score,
+                    "samples": samples,
+                },
+                "opinion": None,
+                "patch": _patch_hint(dim, fix),
             }
         )
     return findings

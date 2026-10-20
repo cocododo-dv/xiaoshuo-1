@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Tag } from "./ws-ui.jsx";
 import {
-  FID_STAGE_LABELS, fidBadgeView, fidDimensionGroups, fidJudgeView, fidReadingView, fidScoreText, fidScoreTone,
+  FID_STAGE_LABELS, fidBadgeView, fidDimensionGroups, fidFixDims, fidJudgeView, fidPassText, fidReadingView, fidScoreText, fidScoreTone,
   fidScoreWord, fidTrendPoints,
 } from "./ws-fidelity-model.js";
 import { formatMonthDayTime } from "./lib/format.js";
@@ -14,6 +14,7 @@ import { formatMonthDayTime } from "./lib/format.js";
    · FidelityGaps —— 和作者不一样的地方（后端给的白话短语，按维度名标注；从不给 z 分）
    · FidelityMeter / FidelityDimensionTable —— 0–10 的分数条；16 维按层：测得（按字数统计的几维）/ 评审（模型打分）
    · FidelityCopyLine —— 照搬检查一句话（只有计数）
+   · FidelityFixList —— 低于及格线的几维与评审给的改法（对照检查的结果、起草台；写作台深改「风格对照」是同一份）
    · FidelityBadge —— 成稿中心按场的小角标
    · FidelityTrend —— 作品最近读数的走势（终稿一条线、首稿作背景点；悬停 / 方向键看每一点，附表格）
    说法都在 ws-fidelity-model.js。不写 window。
@@ -121,7 +122,10 @@ export function FidelityDimensionTable({ reading, judge, states = null, testId }
                     <td title={row.judged == null && row.judgedRaw != null ? `模型原始打分 ${fidScoreText(row.judgedRaw)}（这一维的分不作数）` : undefined}>
                       <FidelityMeter score={row.judged} label={`${row.label} · 评审`} />
                     </td>
-                    <td className="fid-table-note">{row.note || ""}</td>
+                    <td className="fid-table-note">
+                      {row.note || ""}
+                      {row.fix && <span className="fid-fix">改法：{row.fix}</span>}
+                    </td>
                   </tr>
                 );
               })}
@@ -131,7 +135,8 @@ export function FidelityDimensionTable({ reading, judge, states = null, testId }
       </div>
       <p className="fid-foot">
         测得：只有句子、词汇、标点、视角、节奏、信息密度、对白这几维能按字数统计，其余维「—」；评审：模型对着原文样例打的分
-        {judged && judged.state === "calibrated" ? "，已按评审校准折算（0 = 普通文字，10 = 作者原文）" : judged && judged.stateView ? `（${judged.stateView.label}：${judged.stateView.hint}）` : ""}。
+        {judged && judged.state === "calibrated" ? "，已按评审校准折算（0 = 普通文字，10 = 作者原文）" : judged && judged.stateView ? `（${judged.stateView.label}：${judged.stateView.hint}）` : ""}
+        {judged && judged.samples > 1 ? `，评审 ${judged.samples} 次取中位` : ""}；改法是评审给这一维的建议，引的是你的原文。
         分数 7 以上算像，5 以下差得远；「—」的评审格是这一维评审分不清，悬停看模型原始打分。
       </p>
     </div>
@@ -155,8 +160,56 @@ export function FidelityJudgeLine({ judge, testId }) {
         ? <FidelityMeter score={view.overall} label="参考评审总分" />
         : <span title="评审不可用，这是模型原始打分">原始 {fidScoreText(view.rawOverall)}</span>}
       <FidelityJudgeState view={view} testId={testId ? `${testId}-state` : undefined} />
+      <span className="fid-judge-samples" title="单问一次评审，同一份文字的分能差两三分；问几次、每维取中位才稳">
+        {view.samples > 1 ? `评审 ${view.samples} 次取中位` : "评审一次"}
+      </span>
       {view.summary && <span className="fid-judge-summary">{view.summary}</span>}
     </p>
+  );
+}
+
+/* ---------- 低于及格线的几维与改法 ----------
+   onWriter：查的是作品里的一场时「去写作台按这些改」（写作台深改清单筛到「风格对照」，每条能按改法改写、能忽略）；
+   贴进来的文字没有一场可去，只列改法。 */
+export function FidelityFixList({ judge, onWriter = null, limit = 6, testId }) {
+  const [all, setAll] = useState(false);
+  const dims = fidFixDims(judge);
+  const view = fidJudgeView(judge);
+  if (!view) return null;
+  const line = fidPassText(view.passScore);
+  const shown = all ? dims : dims.slice(0, limit);
+  return (
+    <div className="fid-fixes" data-testid={testId}>
+      <div className="fid-sub">{dims.length ? `要改的几维（${line} 分以下）` : "要改的几维"}</div>
+      {dims.length === 0 ? (
+        <p className="fid-muted">评审打的每一维都在 {line} 分以上，没有要按评审改的地方。</p>
+      ) : (
+        <ul className="fid-gap-list">
+          {shown.map((dim) => (
+            <li key={dim.dimension} className="fid-gap fid-fix-item">
+              <span className="fid-gap-dim">{dim.label} {fidScoreText(dim.score)}</span>
+              <span className="fid-gap-phrase">
+                {dim.note}
+                <span className="fid-fix">改法：{dim.fix}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {dims.length > limit && (
+        <button type="button" className="btn btn-quiet btn-xs fid-more" aria-expanded={all} onClick={() => setAll((v) => !v)}>
+          {all ? "收起" : `另有 ${dims.length - limit} 维`}
+        </button>
+      )}
+      {dims.length > 0 && onWriter && (
+        <div className="fid-fix-acts">
+          <button type="button" className="btn btn-accent btn-sm" data-testid={testId ? `${testId}-writer` : undefined} onClick={onWriter}>
+            <I.Pen size={13} /> 去写作台按这些改
+          </button>
+          <span className="fid-muted">写作台的深改清单里，每一条都能按改法改写，也能忽略（有的改法其实在改内容，不想要就忽略）。</span>
+        </div>
+      )}
+    </div>
   );
 }
 

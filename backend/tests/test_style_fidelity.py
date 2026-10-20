@@ -463,9 +463,11 @@ def test_fidelity_thresholds_come_from_the_budget_file() -> None:
         "judge_min_separation": 2.0,
         "judge_min_dimension_separation": 1.0,
         "judge_calibration_anchors": 3.0,
+        "judge_samples": 3.0,
     }
     assert thresholds == S.DEFAULT_THRESHOLDS, "默认值与预算文件一致"
     assert thresholds.judge().pass_score == 6.0 and thresholds.judge().calibration_anchors == 3
+    assert thresholds.judge().samples == 3
 
 
 def test_render_audit_notices_become_style_notices() -> None:

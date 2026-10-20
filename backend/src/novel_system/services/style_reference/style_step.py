@@ -108,6 +108,7 @@ class FidelityThresholds:
     judge_min_separation: float = JudgeThresholds.min_separation
     judge_min_dimension_separation: float = JudgeThresholds.min_dimension_separation
     judge_calibration_anchors: int = JudgeThresholds.calibration_anchors
+    judge_samples: int = JudgeThresholds.samples
 
     def audit(self) -> dict[str, float]:
         return {key: float(value) for key, value in asdict(self).items()}
@@ -119,6 +120,7 @@ class FidelityThresholds:
             min_separation=float(self.judge_min_separation),
             min_dimension_separation=float(self.judge_min_dimension_separation),
             calibration_anchors=int(self.judge_calibration_anchors),
+            samples=int(self.judge_samples),
         )
 
 
@@ -161,6 +163,7 @@ def fidelity_thresholds() -> FidelityThresholds:
         judge_calibration_anchors=int(
             _number(section.get("judge_calibration_anchors"), DEFAULT_THRESHOLDS.judge_calibration_anchors, low=1.0, high=8.0)
         ),
+        judge_samples=int(_number(section.get("judge_samples"), DEFAULT_THRESHOLDS.judge_samples, low=1.0, high=5.0)),
     )
 
 

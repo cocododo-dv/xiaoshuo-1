@@ -9,13 +9,17 @@ LITERARY_REVISION_RUBRIC_ID = "literary_revision_v1"
 LITERARY_REVISION_PASSAGE_RUBRIC_ID = "literary_revision_passage_v1"
 NEAR_FINAL_RUBRIC_ID = "near_final_acceptance_v1"
 
-DIAGNOSIS_SOURCES: tuple[str, ...] = ("rules", "craft", "review", "ai")
+DIAGNOSIS_SOURCES: tuple[str, ...] = ("rules", "craft", "review", "ai", "style")
 SOURCE_LABELS: dict[str, str] = {
     "rules": "规则体检",
     "craft": "节奏",
     "review": "起草评审",
     "ai": "AI 深评",
+    # 风格参考的「对照检查」（2026-10-20）：参考评审几次取中位后，低于及格线、带改法的维
+    "style": "风格对照",
 }
+# 风格对照发现的来源：只认对照检查的读数（几次取中位）；起草流程里的软 QC 评审只问一次，不进清单
+STYLE_FINDING_READING_SOURCE = "manual_check"
 SEVERITIES: tuple[str, ...] = ("blocking", "revision", "taste", "info")
 PASSAGE_VERDICTS: tuple[str, ...] = ("holds", "partly", "does_not_hold", "no_finding")
 PASSAGE_VERDICT_LABELS: dict[str, str] = {
@@ -82,7 +86,7 @@ def candidate_category_for_dimension(dimension: str) -> str:
     """一条发现的维度 → 局部修补的类别（记在改写候选行上，改写策略按它给）。规则维度与深评十维都认。"""
 
     value = str(dimension or "")
-    if value in {"dialogue_subtext", "dialogue_edge", "relationship_tension", "expository_dialogue", "dialogue_as_report"}:
+    if value in {"dialogue_subtext", "dialogue_edge", "relationship_tension", "expository_dialogue", "dialogue_as_report", "scene.dialogue"}:
         return "dialogue_rewrite"
     if value in {"image_necessity", "repetitive_expression", "template_action_reuse", "repetitive_action", "self_repetition", "adjacent_echo", "same_opening"}:
         return "action_replace"

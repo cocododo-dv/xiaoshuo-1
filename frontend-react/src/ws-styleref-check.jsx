@@ -4,8 +4,9 @@ import { Notice, ProgressBar, Segmented, Spinner } from "./ws-ui.jsx";
 import { fidErrorInfo, fidJobView, fidReadingStates } from "./ws-fidelity-model.js";
 import { fidAdoptJob, fidCancelCheck, fidCheck, fidResumeCheck, fidStartCheck, useFidelityStore } from "./ws-fidelity-store.js";
 import {
-  FidelityCopyLine, FidelityDimensionTable, FidelityErrorLine, FidelityGaps, FidelityHeadline, FidelityJudgeLine,
+  FidelityCopyLine, FidelityDimensionTable, FidelityErrorLine, FidelityFixList, FidelityGaps, FidelityHeadline, FidelityJudgeLine,
 } from "./ws-fidelity-ui.jsx";
+import { findSceneByBackendId } from "./labels/catalog.js";
 import { srAppliedToWork, srFormatDuration, srFormatWhen, srIsLegacyGlobalBinding, srModelGate } from "./ws-styleref-model.js";
 import { srActivityTrack, srLoadProjectBinding, srLoadRuntime, srProjectBinding, srRuntime } from "./ws-styleref-store.js";
 import { SrStageEmpty, srActiveWork, srNotify, useSrStore, useSrWorkScenes } from "./ws-styleref-ui.jsx";
@@ -20,6 +21,9 @@ import { SrStageEmpty, srActiveWork, srNotify, useSrStore, useSrWorkScenes } fro
    排队 / 进行中可以取消（取消后条目清掉，可以再发起）。从「参考书活动」打开一次检查（可能是在起草台发起的）时按作业 id
    认领到这本书名下（adoptJobId → fidAdoptJob），看到的是那次的结果而不是空表单——没有本机记下的目标就没有「再查一次」。
    结果与进度记在模块里（离开再回来还在），刷新页面就没了——一场的检查结果另外记在那一场的读数里（起草台可看）。
+   2026-10-20：评审同一份提示问三次、每维取中位；结果先列「要改的几维」与评审给的改法——查的是这部作品的一场时给
+   「去写作台按这些改」（onAction({ type: "writer", sceneSid })：写作台深改清单筛到「风格对照」，同一份发现，
+   每条能按改法改写、能忽略）。以前改法只存在读数里、哪儿都不显示，检查做完就是做完了。
    ========================================================== */
 
 const CHECK_MAX_CHARS = 60000;
@@ -106,6 +110,14 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
     } finally {
       setCancelling(false);
     }
+  };
+
+  /* 查的是这部作品的一场：写作台认的场景 id（目录里的 sid）；别的作品的一场、贴进来的文字 → 没有可去的地方 */
+  const writerSidFor = (item) => {
+    const sceneId = item && ((item.target && item.target.sceneId) || (item.reading && item.reading.scene_id));
+    const hit = sceneId && workId && (!item.target || !item.target.projectId || item.target.projectId === workId)
+      ? findSceneByBackendId(chapters, sceneId) : null;
+    return hit && hit.scene && hit.scene.sid ? hit.scene.sid : null;
   };
 
   const describe = (target) => {
@@ -203,12 +215,12 @@ export function SrCheck({ book, go, onAction, adoptJobId = null, onAdopted = nul
         </div>
       </div>
 
-      {entry && <SrCheckOutcome entry={entry} describe={describe} onAction={act} onCancel={cancel} cancelling={cancelling} />}
+      {entry && <SrCheckOutcome entry={entry} describe={describe} onAction={act} onCancel={cancel} cancelling={cancelling} writerSid={writerSidFor(entry)} />}
     </div>
   );
 }
 
-function SrCheckOutcome({ entry, describe, onAction, onCancel, cancelling }) {
+function SrCheckOutcome({ entry, describe, onAction, onCancel, cancelling, writerSid = null }) {
   /* 认领来的条目没有本机记下的目标：说清是从活动里打开的一次，不冒充当前表单里的选择 */
   const what = describe(entry.target) || (entry.adopted ? "从「参考书活动」打开的一次检查" : "");
   if (entry.phase === "starting" || entry.phase === "running") {
@@ -258,6 +270,15 @@ function SrCheckOutcome({ entry, describe, onAction, onCancel, cancelling }) {
           <FidelityCopyLine reading={reading} testId="sr-check-copy" />
         </div>
       </div>
+      {reading.judge && (
+        <div className="card">
+          <FidelityFixList
+            judge={reading.judge}
+            onWriter={writerSid ? () => onAction({ type: "writer", sceneSid: writerSid }) : null}
+            testId="sr-check-fixes"
+          />
+        </div>
+      )}
       <div className="card">
         <FidelityGaps reading={reading} testId="sr-check-gaps" />
       </div>

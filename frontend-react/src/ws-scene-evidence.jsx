@@ -169,7 +169,7 @@ function Evidence({ scene, sceneId = null, go = null, state, open, onClose, logO
 
       {(state === "ready" || state === "archived") && scene.gate && <GateBlock gate={scene.gate} budgetBlock={scene.budgetBlock} />}
 
-      <SceneFidelityPanel sceneId={sceneId} runFidelity={scene.styleFidelity || null} go={go} />
+      <SceneFidelityPanel sceneId={sceneId} runFidelity={scene.styleFidelity || null} go={go} writerSid={scene.sid || null} />
 
       <SceneStyleWindowsPanel styleWindows={scene.styleWindows} />
 

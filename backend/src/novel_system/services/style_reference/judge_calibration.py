@@ -14,12 +14,15 @@
 provider / model、评审模板版本、画像版本）——任何一项变了就算过期，回到「未校准」的口径，界面给「重新校准」。
 
 **作业**：学习文风成功后自动排一个（:func:`start_after_learn`）；也可以在画像页手动启动
-（``POST …/profiles/{id}/judge-calibration``）、取消（``…/judge-calibration/cancel``）。一次 = 锚点数 N 次改写 + 2N 次
-评审（缺省 N = 3，共 9 次调用；改写稿偏短时那一段重试一次），顺序跑，每次调用之后一个检查点；失败不续跑（重新校准从头来，十来次调用）。
+（``POST …/profiles/{id}/judge-calibration``）、取消（``…/judge-calibration/cancel``）。一次 = 锚点数 N 次改写 + 2N 段
+文字各评审 ``judge_samples`` 次取中位（缺省 N = 3、3 次，共 21 次调用；改写稿偏短时那一段重试一次）；一段文字的几次
+评审并发，段与段顺序跑，每段之后一个检查点；失败不续跑（重新校准从头来）。
 走对照检查那条短车道，不在分类 / 学习后面排队。
 
 **评审调用**：:func:`call_judge` 是作业侧（对照检查、校准）唯一的评审调用——同一份模板、同一种解析；起草流程里的
-软 QC 走管线的节点调度器（``qc_engine.soft``），提示由同一个 ``judge.bare_prompt`` 拼。
+软 QC 走管线的节点调度器（``qc_engine.soft``），提示由 ``judge.bare_prompt`` 拼。两边发出去的提示按字相同：system 都由
+``judge.review_system_prompt`` 收尾（参考块 + 模板 + 不可信数据约束），结构约束都是 ``judge.judge_response_schema``
+（2026-10-20 之前起草流程少了那一句约束，同一份稿子两边拿到的提示不一样，校准只量了作业侧那一份）。
 """
 
 from __future__ import annotations
@@ -61,11 +64,14 @@ from novel_system.services.style_reference.judge import (
     apply_calibration,
     calibration_brief,
     calibration_state,
+    combine_judge_samples,
     compute_calibration,
     judge_identity,
+    judge_response_schema,
     judge_user_prompt,
     neutralize_user_prompt,
     parse_judge_output,
+    review_system_prompt,
     stored_calibration,
 )
 from novel_system.services.style_reference.llm_nodes import (
@@ -201,9 +207,8 @@ def _call_failed(code: str, message: str, details: dict[str, Any]) -> DomainErro
 
 def judge_messages(system_prefix: str, template: Any, text: str) -> list[dict[str, str]]:
     """评审消息：system = 评审口径的 ``[STYLE_REFERENCE]`` 块 + 模板 + 不可信数据约束；user = 任务 + 边界封装的待评文字。"""
-    system = str(system_prefix or "") + str(template.system_prompt or "")
     return [
-        {"role": "system", "content": system.rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION},
+        {"role": "system", "content": review_system_prompt(str(system_prefix or "") + str(template.system_prompt or ""))},
         {"role": "user", "content": judge_user_prompt(template.task_prompt, text)},
     ]
 
@@ -226,7 +231,7 @@ def call_judge(
         runtime.route,
         node_id=JUDGE_NODE_ID,
         messages=judge_messages(system_prefix, template, text),
-        response_schema=getattr(template, "structured_schema", None),
+        response_schema=judge_response_schema(template),
     )
     llm_call_id = f"llm_style_judge_{uuid.uuid4().hex}"
     response = accounted_call(
@@ -250,6 +255,50 @@ def call_judge(
             {"llm_call_id": llm_call_id, "reason": "no_scores" if isinstance(structured, Mapping) else "no_structured_output"},
         )
     return scores, str(getattr(response, "llm_call_id", None) or llm_call_id)
+
+
+def call_judge_panel(
+    llm_client: Any,
+    runtime: NodeRuntime,
+    *,
+    system_prefix: str,
+    text: str,
+    context: LLMCallContext,
+    execute: Callable[..., Any],
+    samples: int,
+    failure_code: str = JUDGE_CALL_FAILED_CODE,
+) -> tuple[JudgeScores, list[str]]:
+    """同一份提示问 ``samples`` 次（并发，每次一条守护线程——进程退出不等在飞的调用）→ 每维取中位的一份评审
+    （``judge.combine_judge_samples``）与答成的各次调用 id。几次里有失败的就用答成的那几次；全失败 → 第一次的错误
+    （502，可重试）。记账 / 控制面的错误原样抛出。"""
+    count = max(1, int(samples or 1))
+    if count == 1:
+        scores, call_id = call_judge(
+            llm_client, runtime, system_prefix=system_prefix, text=text, context=context, execute=execute,
+            failure_code=failure_code,
+        )
+        return scores, [call_id]
+    from novel_system.services.background_jobs import DaemonCallPool
+
+    pool = DaemonCallPool(thread_name_prefix="sr_judge")
+    futures = [
+        pool.submit(
+            call_judge, llm_client, runtime, system_prefix=system_prefix, text=text, context=context, execute=execute,
+            failure_code=failure_code,
+        )
+        for _ in range(count)
+    ]
+    pool.shutdown()
+    answered: list[tuple[JudgeScores, str]] = []
+    failures: list[DomainError] = []
+    for future in futures:
+        try:
+            answered.append(future.result())
+        except DomainError as exc:
+            failures.append(exc)
+    if not answered:
+        raise failures[0]
+    return combine_judge_samples([scores for scores, _call_id in answered]), [call_id for _scores, call_id in answered]
 
 
 def call_neutralize(
@@ -571,7 +620,7 @@ def run_calibration_job(session: Session, claimed: ClaimedJob, service: StyleJob
     judge = runtimes[JUDGE_NODE_ID]
     rendered, _fit = fit_rendered(
         rendered,
-        base_system_prompt=str(judge.template.system_prompt or "") + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION,
+        base_system_prompt=review_system_prompt(str(judge.template.system_prompt or "")),
         user_prompt=judge_user_prompt(judge.template.task_prompt, max((text for _w, text in passages), key=len)),
         target_input_tokens=judge_input_budget(judge.template),
     )
@@ -607,18 +656,21 @@ def run_calibration_job(session: Session, claimed: ClaimedJob, service: StyleJob
         pair: list[JudgeScores] = []
         for kind, body in (("original", text), ("plain", plain)):
             run.check_continue()
-            scores, _call_id = call_judge(
+            scores, call_ids = call_judge_panel(
                 llm_client,
                 judge,
                 system_prefix=rendered.system_prefix,
                 text=body,
                 context=_context(claimed, node_id=JUDGE_NODE_ID, step=CALIBRATE_JUDGE_STEP),
                 execute=execute_accounted_call,
+                samples=thresholds.samples,
                 failure_code=CALIBRATION_CALL_FAILED_CODE,
             )
             pair.append(scores)
             done += 1
-            run.checkpoint(phase="judge", phase_label="评审给两类文字打分", done=done, total=total, llm_calls_delta=1)
+            run.checkpoint(
+                phase="judge", phase_label="评审给两类文字打分", done=done, total=total, llm_calls_delta=len(call_ids)
+            )
         positives.append(pair[0])
         negatives.append(pair[1])
         anchors_meta.append(
@@ -703,6 +755,7 @@ __all__ = [
     "calibration_never_resumes",
     "calibration_payload",
     "call_judge",
+    "call_judge_panel",
     "call_neutralize",
     "cancel_calibration",
     "choose_anchor_windows",

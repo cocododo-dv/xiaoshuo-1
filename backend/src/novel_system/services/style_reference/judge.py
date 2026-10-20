@@ -13,7 +13,10 @@
 - **代码定放行**（:func:`soft_qc_payload`）：作数的维里，低于阈值的维（重点维在前，至多 4 维）出补丁，用评审给这一维
   的 ``fix`` 作补丁说明；没有低于阈值的维就放行；
 - **成对比较**（模板 ``style_reference_compare``，:func:`compare_verdict`）：补丁留不留、定向修改用不用，问「这两个
-  版本哪一个更像」，两个次序各问一次，两次一致才算数——不再拿两次绝对分相减（评审半分到一分的噪声就能翻转结论）。
+  版本哪一个更像」，两个次序各问一次，两次一致才算数——不再拿两次绝对分相减（评审半分到一分的噪声就能翻转结论）；
+- **几次取中位**（:func:`combine_judge_samples`，2026-10-20）：作者看的评审（对照检查）与校准锚点各问 ``samples`` 次
+  （缺省 3，并发），每一维取中位数。实库：CH01_SC10 终稿同一份正文、同一份提示问了 11 次，折算后的总分在 6.0–9.0
+  之间跳（标准差约 1 分），单维约 0.6–1.1 分；起草流程里的软 QC 仍问一次（它的放行有成对比较兜底），界面照实标「一次」。
 
 本模块是纯函数（解析、换算、判定、拼提示）；调模型的地方各在自己的模块：软 QC（``qc_engine.soft``）、对照检查
 （``check_job``）、成对比较（``scene_generation.style_compare``）、校准作业（``judge_calibration``）。
@@ -32,7 +35,7 @@ from novel_system.services.style_reference.binding_config import (
     DIMENSION_EMPHASIZE,
     DIMENSION_EXCLUDE,
 )
-from novel_system.services.style_reference.untrusted_data import secure_reference_block
+from novel_system.services.style_reference.untrusted_data import UNTRUSTED_SYSTEM_INSTRUCTION, secure_reference_block
 
 JUDGE_NODE_ID = "soft_qc"
 JUDGE_TEMPLATE = "style_reference_judge"
@@ -102,10 +105,13 @@ class DimensionJudgement:
 
 @dataclass(frozen=True)
 class JudgeScores:
-    """一次评审的原始结果（16 维里模型给出、刻度对得上的那些维）。"""
+    """一次评审的原始结果（16 维里模型给出、刻度对得上的那些维）；几次合成的（:func:`combine_judge_samples`）带
+    ``samples``（问了几次）与 ``spreads``（每一维几次原始分的最高减最低）。"""
 
     dimensions: Mapping[str, DimensionJudgement]
     summary: str = ""
+    samples: int = 1
+    spreads: Mapping[str, float] = field(default_factory=dict)
 
     def applicable_scores(self) -> dict[str, float]:
         return {dim: item.score for dim, item in self.dimensions.items() if item.applicable}
@@ -161,6 +167,51 @@ def parse_judge_output(structured: Any, *, schema: Any = None) -> JudgeScores | 
     return JudgeScores(dimensions=dims, summary=str(structured.get("summary") or "").strip()[:SUMMARY_MAX_CHARS])
 
 
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+# 合成几次评审时，说明与改法从分数离中位数这么近（原始 10 分制）的几次里挑；其中有引了原文（「…」）的就用它——
+# 改法要钉到写作台的段落上才能「按诊断改写」（实库：同一维三次里常有一次只说「在描写某某时」、不引原文）
+FIX_PICK_TOLERANCE = 1.0
+
+
+def combine_judge_samples(samples: Sequence[JudgeScores]) -> JudgeScores:
+    """同一份文字的几次评审 → 一份：每一维取几次原始分的中位数（单次评审噪声大，见模块说明）；这一维的说明与改法取
+    分数离中位数 :data:`FIX_PICK_TOLERANCE` 以内、优先引了原文的那一次，再按离中位数最近（说明与分数对得上）；一维算
+    「有证据」要至少一半的回答这么说；总评取均分居中的那一次。只有一次 → 原样返回。"""
+    items = [item for item in samples if item is not None]
+    if not items:
+        raise ValueError("combine_judge_samples needs at least one judgement")
+    if len(items) == 1:
+        return items[0]
+    dims: dict[str, DimensionJudgement] = {}
+    spreads: dict[str, float] = {}
+    for dim in ALL_DIMENSIONS:
+        entries = [item.dimensions[dim] for item in items if dim in item.dimensions]
+        if not entries:
+            continue
+        applicable = [entry for entry in entries if entry.applicable]
+        if len(applicable) * 2 < len(entries):
+            dims[dim] = DimensionJudgement(score=0.0, applicable=False, note=entries[0].note, fix="")
+            continue
+        scores = [entry.score for entry in applicable]
+        median = round(_median(scores), 2)
+        near = [entry for entry in applicable if abs(entry.score - median) <= FIX_PICK_TOLERANCE]
+        quoted = [entry for entry in near if "「" in entry.fix]
+        picked = min(quoted or near or applicable, key=lambda entry: abs(entry.score - median))
+        dims[dim] = DimensionJudgement(score=median, applicable=True, note=picked.note, fix=picked.fix)
+        spreads[dim] = round(max(scores) - min(scores), 2)
+    means = [(item.mean(), index) for index, item in enumerate(items) if item.mean() is not None]
+    summary = items[0].summary
+    if means:
+        ordered = sorted(means)
+        summary = items[ordered[(len(ordered) - 1) // 2][1]].summary
+    return JudgeScores(dimensions=dims, summary=summary, samples=len(items), spreads=spreads)
+
+
 # ---------------------------------------------------------------------------
 # 阈值
 # ---------------------------------------------------------------------------
@@ -180,6 +231,8 @@ class JudgeThresholds:
     min_dimension_separation: float = 1.0
     # 校准用几段原文（各配一段普通改写）
     calibration_anchors: int = 3
+    # 作者看的评审（对照检查）与校准锚点各问几次、每维取中位（起草流程的软 QC 问一次）
+    samples: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +362,8 @@ class JudgeVerdict:
     summary: str
     pass_score: float
     calibration: Mapping[str, Any] = field(default_factory=dict)
+    # 这份评审问了几次（几次取中位，见 :func:`combine_judge_samples`）
+    samples: int = 1
 
     def counted(self) -> dict[str, float]:
         return {dim: float(item["score"]) for dim, item in self.dimensions.items() if item.get("score") is not None}
@@ -353,6 +408,8 @@ def apply_calibration(
             "note": item.note,
             "fix": item.fix,
         }
+        if dim in scores.spreads:
+            dims[dim]["spread"] = round(float(scores.spreads[dim]), 1)
     counted = [entry["score"] for entry in dims.values() if entry["score"] is not None]
     raw_values = [entry["raw"] for entry in dims.values() if entry["applicable"]]
     return JudgeVerdict(
@@ -363,6 +420,7 @@ def apply_calibration(
         summary=scores.summary,
         pass_score=float(thresholds.pass_score if state == STATE_CALIBRATED else thresholds.raw_pass_score),
         calibration=calibration_brief(calibration, state),
+        samples=int(scores.samples or 1),
     )
 
 
@@ -380,7 +438,7 @@ def judge_record(verdict: JudgeVerdict, *, source: str) -> dict[str, Any]:
     ``overall`` / ``dimensions.*.score`` 是作数的分；``raw_overall`` / ``dimensions.*.raw`` 是模型原始分；
     ``calibration.state`` 说这次分数是哪种口径。旧读者认的 ``style_score`` / ``dimension_scores`` 一并给出。"""
     dimensions = {
-        dim: {key: entry[key] for key in ("score", "raw", "applicable", "note", "fix") if entry.get(key) not in (None, "")}
+        dim: {key: entry[key] for key in ("score", "raw", "applicable", "note", "fix", "spread") if entry.get(key) not in (None, "")}
         | {"applicable": bool(entry["applicable"])}
         for dim, entry in verdict.dimensions.items()
     }
@@ -392,6 +450,7 @@ def judge_record(verdict: JudgeVerdict, *, source: str) -> dict[str, Any]:
         "dimensions": dimensions,
         "calibration": dict(verdict.calibration),
         "pass_score": verdict.pass_score,
+        "samples": int(verdict.samples or 1),
         "source": source,
         "style_score": verdict.overall,
         "dimension_scores": verdict.counted(),
@@ -583,11 +642,27 @@ def neutralize_user_prompt(task_prompt: str, passage: str, *, retry: bool = Fals
     )
 
 
+def review_system_prompt(system_prompt: str) -> str:
+    """评审口径的 system 提示收尾：模板（前面可能已接上参考块）+ 不可信数据约束。起草流程（:func:`bare_prompt`，注入器
+    把参考块接在最前面）与作业侧（``judge_calibration.judge_messages``）都从这里收尾——2026-10-20 实库：起草流程的
+    评审少了这一句，同一份稿子在流程里与在对照检查里拿到的提示差 186 个字，而校准量的是作业侧那一份。"""
+    return str(system_prompt or "").rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION
+
+
+def judge_response_schema(template: Any) -> dict[str, Any]:
+    """评审调用的结构约束（带模板名）：起草流程经 ``LLMNodeRunner`` 发的就是这个形状，作业侧照发同一份。"""
+    return {
+        "name": str(getattr(template, "name", "") or JUDGE_TEMPLATE),
+        "schema": copy.deepcopy(dict(getattr(template, "structured_schema", None) or {})),
+    }
+
+
 def bare_prompt(template: Any, *, user_prompt: str, target_input_tokens: int) -> dict[str, Any]:
     """不带场景上下文的提示（``PromptBuilder.build`` 的同一形状，给 ``LLMNodeRunner`` 与风格参考注入器用）：评审只看
-    参考块与待评的文字，不看场景设计——同一份文字在起草流程里与在对照检查里拿到的是同一份提示。"""
+    参考块与待评的文字，不看场景设计——同一份文字在起草流程里与在对照检查里拿到的是同一份提示（system 的收尾见
+    :func:`review_system_prompt`；测试按字核对两边相同）。"""
     schema = copy.deepcopy(dict(getattr(template, "structured_schema", None) or {}))
-    system_prompt = str(getattr(template, "system_prompt", "") or "")
+    system_prompt = review_system_prompt(str(getattr(template, "system_prompt", "") or ""))
     prompt_hash = sha256_json_normalized(
         {
             "template_name": template.name,
@@ -616,6 +691,7 @@ __all__ = [
     "COMPARE_TIE",
     "COMPARE_UNAVAILABLE",
     "DimensionJudgement",
+    "FIX_PICK_TOLERANCE",
     "JUDGE_NODE_ID",
     "JUDGE_TEMPLATE",
     "JudgeScores",
@@ -632,16 +708,19 @@ __all__ = [
     "bare_prompt",
     "calibration_brief",
     "calibration_state",
+    "combine_judge_samples",
     "compare_user_prompt",
     "compare_verdict",
     "compute_calibration",
     "failing_dimensions",
     "judge_identity",
     "judge_record",
+    "judge_response_schema",
     "judge_user_prompt",
     "neutralize_user_prompt",
     "parse_compare_output",
     "parse_judge_output",
+    "review_system_prompt",
     "soft_qc_payload",
     "stored_calibration",
     "verdict_from_record",

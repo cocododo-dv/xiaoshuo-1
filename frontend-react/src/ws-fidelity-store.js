@@ -98,6 +98,9 @@ export function fidInvalidate({ sceneId = null, projectId = null } = {}) {
 
 let CHECK_SEQ = 0;
 
+/* 一场的检查记在哪个键下：起草台的「对照检查」与写作台深改的「风格对照」共用这一个（同一个作业、同一份进度） */
+export function fidSceneCheckKey(sceneId) { return `scene:${sceneId}`; }
+
 export function fidCheck(key) { return (key && CHECKS.get(key)) || null; }
 
 /* 某个作业记在哪个键下（活动清单里的一条对照检查 ↔ 本机发起它的那一页；认领来的条目也算） */

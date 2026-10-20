@@ -548,8 +548,11 @@ def test_text_check_job_records_a_manual_reading_with_the_judge(client, session,
             "score": 6.0,
             "raw": 6.0,
             "note": "对白偏正式",
+            "spread": 0.0,
         }
         assert reading.judge_json["calibration"]["state"] == "missing"
+        # 同一份提示问三次、每维取中位（三次一样 → 差距 0）
+        assert reading.judge_json["samples"] == 3 and len(fake.requests) == 3
         assert reading.copy_check_json["blocked"] is False
     request = fake.requests[0]
     assert request.node_id == "soft_qc", "评审走现有的 soft_qc 节点路由"
@@ -671,7 +674,7 @@ def test_check_job_keeps_control_plane_failures_distinct(client, session, monkey
     monkeypatch.setattr(check_job, "execute_accounted_call", raise_error)
     response = _post_check(client, {"text": "他把灯芯拨小了些。" * 60, "profile_id": profile_id}, f"fid-check-cp-{error.code}")
     run_job_inline(response.json()["data"]["job_id"])
-    assert seen == [error]
+    assert seen == [error] * 3, "三次并发的评审都撞上控制面，原样上抛"
     with SessionLocal() as db:
         job = db.get(StyleReferenceJob, response.json()["data"]["job_id"])
         assert job.state == "failed"

@@ -364,7 +364,8 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
   const onPostureIntent = useWrEvent((detail) => {
     const next = typeof detail === "string" ? detail : (detail && detail.posture);
     const signalId = detail && typeof detail === "object" ? (detail.signal_id || detail.signalId || null) : null;
-    deep.setPosture(next === "deep" ? "deep" : "draft", { signalId });
+    const source = detail && typeof detail === "object" ? (detail.source || null) : null;
+    deep.setPosture(next === "deep" ? "deep" : "draft", { signalId, source });
   });
   /* 先挂监听、再报「写作台已就绪」：排队的跨页意图在报就绪时立即派发（两个 effect 按声明顺序执行） */
   useWindowEvents({

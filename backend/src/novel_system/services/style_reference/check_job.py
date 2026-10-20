@@ -4,10 +4,12 @@
 一次检查 = 作业表上一个 ``kind=check`` 作业（``POST /api/v2/style-reference/checks`` 建，作业工人跑）：
 
 1. **读数**（确定性）：测量核特征对作者自己窗口分布的 ``distance`` / ``percentile`` / 越界特征 / 按维分；
-2. **参考评审**（一次模型调用，模板 ``style_reference_judge``，走现有的 ``soft_qc`` 节点路由——与起草流程里的软 QC
-   参考评审是同一份模板、同一种解析，2026-10-14 评审统一）：评审口径的 ``[STYLE_REFERENCE]`` 块（冻结选窗的前 4 窗
-   样例 + 文风卡 + 声音 + 红线）+ 待查的文字 → 16 维各 0–10 分、每维一句说明与改法；总分由代码算，分数按这份画像
-   的评审校准折算（``judge_calibration``；没校准就是模型原始分，读数里标明口径）；
+2. **参考评审**（模板 ``style_reference_judge``，走现有的 ``soft_qc`` 节点路由——与起草流程里的软 QC 参考评审是同一份
+   模板、按字相同的提示、同一种解析，2026-10-14 评审统一 / 2026-10-20 提示对齐）：评审口径的 ``[STYLE_REFERENCE]`` 块
+   （冻结选窗的前 4 窗样例 + 文风卡 + 声音 + 红线）+ 待查的文字 → 16 维各 0–10 分、每维一句说明与改法。同一份提示
+   并发问 ``judge_samples`` 次（缺省 3）、每维取中位（``judge_calibration.call_judge_panel``——单问一次，同一份正文
+   折算后的总分能在 6 到 9 之间跳）；总分由代码算，分数按这份画像的评审校准折算（``judge_calibration``；没校准就是
+   模型原始分，读数里标明口径与问了几次）；
 3. **抄袭门**（``reference_copy_gate``）：只记旗标与计数；
 4. 一条 ``style_fidelity_readings``（``source=manual_check``，``stage=manual``），作业结果 ``{reading_id, ...}``。
 
@@ -37,11 +39,9 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    AuthorDraft,
     FinalScene,
     SceneCard,
     SceneDraft,
@@ -53,7 +53,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import LLMCallContext, execute_accounted_call
-from novel_system.services.manuscript_html import plain_manuscript_text
+from novel_system.services.manuscript_html import plain_manuscript_text, visible_paragraphs
 from novel_system.services.style_reference import readings
 from novel_system.services.style_reference.errors import LLMRequiredError, profile_not_found
 from novel_system.services.style_reference.job_runtime import JobRun
@@ -65,9 +65,15 @@ from novel_system.services.style_reference.jobs import (
     StyleJobService,
     job_activity_entry,
 )
-from novel_system.services.style_reference.judge import JUDGE_NODE_ID, JUDGE_TEMPLATE, judge_record, judge_user_prompt
+from novel_system.services.style_reference.judge import (
+    JUDGE_NODE_ID,
+    JUDGE_TEMPLATE,
+    judge_record,
+    judge_user_prompt,
+    review_system_prompt,
+)
 from novel_system.services.style_reference.judge_calibration import (
-    call_judge,
+    call_judge_panel,
     judge_input_budget,
     profile_policy,
     scope_for,
@@ -75,8 +81,8 @@ from novel_system.services.style_reference.judge_calibration import (
 )
 from novel_system.services.style_reference.llm_nodes import NodeConfigUnavailable, NodeRuntime, load_node_runtimes
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
-from novel_system.services.style_reference.untrusted_data import UNTRUSTED_SYSTEM_INSTRUCTION
 from novel_system.services.scene_lookup import get_scene_or_404
+from novel_system.services.scene_text import current_author_draft
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +119,13 @@ def resolve_check_client() -> tuple[Any | None, bool]:
 
 
 def scene_current_text(session: Session, scene_id: str) -> tuple[str, str | None]:
-    """一场的当前正文与它的出处：当前终稿 → 最近的有效稿 / 风格稿 / 首稿 → 作者稿（HTML 原样，测量核按编辑器段切）。"""
+    """一场「现在的正文」= 写作台上看到的那一份（与场景诊断同一个口径）：有字的作者稿 → 当前终稿 → 最近的有效稿 /
+    风格稿 / 首稿（还在起草、没有终稿的场）。作者稿是 HTML 原样（测量核按编辑器段切）。
+
+    2026-10-20 之前终稿优先：作者在写作台改过之后，对照检查查的仍是改前的终稿，评审的改法也钉不到写作台的段落上。"""
+    author = current_author_draft(session, "scene", scene_id)
+    if author is not None and visible_paragraphs(author.content or ""):
+        return author.content, f"author_draft:{author.draft_id}:rev{int(author.revision_no or 0)}"
     state = session.get(SceneRunState, scene_id)
     if state is not None and state.current_final_scene_row_id:
         final = session.get(FinalScene, state.current_final_scene_row_id)
@@ -130,15 +142,6 @@ def scene_current_text(session: Session, scene_id: str) -> tuple[str, str | None
             draft = session.get(SceneDraft, row_id)
             if draft is not None and draft.scene_id == scene_id and (draft.content or "").strip():
                 return draft.content, f"scene_draft:{draft.row_id}"
-    author = session.execute(
-        select(AuthorDraft).where(
-            AuthorDraft.object_type == "scene",
-            AuthorDraft.object_id == scene_id,
-            AuthorDraft.status == "current",
-        )
-    ).scalars().first()
-    if author is not None and (author.content or "").strip():
-        return author.content, f"author_draft:{author.draft_id}:rev{int(author.revision_no or 0)}"
     return "", None
 
 
@@ -337,7 +340,7 @@ def cancel_check_job(session: Session, job_id: str) -> StyleReferenceJob:
 
 
 def _judge_base_system(template: Any) -> str:
-    return str(template.system_prompt or "").rstrip() + "\n\n" + UNTRUSTED_SYSTEM_INSTRUCTION
+    return review_system_prompt(str(template.system_prompt or ""))
 
 
 def run_reference_judge(
@@ -350,8 +353,8 @@ def run_reference_judge(
     context_scope_id: str,
     project_id: str | None,
 ) -> dict[str, Any]:
-    """一次参考评审调用 → 评审记录（``judge.judge_record``：按校准折算的按维分与总分、原始分、口径）；渲染不出参考 /
-    调用失败 / 没给分数 → ``DomainError``（作业失败）。"""
+    """一次参考评审（同一份提示问 ``judge_samples`` 次、每维取中位）→ 评审记录（``judge.judge_record``：按校准折算的
+    按维分与总分、原始分、口径、问了几次）；渲染不出参考 / 几次调用全失败 / 没给分数 → ``DomainError``（作业失败）。"""
     from novel_system.services.style_prompt_injection import (
         PLACEMENT_SYSTEM,
         ROLE_REVIEW,
@@ -359,6 +362,7 @@ def run_reference_judge(
     )
     from novel_system.services.style_reference.inject.fit import fit_rendered
     from novel_system.services.style_reference.inject.render import render_style
+    from novel_system.services.style_reference.style_step import fidelity_thresholds
 
     runtime = _judge_runtime()
     template = runtime.template
@@ -394,7 +398,7 @@ def run_reference_judge(
                 "target_input_tokens": budget_fit.get("target_input_tokens"),
             },
         )
-    scores, llm_call_id = call_judge(
+    scores, llm_call_ids = call_judge_panel(
         llm_client,
         runtime,
         system_prefix=rendered.system_prefix,
@@ -407,10 +411,12 @@ def run_reference_judge(
             project_id=project_id,
         ),
         execute=execute_accounted_call,
+        samples=fidelity_thresholds().judge().samples,
         failure_code=CHECK_JUDGE_FAILED_CODE,
     )
     judge = judge_record(verdict_for(session, policy, scores), source="manual_check")
-    judge["llm_call_id"] = llm_call_id
+    judge["llm_call_id"] = llm_call_ids[0]
+    judge["llm_call_ids"] = llm_call_ids
     judge["window_count"] = len(rendered.window_refs)
     return judge
 
@@ -472,7 +478,9 @@ def run_check_job(session: Session, claimed: ClaimedJob, service: StyleJobServic
     )
     # 评审可能走了很久：期间作业被取消 / 被清扫重排给别的工人 / 书被删了——先确认还是自己的，再记读数
     run.check_continue()
-    run.checkpoint(phase="record", phase_label="记录读数", done=2, total=3, llm_calls_delta=1)
+    run.checkpoint(
+        phase="record", phase_label="记录读数", done=2, total=3, llm_calls_delta=len(judge.get("llm_call_ids") or ()) or 1
+    )
     row = readings.record_fidelity_reading(
         session,
         policy=policy,

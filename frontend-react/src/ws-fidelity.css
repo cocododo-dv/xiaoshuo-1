@@ -54,6 +54,12 @@
 .fid-judge { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; margin: 0; font-size: var(--fs-sm); }
 .fid-judge-label { font-weight: 600; color: var(--ink-2); }
 .fid-judge-summary { min-width: 0; line-height: var(--lh-ui); color: var(--ink-2); overflow-wrap: anywhere; }
+.fid-judge-samples { font-size: var(--fs-xs); color: var(--ink-3); white-space: nowrap; }
+
+/* ---------- 低于及格线的几维与改法 ---------- */
+.fid-fix { display: block; margin-top: 2px; color: var(--ink-1); }
+.fid-fix-item { align-items: flex-start; }
+.fid-fix-acts { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 10px; }
 .fid-copy { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: var(--fs-sm); line-height: var(--lh-ui); color: var(--tone-ink); }
 .fid-copy svg { flex: 0 0 auto; margin-top: 3px; }
 .fid-copy-label { flex: 0 0 auto; font-weight: 600; white-space: nowrap; }

@@ -2,6 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { WsDialog } from "./ws-dialog.jsx";
 import { useWindowEvents } from "./lib/events.js";
+import { writerIntents } from "./ws-view-intents.js";
 import { EmptyState, MenuButton, Spinner, Tag } from "./ws-ui.jsx";
 import {
   SR_STAGES, SR_STAGE_STATE_LABEL, srActivityActive, srAppliedToWork, srLandingStage, srPickLandingBook,
@@ -125,6 +126,7 @@ export function WsStyleRef({ go }) {
     const target = action.bookId ? String(action.bookId) : null;
     const fail = (e) => srNotifyError(e, "没有发起成，请稍后重试。");
     if (action.type === "settings") openSettings();
+    else if (action.type === "writer" && action.sceneSid) { if (go) go("writer", writerIntents(action.sceneSid, { source: "style" })); }
     else if (action.type === "open_book" && target) selectBook(target, action.stage || null);
     else if (action.type === "learn") {
       if (target && target !== bookId) selectBook(target);

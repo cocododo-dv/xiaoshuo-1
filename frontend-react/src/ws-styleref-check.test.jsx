@@ -263,6 +263,65 @@ describe("第四步 · 对照检查", () => {
     expect(byTestId("sr-check-running")).toBeNull();
   });
 
+  it("查的是一场：结果先列要改的几维与评审的改法，「去写作台按这些改」进写作台深改的风格对照（2026-10-20）", async () => {
+    const go = vi.fn();
+    state.books = [bookRow({ profile: PROFILE_SUMMARY, applied_projects: [{ project_id: "w1", binding_id: "bd-1", config: OWN_BINDING.config }] })];
+    await mountView(go);
+    await openStage("check");
+    await settle();
+    const judged = {
+      ...CHECK_READING,
+      scene_id: "sc-2",
+      project_id: "w1",
+      judge: {
+        overall: 6.4, pass_score: 6, samples: 3, calibration: { state: "calibrated" }, summary: "仍偏严肃写实",
+        dimensions: {
+          "theme.motifs": { score: 4.6, raw: 6.4, note: "缺反差意象", fix: "在「林昭出场」处补一笔旧雨伞" },
+          "theme.emotional_tone": { score: 5.6, raw: 6.8, note: "语调忽然庄重", fix: "在「那封旧信」处用一句自嘲遮掩心酸" },
+          "language.vocabulary": { score: 7.1, raw: 7.2, note: "口语词用得好", fix: "句末多垫语气词" },
+        },
+      },
+    };
+    routeCheck({
+      post: () => Promise.resolve({ job_id: "job-c", job: JOB("succeeded", { finished_at: "2026-10-20T06:00:00" }), reading: judged }),
+      get: () => Promise.resolve({}),
+    });
+    await pickScene("sc-2");
+    await click(byTestId("sr-check-start"));
+    await settle();
+    const fixes = byTestId("sr-check-fixes");
+    expect(fixes.textContent).toContain("要改的几维（6 分以下）");
+    const items = Array.from(fixes.querySelectorAll(".fid-fix-item")).map((li) => li.textContent);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain("母题意象 4.6");
+    expect(items[0]).toContain("改法：在「林昭出场」处补一笔旧雨伞");
+    expect(items[1]).toContain("情感基调 5.6");
+    expect(byTestId("sr-check-judge").textContent).toContain("评审 3 次取中位");
+    expect(byTestId("sr-check-dims").textContent).toContain("改法：句末多垫语气词");
+    await click(byTestId("sr-check-fixes-writer"));
+    expect(go).toHaveBeenCalledWith("writer", [
+      { type: "ws:writer-scene", detail: "sc-2" },
+      { type: "ws:writer-posture", detail: { posture: "deep", source: "style" } },
+    ]);
+  });
+
+  it("贴进来的文字：只列改法，没有一场可去", async () => {
+    await openCheck();
+    await typeText("一段文字".repeat(100));
+    routeCheck({
+      post: () => Promise.resolve({
+        job_id: "job-c", job: JOB("succeeded"),
+        reading: { ...CHECK_READING, judge: { overall: 5, pass_score: 6, dimensions: { "scene.dialogue": { score: 5, note: "对白偏正式", fix: "在「你来了」处改成拆台" } } } },
+      }),
+      get: () => Promise.resolve({}),
+    });
+    await click(byTestId("sr-check-start"));
+    await settle();
+    expect(byTestId("sr-check-fixes").textContent).toContain("改法：在「你来了」处改成拆台");
+    expect(byTestId("sr-check-fixes-writer")).toBeNull();
+    expect(byTestId("sr-check-judge").textContent).toContain("评审一次");
+  });
+
   it("出了结果给「再查一次」：按同样的目标再发一次（sr-check-again）", async () => {
     await openCheck();
     await typeText("一段文字".repeat(100));

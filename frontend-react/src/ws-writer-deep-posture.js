@@ -21,7 +21,8 @@ import { useWrEvent } from "./ws-writer-hooks.js";
    文学质量视图和成稿门读的是同一份忽略清单。
    进入深改时有未落盘的改动先存（正文马上变只读，诊断要对着存下去的字）；没改过就不存。
    从文学质量 / 待办 / 成稿中心带着 signal_id 跳进来：诊断到了就选中那一条并滚过去；
-   当前作者稿里没有这一条时给一句提示（handoffMiss）。
+   当前作者稿里没有这一条时给一句提示（handoffMiss）。从对照检查带着 source（"style"）跳进来：重新取诊断，
+   清单筛到那个来源、停在它的第一条上（2026-10-20：检查做完不再是死胡同）。
    计数随写回传（2026-09-22 第三轮）：深评 / 局部深评 / 偏好保存的响应里带 diagnosis_rollup，直接合进
    WsDiagnosis；忽略 / 恢复先按面板里的清单本地记一笔，不再让别的视图重拉整本书。
    ESM 模块，不写 window。
@@ -59,6 +60,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   const prefsRef = useRef({ sceneId: null, revisionNo: 0, saveChain: Promise.resolve() });
   const sceneRef = useRef(activeScene);
   const pendingSignalRef = useRef(null);
+  const pendingSourceRef = useRef(null);
   const loadSeq = useRef(0);
   useEffect(() => { sceneRef.current = activeScene; }, [activeScene]);
 
@@ -72,10 +74,15 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   /* 终稿锁定的场不进深改；锁定发生时退回起草。带 signalId 进来：诊断到了就选中那一条 */
   const setPosture = useWrEvent((next, options = {}) => {
     const signalId = options && options.signalId ? String(options.signalId) : null;
+    const source = options && options.source ? String(options.source) : null;
     const wantDeep = next === "deep" && activeScene && !approvedLocked;
     if (signalId && wantDeep) {
       if (posture === "deep" && diagnosis) focusSignal(signalId);
       else pendingSignalRef.current = signalId;
+    } else if (source && wantDeep) {
+      /* 带着来源过来（对照检查刚做完）：已经在深改里也重新取一次——新检查的发现要进清单 */
+      pendingSourceRef.current = source;
+      if (posture === "deep" && activeScene) load(activeScene);
     }
     setPostureState(wantDeep ? "deep" : "draft");
   });
@@ -180,8 +187,16 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     else setPersistenceStatus("synced");
     const list = wrDxWithIgnored((payload && payload.findings) || [], new Set(merged.ignored_issue_keys));
     const wanted = pendingSignalRef.current;
+    const wantedSource = pendingSourceRef.current;
     pendingSignalRef.current = null;
-    if (wanted) {
+    pendingSourceRef.current = null;
+    if (wantedSource && !wanted) {
+      /* 从对照检查过来：筛到这个来源（一条都没有就停在全部，面板顶上那一块说清楚检查的结果） */
+      const first = list.find((f) => !f.ignored && f.source === wantedSource);
+      setFilter(first ? wantedSource : "all");
+      setActiveKey(first ? first.signal_id : null);
+      if (first) setTimeout(() => locateFinding(first), 60);
+    } else if (wanted) {
       const hit = list.find((f) => f.signal_id === wanted);
       if (hit) {
         setHandoffMiss(false);

@@ -37,6 +37,7 @@ from novel_system.services.style_reference.fidelity import (
     within_author_range,
 )
 from novel_system.services.hash_engine import sha256_text
+from novel_system.services.manuscript_html import plain_manuscript_text
 from novel_system.services.value_coercion import finite_or_none
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,12 @@ def reading_for_text(session: Session, policy: Any, text: str) -> FidelityReadin
 
 def text_sha256(text: str) -> str:
     return sha256_text(text)
+
+
+def visible_text_sha256(text: str) -> str:
+    """可见文字的哈希（编辑器段落、段间一个空格）——与场景诊断的 ``DiagnosisText.sha256`` 同一个口径：作者稿在写作台
+    存一次（纯文本变成 ``<p>`` 段落）原文哈希就变，可见文字没变，这次检查仍是对着现在这份字。"""
+    return sha256_text(plain_manuscript_text(text))
 
 
 def scene_project_id(session: Session, scene: Any) -> str | None:
@@ -158,8 +165,8 @@ def _judge_number(value: Any) -> float | None:
 
 
 def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] | None:
-    """评审分 → ``{overall, dimensions: {dim: {score, note, raw?, fix?}}, source, summary?, raw_overall?, calibration?}``
-    （10 分制，一位小数）。
+    """评审分 → ``{overall, dimensions: {dim: {score, note, raw?, fix?, spread?}}, source, summary?, raw_overall?,
+    calibration?, samples?}``（10 分制，一位小数；``samples`` / ``spread``：问了几次、每维几次原始分的最高减最低）。
 
     接受：``judge.judge_record`` 的评审记录（2026-10-14 起软 QC 与对照检查同一形状：``score`` 是按校准折算后作数的分，
     这一维不作数时为 None，``raw`` 是模型原始分，``calibration.state`` 说口径）；旧的对照检查输出
@@ -188,6 +195,9 @@ def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] 
                 item["fix"] = fix[:300]
             if entry.get("applicable") is False:
                 item["applicable"] = False
+            spread = _judge_number(entry.get("spread"))
+            if spread is not None:
+                item["spread"] = spread
             dimensions[dim] = item
     scores = judge.get("dimension_scores")
     if isinstance(scores, Mapping):
@@ -215,6 +225,10 @@ def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] 
     pass_score = _judge_number(judge.get("pass_score"))
     if pass_score is not None:
         payload["pass_score"] = pass_score
+    samples = finite_or_none(judge.get("samples"))
+    if samples is not None and samples >= 1:
+        # 这份评审问了几次、每维取中位（2026-10-20；旧记录没有 = 一次）
+        payload["samples"] = int(samples)
     summary = str(judge.get("summary") or "").strip()
     if summary:
         payload["summary"] = summary[:500]
@@ -374,6 +388,7 @@ def _record(
         "within_range": within_author_range(reading, max_percentile=threshold),
         "max_percentile": threshold,
         "policy": policy_essentials(policy),
+        "visible_sha256": visible_text_sha256(content),
     }
     row = StyleFidelityReading(
         reading_id=f"sfr_{uuid.uuid4().hex[:16]}",
@@ -791,4 +806,5 @@ __all__ = [
     "record_fidelity_reading",
     "scene_project_id",
     "text_sha256",
+    "visible_text_sha256",
 ]
