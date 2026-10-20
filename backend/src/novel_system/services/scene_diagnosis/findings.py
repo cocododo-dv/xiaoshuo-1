@@ -415,6 +415,27 @@ def _quotes(*texts: str) -> list[str]:
     return found
 
 
+# 锚点两端常带上的标点（模型抄原文时多抄或少抄一个逗号、句号）
+_ANCHOR_EDGE_PUNCT = "，。、；：！？…—,.;:!?「」『』“”\"' \u3000"
+# 整段锚点对不上时退而用它的前半 / 后半去找：太短的片段会钉错地方，至少要这么长
+_ANCHOR_PART_MIN_CHARS = 6
+
+
+def _anchor_candidates(anchor: str) -> list[str]:
+    """评审给的原文锚点 → 依次去正文里找的几段：原样、去掉两端标点、前半与后半（模型偶尔在锚点里错一两个字）。"""
+    value = compact_ws(str(anchor or ""))
+    if len(value) < 2:
+        return []
+    trimmed = value.strip(_ANCHOR_EDGE_PUNCT)
+    candidates = [value]
+    if trimmed and trimmed != value:
+        candidates.append(trimmed)
+    half = len(trimmed) // 2
+    if half >= _ANCHOR_PART_MIN_CHARS:
+        candidates.extend([trimmed[:half], trimmed[-half:]])
+    return [item for index, item in enumerate(candidates) if item and item not in candidates[:index]]
+
+
 def style_findings(
     row: StyleFidelityReading,
     text: DiagnosisText,
@@ -424,7 +445,9 @@ def style_findings(
 ) -> list[dict[str, Any]]:
     """一次对照检查的评审 → 风格对照发现：作数的分低于及格线、给了改法的维各一条（「不学」的维不出；评审不可用 /
     分不作数的维不出）。证据 = 改法（其次说明）里引的那句原文，钉到编辑器段落；读数查的不是现在这份字（``current``
-    为假）且那句已找不到 → ``stale``。``signal_id`` 按「维 + 钉住的那句」取：重查指着同一处时，忽略过的仍是忽略。"""
+    为假）且那句已找不到 → ``stale``。证据先找评审逐字抄的锚点（``anchor``，2026-10-20 起每维必填；对不上时试去掉两端
+    标点、前半与后半），再找改法 / 说明里引的原文。``signal_id`` 按「维 + 钉住的那句」取：重查指着同一处时，忽略过的仍是
+    忽略。"""
 
     judge = row.judge_json if isinstance(row.judge_json, Mapping) else {}
     calibration = judge.get("calibration") if isinstance(judge.get("calibration"), Mapping) else {}
@@ -448,7 +471,8 @@ def style_findings(
         if not isinstance(score, (int, float)) or score >= pass_score or not fix:
             continue
         note = str(entry.get("note") or "").strip()
-        quotes = _quotes(fix, note)
+        # 先用评审逐字抄的原文锚点（模板 2026-10-20.v1），再用改法 / 说明里引的原文
+        quotes = [*_anchor_candidates(str(entry.get("anchor") or "")), *_quotes(fix, note)]
         evidence = next((hit for hit in (locate_in_paragraphs(text.paragraphs, quote) for quote in quotes) if hit), None)
         anchor = (evidence or {}).get("excerpt") or (quotes[0] if quotes else "")
         label = STYLE_DIMENSION_LABELS.get(dim, dim)

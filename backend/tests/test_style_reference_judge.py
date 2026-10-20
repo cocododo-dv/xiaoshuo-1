@@ -95,7 +95,8 @@ def test_the_unified_template_requires_all_sixteen_dimensions_and_never_asks_for
     assert schema["required"] == ["dimensions", "summary"]
     assert set(schema["properties"]["dimensions"]["required"]) == set(ALL_DIMENSIONS)
     member = schema["properties"]["dimensions"]["properties"]["scene.dialogue"]
-    assert member["required"] == ["score", "applicable", "note", "fix"]
+    assert member["required"] == ["score", "applicable", "note", "fix", "anchor"]
+    assert "verbatim" in template.task_prompt and "anchor" in template.task_prompt
     assert "overall" not in schema["properties"] and "resolution_code" not in schema["properties"]
     assert "style_ref_check_judge" not in load_prompt_templates()
     soft = load_prompt_templates()["soft_qc"].structured_schema["properties"]
@@ -116,6 +117,26 @@ def _judged(scores: dict[str, float], *, default: float = 7.0, summary: str = ""
     parsed = J.parse_judge_output(structured)
     assert parsed is not None
     return parsed
+
+
+def test_the_anchor_is_read_trimmed_and_carried_into_the_record_and_the_patch_brief() -> None:
+    """2026-10-20 模板 v1：每维逐字抄一小段原文标出改法落在哪里（改法常只说「在某某出场时」，写作台钉不到段落）。"""
+    structured = _structured({"scene.dialogue": 4.0}, default=8.0)
+    structured["dimensions"]["scene.dialogue"]["anchor"] = "「林昭把旧信塞回案卷」"
+    structured["dimensions"]["scene.environment"] = {"score": 0, "applicable": False, "note": "没有环境", "fix": "", "anchor": "雨城"}
+    structured["dimensions"]["theme.values"]["anchor"] = "雨" * 60
+    parsed = J.parse_judge_output(structured)
+    assert parsed.dimensions["scene.dialogue"].anchor == "林昭把旧信塞回案卷", "两端的引号去掉"
+    assert parsed.dimensions["scene.environment"].anchor == "", "没有证据的维不留锚点"
+    assert len(parsed.dimensions["theme.values"].anchor) == J.ANCHOR_MAX_CHARS
+    assert J.parse_judge_output(_structured(default=8.0)).dimensions["scene.dialogue"].anchor == "", "旧回答没有锚点"
+    verdict = J.apply_calibration(parsed, calibration=None, state=J.STATE_MISSING, dimension_states=None, thresholds=THRESHOLDS)
+    record = J.judge_record(verdict, source="manual_check")
+    assert record["dimensions"]["scene.dialogue"]["anchor"] == "林昭把旧信塞回案卷"
+    assert "anchor" not in record["dimensions"]["language.vocabulary"], "空锚点不落库"
+    payload = J.soft_qc_payload(verdict, dimension_states=None)
+    brief = next(line for line in payload["rewrite_brief"] if line.startswith("scene.dialogue"))
+    assert brief.endswith("（位置：「林昭把旧信塞回案卷」）"), "补丁说明带上位置"
 
 
 def test_several_judgements_combine_by_the_median_of_each_dimension() -> None:
@@ -142,6 +163,12 @@ def test_several_judgements_combine_by_the_median_of_each_dimension() -> None:
     assert picked.score == 5.6 and picked.fix == "在「那封旧信」处补一笔旧雨伞"
     picked = J.combine_judge_samples([plain_fix, motif(5.2, "在描写林昭时", "中位"), motif(9.0, "在「那封旧信」处改", "离得远")])
     assert picked.dimensions["theme.motifs"].note == "中位", "引了原文但分数离中位数太远的那次不用"
+    # 给了逐字锚点的那一次比只在改法里引了原文的更优先；说明、改法与锚点取自同一次
+    structured = _structured(default=7.0)
+    structured["dimensions"]["theme.motifs"] = {"score": 5.3, "applicable": True, "note": "给了锚点", "fix": "补一笔旧雨伞", "anchor": "许望进门"}
+    anchored = J.parse_judge_output(structured)
+    picked = J.combine_judge_samples([quoted, anchored, motif(8.0, "远")]).dimensions["theme.motifs"]
+    assert (picked.note, picked.anchor, picked.fix) == ("给了锚点", "许望进门", "补一笔旧雨伞")
     # 一维算不算「有证据」：至少一半的回答这么说
     silent = _structured(default=7.0)
     silent["dimensions"]["scene.dialogue"] = {"score": 0, "applicable": False, "note": "没有对白", "fix": ""}

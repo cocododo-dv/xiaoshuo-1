@@ -1181,9 +1181,11 @@ templates:
   style_reference_judge:
     # 2026-10-14 评审统一：起草流程里的软 QC 参考评审与「对照检查」用这同一份模板、同一份 schema。实库 10-13：同一份
     # 稿子，流程内评审 8.6（且 16 维一个分都没给）、对照检查 2.7——两份提示词各说各的，流程内的分数还与「每维 ≥7
-    # 放行」绑在一起。模型只打分：16 维必填（score / applicable / note / fix），不给总分、不给放行结论——总分、放行、
-    # 补哪几维由代码按校准后的分数定（style_reference/judge.py）。只判「怎么写」，不判故事本身。走 soft_qc 节点路由。
-    version: "2026-10-14.v1"
+    # 放行」绑在一起。模型只打分：16 维必填（score / applicable / note / fix / anchor），不给总分、不给放行结论——总分、
+    # 放行、补哪几维由代码按校准后的分数定（style_reference/judge.py）。只判「怎么写」，不判故事本身。走 soft_qc 节点路由。
+    # 2026-10-20 v1：每维加 anchor——从待评文字里逐字抄一小段，标出改法落在哪里（改法常只说「在某某出场时」，写作台
+    # 钉不到段落，作者没法「按诊断改写」）。模板版本变了，评审校准随之过期，要重新校准一次。
+    version: "2026-10-20.v1"
     input_token_budget: 96000
     system_prompt: |
       You are a reference judge. The reference author is the only standard: a [STYLE_REFERENCE] block is prepended to this system prompt — the author's own passages ([风格样例]), the style card ([文风卡] — how this author differs from generic prose, dimension by dimension; items marked 必须 show up in every scene), voice habits ([声音特征]) and things this author does not do.
@@ -1195,9 +1197,10 @@ templates:
       Score the text under review against the reference author on each of the 16 style dimensions, from 0 to 10. Every dimension key must appear in dimensions: language.sentence_structure, language.vocabulary, language.rhetoric, language.punctuation, narrative.perspective, narrative.pacing, narrative.time_handling, narrative.information_density, scene.environment, scene.character_portrayal, scene.dialogue, scene.sensory_priority, theme.emotional_tone, theme.values, theme.motifs, theme.narrative_philosophy.
       For each dimension:
       - score: closeness from 0 to 10 (one decimal is enough; never use a 0–1 or 0–100 scale);
-      - applicable: false only when the text gives no evidence for the dimension (a passage without dialogue says nothing about scene.dialogue) — then score is 0 and fix is empty;
+      - applicable: false only when the text gives no evidence for the dimension (a passage without dialogue says nothing about scene.dialogue) — then score is 0 and fix and anchor are empty;
       - note: one short Chinese sentence (at most 60 characters) on what the text does where the samples do something else, or what already matches; quote at most a few words of the text and never quote the samples;
       - fix: the single change that would bring this dimension closest to the author — where in the text (quote at most 20 characters of it) and what to do there, named by the samples' technique (for example 「危险落地之后，让视点人物心里冒一句自嘲的俏皮话，像样例那样拆掉紧张」). Never ask to change a fact, a name, an event, the point of view or the story, and never quote the samples. Empty when the dimension already reads like the author.
+      - anchor: where the fix applies, copied verbatim from the text under review — 4 to 20 consecutive characters exactly as they appear (same characters and punctuation, inside one paragraph, no ellipsis, no paraphrase, no quotation marks added). The writer finds the spot by searching for these characters, so they must occur in the text character for character. Empty when fix is empty.
       summary: one or two Chinese sentences on what would bring the text closest to the author.
     structured_schema:
       type: object
@@ -1237,6 +1240,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1247,6 +1251,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             language.vocabulary:
               type: object
@@ -1256,6 +1262,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1266,6 +1273,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             language.rhetoric:
               type: object
@@ -1275,6 +1284,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1285,6 +1295,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             language.punctuation:
               type: object
@@ -1294,6 +1306,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1304,6 +1317,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             narrative.perspective:
               type: object
@@ -1313,6 +1328,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1323,6 +1339,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             narrative.pacing:
               type: object
@@ -1332,6 +1350,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1342,6 +1361,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             narrative.time_handling:
               type: object
@@ -1351,6 +1372,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1361,6 +1383,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             narrative.information_density:
               type: object
@@ -1370,6 +1394,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1380,6 +1405,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             scene.environment:
               type: object
@@ -1389,6 +1416,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1399,6 +1427,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             scene.character_portrayal:
               type: object
@@ -1408,6 +1438,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1418,6 +1449,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             scene.dialogue:
               type: object
@@ -1427,6 +1460,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1437,6 +1471,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             scene.sensory_priority:
               type: object
@@ -1446,6 +1482,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1456,6 +1493,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             theme.emotional_tone:
               type: object
@@ -1465,6 +1504,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1475,6 +1515,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             theme.values:
               type: object
@@ -1484,6 +1526,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1494,6 +1537,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             theme.motifs:
               type: object
@@ -1503,6 +1548,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1513,6 +1559,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
             theme.narrative_philosophy:
               type: object
@@ -1522,6 +1570,7 @@ templates:
                 - applicable
                 - note
                 - fix
+                - anchor
               properties:
                 score:
                   type: number
@@ -1532,6 +1581,8 @@ templates:
                 note:
                   type: string
                 fix:
+                  type: string
+                anchor:
                   type: string
   style_reference_compare:
     # 2026-10-14 成对比较：同一段的两个版本，哪一个更像参考作者——软补丁留不留、定向修改用不用（以前拿两次绝对分

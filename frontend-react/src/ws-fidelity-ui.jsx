@@ -2,7 +2,7 @@ import React from "react";
 import { I } from "./icons.jsx";
 import { Notice, Tag } from "./ws-ui.jsx";
 import {
-  FID_STAGE_LABELS, fidBadgeView, fidDimensionGroups, fidFixDims, fidJudgeView, fidPassText, fidReadingView, fidScoreText, fidScoreTone,
+  FID_STAGE_LABELS, fidBadgeView, fidDimensionGroups, fidFixDims, fidFixText, fidJudgeView, fidPassText, fidReadingView, fidScoreText, fidScoreTone,
   fidScoreWord, fidTrendPoints,
 } from "./ws-fidelity-model.js";
 import { formatMonthDayTime } from "./lib/format.js";
@@ -190,7 +190,7 @@ export function FidelityFixList({ judge, onWriter = null, limit = 6, testId }) {
               <span className="fid-gap-dim">{dim.label} {fidScoreText(dim.score)}</span>
               <span className="fid-gap-phrase">
                 {dim.note}
-                <span className="fid-fix">改法：{dim.fix}</span>
+                <span className="fid-fix">改法：{fidFixText(dim)}</span>
               </span>
             </li>
           ))}

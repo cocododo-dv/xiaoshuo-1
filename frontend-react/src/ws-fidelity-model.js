@@ -181,9 +181,10 @@ export function fidJudgeState(judge) {
 }
 
 /* 评审（软质检的参考评审 / 对照检查）：
-   { overall, rawOverall, summary, state, stateView, passScore, samples, dims: { dim: { score, raw, note, fix, spread } } }
+   { overall, rawOverall, summary, state, stateView, passScore, samples, dims: { dim: { score, raw, note, fix, anchor, spread } } }
    或 null。score = 作数的分（校准后的；这一维分不清 / 评审不可用时为 null），raw = 模型原始分；samples = 问了几次
-   （对照检查同一份提示问三次、每维取中位，2026-10-20；起草流程里的软 QC 问一次），spread = 几次原始分的最高减最低 */
+   （对照检查同一份提示问三次、每维取中位，2026-10-20；起草流程里的软 QC 问一次），spread = 几次原始分的最高减最低；
+   anchor = 改法落在哪里，评审从正文里逐字抄的一小段（评审模板 2026-10-20.v1 起有，旧记录为空） */
 export function fidJudgeView(judge) {
   if (!judge || typeof judge !== "object") return null;
   const dims = {};
@@ -197,6 +198,7 @@ export function fidJudgeView(judge) {
       raw,
       note: obj ? String(obj.note || "") : "",
       fix: obj ? String(obj.fix || "") : "",
+      anchor: obj ? String(obj.anchor || "") : "",
       spread: obj ? num(obj.spread) : null,
     };
   });
@@ -209,6 +211,14 @@ export function fidJudgeView(judge) {
     overall, rawOverall, summary: String(judge.summary || ""), dims, state, stateView: FID_JUDGE_STATES[state],
     passScore: num(judge.pass_score), samples: samples != null && samples >= 1 ? Math.round(samples) : 1,
   };
+}
+
+/* 一维的改法怎么念：改法本身没引到锚点时补一句「位置：「…」」（锚点是评审逐字抄的原文，写作台按它找到那一处） */
+export function fidFixText(entry) {
+  const fix = String((entry && entry.fix) || "");
+  const anchor = String((entry && entry.anchor) || "");
+  if (!fix) return "";
+  return anchor && !fix.includes(anchor) ? `${fix}（位置：「${anchor}」）` : fix;
 }
 
 /* 及格线怎么写：整数不带小数（「6 分以下」），否则一位小数 */
@@ -226,7 +236,7 @@ export function fidFixDims(judge) {
   const line = view.passScore != null ? view.passScore : 6;
   return Object.entries(view.dims)
     .filter(([, entry]) => entry.score != null && entry.score < line && entry.fix)
-    .map(([dimension, entry]) => ({ dimension, label: styleDimensionLabel(dimension), score: entry.score, note: entry.note, fix: entry.fix }))
+    .map(([dimension, entry]) => ({ dimension, label: styleDimensionLabel(dimension), score: entry.score, note: entry.note, fix: entry.fix, anchor: entry.anchor }))
     .sort((a, b) => a.score - b.score || STYLE_DIMENSIONS.indexOf(a.dimension) - STYLE_DIMENSIONS.indexOf(b.dimension));
 }
 
@@ -257,7 +267,7 @@ export function fidDimensionGroups(reading, judge, { states = null } = {}) {
       judged: view && view.dims[dim] ? view.dims[dim].score : null,
       judgedRaw: view && view.dims[dim] ? view.dims[dim].raw : null,
       note: view && view.dims[dim] ? view.dims[dim].note : "",
-      fix: view && view.dims[dim] ? view.dims[dim].fix : "",
+      fix: view && view.dims[dim] ? fidFixText(view.dims[dim]) : "",
       state: (states && states[dim]) || "normal",
     })),
   }));

@@ -3,7 +3,7 @@
 // 近期常见偏差按维归组、走势点、出错说法。合成数据，不是任何真书。
 import { describe, expect, it } from "vitest";
 import {
-  fidBadgeView, fidCopyView, fidDimensionGroups, fidErrorInfo, fidExplain, fidFinalsSummary, fidFixDims, fidGaps, fidGapsByDimension,
+  fidBadgeView, fidCopyView, fidDimensionGroups, fidErrorInfo, fidExplain, fidFinalsSummary, fidFixDims, fidFixText, fidGaps, fidGapsByDimension,
   fidJobView, fidJudgeView, fidPatchView, fidRank, fidReadingStates, fidReadingView, fidSceneFinals, fidScoreTone,
   fidStyleStepView, fidTrendPoints, fidUnreliableText, fidVerdict, fidWeakestDims, fidJudgeState, FID_JUDGE_STATES,
 } from "./ws-fidelity-model.js";
@@ -97,7 +97,7 @@ describe("分数与维度", () => {
     expect(fidJudgeView({ overall: null, dimensions: {} })).toBeNull();
     expect(fidJudgeView(reading().judge)).toMatchObject({ overall: 7.2, summary: "对白再松一点就更像" });
     expect(fidWeakestDims(reading().judge, 1)).toEqual([
-      { dimension: "scene.dialogue", label: "对话写法", score: 6, raw: null, note: "对白偏正式", fix: "", spread: null },
+      { dimension: "scene.dialogue", label: "对话写法", score: 6, raw: null, note: "对白偏正式", fix: "", anchor: "", spread: null },
     ]);
   });
 
@@ -111,7 +111,7 @@ describe("分数与维度", () => {
     });
     expect(calibrated).toMatchObject({ overall: 5, rawOverall: 6.5, state: "calibrated" });
     expect(calibrated.stateView.label).toBe("已校准");
-    expect(calibrated.dims["language.punctuation"]).toEqual({ score: null, raw: 7, note: "分不清", fix: "", spread: null });
+    expect(calibrated.dims["language.punctuation"]).toEqual({ score: null, raw: 7, note: "分不清", fix: "", anchor: "", spread: null });
     expect(calibrated.samples).toBe(1);
     expect(fidWeakestDims({ overall: 5, calibration: { state: "calibrated" }, dimensions: calibrated.dims }, 3).map((d) => d.dimension))
       .toEqual(["scene.dialogue"]);
@@ -138,8 +138,8 @@ describe("分数与维度", () => {
     expect(view).toMatchObject({ samples: 3, passScore: 6 });
     expect(view.dims["theme.motifs"].spread).toBe(1.8);
     expect(fidFixDims(judge)).toEqual([
-      { dimension: "theme.motifs", label: "母题意象", score: 4.6, note: "缺反差意象", fix: "在「林昭出场」处补一笔" },
-      { dimension: "theme.emotional_tone", label: "情感基调", score: 5.6, note: "语调忽然庄重", fix: "在「那封旧信」处用自嘲遮掩" },
+      { dimension: "theme.motifs", label: "母题意象", score: 4.6, note: "缺反差意象", fix: "在「林昭出场」处补一笔", anchor: "" },
+      { dimension: "theme.emotional_tone", label: "情感基调", score: 5.6, note: "语调忽然庄重", fix: "在「那封旧信」处用自嘲遮掩", anchor: "" },
     ]);
     // 没给改法的、达标的、分不清的维都不算；旧记录没有及格线按 6 分
     expect(fidFixDims({ overall: 5, dimensions: { "scene.dialogue": { score: 5.5, fix: "拆台" } } }).map((d) => d.dimension)).toEqual(["scene.dialogue"]);
@@ -147,6 +147,17 @@ describe("分数与维度", () => {
     const groups = fidDimensionGroups({ dimension_scores: {} }, judge);
     const row = groups.flatMap((g) => g.rows).find((r) => r.dimension === "theme.motifs");
     expect(row.fix).toBe("在「林昭出场」处补一笔");
+  });
+
+  it("改法的位置（2026-10-20 评审锚点）：改法没引到锚点时补「位置：「…」」，已引到就不重复；没有改法就是空", () => {
+    expect(fidFixText({ fix: "加一句自嘲", anchor: "雨城的潮气" })).toBe("加一句自嘲（位置：「雨城的潮气」）");
+    expect(fidFixText({ fix: "在「雨城的潮气」处加一句自嘲", anchor: "雨城的潮气" })).toBe("在「雨城的潮气」处加一句自嘲");
+    expect(fidFixText({ fix: "加一句自嘲", anchor: "" })).toBe("加一句自嘲");
+    expect(fidFixText({ fix: "", anchor: "雨城" })).toBe("");
+    const judge = { overall: 5, pass_score: 6, dimensions: { "theme.motifs": { score: 4.6, note: "缺意象", fix: "补一笔旧雨伞", anchor: "许望进门" } } };
+    expect(fidFixDims(judge)[0].anchor).toBe("许望进门");
+    const row = fidDimensionGroups({ dimension_scores: {} }, judge).flatMap((g) => g.rows).find((r) => r.dimension === "theme.motifs");
+    expect(row.fix).toBe("补一笔旧雨伞（位置：「许望进门」）");
   });
 });
 

@@ -386,7 +386,8 @@ def judge_revision_brief_sections(
         parts.append(head)
         fix = str(entry.get("fix") or "").strip()
         if fix:
-            parts.append(f"  改法：{fix}")
+            anchor = str(entry.get("anchor") or "").strip()
+            parts.append(f"  改法：{fix}" + (f"（位置：「{anchor}」）" if anchor and anchor not in fix else ""))
     if differences:
         parts.append("")
         parts.append("## Measured Differences (this draft against the author's own passages)")

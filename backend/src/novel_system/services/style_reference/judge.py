@@ -50,6 +50,8 @@ MAX_PATCH_DIMENSIONS = 4
 NEUTRAL_LENGTH_FLOOR = 0.8
 NOTE_MAX_CHARS = 200
 FIX_MAX_CHARS = 300
+# 改法落在哪里：从待评文字里逐字抄的一小段（提示要 4–20 字；多给的截掉——写作台按它在正文里找）
+ANCHOR_MAX_CHARS = 40
 SUMMARY_MAX_CHARS = 500
 
 # 画像 profile_json 里存校准结果的键（不进冻结契约：它说的是评审模型，不是文风）
@@ -101,6 +103,8 @@ class DimensionJudgement:
     applicable: bool
     note: str = ""
     fix: str = ""
+    # 改法落在哪里（2026-10-20 模板 v1）：从待评文字里逐字抄的一小段；旧回答没有 → 空
+    anchor: str = ""
 
 
 @dataclass(frozen=True)
@@ -161,6 +165,7 @@ def parse_judge_output(structured: Any, *, schema: Any = None) -> JudgeScores | 
             applicable=applicable,
             note=str(entry.get("note") or "").strip()[:NOTE_MAX_CHARS],
             fix=str(entry.get("fix") or "").strip()[:FIX_MAX_CHARS] if applicable else "",
+            anchor=str(entry.get("anchor") or "").strip().strip("「」“”\"'")[:ANCHOR_MAX_CHARS] if applicable else "",
         )
     if not any(item.applicable for item in dims.values()):
         return None
@@ -180,7 +185,8 @@ FIX_PICK_TOLERANCE = 1.0
 
 def combine_judge_samples(samples: Sequence[JudgeScores]) -> JudgeScores:
     """同一份文字的几次评审 → 一份：每一维取几次原始分的中位数（单次评审噪声大，见模块说明）；这一维的说明与改法取
-    分数离中位数 :data:`FIX_PICK_TOLERANCE` 以内、优先引了原文的那一次，再按离中位数最近（说明与分数对得上）；一维算
+    分数离中位数 :data:`FIX_PICK_TOLERANCE` 以内、优先给了原文锚点（``anchor``）的那一次、其次改法里引了原文的，再按离
+    中位数最近（说明与分数对得上）；说明、改法与锚点取自同一次。一维算
     「有证据」要至少一半的回答这么说；总评取均分居中的那一次。只有一次 → 原样返回。"""
     items = [item for item in samples if item is not None]
     if not items:
@@ -200,9 +206,12 @@ def combine_judge_samples(samples: Sequence[JudgeScores]) -> JudgeScores:
         scores = [entry.score for entry in applicable]
         median = round(_median(scores), 2)
         near = [entry for entry in applicable if abs(entry.score - median) <= FIX_PICK_TOLERANCE]
+        anchored = [entry for entry in near if entry.anchor and entry.fix]
         quoted = [entry for entry in near if "「" in entry.fix]
-        picked = min(quoted or near or applicable, key=lambda entry: abs(entry.score - median))
-        dims[dim] = DimensionJudgement(score=median, applicable=True, note=picked.note, fix=picked.fix)
+        picked = min(anchored or quoted or near or applicable, key=lambda entry: abs(entry.score - median))
+        dims[dim] = DimensionJudgement(
+            score=median, applicable=True, note=picked.note, fix=picked.fix, anchor=picked.anchor if picked.fix else ""
+        )
         spreads[dim] = round(max(scores) - min(scores), 2)
     means = [(item.mean(), index) for index, item in enumerate(items) if item.mean() is not None]
     summary = items[0].summary
@@ -407,6 +416,7 @@ def apply_calibration(
             "applicable": item.applicable,
             "note": item.note,
             "fix": item.fix,
+            "anchor": item.anchor,
         }
         if dim in scores.spreads:
             dims[dim]["spread"] = round(float(scores.spreads[dim]), 1)
@@ -438,7 +448,7 @@ def judge_record(verdict: JudgeVerdict, *, source: str) -> dict[str, Any]:
     ``overall`` / ``dimensions.*.score`` 是作数的分；``raw_overall`` / ``dimensions.*.raw`` 是模型原始分；
     ``calibration.state`` 说这次分数是哪种口径。旧读者认的 ``style_score`` / ``dimension_scores`` 一并给出。"""
     dimensions = {
-        dim: {key: entry[key] for key in ("score", "raw", "applicable", "note", "fix", "spread") if entry.get(key) not in (None, "")}
+        dim: {key: entry[key] for key in ("score", "raw", "applicable", "note", "fix", "anchor", "spread") if entry.get(key) not in (None, "")}
         | {"applicable": bool(entry["applicable"])}
         for dim, entry in verdict.dimensions.items()
     }
@@ -530,6 +540,9 @@ def soft_qc_payload(
         label = labels.get(dim, dim)
         note = str(entry.get("note") or "").strip() or f"{label}离参考作者还远。"
         fix = str(entry.get("fix") or "").strip() or f"照样例的写法改这一维：{note}"
+        anchor = str(entry.get("anchor") or "").strip()
+        if anchor and anchor not in fix:
+            fix += f"（位置：「{anchor}」）"
         issues.append(
             {
                 "issue_key": f"style_reference.{dim}",

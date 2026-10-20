@@ -165,7 +165,7 @@ def _judge_number(value: Any) -> float | None:
 
 
 def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] | None:
-    """评审分 → ``{overall, dimensions: {dim: {score, note, raw?, fix?, spread?}}, source, summary?, raw_overall?,
+    """评审分 → ``{overall, dimensions: {dim: {score, note, raw?, fix?, anchor?, spread?}}, source, summary?, raw_overall?,
     calibration?, samples?}``（10 分制，一位小数；``samples`` / ``spread``：问了几次、每维几次原始分的最高减最低）。
 
     接受：``judge.judge_record`` 的评审记录（2026-10-14 起软 QC 与对照检查同一形状：``score`` 是按校准折算后作数的分，
@@ -193,6 +193,9 @@ def normalize_judge(judge: Any, *, source: str | None = None) -> dict[str, Any] 
             fix = str(entry.get("fix") or "").strip()
             if fix:
                 item["fix"] = fix[:300]
+            anchor = str(entry.get("anchor") or "").strip()
+            if anchor:
+                item["anchor"] = anchor[:40]
             if entry.get("applicable") is False:
                 item["applicable"] = False
             spread = _judge_number(entry.get("spread"))

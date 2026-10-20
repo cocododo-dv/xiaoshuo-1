@@ -172,3 +172,29 @@ def test_only_checks_of_the_bound_profile_count_and_a_single_pipeline_judgement_
     _add_check(session, scene, profile_id, judge=unusable)
     payload = SceneDiagnosisService(session).payload(scene.scene_id)
     assert _style(payload) == [] and payload["style"]["status"] == "current", "评审不可用：检查算做过，但它的分不出发现"
+
+
+def test_the_judge_anchor_pins_a_fix_that_quotes_nothing(session) -> None:
+    """2026-10-20 评审模板 v1：每维逐字抄一小段原文（anchor）。改法只说「在开头写潮气时」也钉得到段落；锚点抄错一两个字
+    （多抄一个句号、末尾错一个字）退而用它的前半 / 后半去找；锚点对不上、引文也没有 → 不钉段，也不算过时。"""
+    scene, profile_id = _seed(session, "styanchor")
+    judge = {
+        **JUDGE,
+        "dimensions": {
+            "theme.emotional_tone": _dim(5.0, note="开头太平。", fix="在开头写潮气时，加一句林昭的自嘲。") | {"anchor": "雨城的潮气扑了林昭一脸。"},
+            "narrative.perspective": _dim(4.6, note="视角太正。", fix="换成他对自己的嘲弄。") | {"anchor": "盯着案卷上那行字呀呀呀呀"},
+            "theme.motifs": _dim(3.9, note="缺少反差意象。", fix="补一笔旧雨伞。") | {"anchor": "根本不在正文里的话"},
+        },
+    }
+    _add_check(session, scene, profile_id, judge=judge)
+    found = {finding["dimension"]: finding for finding in _style(SceneDiagnosisService(session).payload(scene.scene_id))}
+    tone = found["theme.emotional_tone"]
+    assert tone["evidence"]["paragraph_index"] == 0 and tone["evidence"]["excerpt"].startswith("雨城的潮气扑了林昭一脸")
+    perspective = found["narrative.perspective"]
+    assert perspective["evidence"]["paragraph_index"] == 1, "末尾抄错了几个字：用锚点的前半找到"
+    motifs = found["theme.motifs"]
+    assert motifs["evidence"] is None and motifs["stale"] is False, "对着现在这份字的检查：对不上的锚点不算过时"
+    # 钉住的那句进 signal id：同一处再查，忽略过的仍是忽略
+    _add_check(session, scene, profile_id, judge=judge)
+    again = {finding["dimension"]: finding["signal_id"] for finding in _style(SceneDiagnosisService(session).payload(scene.scene_id))}
+    assert again["theme.emotional_tone"] == tone["signal_id"]
