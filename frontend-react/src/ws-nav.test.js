@@ -6,26 +6,28 @@ import {
 } from "./ws-nav.js";
 
 describe("ws-nav", () => {
-  it("全部页面：侧栏与命令面板读同一份（含文学质量 / 成本看板）", () => {
+  it("全部页面：侧栏与命令面板读同一份（含成本看板；文学质量 2026-10-20 退役）", () => {
     expect(WS_ALL_VIEWS).toEqual([
       "home", "snowflake", "writer", "styleref", "review", "library",
-      "author", "scene", "manuscripts", "quality", "cost", "settings", "trash",
+      "author", "scene", "manuscripts", "cost", "settings", "trash",
     ]);
     expect(WS_VIEW_LABELS.cost).toBe("成本看板");
     WS_NAV_ITEMS.forEach(it => { expect(it.desc).toBeTruthy(); expect(it.kw).toBeTruthy(); });
   });
 
   it("高级页面只在高级模式出现；系统组固定在底部，不进滚动区", () => {
-    expect(["author", "scene", "manuscripts", "quality", "cost"].every(isAdvancedView)).toBe(true);
+    expect(["author", "scene", "manuscripts", "cost"].every(isAdvancedView)).toBe(true);
     expect(["home", "writer", "settings", "trash"].some(isAdvancedView)).toBe(false);
     expect(navGroupsForMode("writer").map(g => g.id)).toEqual(["daily"]);
     expect(navGroupsForMode("advanced").map(g => g.id)).toEqual(["daily", "production", "ops"]);
     expect(systemNavGroup().items.map(it => it.id)).toEqual(["settings", "trash"]);
   });
 
-  it("旧路由别名只重定向到已知页面", () => {
+  it("旧路由别名只重定向到已知页面；退役的文学质量深链去成稿中心", () => {
     Object.values(WS_VIEW_ALIAS).forEach(v => expect(isKnownView(v)).toBe(true));
     expect(isKnownView("deepdesk")).toBe(false);
+    expect(isKnownView("quality")).toBe(false);
+    expect(WS_VIEW_ALIAS.quality).toBe("manuscripts");
   });
 
   it("雪花十步：后端 step_key ↔ 前端步骤键一一对应", () => {

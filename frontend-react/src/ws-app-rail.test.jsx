@@ -91,7 +91,7 @@ describe("侧栏 · 结构", () => {
   it("高级模式：生产与运维组进入导航区，分组标题留在 DOM 里（折叠时只是一条线）", async () => {
     const { host } = await mountRail({ mode: "advanced", view: "scene" });
     const nav = host.querySelector(".ws-nav-scroll");
-    expect(itemLabels(nav)).toEqual(["主页", "构思", "写作", "风格", "待办", "资料", "章节编排", "AI 起草台", "成稿中心", "文学质量", "成本看板"]);
+    expect(itemLabels(nav)).toEqual(["主页", "构思", "写作", "风格", "待办", "资料", "章节编排", "AI 起草台", "成稿中心", "成本看板"]);
     expect([...nav.querySelectorAll(".ws-nav-label")].map(n => n.textContent)).toEqual(["生产与质控", "运维工具"]);
     expect(itemLabels(host.querySelector(".ws-rail-foot"))).toEqual(["设置", "回收站"]);
   });

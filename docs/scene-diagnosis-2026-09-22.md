@@ -4,6 +4,10 @@
 
 这份文档是现行契约：一场正文「哪里有问题」只有**一份记录**，写作台的深改面板是**唯一的展示处**；文学质量视图、成稿门、起草台的评审和 AI 深评都读写这一份。
 
+> 2026-10-20：单独的文学质量视图（巡检 / 即时扫描 / 章组复审）与它的三个接口 `/api/v1/literary-quality/*` 退役（§10），
+> 下文凡说「文学质量视图」读同一份记录、认忽略清单的地方，都按历史读；规则引擎 `literary_quality` 本身照旧，发现经场景诊断
+> 与成稿门出来。成稿中心的「诊断」页签改叫「通读」。
+
 > 2026-09-29 全系统重构之后的对照（正文按 2026-09-22 的代码写，下面这几条以现在的代码为准）：
 > - 模块变成了包：`services/scene_diagnosis/`（`vocabulary` / `text` / `calibration` / `findings` / `serialize` / `context` / `service`，
 >   门面是包的 `__init__`），`services/literary_quality/`（`dimensions` / `lexicons` / `rules` / `calibration` / `calibration_source` /
@@ -159,3 +163,18 @@ patch            { candidate_category, revision_strategy }：从这条发现发�
 **界面。** 写作台深改：来源筛选多「风格对照」；顶上一块（`ws-deep-style.jsx`）说最近一次检查的分、及格线、口径、问了几次与新旧，按钮「对照检查 / 重新检查」就地发起（与起草台共用一个作业键 `fidSceneCheckKey`），跑完读数 id 变了就重新取诊断。风格页的对照检查结果先列「要改的几维」（`FidelityFixList`：低于及格线、给了改法的维，分从低到高；按维的表里每维也带改法），查的是作品里的一场时给「去写作台按这些改」（`writerIntents(sid, {source: "style"})`：深改清单筛到风格对照、停在第一条）；起草台证据栏的对照检查同样。起草流程里的评审照实标「起草时评审 · 一次」。有的改法其实是在改内容（把参考书的题材往作者的故事上搬），所以不做一键全改：一条条由作者挑，不要的忽略。
 
 测试：`tests/test_scene_diagnosis_style.py`（发现的形状与钉段、达标 / 没改法 / 分不清的维不出、重查 id 不变、改稿后过时与引文丢失、存成 HTML 仍是同一份字、忽略与计数、只认绑定画像的对照检查、评审不可用）、`tests/test_style_reference_check_job.py`（检查写作台上的那份正文、记可见文字哈希）；前端 `ws-writer-deep.test.jsx`（带 source 进深改、风格对照块、就地检查后重新取诊断）、`ws-styleref-check.test.jsx`（要改的几维、去写作台、贴文字没有去处）、`ws-fidelity-model.test.js`（`fidFixDims`）。部署：无迁移、无提示词改动。
+
+## 10. 文学质量页退役、成稿中心「通读」（2026-10-20）
+
+作者同意第 3 步：问题清单只在一处——写作台深改；别的地方只当入口。
+
+- **文学质量页退役**：前端视图（`ws-quality*`）、导航项与它的三个接口（`GET /api/v1/literary-quality/overview`、
+  `POST …/analyze-text`、`POST …/chapter-set-review`）删掉，登记进 `tests/test_retired_surface.py`（含整段前缀）；旧深链
+  `#quality` 去成稿中心（`ws-nav.WS_VIEW_ALIAS`）。巡检就是深改清单里「规则」那一部分，各章各场的计数在成稿中心与主页。
+  随页退掉的还有两样深改里没有的：**章组复审**（跨章的重复句式、伏笔兑现、受保护专名——原文重合另有唯一的抄袭门）与
+  **即时扫描**（贴一段文字查规则；对照检查仍能贴文字查像不像）。`literary_quality/service.py`、`chapter_set.py` 删掉，
+  `report.py` 只留「整维已忽略」的判定（成稿门用），`LITERARY_QUALITY_*` 错误文案删掉。成本看板借用的
+  `.q-stats / .q-stat / .q-empty / .q-notice` 搬进 `ws-cost.css`；规则维度中文名与后端逐字相同的守卫搬进 `ws-labels.test.js`。
+- **成稿中心「诊断」→「通读」**：这一页是「AI 通读本章」的判断与钉不到任何一场的发现，外加各场还开着几条（点进去就是写作台
+  深改的那一场）；页签上不再挂计数（左栏章行有）。左栏、结构页签与主页的「诊断 N」照旧——它们数的就是写作台深改的清单。
+

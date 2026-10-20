@@ -240,7 +240,7 @@ Retired and ignored except for one startup warning: the LLM quota / cost / auto-
   `ws:work-changed` (`lib/events.js`) fires only on a work switch or shelf change; stats go via `WsWorks.subscribe`.
   `ws-test-seam.js` is the only `window` writer (`window.__wsStores.load(...)`, DEV only, for the smokes).
 - Shell: `ws-nav.js` is the pure navigation model (`WS_NAV_GROUPS`, `WS_VIEW_ALIAS`: `deepdesk → writer`,
-  `flowmap → home`); `ws-app.jsx` keeps routing, the lazy imports and `<ViewReady>`; cross-view intents go through
+  `flowmap → home`, `quality → manuscripts`); `ws-app.jsx` keeps routing, the lazy imports and `<ViewReady>`; cross-view intents go through
   `ws-view-intents.js` (mount handshake). Megafiles are split behind entry modules that re-export what tests import.
 - Shared layer — use it instead of per-view look-alikes: tokens in `styles.css`; `ws-ui.jsx` + `ws-ui.css`
   (`PageHeader`, `Segmented`, `Tabs`, `Tag`, `Notice`, `EmptyState`, `ProgressBar`, `RadioCards`, `Popover` /
@@ -327,8 +327,8 @@ Retired and ignored except for one startup warning: the LLM quota / cost / auto-
   approval nor export. Reopening needs a reason and cascades revocation.
 - Story memory (`story_memory.py`, `story_editorial.py`): prompts read working memory (canon + unreviewed
   extractions), digests + derived thread ledger, accepted editorial notes; hard QC / final gate: canon.
-- One diagnosis record (`scene_diagnosis`, stable `signal_id`; 对照检查 findings join as `style`); ignore lists hold
-  signal ids and are honoured by 文学质量 and the final gate; writes that change findings return `diagnosis_rollup`.
+- One diagnosis record (`scene_diagnosis`, stable `signal_id`; 对照检查 joins as `style`); ignore lists (signal ids)
+  are honoured by the final gate; writes that change findings return `diagnosis_rollup`.
 - Style reference: jobs are owner-token fenced and a process exit requeues them; `StylePolicy` is the only binding
   decision, `binding_config.normalize_binding_config` the only config interpreter, `judge.py` the only judge,
   `readings.record_fidelity_reading` the only readings writer, `reference_copy_gate.py` the only copy gate (≥ 12 shared

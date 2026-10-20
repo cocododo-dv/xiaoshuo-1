@@ -29,7 +29,7 @@ describe("生产构建分块", () => {
     const app = fs.readFileSync(path.join(srcRoot, "ws-app.jsx"), "utf8");
     for (const moduleName of [
       "ws-home.jsx", "ws-snow.jsx", "ws-styleref.jsx", "ws-library.jsx",
-      "ws-author.jsx", "ws-scene.jsx", "ws-manuscripts.jsx", "ws-quality.jsx",
+      "ws-author.jsx", "ws-scene.jsx", "ws-manuscripts.jsx",
       "ws-cost.jsx", "ws-settings.jsx", "ws-writer.jsx",
     ]) {
       expect(app, moduleName).toContain(`import("./${moduleName}")`);

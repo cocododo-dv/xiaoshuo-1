@@ -8,8 +8,10 @@ import { useChapterDiagnosis } from "./ws-manuscripts-diagnosis-store.js";
 import { formatLocaleMonthDayTime } from "./lib/format.js";
 
 /* ==========================================================
-   成稿中心 · 诊断页签（2026-09-22 场景诊断统一）
+   成稿中心 · 通读页签（2026-09-22 场景诊断统一；2026-10-20 由「诊断」改叫「通读」）
    ----------------------------------------------------------
+   一场正文的问题清单只在写作台深改里（规则、节奏、起草评审、AI 深评、风格对照合成一份）；这一页是章级的那一半：
+   「AI 通读本章」的判断与钉不到任何一场的发现，外加各场还开着几条、点进去就是写作台深改的那一场。
    读 GET /api/v1/chapters/{id}/deep-review：章级「AI 通读本章」的判断（承诺 / 升级 / 兑现 / 收束）、
    钉不到任何一场的章级发现，以及各场的诊断计数（写作台深改面板里的同一份，忽略过的不算）。
    「AI 通读本章」= POST 同一路径（拒绝式：无模型给「去系统设置」）；通读的发现钉得到哪一场就落到哪一场，
@@ -19,7 +21,7 @@ import { formatLocaleMonthDayTime } from "./lib/format.js";
    未改的场沿用上次的发现，标「沿用上次」）和「整章重新通读」；没有场改过时服务端不调模型，这里说一句。
    通读的响应带 diagnosis_rollup，随广播交给计数 store（WsDiagnosis）。读写都在 ws-manuscripts-diagnosis-store.js
    （一次通读只属于发起它的那一章：等模型时换了章，回包、提示、出错都不落到别的章上），
-   这里只管画；一条发现的版式与文学质量共用（ws-finding-ui.jsx 的 FindingLine）。
+   这里只管画；一条发现的版式在 ws-finding-ui.jsx（FindingLine）。
    章里各场都还没有正文时（后端对它回 409 WRITER_DEEP_REVIEW_NO_TEXT，不调模型）两个通读按钮不可点。
    ========================================================== */
 
@@ -61,7 +63,7 @@ function ManuDiagnosis({ chapter, go }) {
   const openSettings = go ? () => go("settings", { type: "ws:settings-tab", detail: "ai" }) : null;
 
   if (!chapterId) {
-    return <div className="ms-diag"><Notice tone="info">这一章还没有同步到服务器，暂时没有诊断。</Notice></div>;
+    return <div className="ms-diag"><Notice tone="info">这一章还没有同步到服务器，暂时不能通读。</Notice></div>;
   }
   const ai = (payload && payload.ai) || { status: "not_run" };
   const score = ai.overall_score != null ? Math.round(ai.overall_score * 100) : null;
@@ -116,10 +118,10 @@ function ManuDiagnosis({ chapter, go }) {
         )}
         {status === "error" && !payload && (
           <Notice tone="danger" className="ms-status" actions={<button type="button" className="btn btn-ghost btn-sm" onClick={reload}>重试</button>}>
-            {(error && error.message) || "读不到本章的诊断。"}
+            {(error && error.message) || "读不到本章的通读与各场计数。"}
           </Notice>
         )}
-        {status === "loading" && !payload && <div className="ms-canonical-loading" role="status"><Spinner size={13} /> 正在读本章的诊断…</div>}
+        {status === "loading" && !payload && <div className="ms-canonical-loading" role="status"><Spinner size={13} /> 正在读本章的通读与各场计数…</div>}
         {brief.length > 0 && ai.status !== "not_run" && (
           <ul className="ms-diag-brief">
             {brief.slice(0, 5).map((line, i) => <li key={i}>{line.action || line.fix_direction || line.recommendation || line.text || (line.target ? `${line.target}：${line.issue || ""}` : "")}</li>)}
@@ -128,7 +130,7 @@ function ManuDiagnosis({ chapter, go }) {
         {ai.status !== "not_run" && chapterFindings.length > 0 && (
           <>
             <div className="ms-diag-sub">整章的判断 <span className="card-sub">{chapterFindings.length}</span></div>
-            <ul className="ms-diag-list">{chapterFindings.map((f) => <FindingLine key={f.signal_id} layout="row" finding={f} />)}</ul>
+            <ul className="ms-diag-list">{chapterFindings.map((f) => <FindingLine key={f.signal_id} finding={f} />)}</ul>
           </>
         )}
         {ai.status !== "not_run" && chapterFindings.length === 0 && summary.open === 0 && (
@@ -142,6 +144,7 @@ function ManuDiagnosis({ chapter, go }) {
             <div className="card-title">各场的诊断</div>
             <span className="card-sub">开着 {summary.open ?? 0} 条{summary.blocking ? ` · 阻断 ${summary.blocking}` : ""}</span>
           </div>
+          <p className="ms-diag-meta">每一场的问题清单在写作台深改里看、改、忽略（规则、节奏、起草评审、AI 深评、风格对照是同一份）；这里只说各场还开着几条。</p>
           {scenes.length === 0 ? <p className="ms-diag-empty">这一章还没有场。</p> : (
             <ul className="ms-diag-scenes">
               {scenes.map((entry, i) => {
@@ -167,7 +170,7 @@ function ManuDiagnosis({ chapter, go }) {
                     </div>
                     {fromChapter.length > 0 && (
                       <ul className="ms-diag-list">
-                        {fromChapter.map((f) => <FindingLine key={f.signal_id} layout="row" finding={f} onLocate={catalogScene && go ? (signalId) => goWriter(catalogScene, signalId) : null} />)}
+                        {fromChapter.map((f) => <FindingLine key={f.signal_id} finding={f} onLocate={catalogScene && go ? (signalId) => goWriter(catalogScene, signalId) : null} />)}
                       </ul>
                     )}
                   </li>

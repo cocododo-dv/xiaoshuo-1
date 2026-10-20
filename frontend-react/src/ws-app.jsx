@@ -33,7 +33,6 @@ const LazyWsTrash = lazyNamed(() => import("./ws-trash.jsx"), "WsTrash");
 const LazyWsAuthor = lazyNamed(() => import("./ws-author.jsx"), "WsAuthor");
 const LazyWsScene = lazyNamed(() => import("./ws-scene.jsx"), "WsScene");
 const LazyWsManuscripts = lazyNamed(() => import("./ws-manuscripts.jsx"), "WsManuscripts");
-const LazyWsQuality = lazyNamed(() => import("./ws-quality.jsx"), "WsQuality");
 const LazyWsCost = lazyNamed(() => import("./ws-cost.jsx"), "WsCost");
 const LazyWsSettings = lazyNamed(() => import("./ws-settings.jsx"), "WsSettings");
 const LazyWriterRoom = lazyNamed(() => import("./ws-writer.jsx"), "WriterRoom");
@@ -156,7 +155,6 @@ function App() {
       case "author":      return <LazyWsAuthor go={go} />;
       case "scene":       return <LazyWsScene go={go} t={t} />;
       case "manuscripts": return <LazyWsManuscripts go={go} />;
-      case "quality":     return <LazyWsQuality go={go} />;
       case "cost":        return <LazyWsCost go={go} />;
       case "settings":    return <LazyWsSettings go={go} t={t} setTweak={setTweak} />;
       case "trash":       return <LazyWsTrash go={go} />;

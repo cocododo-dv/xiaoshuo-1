@@ -8,6 +8,7 @@ import {
   CHAPTER_STATE_ORDER,
   LLM_NODE_LABELS,
   PARAGRAPH_TYPE_LABELS,
+  RULE_DIMENSION_LABELS,
   SCENE_STATE_META,
   SCENE_STATE_ORDER,
   STYLE_DIMENSIONS,
@@ -175,6 +176,18 @@ const pyBlock = (source, head) => {
   const next = source.indexOf("\nclass ", body);
   return source.slice(body, next < 0 ? undefined : next);
 };
+
+describe("诊断发现的规则维度与后端一致", () => {
+  /* 原在 ws-quality.test.jsx（文学质量页 2026-10-20 退役）：成稿中心通读与写作台深改的发现在服务端没给中文名时
+     由这张表念名字 */
+  it("20 维的键、顺序与中文名和 literary_quality/dimensions.py 的 DIMENSION_LABELS 逐字相同", () => {
+    const source = fs.readFileSync(path.join(BACKEND_STYLE_REF, "..", "literary_quality", "dimensions.py"), "utf8");
+    const block = pyBlock(source, "DIMENSION_LABELS: dict[str, str] = {");
+    const backend = [...block.matchAll(/"([a-z_]+)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]);
+    expect(backend).toHaveLength(20);
+    expect(Object.entries(RULE_DIMENSION_LABELS)).toEqual(backend);
+  });
+});
 
 describe("风格参考词表与后端一致", () => {
   it("16 维的键、顺序与名字和 card.DIMENSION_LABELS 逐字相同", () => {

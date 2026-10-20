@@ -1,18 +1,18 @@
-"""文学质量：规则引擎与文学质量视图（B04-01：原来 2,900 行的 literary_quality.py 按职责拆成这个包）。
+"""文学质量：规则引擎（B04-01：原来 2,900 行的 literary_quality.py 按职责拆成这个包）。规则发现进场景诊断
+（写作台深改的「规则」来源）与成稿门的 Q3 警告；单独的文学质量视图与它的三个接口（巡检 / 即时扫描 / 章组复审）
+2026-10-20 退役，``service`` / ``chapter_set`` 两个模块随之删掉。
 
 - ``dimensions``：规则维度的词汇（维度、权重、中文名与「问题 / 改法」、严重度、文本层、signal id、统一形状）；
 - ``lexicons``：词表；``text``：文本助手；
 - ``calibration``：按参考书校准；``scoring``：证据充分度与自动诊断分的上限；
 - ``rules``：规则维度与 ``analyze_literary_quality``；
 - ``fingerprint``：质量指纹；``candidates``：候选稿的对抗排名分；
-- ``report``：视图的报告层（统一形状的发现、定位、风险簇、跨场复用、推荐动作、整维已忽略）；
-- ``chapter_set``：章组复审；``service``：``LiteraryQualityService``（读库的视图服务）；
+- ``report``：「整维已忽略」的判定（成稿门用）；
 - ``calibration_source``：参考书那一侧的校准读数（读参考书的段落表与绑定的画像），不从这里再导出——
   要用的地方按模块导入，导入这个包不拉起它。
 
-依赖只朝下：text / lexicons ← dimensions / calibration ← scoring ← rules ← candidates / report ← service
-（fingerprint、chapter_set 只靠词表与文本助手；calibration_source 在 rules 之上）。调用方从旧模块路径取的名字
-在这里原样再导出。
+依赖只朝下：text / lexicons ← dimensions / calibration ← scoring ← rules ← candidates / report
+（fingerprint 只靠词表与文本助手；calibration_source 在 rules 之上）。调用方从旧模块路径取的名字在这里原样再导出。
 """
 
 from novel_system.services.literary_quality.calibration import (
@@ -65,10 +65,6 @@ from novel_system.services.literary_quality.scoring import (
     automated_evidence_sufficiency,
     weighted_score,
 )
-from novel_system.services.literary_quality.service import (
-    LiteraryQualityService,
-    RuleCalibrationResolver,
-)
 
 __all__ = [
     "ADVERSARIAL_DIMS",
@@ -93,9 +89,7 @@ __all__ = [
     "RULE_REPETITION_DIMENSIONS",
     "RULE_SIGNAL_SOURCE",
     "SEVERITY_RANK",
-    "LiteraryQualityService",
     "RuleCalibration",
-    "RuleCalibrationResolver",
     "adversarial_rank_score",
     "analyze_literary_quality",
     "automated_diagnostic_assessment",

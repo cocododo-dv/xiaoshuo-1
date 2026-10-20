@@ -1,16 +1,16 @@
 /* ==========================================================
    labels/finding — 诊断发现的叫法（2026-10 从 ws-quality-model.js 挪出）
    ----------------------------------------------------------
-   统一的发现记录（signal_id / label / dimension / severity / issue / recommendation……）在三处显示：
-   文学质量、成稿中心的诊断页签、写作台深改抽屉。它们共用这里的词：
+   统一的发现记录（signal_id / label / dimension / severity / issue / recommendation……）在两处显示：
+   写作台深改抽屉、成稿中心的「通读」页签（文学质量页 2026-10-20 退役）。它们共用这里的词：
    · 严重程度的中文名与语气色（ws-ui 的 tone）；
    · 规则维度的中文名——与后端 literary_quality/dimensions.py 的 DIMENSION_LABELS 逐字相同
-     （ws-quality.test.jsx 读后端源码比对）。服务端给了 finding.label 就用服务端的；
+     （ws-labels.test.js 读后端源码比对）。服务端给了 finding.label 就用服务端的；
      AI 深评 / 通读的维度（information_rhythm 这类）一律由服务端给名字。
    纯数据与纯函数：不读 store、不碰 React、不写 window。
    ========================================================== */
 
-/* 严重程度：从重到轻（文学质量「最低级别」下拉的顺序） */
+/* 严重程度：从重到轻 */
 export const FINDING_SEVERITY_ORDER = ["blocking", "revision", "taste", "info"];
 
 export const FINDING_SEVERITY_META = {

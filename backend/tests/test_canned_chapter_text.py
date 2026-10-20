@@ -76,23 +76,6 @@ def test_the_execution_contract_does_not_take_the_canned_emotion_and_stays_activ
     assert EMOTION not in str(contract.payload_json)
 
 
-def test_chapter_set_checks_do_not_count_the_canned_sentences_as_evidence(session) -> None:
-    from novel_system.services.literary_quality.chapter_set import (
-        _chapter_set_payoff_reveal_checks,
-        _theme_variety_score,
-    )
-
-    chapters = [_legacy_chapter(session, f"CANNED_SET_{index}") for index in range(3)]
-    # 没有正文的章：以前样板句里的「代价」「选择」替它们冒充了证据
-    checks = _chapter_set_payoff_reveal_checks(chapters, [])
-    assert checks["forced_choice_chapter_ids"] == [] and checks["cost_chapter_ids"] == []
-    # 三章同一句样板情绪：以前算成「全书只有一种情绪」（0.0）；没规划就是数据不够（0.5）
-    assert _theme_variety_score(chapters) == 0.5
-    # 作者写了的照旧算
-    chapters[0].emotional_target = "她不得不选择，代价是失去证人"
-    assert _chapter_set_payoff_reveal_checks(chapters[:1], [])["cost_chapter_ids"] == [chapters[0].chapter_id]
-
-
 def test_chapter_payloads_and_the_planning_context_say_not_planned(session) -> None:
     from novel_system.services.author_lifecycle import AuthorLifecycleService
     from novel_system.services.chapter_planning_context import ChapterPlanningContextBuilder

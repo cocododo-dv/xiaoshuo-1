@@ -60,7 +60,7 @@ function clearViewIntents(view) {
   else pendingByView.clear();
 }
 
-/* 进写作台的一组视图意图（章节编排、成稿中心、文学质量、待办、AI 起草台去写作台都用它）：
+/* 进写作台的一组视图意图（章节编排、成稿中心、待办、AI 起草台、风格参考去写作台都用它）：
    · sid：先定位到这一场（ws:writer-scene）；
    · deep / signalId：进这一场的深改姿态，signalId 让深改面板到了诊断就选中这一条（隐含 deep）。没有 sid
      （章级结果没有单一场景可去）时不带姿态，是空数组：只回写作台；

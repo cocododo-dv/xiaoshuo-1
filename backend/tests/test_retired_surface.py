@@ -85,6 +85,11 @@ RETIRED_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("POST", "/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm", "B2-1"),
     # 成稿：不分作品的全库章节清单（逐章 N+1 读详情），界面与冒烟从不调；成稿中心只按章读详情（R15a(g)）
     ("GET", "/api/v1/chapter-manuscripts", "R15a(g)"),
+    # 文学质量页退役（2026-10-20）：它的巡检就是写作台深改清单里「规则」那一部分，各章各场的计数在成稿中心；
+    # 即时扫描与章组复审随页退役（整段前缀同样钉在下面）
+    ("GET", "/api/v1/literary-quality/overview", "文学质量页退役"),
+    ("POST", "/api/v1/literary-quality/analyze-text", "文学质量页退役"),
+    ("POST", "/api/v1/literary-quality/chapter-set-review", "文学质量页退役"),
 )
 
 #: 路径本身还在、只是为别的方法服务的退役行：请求它们答 405。其余退役路径整条都不在了，任何方法都只得 404。
@@ -98,6 +103,7 @@ RETIRED_PREFIXES: tuple[tuple[str, str], ...] = (
     ("/api/v1/reference-books", "旧参考书接口"),
     ("/api/v1/projects/{project_id}/snowflake", "批准 #16a"),
     ("/api/v1/demo", "一次性的参考书演示"),
+    ("/api/v1/literary-quality", "文学质量页退役"),
 )
 
 

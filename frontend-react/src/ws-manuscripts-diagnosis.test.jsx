@@ -250,7 +250,7 @@ describe("成稿中心 · 诊断页签", () => {
 
       await rerender(<ManuDiagnosis chapter={CH2} go={vi.fn()} />);
       expect(host.textContent).not.toContain("第一章旧的诊断");
-      expect(host.textContent).toContain("正在读本章的诊断");
+      expect(host.textContent).toContain("正在读本章的通读与各场计数");
       expect(host.querySelector('[data-testid="chapter-deep-review-run"]').disabled).toBe(true);
 
       await act(async () => { second.resolve(only("c2", "第二章自己的诊断")); await second.promise; });

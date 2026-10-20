@@ -1,7 +1,7 @@
 /* ==========================================================
    导航模型（纯数据，ESM，不写 window）
    侧栏、命令面板、路由校验共用这一份。过去命令面板手抄了一份页面清单，
-   漏了「文学质量」「成本看板」，在 ⌘K 里怎么搜都找不到。
+   漏了「文学质量」（2026-10-20 已退役）「成本看板」，在 ⌘K 里怎么搜都找不到。
    路由本身（hash 读写、别名重定向、懒加载）仍在 ws-app.jsx。
    ========================================================== */
 
@@ -28,7 +28,6 @@ const WS_NAV_GROUPS = [
       { id: "author",      label: "章节编排", icon: "Layout",     desc: "章与场的结构", kw: "author zhangjie bianpai" },
       { id: "scene",       label: "AI 起草台", icon: "Play",       desc: "按场起草",     kw: "scene ai qicao changjing" },
       { id: "manuscripts", label: "成稿中心", icon: "BookOpen",   desc: "定稿与导出",   kw: "manuscripts chenggao dinggao daochu" },
-      { id: "quality",     label: "文学质量", icon: "Microscope", desc: "质量体检",     kw: "quality wenxue zhiliang" },
     ],
   },
   {
@@ -57,12 +56,14 @@ const WS_ALL_VIEWS = WS_NAV_ITEMS.map(it => it.id);
 /* 必须先有一部作品才能打开的页面（没有时显示「先创建一部作品」） */
 const WS_PROJECT_SCOPED_VIEWS = new Set([
   "snowflake", "writer", "library", "author", "scene",
-  "manuscripts", "quality",
+  "manuscripts",
 ]);
 
 /* 旧路由别名：独立深改台已并入写作台，深链重定向到深改姿态；
-   「流程」视图（#flowmap）于 2026-09-16 并入主页（全书进度脊 + 场景计数），深链回主页 */
-const WS_VIEW_ALIAS = { deepdesk: "writer", flowmap: "home" };
+   「流程」视图（#flowmap）于 2026-09-16 并入主页（全书进度脊 + 场景计数），深链回主页；
+   「文学质量」（#quality）于 2026-10-20 退役：它的规则发现就是写作台深改清单里「规则」那一部分，各章各场的计数
+   在成稿中心，深链去成稿中心 */
+const WS_VIEW_ALIAS = { deepdesk: "writer", flowmap: "home", quality: "manuscripts" };
 
 function isKnownView(view) {
   return WS_ALL_VIEWS.includes(view);

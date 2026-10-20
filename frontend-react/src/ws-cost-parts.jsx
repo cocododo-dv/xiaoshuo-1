@@ -50,8 +50,8 @@ export function pricingComplete(summary) {
    小部件
    ========================================================== */
 
-/* 统计卡：ws-ui 的 StatTile 外加一张卡的底（.q-stats / .q-stat 借用 ws-quality.css，与文学质量的统计块同一套）。
-   children 是跟在注释前面的小标签（如 EstimatePill 的「用量含估算」）。原在 ws-quality-ui.jsx——文学质量早就不用它了，
+/* 统计卡：ws-ui 的 StatTile 外加一张卡的底（.q-stats / .q-stat 在 ws-cost.css——名字是文学质量页留下的，那一页
+   2026-10-20 退役）。children 是跟在注释前面的小标签（如 EstimatePill 的「用量含估算」）。原在 ws-quality-ui.jsx，
    只有成本看板用，2026-10 搬到这里（F04-14 / F05-20）。 */
 export function StatCard({ label, value, hint, tone, children, className }) {
   const note = children || hint

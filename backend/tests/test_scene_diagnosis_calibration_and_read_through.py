@@ -237,7 +237,7 @@ def _bind_reference_book(session, *, paragraphs: list[str], scene_breaks: list[i
     session.commit()
 
 
-def test_bound_scene_reads_the_reference_rule_calibration_and_the_quality_view_agrees(client: TestClient, session) -> None:
+def test_bound_scene_reads_the_reference_rule_calibration(client: TestClient, session) -> None:
     _seed_scene(session)  # 第 1 段有「突然意识到」——房风词表下是一条模型腔
     house = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     assert house["style_bound"] is False and house["craft_calibration"]["rules"] is None
@@ -261,15 +261,6 @@ def test_bound_scene_reads_the_reference_rule_calibration_and_the_quality_view_a
     absence = _finding(bound, "rules", "painless_scene")  # 夹具正文里有抉择词，没有代价词
     assert absence["severity"] == "info" and absence["calibrated"]["level"] == "habit" and "只作提示" in absence["why"]
     assert absence["house_taste"] is True
-
-    # 文学质量视图读同一份校准：这一场的条目不再有模型腔，并标出校准来源
-    overview = client.get("/api/v1/literary-quality/overview", params={"project_id": PROJECT_ID}).json()["data"]
-    item = next(entry for entry in overview["items"] if entry["scene_id"] == SCENE_ID)
-    assert item["rule_calibration"]["top_needles"][0]["term"] == "突然意识到"
-    assert "model_voice" not in item["open_dimensions"]
-    assert next(entry for entry in item["findings"] if entry["dimension"] == "painless_scene")["severity"] == "info"
-    # 同一条发现在两处 id 相同
-    assert {entry["signal_id"] for entry in item["findings"]} <= {entry["signal_id"] for entry in bound["findings"]}
 
 
 # ---------------------------------------------------------------------------

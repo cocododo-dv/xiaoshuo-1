@@ -376,24 +376,6 @@ def test_the_design_context_and_the_proposal_target_take_no_canned_goal(session)
     assert target["scene_card"]["beats"] == []
 
 
-def test_chapter_set_review_counts_no_canned_goal_as_evidence(session) -> None:
-    from novel_system.services.literary_quality.chapter_set import (
-        _chapter_set_payoff_reveal_checks,
-        _tension_dynamics_score,
-    )
-
-    # 章名里有「选择」：样板「推进本章：林昭的选择」替没写正文的章冒充了「有抉择」的证据
-    chapter, _blank = _legacy_rows(session, "GOAL_CH04", title="林昭的选择")
-    checks = _chapter_set_payoff_reveal_checks([chapter], [])
-    assert checks["forced_choice_chapter_ids"] == []
-    # 张力分项：两章都没规划主线推进 → 没有数据（0.5），不拿两句样板的长度差算起伏
-    other, _ = _legacy_rows(session, "GOAL_CH05", title="雨城旧案的第二个证人")
-    assert _tension_dynamics_score([chapter, other]) == 0.5
-    # 作者写的照旧算
-    chapter.chapter_goal = "林昭必须选择：交出旧信，还是保住证人"
-    assert _chapter_set_payoff_reveal_checks([chapter], [])["forced_choice_chapter_ids"] == [chapter.chapter_id]
-
-
 def test_deriving_chapter_plans_from_the_catalog_takes_no_canned_goal(session) -> None:
     from novel_system.services.snowflake_chaptering.derive import _derive_from_catalog
 

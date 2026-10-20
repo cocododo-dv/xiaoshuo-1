@@ -212,7 +212,7 @@ def test_deep_review_get_is_the_unified_scene_diagnosis(client: TestClient, sess
     assert [ranks[item["severity"]] for item in payload["findings"]] == sorted(ranks[item["severity"]] for item in payload["findings"])
 
 
-def test_ignoring_a_finding_in_the_writer_hides_it_everywhere(client: TestClient, session) -> None:
+def test_ignoring_a_finding_in_the_writer_keeps_it_listed_but_not_open(client: TestClient, session) -> None:
     _seed_scene(session)
     diagnosis = client.get(f"/api/v1/scenes/{SCENE_ID}/deep-review").json()["data"]
     voice = _finding(diagnosis, "rules", "model_voice")
@@ -230,20 +230,6 @@ def test_ignoring_a_finding_in_the_writer_hides_it_everywhere(client: TestClient
     assert after["summary"]["ignored"] == 1
     assert after["summary"]["open"] == diagnosis["summary"]["open"] - 1
     assert after["preferences"]["ignored_issue_keys"] == [voice["signal_id"]]
-
-    # 文学质量视图：同一个 id，忽略过的不再列出，但说明有几条被忽略
-    overview = client.get("/api/v1/literary-quality/overview", params={"project_id": PROJECT_ID}).json()["data"]
-    item = next(entry for entry in overview["items"] if entry["object_type"] == "scene" and entry["object_id"] == SCENE_ID)
-    assert item["ignored_count"] == 1
-    assert item["ignored_findings"] == [{"signal_id": voice["signal_id"], "dimension": "model_voice", "label": "模型腔"}]
-    assert voice["signal_id"] not in {finding["signal_id"] for finding in item["findings"]}
-    assert "model_voice" not in item["open_dimensions"]
-    assert item["signals"]["model_voice"]["risk"] is True, "分数是文本的事实，忽略是作者的决定"
-    diagnosis_rule_ids = {finding["signal_id"] for finding in diagnosis["findings"] if finding["source"] == "rules"}
-    overview_ids = {finding["signal_id"] for finding in item["findings"]} | {voice["signal_id"]}
-    assert overview_ids == diagnosis_rule_ids
-    assert all(finding["issue"] and finding["label"] for finding in item["findings"]), "视图读服务端给的中文"
-    assert item["recommended_next_action"]["signal_id"] in diagnosis_rule_ids
 
 
 def test_ignored_dimensions_drop_the_final_gate_warning(session) -> None:

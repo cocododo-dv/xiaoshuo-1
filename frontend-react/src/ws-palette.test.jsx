@@ -1,5 +1,5 @@
 // 命令面板（ws-palette.jsx）单测：
-// 页面清单与侧栏同源（文学质量 / 成本看板找得到）、输入后在全书所有场景里找、对话框 + combobox / listbox 语义、
+// 页面清单与侧栏同源（成本看板找得到）、输入后在全书所有场景里找、对话框 + combobox / listbox 语义、
 // 输入法组字中的回车不当命令、Esc 关闭。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -87,7 +87,7 @@ describe("命令面板", () => {
     expect(options()[1].getAttribute("aria-selected")).toBe("true");
   });
 
-  it("页面清单与侧栏同源：「成本」「质量」都找得到，回车跳过去", async () => {
+  it("页面清单与侧栏同源：「成本」找得到，回车跳过去；退役的「文学质量」不再列出", async () => {
     const { run, onClose } = await mountPalette();
     await type("成本");
     expect(options()[0].textContent).toContain("成本看板");
@@ -96,7 +96,7 @@ describe("命令面板", () => {
     expect(onClose).toHaveBeenCalled();
 
     await type("质量");
-    expect(options().some(o => o.textContent.includes("文学质量"))).toBe(true);
+    expect(options().some(o => o.textContent.includes("文学质量"))).toBe(false);
   });
 
   it("没输入时场景只列前几条（在写的排前面）；输入后在全书所有场景里找", async () => {

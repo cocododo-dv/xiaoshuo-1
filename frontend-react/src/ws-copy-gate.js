@@ -84,7 +84,7 @@ export function copyGatePromoteMessage(error) {
    final_text_gate.warnings 里风格参考的两条：
    · source_safety:protected_term —— 正文用了参考书的专名（带 terms、hit_count）；不拦；
    · source_safety:unavailable —— 原文重合检查这一边没做成（绑定的书已删 / 绑定解析失败）；不拦。
-   其余警告（文学质量 Q3 等）有自己的去处，这里不管。 */
+   其余警告（规则维度的 Q3 等）有自己的去处，这里不管。 */
 const FINAL_GATE_PROTECTED_TERM = "source_safety:protected_term";
 const FINAL_GATE_SOURCE_UNAVAILABLE = "source_safety:unavailable";
 

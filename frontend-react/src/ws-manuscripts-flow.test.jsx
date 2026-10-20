@@ -977,15 +977,16 @@ describe("成稿中心 · 对话框焦点、在途动作与章名（复审修补
 });
 
 
-describe("成稿中心 · 诊断计数与诊断页签", () => {
-  it("左栏章行与页签标出还开着的发现数；结构页签的场景行给「诊断 N」并带深改姿态进写作台；诊断页签挂面板", async () => {
+describe("成稿中心 · 诊断计数与通读页签", () => {
+  it("左栏章行标出还开着的发现数；页签叫「通读」、不挂计数；结构页签的场景行给「诊断 N」并带深改姿态进写作台；通读页签挂面板", async () => {
     diagFx.chapters = { c1: { open: 3, blocking: 1 } };
     diagFx.scenes = { s1: { open: 3, blocking: 1 } };
     const go = vi.fn();
     const host = await renderPage("writing", go);
     expect(host.querySelector('[data-testid="manuscript-chapter-item"]').textContent).toContain("诊断 3");
-    const tab = [...host.querySelectorAll('[role="radio"]')].find((node) => node.textContent.includes("诊断"));
-    expect(tab.textContent).toContain("诊断 3");
+    const tab = host.querySelector('[data-testid="manuscript-diagnosis-tab"]');
+    expect(tab.textContent).toBe("通读");
+    expect([...host.querySelectorAll('[role="radio"]')].some((node) => node.textContent.startsWith("诊断"))).toBe(false);
 
     const structure = [...host.querySelectorAll('[role="radio"]')].find((node) => node.textContent === "结构");
     await act(async () => structure.click());

@@ -1,9 +1,22 @@
 /* ==========================================================
-   ws-cost.css — 成本看板（ws-cost*.jsx）。原在 ws-quality.css 的后半段（2026-10 挪出）；main.jsx 里紧跟
-   ws-quality.css 导入，层叠位置不变。统计块 / 空态 / 提示条借用 ws-quality.css 的 .q-stats / .q-empty / .q-notice。
+   ws-cost.css — 成本看板（ws-cost*.jsx）。原在 ws-quality.css 的后半段（2026-10 挪出）；文学质量页 2026-10-20 退役，
+   它借用的统计块 / 空态 / 提示条（.q-stats / .q-stat / .q-empty / .q-notice，名字照旧）一并搬到这里，main.jsx 里
+   仍在 ws-review.css 之后导入，层叠位置不变。
    单列网格的轨道必须是 minmax(0,1fr)：否则八列明细表的最小宽度会把整列撑出页面，
    而 .ws-content 横向是 hidden，被撑出去的部分既看不见也滚不到。表格在卡片内部横向滚动。
    ========================================================== */
+.q-notice { margin: 0 0 14px; }
+.q-stats {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(140px, 100%), 1fr));
+  gap: 10px; margin: 0 0 18px;
+}
+.q-stat {
+  padding: 12px 14px; border-radius: var(--r-lg);
+  background: var(--paper-1); border: 1px solid var(--line-1);
+}
+.q-stat .ws-stat-value { font-size: var(--fs-xl); }
+.q-empty { border: 1px dashed var(--line-2); border-radius: var(--r-lg); }
+
 .q-cost .cs-grid, .cs-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .cs-grid > * { min-width: 0; }
 .cs-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px; }

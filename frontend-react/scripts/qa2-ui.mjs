@@ -108,13 +108,12 @@ const reviewLen = (await contentText()).length;
 chk("待办视图渲染非空", reviewLen > 60, `len=${reviewLen}`);
 await shot("review-tide");
 
-// ---- QUAL-04：文学质量视图渲染 ----
+// ---- QUAL-04：文学质量页 2026-10-20 退役——旧深链 #quality 落到成稿中心，不留空页 ----
 ctx = "QUAL-04";
 await go("work-a", "quality");
-await becomes(() => (document.querySelector(".ws-content")?.innerText || "").length > 60);
-const qualLen = (await contentText()).length;
-chk("文学质量视图渲染非空", qualLen > 60, `len=${qualLen}`);
-await shot("quality-tide");
+const qualRedirected = await becomes(() => location.hash === "#manuscripts" && !!document.querySelector('[data-screen-label="manuscripts"]'));
+chk("旧深链 #quality 落到成稿中心", qualRedirected, await page.evaluate(() => location.hash));
+await shot("quality-retired");
 
 // ---- STYLE-12：风格页（参考书 → 学习文风 → 用于作品 → 对照检查）----
 // 隔离的 E2E 后端没有配模型、夹具里也没有参考书：验真实断言——书库空态（有书时是四步步骤条）、导入被「先接入模型」

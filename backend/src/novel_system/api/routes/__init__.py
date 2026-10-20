@@ -9,7 +9,6 @@ __all__ = [
     "chapters",
     "cost",
     "library",
-    "literary_quality",
     "project_overview",
     "projects",
     "review",

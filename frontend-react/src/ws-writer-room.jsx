@@ -359,7 +359,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     else if (action === "immersion") setImmersion((v) => !v);
     else if (action === "deep") deep.setPosture("deep");
   });
-  /* 姿态意图的 detail：字符串（"deep" / "draft"），或 { posture, signal_id }——文学质量 / 待办 / 成稿中心
+  /* 姿态意图的 detail：字符串（"deep" / "draft"），或 { posture, signal_id }——待办 / 成稿中心
      带着一条发现跳进来，深改面板到了诊断就选中那一条并滚过去 */
   const onPostureIntent = useWrEvent((detail) => {
     const next = typeof detail === "string" ? detail : (detail && detail.posture);

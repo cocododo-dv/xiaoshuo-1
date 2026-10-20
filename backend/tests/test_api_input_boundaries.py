@@ -120,8 +120,6 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
     [
         "/api/v1/passages/patch-candidates",
         "/api/v1/passage-patch-candidates/UNKNOWN/reject",
-        "/api/v1/literary-quality/analyze-text",
-        "/api/v1/literary-quality/chapter-set-review",
         "/api/v1/review-items/UNKNOWN/resolve",
         "/api/v1/review-items/UNKNOWN/unresolve",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/generate",

@@ -50,9 +50,11 @@ def test_every_versioned_api_operation_documents_standard_success_and_error_enve
     # non-AI chapter-plan gap list: v1 → 81, v2 → 90;
     # round 2 B2-1: the two-step read-confirm and the unscoped chapter-manuscripts list go: v1 → 79;
     # round 2 B2-5 keeps only the chapter blueprint of the desk's AI planning — plan/candidates, plan/fill,
-    # plan/apply, plan/gaps and plan/review retired: v2 → 85; round 2 B2-4 retires GET /api/v1/system-config: v1 → 78).
-    assert operation_counts["v1"] >= 77
-    assert operation_counts["v2"] >= 84
+    # plan/apply, plan/gaps and plan/review retired: v2 → 85; round 2 B2-4 retires GET /api/v1/system-config: v1 → 78;
+    # 2026-10-20 the 文学质量 page goes with its three /api/v1/literary-quality routes: v1 88 → 85 — floors reset just
+    # below the live counts, v1 85 / v2 94).
+    assert operation_counts["v1"] >= 84
+    assert operation_counts["v2"] >= 93
 
 
 def test_health_probes_keep_their_minimal_non_enveloped_contract() -> None:

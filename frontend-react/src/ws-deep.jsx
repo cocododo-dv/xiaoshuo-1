@@ -18,15 +18,15 @@ import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
    诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把规则维度体检（QUALITY_DIMENSIONS）、段落节奏
    （贴邻叠句 / 段落偏长 / 句首重复——原先是这里三条本地正则）、起草台的准定稿评审、AI 深评和风格参考的
    对照检查（风格对照，2026-10-20；那一块在 ws-deep-style.jsx）合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
-   evidence{paragraph_index,start,end,excerpt}），文学质量视图读的也是这份，所以一条发现从那边
-   点过来，这里就是同一条。
+   evidence{paragraph_index,start,end,excerpt}），成稿中心「通读」页签里各场的计数与落到场里的发现读的也是这份，
+   所以一条发现从那边点过来，这里就是同一条（文学质量页 2026-10-20 退役）。
    · wrDxFetch / wrDxRunAi     取诊断 / 跑「AI 深评」（POST 同一路径；无模型时后端 409，这里给「去系统设置」）
    · wrDeepMark / wrDeepUnmark 按发现的段落序号 + 证据文字在编辑器里标高亮
    · WrDeepDrawer              右栏面板：来源筛选、AI 深评块、发现列表（展开一条看证据 / 改法 / 为什么）、
                                已忽略、最近的决定
    深改只诊断、不改字：每一条给「选中这一句去改写」/「按诊断改写」——回到起草姿态、选中那一句，
    改写走选区工具条那条真实的改写接口，并把这条发现（id / 维度 / 改法）一起发给后端。
-   忽略按 signal_id 记在服务端（deep-review/preferences，带修订号），文学质量视图和成稿门都认。
+   忽略按 signal_id 记在服务端（deep-review/preferences，带修订号），成稿门也认。
    姿态本身（进出、偏好同步、选中去改写）在 ws-writer-deep-posture.js；本机偏好与诊断请求在
    ws-deep-prefs.js，编辑器里的标注在 ws-deep-marks.js（2026-09-29 拆出，名字照旧从这里转出）。
    ========================================================== */
@@ -330,7 +330,7 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
         )}
         {handoffMiss && (
           <Notice tone="warn" className="wr-dxd-notice">
-            文学质量里指的那一处在当前作者稿里没有对应位置——它可能来自另一层文本（比如运行终稿），或已经改掉了。
+            跳过来的那一处在当前作者稿里没有对应位置——它可能来自另一层文本（比如运行终稿），或已经改掉了。
           </Notice>
         )}
 
@@ -412,7 +412,7 @@ function WrDeepDrawer({ deep, open, onClose, onOpenSettings }) {
 
         <div className="wr-dxd-note">
           诊断只指出问题、不替你改字：规则体检、节奏提示和起草台的评审随时可看，AI 深评与风格对照要用模型。
-          忽略过的条目不再提示，也不会再出现在文学质量和成稿中心里；点「已忽略」里的恢复可以找回。
+          忽略过的条目不再提示，也不再算进成稿中心与主页的计数；点「已忽略」里的恢复可以找回。
           {syncNote ? <> {syncNote}</> : null}
         </div>
       </div>

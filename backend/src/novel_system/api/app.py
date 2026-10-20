@@ -32,7 +32,6 @@ from novel_system.api.routes import (
     chapters,
     cost,
     library,
-    literary_quality,
     project_overview,
     projects,
     review,
@@ -259,7 +258,6 @@ def create_app() -> FastAPI:
     app.include_router(review.router)
     app.include_router(library.router)
     app.include_router(system_config.router)
-    app.include_router(literary_quality.router)
     app.include_router(style_reference.router)
     app.include_router(style_fidelity.router)
     install_api_openapi_contract(app)

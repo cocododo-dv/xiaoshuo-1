@@ -193,12 +193,6 @@ ERROR_MESSAGES: dict[str, str] = {
     "PASSAGE_PATCH_OPTION_NOT_FOUND": "找不到选中的这个改写方案。",
     "WRITER_PASSAGE_PATCH_OUTPUT_INVALID": "模型这次的改写没有可追溯的调用记录，已丢弃；请再试一次。",
     # ---- 文学质量 ----
-    "LITERARY_QUALITY_CHAPTER_NOT_FOUND": "找不到这一章。",
-    "LITERARY_QUALITY_CHAPTER_SET_REQUIRED": "请至少选一章。",
-    "LITERARY_QUALITY_LAYER_INVALID": "不支持这种正文层。",
-    "LITERARY_QUALITY_RISK_TYPE_INVALID": "不支持这种风险维度。",
-    "LITERARY_QUALITY_SEVERITY_INVALID": "不支持这个严重程度。",
-    "LITERARY_QUALITY_TEXT_REQUIRED": "请提供要分析的文字。",
     # ---- 正史 / 叙事位置 ----
     "NARRATIVE_CURSOR_CHAPTER_NOT_FOUND": "找不到这一场所在的章。",
     "NARRATIVE_CURSOR_PROJECT_MISMATCH": "这一场与作品对不上，请刷新后再试。",

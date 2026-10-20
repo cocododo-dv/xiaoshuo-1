@@ -88,13 +88,14 @@ function WsManuscripts({ go }) {
   /* 有服务端章节时，正文只能来自权威聚合；加载失败也不退回任何示例稿 */
   const body = manuBuildBody(catPicked, canonical);
   const synced = !!(catPicked && catPicked.backendId);
-  const chapterDiag = catPicked && catPicked.backendId ? diag.chapterCounts(catPicked.backendId) : null;
   const tabOptions = [
     { value: "read", label: "正文" },
     { value: "structure", label: "结构" },
     { value: "canon", label: "正史", testId: "manuscript-canon-tab" },
     { value: "memory", label: "记忆", testId: "manuscript-memory-tab" },
-    { value: "diagnosis", label: chapterDiag && chapterDiag.open ? `诊断 ${chapterDiag.open}` : "诊断", testId: "manuscript-diagnosis-tab" },
+    /* 2026-10-20：「诊断」改叫「通读」——这一页是 AI 通读本章与各场计数，各场的问题清单只在写作台深改里；
+       还开着几条看左栏的章行 */
+    { value: "diagnosis", label: "通读", testId: "manuscript-diagnosis-tab" },
     ...(canDiff ? [{ value: "diff", label: "对比" }] : []),
   ];
   const message = flow.status.message;

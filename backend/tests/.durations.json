@@ -45,7 +45,6 @@
  "test_chapter_run_archive_checkpoint.py": 9.89,
  "test_chapter_runner.py": 2.42,
  "test_chapter_runner_catalog_scenes.py": 5.77,
- "test_chapter_set_review_honesty.py": 1.89,
  "test_chapter_structure_ownership.py": 15.24,
  "test_character_continuity.py": 0.02,
  "test_character_entity_sync.py": 0.81,
