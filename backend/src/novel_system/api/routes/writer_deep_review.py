@@ -113,6 +113,15 @@ def get_project_diagnosis_summary(project_id: str, request: Request, session: Se
     return respond(request, payload)
 
 
+@router.get("/api/v1/projects/{project_id}/cross-chapter-check")
+def get_project_cross_chapter_check(project_id: str, request: Request, session: Session = Depends(get_session)):
+    """成稿中心「跨章」：全书反复出现的写法、章与章的形状、线索台账的提醒——不用模型，按各场现在的正文现算，读不写。"""
+
+    from novel_system.services.cross_chapter import CrossChapterService
+
+    return respond(request, CrossChapterService(session).report(project_id))
+
+
 @router.get("/api/v1/scenes/{scene_id}/diagnosis-rollup")
 def get_scene_diagnosis_rollup(scene_id: str, request: Request, session: Session = Depends(get_session)):
     """这一场所在那一章的计数（章条目 + 章里每一场的条目）：起草台归档终稿之后前端据此更新角标，不必拉整本书。"""

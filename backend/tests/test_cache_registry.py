@@ -25,6 +25,7 @@ KNOWN_CACHES = {
     "novel_system.services.reference_copy_gate": ("reference_copy_gate",),
     "novel_system.services.run_job_leases": ("run_job_leases.held",),
     "novel_system.services.scene_diagnosis": ("scene_diagnosis.findings", "scene_diagnosis.reference_craft"),
+    "novel_system.services.scene_diagnosis.repeats": ("scene_diagnosis.repeats", "scene_diagnosis.repeats.reference_text"),
     "novel_system.services.scene_run_jobs": ("scene_run_jobs.bundle_draft_modes",),
     "novel_system.services.style_policy": ("style_policy",),
     "novel_system.services.style_reference.config_loader": ("style_reference.config_loader",),

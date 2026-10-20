@@ -191,15 +191,17 @@ def reference_craft_stats(
     return _CRAFT_STATS.get_or_build((state.book_id, state.version), lambda: compute_reference_craft(load().texts))
 
 
-def craft_calibration_for(session: Session, profile: BoundProfile | None) -> CraftCalibration:
+def craft_calibration_for(
+    session: Session, profile: BoundProfile | None, *, book_state: Callable[[str], Any] | None = None
+) -> CraftCalibration:
     """按绑定画像的参考书校准节奏检查与规则维度（真实参考书 2.6 万段：节奏读数约 1 s、规则读数约 0.6 s，
     每个进程每本书的每个版本算一次）。没有绑定 / 书没有段落 / 读不出来 → 房风默认（读不出来记 warning，
-    不让诊断失败）。"""
+    不让诊断失败）。``book_state(book_id)``：调用方在一次请求里记住的书的版本（不给就现读）。"""
 
     if profile is None or not profile.book_id:
         return DEFAULT_CRAFT_CALIBRATION
     try:
-        state = reference_book_state(session, profile.book_id)
+        state = book_state(profile.book_id) if book_state is not None else reference_book_state(session, profile.book_id)
         if state is None or state.paragraphs <= 0:
             return DEFAULT_CRAFT_CALIBRATION
         corpus = CorpusLoader(session, profile.book_id)

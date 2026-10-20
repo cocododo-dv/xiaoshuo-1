@@ -1,5 +1,5 @@
 """各来源 → 统一发现：规则维度（``literary_quality``）、段落节奏（原写作台本地规则）、评审 / 深评行里的发现、风格参考
-对照检查的评审（``style``）；计数与排序；同一场同一份字的规则 / 节奏发现在进程里缓存（规则维度一场约 30 ms，全书计数
+对照检查的评审（``style``）、全书的跨场重复（``repeat``）；计数与排序；同一场同一份字的规则 / 节奏发现在进程里缓存（规则维度一场约 30 ms，全书计数
 一次跑几十场）。"""
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from novel_system.services.scene_diagnosis.calibration import (
     CraftCalibration,
     same_opening_hit,
 )
+from novel_system.services.scene_diagnosis.repeats import RepeatReport
 from novel_system.services.scene_diagnosis.text import DiagnosisText, locate, locate_in_paragraphs
 from novel_system.services.scene_diagnosis.vocabulary import (
     AI_DIMENSION_LABELS,
@@ -38,6 +39,7 @@ from novel_system.services.scene_diagnosis.vocabulary import (
     LENS_LABELS,
     PASSAGE_RELATION_KINDS,
     PASSAGE_RELATION_LABELS,
+    REPEAT_DIMENSION,
     REVIEW_DIMENSION_LABELS,
     SEVERITIES,
     SOURCE_LABELS,
@@ -505,6 +507,76 @@ def style_findings(
                 },
                 "opinion": None,
                 "patch": _patch_hint(dim, fix),
+            }
+        )
+    return findings
+
+
+def _place(chapter_number: int, scene_number: int) -> str:
+    return f"第 {chapter_number} 章第 {scene_number} 场"
+
+
+def repeat_findings(report: RepeatReport | None, scene_id: str, text: DiagnosisText) -> list[dict[str, Any]]:
+    """这一场里的跨场重复（``repeats.find_repeats``，全书一份）：每个反复出现的写法一条，钉到它在这一场第一次出现的那一段；
+    问题里说另外还在哪几场出现。参考作者也常这么写的降为提示。``signal_id`` 只按短语取：哪一场都一样，忽略按场记。"""
+
+    if report is None or text.layer == "none":
+        return []
+    findings: list[dict[str, Any]] = []
+    for item in report.by_scene.get(scene_id, []):
+        here = [occurrence for occurrence in item.occurrences if occurrence.scene_id == scene_id]
+        if not here:
+            continue
+        first = here[0]
+        paragraph = text.paragraphs[first.paragraph_index] if 0 <= first.paragraph_index < len(text.paragraphs) else ""
+        evidence = None
+        if paragraph[first.start : first.start + len(item.phrase)] == item.phrase:
+            evidence = {
+                "excerpt": item.phrase,
+                "paragraph_index": first.paragraph_index,
+                "start": first.start,
+                "end": first.start + len(item.phrase),
+            }
+        else:
+            evidence = locate_in_paragraphs(text.paragraphs, item.phrase)
+        elsewhere = list(dict.fromkeys(
+            _place(occurrence.chapter_number, occurrence.scene_number)
+            for occurrence in item.occurrences
+            if occurrence.scene_id != scene_id
+        ))
+        issue = f"「{item.phrase}」在{'、'.join(elsewhere[:4])}{'等' if len(elsewhere) > 4 else ''}也出现过"
+        issue += f"（全书已写的正文里共 {item.count} 次）" if item.count > len(here) + len(elsewhere) else ""
+        issue += "；这一场里出现了 " + str(len(here)) + " 次。" if len(here) > 1 else "。"
+        why = "同一个说法在不同的场里反复出现，读者会注意到它，像作者的口头禅。按各场现在的正文现算，不用模型。"
+        if item.habitual:
+            why = f"参考作者也常这么写（参考书里 {item.reference_count} 次），只作提示。"
+        findings.append(
+            {
+                "signal_id": item.signal_id,
+                "source": "repeat",
+                "dimension": REPEAT_DIMENSION,
+                "label": "跨场重复",
+                "lens": None,
+                "severity": "info" if item.habitual else "taste",
+                "issue": issue,
+                "recommendation": "这一处换一种说法，或者只在最要紧的那一场留着。",
+                "why": why,
+                "evidence": evidence,
+                "context": first.excerpt[:160],
+                "ignored": False,
+                "stale": False,
+                "house_taste": False,
+                "related": None,
+                "origin": {
+                    "kind": "repeat",
+                    "phrase": item.phrase,
+                    "count": item.count,
+                    "scene_ids": item.scene_ids,
+                    "chapter_ids": item.chapter_ids,
+                    "reference_count": item.reference_count,
+                },
+                "opinion": None,
+                "patch": _patch_hint(REPEAT_DIMENSION, "换一种说法，别和别的场里那一句一模一样。"),
             }
         )
     return findings

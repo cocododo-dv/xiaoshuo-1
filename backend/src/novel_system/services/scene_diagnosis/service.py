@@ -7,11 +7,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import ChapterGoal, SceneCard, WriterEvaluation
+from novel_system.db.models import ChapterGoal, LibraryEntity, SceneCard, StoryCharacter, WriterEvaluation
 from novel_system.services.hash_engine import sha256_text
 from novel_system.services.literary_quality.calibration_source import (
     BoundProfile,
     bound_profile_for_policy,
+    load_reference_corpus,
+    reference_book_state,
 )
 from novel_system.services.scene_diagnosis.calibration import (
     DEFAULT_CRAFT_CALIBRATION,
@@ -20,12 +22,14 @@ from novel_system.services.scene_diagnosis.calibration import (
 )
 from novel_system.services.scene_diagnosis.context import DiagnosisContext, diagnosis_text
 from novel_system.services.scene_diagnosis.findings import (
+    repeat_findings,
     cached_text_findings,
     evaluation_findings,
     finding_counts,
     finding_sort_key,
     style_findings,
 )
+from novel_system.services.scene_diagnosis.repeats import RepeatReport, SceneText, cached_reference_text, cached_repeats, find_repeats
 from novel_system.services.scene_diagnosis.serialize import serialize_passage_review
 from novel_system.services.scene_diagnosis.text import DiagnosisText
 from novel_system.services.scene_diagnosis.vocabulary import (
@@ -37,7 +41,7 @@ from novel_system.services.scene_diagnosis.vocabulary import (
     REVIEW_DIMENSION_LABELS,
 )
 from novel_system.services.scene_lookup import active_chapter_scenes, require_chapter, require_project, require_scene
-from novel_system.services.scene_text import current_author_draft, pointed_final_scene
+from novel_system.services.scene_text import current_author_draft, current_author_drafts, pointed_final_scene, pointed_final_scenes
 from novel_system.services.style_policy import StylePolicy, style_policy_live
 
 STYLE_TASK_TYPE = "scene_generation"
@@ -51,6 +55,10 @@ class SceneDiagnosisService:
         # 每份绑定的画像一份校准（书的版本只查一次库，而不是逐场一次；X01-03 / X01-09）
         self._calibration_memo: dict[tuple[str, str | None, bool], CraftCalibration] = {}
         self._profile_memo: dict[tuple[str, str | None], BoundProfile | None] = {}
+        # 全书的跨场重复：一次请求里每部作品只取一次（进程里另按正文指纹缓存）
+        self._repeats_memo: dict[str, RepeatReport] = {}
+        # 参考书的版本（数段落表）一次请求里每本书只读一遍：校准与跨场重复共用
+        self._book_state_memo: dict[str, Any] = {}
 
     # -- 正文 --------------------------------------------------------------
 
@@ -179,6 +187,97 @@ class SceneDiagnosisService:
         removed = [scene_id for scene_id in recorded_sha if scene_id not in set(scene_ids) and recorded_sha[scene_id]]
         return {"changed_scene_ids": changed, "unchanged_scene_ids": unchanged, "removed_scene_ids": removed}
 
+    # -- 全书的跨场重复 ----------------------------------------------------
+
+    def project_scenes_in_order(self, project_id: str) -> list[tuple[ChapterGoal, list[SceneCard]]]:
+        """作品的活章（``display_order``）与各章未删的场（``scene_seq``）——全书计数、跨场重复、跨章检查同一个次序。"""
+
+        chapters = list(
+            self.session.execute(
+                select(ChapterGoal)
+                .where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
+                .order_by(ChapterGoal.display_order.asc(), ChapterGoal.chapter_id.asc())
+            ).scalars().all()
+        )
+        scenes_by_chapter: dict[str, list[SceneCard]] = {chapter.chapter_id: [] for chapter in chapters}
+        if chapters:
+            for scene in self.session.execute(
+                select(SceneCard)
+                .where(SceneCard.chapter_id.in_(list(scenes_by_chapter)), SceneCard.trashed_flag == 0)
+                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+            ).scalars():
+                scenes_by_chapter[scene.chapter_id].append(scene)
+        return [(chapter, scenes_by_chapter[chapter.chapter_id]) for chapter in chapters]
+
+    def project_texts(self, project_id: str) -> list[tuple[ChapterGoal, int, SceneCard, int, DiagnosisText]]:
+        """全书各场的诊断正文（写作台上那份），带章号与章内场号（从 1 数）。两次批量查询。"""
+
+        layout = self.project_scenes_in_order(project_id)
+        scene_ids = [scene.scene_id for _chapter, scenes in layout for scene in scenes]
+        drafts = current_author_drafts(self.session, "scene", scene_ids)
+        finals = pointed_final_scenes(self.session, [scene_id for scene_id in scene_ids if scene_id not in drafts])
+        return [
+            (chapter, chapter_number, scene, scene_number, diagnosis_text(drafts.get(scene.scene_id), finals.get(scene.scene_id)))
+            for chapter_number, (chapter, scenes) in enumerate(layout, start=1)
+            for scene_number, scene in enumerate(scenes, start=1)
+        ]
+
+    def _story_names(self, project_id: str) -> list[str]:
+        names: list[str] = []
+        for character in self.session.execute(select(StoryCharacter).where(StoryCharacter.project_id == project_id)).scalars():
+            names.append(str(character.display_name or ""))
+        for entity in self.session.execute(select(LibraryEntity).where(LibraryEntity.project_id == project_id)).scalars():
+            names.append(str(entity.name or ""))
+            names.extend(str(alias) for alias in entity.aliases_json or [] if alias)
+        return [name for name in names if name.strip()]
+
+    def project_repeats(self, project_id: str | None) -> RepeatReport | None:
+        """全书已写的各场正文里逐字反复出现的写法（``repeats.find_repeats``）；按（各场正文指纹、名字、参考书版本）在
+        进程里缓存。绑定了参考书（按第一场有正文的场的策略）就数参考作者原文里的次数。"""
+
+        if not project_id:
+            return None
+        hit = self._repeats_memo.get(project_id)
+        if hit is not None:
+            return hit
+        rows = [row for row in self.project_texts(project_id) if row[4].layer != "none"]
+        names = self._story_names(project_id)
+        reference_key: tuple[str, ...] | None = None
+        counter = None
+        reference_chars = 0
+        if rows:
+            policy = self.style_policy(rows[0][2])
+            book_id = str(policy.book_id or "") if policy.bound else ""
+            state = self.book_state(book_id) if book_id else None
+            if state is not None and state.paragraphs:
+                reference_key = (book_id, *[str(part) for part in state.version])
+                corpus_text = cached_reference_text(
+                    reference_key, lambda: "\n".join(load_reference_corpus(self.session, book_id).texts)
+                )
+                reference_chars = len(corpus_text)
+                counter = corpus_text.count
+        scenes = [
+            SceneText(
+                chapter_id=chapter.chapter_id,
+                chapter_number=chapter_number,
+                scene_id=scene.scene_id,
+                scene_number=scene_number,
+                paragraphs=tuple(text.paragraphs),
+            )
+            for chapter, chapter_number, scene, scene_number, text in rows
+        ]
+        key = (
+            project_id,
+            tuple((item.chapter_id, item.chapter_number, item.scene_id, item.scene_number, text.paragraphs_sha256) for item, (_c, _cn, _s, _sn, text) in zip(scenes, rows)),
+            tuple(sorted(set(names))),
+            reference_key,
+        )
+        report = cached_repeats(
+            key, lambda: find_repeats(scenes, names=names, reference_counter=counter, reference_chars=reference_chars)
+        )
+        self._repeats_memo[project_id] = report
+        return report
+
     # -- 风格绑定与校准 ----------------------------------------------------
 
     def style_policy(self, scene: SceneCard) -> StylePolicy:
@@ -221,6 +320,13 @@ class SceneDiagnosisService:
         style_bound, profile = self.binding_profile(scene)
         return style_bound, (self.craft_calibration(profile) if style_bound else DEFAULT_CRAFT_CALIBRATION)
 
+    def book_state(self, book_id: str) -> Any:
+        """参考书的版本（``reference_book_state``），一次请求里每本书只读一遍。"""
+
+        if book_id not in self._book_state_memo:
+            self._book_state_memo[book_id] = reference_book_state(self.session, book_id)
+        return self._book_state_memo[book_id]
+
     def craft_calibration(self, profile: BoundProfile | None) -> CraftCalibration:
         """按绑定画像的参考书校准节奏检查与规则维度（``calibration.craft_calibration_for``：读数按书的版本缓存在
         进程里）；同一个实例里同一份画像只算一次。"""
@@ -230,7 +336,7 @@ class SceneDiagnosisService:
         key = (profile.profile_id, profile.book_id, bool(profile.deliberate_repetition))
         calibration = self._calibration_memo.get(key)
         if calibration is None:
-            calibration = craft_calibration_for(self.session, profile)
+            calibration = craft_calibration_for(self.session, profile, book_state=self.book_state)
             self._calibration_memo[key] = calibration
         return calibration
 
@@ -285,6 +391,7 @@ class SceneDiagnosisService:
                         style_row, text, current=style_status == "current", dimension_states=policy.dimension_states
                     )
                 )
+            findings.extend(repeat_findings(self.project_repeats(getattr(scene, "project_id", None)), scene.scene_id, text))
 
         opinions: dict[str, dict[str, Any]] = {}
         for row in passage_rows:
@@ -547,22 +654,10 @@ class SceneDiagnosisService:
         随写回传（同一种 ``scenes`` / ``chapters`` 条目形状，前端本地汇总 ``totals``）。"""
 
         require_project(self.session, project_id)
-        chapters = list(
-            self.session.execute(
-                select(ChapterGoal)
-                .where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
-                .order_by(ChapterGoal.display_order.asc(), ChapterGoal.chapter_id.asc())
-            ).scalars().all()
-        )
-        scenes_by_chapter: dict[str, list[SceneCard]] = {chapter.chapter_id: [] for chapter in chapters}
-        if chapters:
-            # 与 active_chapter_scenes 同一个口径（未删的场，按 scene_seq、scene_id），各章一次取齐
-            for scene in self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.chapter_id.in_(list(scenes_by_chapter)), SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-            ).scalars():
-                scenes_by_chapter[scene.chapter_id].append(scene)
+        # 与 active_chapter_scenes 同一个口径（未删的场，按 scene_seq、scene_id），各章一次取齐
+        layout = self.project_scenes_in_order(project_id)
+        chapters = [chapter for chapter, _scenes in layout]
+        scenes_by_chapter: dict[str, list[SceneCard]] = {chapter.chapter_id: scenes for chapter, scenes in layout}
         context = DiagnosisContext.load(
             self.session,
             [scene for scenes in scenes_by_chapter.values() for scene in scenes],

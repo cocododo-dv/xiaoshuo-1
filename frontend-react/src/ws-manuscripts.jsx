@@ -15,6 +15,7 @@ import { ManuFootNote, ManuRead, ManuState, ManuStructure } from "./ws-manuscrip
 import { ManuCanon } from "./ws-manuscripts-canon.jsx";
 import { ManuMemory } from "./ws-manuscripts-memory.jsx";
 import { ManuDiagnosis } from "./ws-manuscripts-diagnosis.jsx";
+import { ManuCrossCheck } from "./ws-manuscripts-cross.jsx";
 import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
@@ -96,6 +97,8 @@ function WsManuscripts({ go }) {
     /* 2026-10-20：「诊断」改叫「通读」——这一页是 AI 通读本章与各场计数，各场的问题清单只在写作台深改里；
        还开着几条看左栏的章行 */
     { value: "diagnosis", label: "通读", testId: "manuscript-diagnosis-tab" },
+    /* 2026-10-20：全书放在一起看——反复出现的写法、章与章的形状、线索提醒（与选中的哪一章无关） */
+    { value: "cross", label: "跨章", testId: "manuscript-cross-tab" },
     ...(canDiff ? [{ value: "diff", label: "对比" }] : []),
   ];
   const message = flow.status.message;
@@ -147,6 +150,7 @@ function WsManuscripts({ go }) {
           {view === "read" && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={flow.retryCanonical} fidelity={fidelity.finals} />}
           {view === "structure" && <ManuStructure body={body} chapter={catPicked} canonical={canonical} go={go} diag={diag} fidelity={fidelity.finals} />}
           {view === "diagnosis" && <ManuDiagnosis chapter={catPicked} go={go} />}
+          {view === "cross" && <ManuCrossCheck projectId={readyWorkId(WsWorks)} chapters={catChs} go={go} onOpenMemory={() => setView("memory")} />}
           {view === "diff" && <ManuDiff picked={picked} chapter={catPicked} />}
 
           <footer className="ms-reader-foot">

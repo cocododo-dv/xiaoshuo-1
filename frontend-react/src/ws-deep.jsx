@@ -17,7 +17,8 @@ import { formatClockTime, formatLocaleMonthDayTime } from "./lib/format.js";
    ----------------------------------------------------------
    诊断只有一份，在服务端：GET /api/v1/scenes/{id}/deep-review 把规则维度体检（QUALITY_DIMENSIONS）、段落节奏
    （贴邻叠句 / 段落偏长 / 句首重复——原先是这里三条本地正则）、起草台的准定稿评审、AI 深评和风格参考的
-   对照检查（风格对照，2026-10-20；那一块在 ws-deep-style.jsx）合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
+   对照检查（风格对照，2026-10-20；那一块在 ws-deep-style.jsx）、全书的跨场重复（成稿中心「跨章」页签是同一份）
+   合成同一种发现形状（signal_id / source / dimension / severity / issue / recommendation /
    evidence{paragraph_index,start,end,excerpt}），成稿中心「通读」页签里各场的计数与落到场里的发现读的也是这份，
    所以一条发现从那边点过来，这里就是同一条（文学质量页 2026-10-20 退役）。
    · wrDxFetch / wrDxRunAi     取诊断 / 跑「AI 深评」（POST 同一路径；无模型时后端 409，这里给「去系统设置」）
@@ -37,8 +38,9 @@ const WR_DX_SOURCES = {
   review: "起草评审",
   ai: "AI 深评",
   style: "风格对照",
+  repeat: "跨场重复",
 };
-const WR_DX_SOURCE_ORDER = ["rules", "craft", "review", "ai", "style"];
+const WR_DX_SOURCE_ORDER = ["rules", "craft", "review", "ai", "style", "repeat"];
 const WR_DX_LENS = { story: "故事", character: "人物", prose: "文字", reader: "读者", theme: "主题" };
 const WR_DX_ORIGIN = { passage: "局部", chapter: "通读" };
 const WR_DX_VERDICT = {
