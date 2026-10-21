@@ -10,7 +10,7 @@ import { isImeComposing, topModalLayer } from "./ws-dialog.jsx";
      过去存在 WriterRoom 的 state 里，整棵树（大纲的每一章每一场、上下文栏、设计卡）
      跟着每个按键重渲染；现在只有读字数的几个叶子组件订阅它。
    · useWrLayout：书桌布局里两侧栏停靠 / 叠放的规则与开合。
-   · useRailResize：拖动两侧栏的分隔线，宽度记在 wr-rail。
+   · useRailResize：拖动两侧栏的分隔线，宽度记在 wr-rail（右栏起草时是上下文栏、深改时是诊断栏，各记各的）。
    · useImmersionChrome：沉浸写作时，外框在鼠标 / 键盘静止一会儿后淡出。
    · useWriterShortcuts：写作台的全局快捷键（⌘/Ctrl+J、.、1、2 与 Esc）。
    ESM 模块，不写 window。
@@ -120,17 +120,21 @@ export function useWrLayout(isDesk, posture = "draft") {
 
 /* ---------------- 侧栏宽度 ---------------- */
 
-/* 两侧栏的默认宽度：大纲 240、上下文 272（在 1280 宽的屏上两栏都停靠时，稿纸仍有近 30 字一行）；
-   作者拖过的宽度记在 wr-rail 里 */
-export const WR_RAIL_DEFAULT = { l: 240, r: 272 };
-const RAIL_MIN = 200;
-const RAIL_MAX = 360;
+/* 两侧栏的默认宽度：大纲 240、上下文 272（在 1280 宽的屏上两栏都停靠时，稿纸仍有近 30 字一行）、
+   深改诊断 340（d）——深改时正文只读，右栏才是干活的地方：证据、改法与两行动作要放得下，
+   所以它单独记一个宽度，进出深改右栏在两个宽度之间换。作者拖过的宽度记在 wr-rail 里 */
+export const WR_RAIL_DEFAULT = { l: 240, r: 272, d: 340 };
+const RAIL_RANGE = { l: [200, 360], r: [200, 360], d: [260, 480] };
 
 function wrLoadRail() {
-  try { const s = JSON.parse(localStorage.getItem("wr-rail")); if (s && s.l && s.r) return { l: s.l, r: s.r }; } catch (e) {}
+  try {
+    const s = JSON.parse(localStorage.getItem("wr-rail"));
+    if (s && s.l && s.r) return { l: s.l, r: s.r, d: s.d || WR_RAIL_DEFAULT.d };
+  } catch (e) {}
   return { ...WR_RAIL_DEFAULT };
 }
 
+/* side：l（大纲）、r（上下文）、d（深改诊断；和上下文栏是同一道右边的分隔线） */
 export function useRailResize() {
   const [rail, setRail] = useState(wrLoadRail);
   const [dragging, setDragging] = useState(false);
@@ -139,11 +143,12 @@ export function useRailResize() {
   const startRail = useWrEvent((side, event) => {
     event.preventDefault();
     if (stopRef.current) stopRef.current();
-    const origin = { x: event.clientX, l: rail.l, r: rail.r };
-    const clamp = (value) => Math.max(RAIL_MIN, Math.min(RAIL_MAX, value));
+    const origin = { x: event.clientX, width: rail[side] };
+    const [min, max] = RAIL_RANGE[side];
+    const clamp = (value) => Math.max(min, Math.min(max, value));
     const move = (e) => {
       const dx = e.clientX - origin.x;
-      setRail((prev) => (side === "l" ? { ...prev, l: clamp(origin.l + dx) } : { ...prev, r: clamp(origin.r - dx) }));
+      setRail((prev) => ({ ...prev, [side]: clamp(side === "l" ? origin.width + dx : origin.width - dx) }));
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
@@ -165,11 +170,11 @@ export function useRailResize() {
   // 拖动中不写存储，松手再记
   useEffect(() => {
     if (dragging) return;
-    try { localStorage.setItem("wr-rail", JSON.stringify({ l: rail.l, r: rail.r })); } catch (e) {}
+    try { localStorage.setItem("wr-rail", JSON.stringify({ l: rail.l, r: rail.r, d: rail.d })); } catch (e) {}
   }, [rail, dragging]);
   useEffect(() => () => { if (stopRef.current) stopRef.current(); }, []);
 
-  return { railL: rail.l, railR: rail.r, dragging, startRail, resetRail };
+  return { railL: rail.l, railR: rail.r, railD: rail.d, dragging, startRail, resetRail };
 }
 
 /* ---------------- 沉浸 ---------------- */

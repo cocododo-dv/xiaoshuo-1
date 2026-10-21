@@ -1,10 +1,11 @@
 /* ==========================================================
-   ws-deep.css — 写作台深改姿态（2026-09-22 诊断统一：发现按严重度上色，来源筛选、AI 深评块、已忽略）
+   ws-deep.css — 写作台深改姿态（2026-09-22 诊断统一：发现按严重度上色、AI 深评、已忽略；
+   2026-10-21 右栏重排：来源状态条、按严重程度分组、展开的一条与它那一行同一张卡）
    ========================================================== */
 
 /* 姿态切换（写作房间顶栏）现在是共享的分段控件 .seg（ws-ui.jsx Segmented），位置规则在 wr-room.css */
 
-/* ---- 深改姿态：正文只读提示 + 发现标注（四档严重度，与面板标签同色） ---- */
+/* ---- 深改姿态：正文只读提示 + 发现标注（四档严重度，与面板色条同色） ---- */
 .wr-root[data-posture="deep"] .wr-editor { caret-color: transparent; }
 .wr-deep-note { margin: 12px 0 6px; }
 
@@ -21,95 +22,105 @@ mark.wr-dx.is-active { outline: 2px solid var(--accent); outline-offset: 1px; }
 .wr-editor .wr-dx-para.sev-revision { background: var(--accent-wash); box-shadow: 0 0 0 6px var(--accent-wash); }
 .wr-editor .wr-dx-para.sev-info     { background: var(--info-wash); box-shadow: 0 0 0 6px var(--info-wash); }
 .wr-editor .wr-dx-para.is-active { outline: 2px solid var(--accent); outline-offset: 5px; }
+mark.wr-dx.is-related { background: var(--info-wash); color: inherit; }
 
-/* ---- 深改面板（复用 wr-drawer right 外壳）---- */
+/* 场景卡随行（正文上方）现在是共用设计卡 sdc-*（样式在 ws-scene-design.css）；旧的 wr-scard-* 已随 WrSceneCard 一起删除 */
+
+/* ---- 深改面板（复用 wr-drawer right 外壳；停靠时宽度是自己的 --rail-r，见 useRailResize 的 d）---- */
 .wr-dxd { display: flex; flex-direction: column; }
 .wr-dxd-head-acts { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
 .wr-dxd .wr-drawer-x { margin-left: 0; }
-.wr-dxd-scroll { flex: 1; overflow-y: auto; padding: 10px 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+.wr-dxd-sync { flex: none; }
+.wr-dxd-scroll { flex: 1; overflow-y: auto; padding: 12px 14px 20px; display: flex; flex-direction: column; gap: 14px; }
 .wr-dxd-loading { display: flex; align-items: center; gap: 8px; padding: 18px 6px; font-size: var(--fs-sm); color: var(--ink-3); }
 .wr-dxd-notice { margin: 0; }
+.wr-dxd-hint { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
 
-/* AI 深评块 */
-.wr-dxd-ai { border: 1px solid var(--line-1); border-radius: var(--r-sm); padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); }
-.wr-dxd-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.wr-dxd-ai-head .wr-dxd-sub { display: inline-flex; align-items: center; gap: 5px; }
-.wr-dxd-ai-meta { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
+/* 折叠（DxFold）：整体建议、参考书校准、为什么、已忽略、最近的决定 */
+.wr-dxd-fold-btn { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; padding: 2px 0;
+  font: inherit; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); cursor: pointer; text-align: left; }
+.wr-dxd-fold-btn:hover { color: var(--ink-1); }
+.wr-dxd-fold-btn svg { flex: none; transition: transform var(--t-fast); }
+.wr-dxd-fold-btn[aria-expanded="true"] svg { transform: rotate(90deg); }
+.wr-dxd-fold-body { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+
+/* 来源状态条：AI 深评 / 风格对照 / 参考书校准，一行一个来源 */
+.wr-dxd-sources { border: 1px solid var(--line-1); border-radius: var(--r-md); background: var(--paper-2); }
+.wr-dxd-source { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wr-dxd-source + .wr-dxd-source { border-top: 1px solid var(--line-1); }
+.wr-dxd-source-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wr-dxd-source-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); }
+.wr-dxd-source-name svg { flex: none; color: var(--ink-3); }
+.wr-dxd-source-meta { margin: 0; font-size: var(--fs-xs); line-height: 1.55; color: var(--ink-3); }
+.wr-dxd-source-meta.is-stale { color: var(--warn-ink); }
+.wr-dxd-source .wr-dxd-notice { margin-top: 4px; }
+.wr-dxd-calib { margin: 0; font-size: var(--fs-xs); line-height: 1.65; color: var(--ink-2); }
 .wr-dxd-brief { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .wr-dxd-brief li { font-size: var(--fs-xs); line-height: 1.55; color: var(--ink-2); padding-left: 10px; position: relative; }
 .wr-dxd-brief li::before { content: "·"; position: absolute; left: 0; color: var(--ink-3); }
 
-/* 来源筛选 */
-.wr-dxd-filters { display: flex; flex-wrap: wrap; gap: 5px; }
-.wr-dxd-chip { border: 1px solid var(--line-2); background: transparent; color: var(--ink-2); font: inherit;
-  font-size: var(--fs-xs); padding: 3px 9px; border-radius: 999px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-.wr-dxd-chip:hover { background: var(--paper-2); }
-.wr-dxd-chip.is-on { background: var(--accent-wash); color: var(--accent-ink); border-color: var(--accent-wash); }
-.wr-dxd-chip-n { font-variant-numeric: tabular-nums; opacity: 0.85; }
+/* 清单：来源下拉 + 按严重程度分组 */
+.wr-dxd-findings { display: flex; flex-direction: column; gap: 12px; }
+.wr-dxd-bar { display: flex; align-items: center; gap: 8px; }
+.wr-dxd-bar-l { flex: none; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
+.wr-dxd-filter { width: auto; min-width: 0; max-width: 100%; padding: 4px 8px; border-radius: var(--r-sm); font-size: var(--fs-xs); }
+.wr-dxd-group { display: flex; flex-direction: column; gap: 4px; }
+.wr-dxd-group-h { margin: 0; padding: 0 2px; display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-xs); font-weight: 600; color: var(--ink-2); }
+.wr-dxd-group-n { font-weight: 500; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
-/* 发现列表 */
-.wr-dxd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.wr-dxd-row { display: flex; gap: 9px; align-items: flex-start; width: 100%; text-align: left; border: 0;
-  background: transparent; color: inherit; font: inherit; padding: 8px 9px; border-radius: var(--r-sm); cursor: pointer; }
+/* 严重程度色条：组标题、每一行、已忽略里都是这一道，与正文里的标注同色 */
+.wr-dxd-sev { flex: none; width: 3px; height: 13px; border-radius: 2px; background: var(--warn); }
+.wr-dxd-sev.sev-blocking { background: var(--danger); }
+.wr-dxd-sev.sev-revision { background: var(--accent); }
+.wr-dxd-sev.sev-taste    { background: var(--warn); }
+.wr-dxd-sev.sev-info     { background: var(--line-3); }
+
+/* 一条发现：一张卡，开着时与它的展开内容同在卡里 */
+.wr-dxd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.wr-dxd-item { border: 1px solid transparent; border-radius: var(--r-md); }
+.wr-dxd-item.is-active { background: var(--paper-0); border-color: var(--line-2); box-shadow: var(--shadow-sm); }
+.wr-dxd-row { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; border: 0;
+  background: transparent; color: inherit; font: inherit; padding: 8px 10px; border-radius: var(--r-md); cursor: pointer; }
 .wr-dxd-row:hover { background: var(--paper-2); }
-.wr-dxd-row.is-active { background: var(--paper-2); outline: 1px solid var(--line-2); }
-.wr-dxd-mark { flex: none; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap;
-  padding: 2px 7px; border-radius: var(--r-xs); margin-top: 1px; max-width: 7.5em; overflow: hidden; text-overflow: ellipsis; }
-.wr-dxd-mark.sev-blocking { background: var(--danger-wash); color: var(--danger-ink); }
-.wr-dxd-mark.sev-revision { background: var(--accent-wash); color: var(--accent-ink); }
-.wr-dxd-mark.sev-taste    { background: var(--warn-wash); color: var(--warn-ink); }
-.wr-dxd-mark.sev-info     { background: var(--info-wash); color: var(--info-ink); }
-.wr-dxd-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.wr-dxd-t { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); line-height: 1.45; }
-.wr-dxd-h { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.5; display: flex; flex-wrap: wrap; gap: 4px 8px; }
-.wr-dxd-src { color: var(--ink-3); }
-.wr-dxd-stale { color: var(--warn-ink); }
+.wr-dxd-item.is-active .wr-dxd-row:hover { background: transparent; }
+.wr-dxd-row .wr-dxd-sev { margin-top: 3px; }
+.wr-dxd-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.wr-dxd-t { font-size: var(--fs-sm); font-weight: 600; color: var(--ink-1); line-height: 1.5; }
+.wr-dxd-h { font-size: var(--fs-xs); color: var(--ink-3); line-height: 1.5; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.wr-dxd-badge { padding: 0 7px; line-height: 18px; }
+.wr-dxd-stale { font-size: var(--fs-xs); color: var(--warn-ink); }
 
-/* 展开的一条：证据 / 改法 / 为什么 / 动作 */
-.wr-dxd-detail { padding: 2px 9px 10px 9px; display: flex; flex-direction: column; gap: 7px; }
+/* 展开的一条：与标题同一条左边线（10 + 3 + 10），证据 / 改法 / AI 的判断 / 两行动作 */
+.wr-dxd-detail { padding: 0 12px 12px 23px; display: flex; flex-direction: column; gap: 8px; }
 .wr-dxd-ev { margin: 0; padding: 6px 10px; border-left: 3px solid var(--line-3); background: var(--paper-2);
   font-family: var(--font-serif); font-size: var(--fs-sm); line-height: 1.7; color: var(--ink-1); border-radius: 0 var(--r-xs) var(--r-xs) 0; }
 .wr-dxd-fix { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
 .wr-dxd-why { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-3); }
-.wr-dxd-sub { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
-.wr-dxd-row-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.wr-dxd-sub { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-3); }
+.wr-dxd-related { display: flex; flex-direction: column; gap: 4px; }
+.wr-dxd-related-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wr-dxd-acts { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.wr-dxd-row-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
-/* 已忽略 */
-.wr-dxd-ignored { border-top: 1px solid var(--line-1); padding-top: 8px; }
-.wr-dxd-ignored-toggle { border: 0; background: transparent; color: var(--ink-3); font: inherit; font-size: var(--fs-xs);
-  font-weight: 600; padding: 4px 0; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-.wr-dxd-ignored-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
-.wr-dxd-ignored-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.wr-dxd-ignored-list li { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--ink-3); }
-.wr-dxd-ignored-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「AI 看这一处」的判断（挂在那条发现下面）与独立看一段的结果（清单最上面，可收起） */
+.wr-dxd-opinion { border-left: 3px solid var(--accent-wash); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); border-radius: 0 var(--r-xs) var(--r-xs) 0; }
+.wr-dxd-opinion-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wr-dxd-opinion-t { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
+.wr-dxd-passage { border: 1px solid var(--line-1); border-radius: var(--r-md); padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); }
+.wr-dxd-passage-x { margin-left: auto; }
 
 .wr-dxd-clear { display: grid; justify-items: center; gap: 8px; text-align: center; padding: 28px 14px;
   color: var(--ok); }
 .wr-dxd-clear-t { font-family: var(--font-serif); font-weight: 600; font-size: 14.5px; color: var(--ink-1); }
 .wr-dxd-clear p { margin: 0; font-size: var(--fs-xs); line-height: 1.7; color: var(--ink-3); }
 
-.wr-dxd-log { border-top: 1px solid var(--line-1); padding-top: 10px; }
-.wr-dxd-log ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+/* 底部：已忽略、最近的决定（都折叠） */
+.wr-dxd-foot { border-top: 1px solid var(--line-1); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.wr-dxd-ignored-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.wr-dxd-ignored-list li { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--ink-3); }
+.wr-dxd-ignored-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wr-dxd-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .wr-dxd-dec { display: flex; gap: 8px; font-size: var(--fs-xs); line-height: 1.55; }
 .wr-dxd-dec-t { flex: none; font-variant-numeric: tabular-nums; color: var(--ink-3); }
 .wr-dxd-dec-x { color: var(--ink-2); }
-
-.wr-dxd-note { border: 1px dashed var(--line-2); background: var(--paper-2);
-  border-radius: var(--r-sm); padding: 8px 10px; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
-
-/* 场景卡随行（正文上方）现在是共用设计卡 sdc-*（样式在 ws-scene-design.css）；旧的 wr-scard-* 已随 WrSceneCard 一起删除 */
-
-/* ---- 「AI 看这一处」的判断（挂在那条发现下面）与独立看一段的结果 ---- */
-.wr-dxd-opinion { border-left: 3px solid var(--accent-wash); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); border-radius: 0 var(--r-xs) var(--r-xs) 0; }
-.wr-dxd-opinion-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.wr-dxd-opinion-t { margin: 0; font-size: var(--fs-xs); line-height: 1.6; color: var(--ink-2); }
-.wr-dxd-opinion-tag { font-size: var(--fs-xs); color: var(--accent-ink); }
-.wr-dxd-passage { border: 1px solid var(--line-1); border-radius: var(--r-sm); padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; background: var(--paper-2); }
-
-/* 2026-09-22 第三轮：跨段发现（与第 N 段矛盾 / 重复 / 承接）与参考书校准的标记 */
-.wr-dxd-related { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
-.wr-dxd-related-tag { font-size: var(--fs-xs); color: var(--warn-ink); }
-.wr-dxd-calibrated { font-size: var(--fs-xs); color: var(--info-ink); }
-mark.wr-dx.is-related { background: var(--info-wash); color: inherit; }
-
-.wr-dxd-waived { display: inline; }

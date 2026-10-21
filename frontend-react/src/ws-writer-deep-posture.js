@@ -1,7 +1,7 @@
 import React from "react";
 import { requireSceneApiId } from "./ws-scene-id.js";
 import {
-  wrDeepMark, wrDeepUnmark, wrDxAddSkip, wrDxApplyPreferences, wrDxFetch, wrDxLoadPreferences,
+  wrDeepMark, wrDeepUnmark, wrDxAddSkip, wrDxApplyPreferences, wrDxBySeverity, wrDxFetch, wrDxLoadPreferences,
   wrDxMergePreferences, wrDxPushLog, wrDxRemoveSkip, wrDxReviewPassage, wrDxRunAi, wrDxSavePreferences, wrDxSkips,
   wrDxSnapshot, wrDxWithIgnored,
 } from "./ws-deep.jsx";
@@ -15,8 +15,10 @@ import { useWrEvent } from "./ws-writer-hooks.js";
    ----------------------------------------------------------
    起草 / 深改是写作台的两种姿态。深改只诊断、不改字：正文只读，诊断从服务端取
    （GET /api/v1/scenes/{id}/deep-review：规则体检 + 段落节奏 + 起草评审 + AI 深评，同一种发现形状），
-   按发现的段落序号与证据在正文里标高亮；每一项给「选中这一句去改写」/「按诊断改写」——回到起草姿态、
+   按发现的段落序号与证据在正文里标高亮；每一项给「选中去改」/「按诊断改写」——回到起草姿态、
    选中那一句，改写走选区工具条，并把这条发现带给后端（rewriteFinding）。
+   清单按严重程度排（wrDxBySeverity，面板按它分组）。进来不展开哪一条，先看整张清单；点一条展开它并把正文
+   滚到那一处，再点一下收起；忽略了开着的那一条就按这个次序停到下一条（正在一条条处理）。
    忽略 / 恢复按 signal_id 记：本机写穿 + 服务端 deep-review 偏好（带修订号，冲突时合并重试）；
    成稿门读的是同一份忽略清单。
    进入深改时有未落盘的改动先存（正文马上变只读，诊断要对着存下去的字）；没改过就不存。
@@ -38,7 +40,7 @@ function shortIssue(finding) {
 }
 
 /* doc：useDocBinding 的返回；onEnter：进入深改时调用（打开右栏）；
-   onLeave：「选中这一句去改写」离开深改前调用（收起叠放的抽屉） */
+   onLeave：「选中去改」离开深改前调用（收起叠放的抽屉） */
 export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollRef, doc, onEnter, onLeave }) {
   const [posture, setPostureState] = useState("draft");
   const [diagnosis, setDiagnosis] = useState(null);
@@ -64,9 +66,9 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   const loadSeq = useRef(0);
   useEffect(() => { sceneRef.current = activeScene; }, [activeScene]);
 
-  /* 发现列表：服务端的诊断 + 本机的忽略清单（忽略 / 恢复不必等往返） */
+  /* 发现列表：服务端的诊断 + 本机的忽略清单（忽略 / 恢复不必等往返），按严重程度排 */
   const findings = useMemo(
-    () => (diagnosis && activeScene ? wrDxWithIgnored(diagnosis.findings, wrDxSkips(activeScene)) : []),
+    () => (diagnosis && activeScene ? wrDxBySeverity(wrDxWithIgnored(diagnosis.findings, wrDxSkips(activeScene))) : []),
     [diagnosis, activeScene, skipTick], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const openCount = findings.filter((f) => !f.ignored).length;
@@ -185,7 +187,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     const remoteSnapshot = { decision_log: remote.decision_log || [], ignored_issue_keys: remote.ignored_issue_keys || [] };
     if (JSON.stringify(merged) !== JSON.stringify(remoteSnapshot)) queuePersist(sceneId);
     else setPersistenceStatus("synced");
-    const list = wrDxWithIgnored((payload && payload.findings) || [], new Set(merged.ignored_issue_keys));
+    const list = wrDxBySeverity(wrDxWithIgnored((payload && payload.findings) || [], new Set(merged.ignored_issue_keys)));
     const wanted = pendingSignalRef.current;
     const wantedSource = pendingSourceRef.current;
     pendingSignalRef.current = null;
@@ -209,9 +211,9 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
         setActiveKey(null);
       }
     } else {
-      /* 没指定就停在第一条还开着的发现上（面板展开它，正文里它的标注高亮） */
-      const first = list.find((f) => !f.ignored);
-      setActiveKey((key) => (list.some((f) => f.signal_id === key) ? key : (first ? first.signal_id : null)));
+      /* 没指定就不展开哪一条：进来先看整张清单（2026-10-21：过去默认展开第一条，带 AI 复核的那条一张卡就占满第一屏）；
+         重新诊断 / 深评之后，原来展开着的那条还在就留着 */
+      setActiveKey((key) => (list.some((f) => f.signal_id === key) ? key : null));
     }
   });
 
@@ -274,7 +276,9 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     if (el && posture === "deep") wrDeepMark(el, findings, activeKey);
   }, [findings, activeKey, posture, editorRef]);
 
+  /* 点一条：展开它并把正文滚到那一处；再点开着的那一条：收起（展开的卡很高，收起来才看得到整张清单） */
   const pick = useWrEvent((key) => {
+    if (key === activeKey) { setActiveKey(null); return; }
     setActiveKey(key);
     const finding = findings.find((item) => item.signal_id === key);
     if (finding) setTimeout(() => locateFinding(finding), 60);
@@ -313,6 +317,8 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
   });
   const rescan = useWrEvent(() => { if (activeScene) load(activeScene); });
   const toggleIgnored = useWrEvent(() => setShowIgnored((v) => !v));
+  /* 独立看一段的结果看完了：从清单顶上收起（下次再看一段会换上新的） */
+  const dismissPassage = useWrEvent(() => setLastPassage(null));
 
   const runAi = useWrEvent(async () => {
     if (!activeScene || aiBusy) return;
@@ -377,7 +383,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     }
   });
 
-  /* 「选中这一句去改写」：深改只诊断、不代笔。回到起草姿态，把那一句（段落级问题就是整段）选中，
+  /* 「选中去改」：深改只诊断、不代笔。回到起草姿态，把那一句（段落级问题就是整段）选中，
      选区工具条随之出现——润色 / 更凝练 / 自定义…都在那里，走的是同一条改写接口。
      target 是一条发现（带 evidence）或工具条给的原始选区 { pid, find, start, end }。
      发现的 evidence 带 paragraph_end（比 paragraph_index 大）时选中这一段范围（从起始段开头到结束段末尾）：
@@ -466,7 +472,7 @@ export function useDeepPosture({ activeScene, approvedLocked, editorRef, scrollR
     posture, setPosture, diagnosis, findings, openCount, activeKey, setActiveKey,
     filter, setFilter, showIgnored, toggleIgnored, loading, error, reload: rescan,
     aiBusy, aiError, runAi, handoffMiss, log, persistenceStatus,
-    passageBusy, passageError, lastPassage, reviewPassage, rewriteParagraph, locateParagraph,
+    passageBusy, passageError, lastPassage, dismissPassage, reviewPassage, rewriteParagraph, locateParagraph,
     pick, ignore, restore, rescan, selectForRewrite, rewriteFromFinding, rewriteFinding, clearRewriteFinding,
   };
 }

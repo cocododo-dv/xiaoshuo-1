@@ -8,7 +8,7 @@ import { useWrCount } from "./ws-writer-hooks.js";
    ESM 模块，不写 window。
    ========================================================== */
 
-/* deep：深改姿态正文只读，续写和终稿锁定一样置灰，并说清楚怎么回去写 */
+/* deep：深改姿态正文只读，续写和终稿锁定一样置灰，并说清楚怎么回去写；右栏此刻是诊断栏，开关就叫「诊断」 */
 export function WrDock({ onExit, leftOpen, rightOpen, onToggleLeft, onToggleRight, hasScene, approvedLocked, deep = false, onOpenAI, isDesk, onToggleLayout, immersion, onToggleImmersion }) {
   const aiBlocked = approvedLocked ? "终稿已锁定，请先重新打开章节" : deep ? "深改只诊断，回到起草再续写" : "";
   return (
@@ -17,8 +17,8 @@ export function WrDock({ onExit, leftOpen, rightOpen, onToggleLeft, onToggleRigh
       <button type="button" className={`wr-dock-btn ${leftOpen ? "is-on" : ""}`} aria-pressed={leftOpen} onClick={onToggleLeft} title={`大纲（${modCombo("1")}）`}>
         <I.BookOpen size={16} /><span className="wr-dock-label">大纲</span>
       </button>
-      <button type="button" className={`wr-dock-btn ${rightOpen ? "is-on" : ""}`} aria-pressed={rightOpen} onClick={onToggleRight} title={`上下文（${modCombo("2")}）`}>
-        <I.Compass size={16} /><span className="wr-dock-label">上下文</span>
+      <button type="button" className={`wr-dock-btn ${rightOpen ? "is-on" : ""}`} aria-pressed={rightOpen} onClick={onToggleRight} title={`${deep ? "深改诊断" : "上下文"}（${modCombo("2")}）`}>
+        {deep ? <I.Microscope size={16} /> : <I.Compass size={16} />}<span className="wr-dock-label">{deep ? "诊断" : "上下文"}</span>
       </button>
       {hasScene && <div className="wr-dock-sep" />}
       {hasScene && (
@@ -35,12 +35,12 @@ export function WrDock({ onExit, leftOpen, rightOpen, onToggleLeft, onToggleRigh
   );
 }
 
-/* 两侧栏收起（叠放）时，贴边的召唤条 */
-export function WrEdgeTabs({ onOpenLeft, onOpenRight }) {
+/* 两侧栏收起（叠放）时，贴边的召唤条；深改时右边召回的是诊断栏 */
+export function WrEdgeTabs({ onOpenLeft, onOpenRight, deep = false }) {
   return (
     <>
       <button type="button" className="wr-edge left" onClick={onOpenLeft} title={`章节大纲（${modCombo("1")}）`}><span className="wr-edge-label">大纲</span></button>
-      <button type="button" className="wr-edge right" onClick={onOpenRight} title={`场景上下文（${modCombo("2")}）`}><span className="wr-edge-label">上下文</span></button>
+      <button type="button" className="wr-edge right" onClick={onOpenRight} title={`${deep ? "深改诊断" : "场景上下文"}（${modCombo("2")}）`}><span className="wr-edge-label">{deep ? "诊断" : "上下文"}</span></button>
     </>
   );
 }

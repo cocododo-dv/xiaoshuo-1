@@ -95,7 +95,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
   const nav = useMemo(() => wrNeighbours(chapters, activeScene), [chapters, activeScene]);
 
   /* ---- 布局（两侧栏的停靠规则要看姿态，useWrLayout 在深改姿态之后调用） ---- */
-  const { railL, railR, dragging, startRail, resetRail } = useRailResize();
+  const { railL, railR, railD, dragging, startRail, resetRail } = useRailResize();
   const [rightTab, setRightTab] = useState("scene");
   const [trayOpen, setTrayOpen] = useState(false);
   const [immersion, setImmersion] = useState(false);
@@ -190,13 +190,16 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
     },
   });
   const canonical = useCanonicalPromotion({ activeScene, doc, notify });
-  /* 深改进场打开诊断栏；「选中这一句去改写」回起草前先收起叠放的抽屉（layout 在下面才建，调用时已就绪） */
+  /* 深改进场打开诊断栏；「选中去改」回起草前先收起叠放的抽屉（layout 在下面才建，调用时已就绪） */
   const onDeepEnter = useWrEvent(() => layout.openRight());
   const onDeepLeave = useWrEvent(() => layout.closeOverlayRails());
   const deep = useDeepPosture({ activeScene, approvedLocked, editorRef, scrollRef, doc, onEnter: onDeepEnter, onLeave: onDeepLeave });
   const posture = deep.posture;
   const inDeep = posture === "deep";
   const layout = useWrLayout(isDesk, posture);
+  /* 右栏的宽度：深改时是诊断栏自己的（d，默认更宽），起草时是上下文栏的（r）；拖分隔线改的是此刻这一栏 */
+  const rightRail = inDeep ? "d" : "r";
+  const railRight = inDeep ? railD : railR;
 
   const commitEdit = useWrEvent(() => {
     if (approvedLocked) return;
@@ -419,7 +422,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
       data-dock-left={dockLeft ? "on" : "off"}
       data-dock-right={dockRight ? "on" : "off"}
       data-dragging={dragging ? "on" : "off"}
-      style={{ "--measure": tw.measure + "px", "--ms-fz": tw.fontSize + "px", "--ms-lh": String(tw.lineHeight), "--rail-l": railL + "px", "--rail-r": railR + "px" }}
+      style={{ "--measure": tw.measure + "px", "--ms-fz": tw.fontSize + "px", "--ms-lh": String(tw.lineHeight), "--rail-l": railL + "px", "--rail-r": railRight + "px" }}
     >
       <div className="wr-room-bg" />
       <div className="wr-room">
@@ -515,7 +518,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
           </div>
         </div>
 
-        <WrEdgeTabs onOpenLeft={layout.openLeft} onOpenRight={layout.openRight} />
+        <WrEdgeTabs onOpenLeft={layout.openLeft} onOpenRight={layout.openRight} deep={inDeep} />
         <WrDock
           onExit={onExit}
           leftOpen={leftOpen} rightOpen={rightOpen}
@@ -526,7 +529,7 @@ export function WriterRoom({ t, setTweak, onExit, go }) {
         />
 
         {dockLeft && leftOpen && <div className="wr-resize wr-resize-l" onPointerDown={(e) => startRail("l", e)} onDoubleClick={() => resetRail("l")} title="拖动调整大纲栏宽，双击恢复默认" />}
-        {dockRight && rightOpen && <div className="wr-resize wr-resize-r" onPointerDown={(e) => startRail("r", e)} onDoubleClick={() => resetRail("r")} title="拖动调整上下文栏宽，双击恢复默认" />}
+        {dockRight && rightOpen && <div className="wr-resize wr-resize-r" onPointerDown={(e) => startRail(rightRail, e)} onDoubleClick={() => resetRail(rightRail)} title={`拖动调整${inDeep ? "诊断" : "上下文"}栏宽，双击恢复默认`} />}
 
         <WrNextCue counter={counter} lengthRange={lengthRange} nextTitle={nav.nextTitle}
           enabled={nextDismissedSid !== activeScene && !overlayOpen && !inDeep}

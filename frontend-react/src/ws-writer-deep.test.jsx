@@ -1,7 +1,9 @@
 // 写作台的深改姿态与「AI 放在抽屉里」时的续写面板。
 // 深改只诊断、不代笔：诊断是服务端的一份（GET /api/v1/scenes/{id}/deep-review），每一项给
-// 「选中这一句去改写」/「按诊断改写」，回到起草姿态并选中那一句——改写走选区工具条，并带着这条发现。
+// 「选中去改」/「按诊断改写」，回到起草姿态并选中那一句——改写走选区工具条，并带着这条发现。
 // 过去这里挂着三条本地正则和一条「采纳候选 · 写回正文」的通路，诊断从不产出候选，那条路永远走不到。
+// 2026-10-21 右栏重排：来源状态条（AI 深评 / 风格对照 / 参考书校准各一行，整体建议与校准折叠）、来源下拉、
+// 按严重程度分组、展开的一条只有一个主按钮、已忽略与最近的决定折叠；深改时右栏有自己的宽度。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -160,6 +162,14 @@ async function render(node) {
 }
 const click = (node) => act(async () => node.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 const drawerButton = (host, text) => [...host.querySelectorAll(".wr-dxd button")].find((node) => node.textContent.includes(text));
+/* 来源下拉（过去是一排胶囊）：选一个来源 */
+const sourceSelect = (host) => host.querySelector(".wr-dxd select.wr-dxd-filter");
+const pickSource = (host, value) => act(async () => {
+  const select = sourceSelect(host);
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+});
+const railRight = (host) => host.querySelector(".wr-root").style.getPropertyValue("--rail-r");
 
 beforeEach(() => {
   vi.resetModules();
@@ -197,7 +207,7 @@ afterEach(async () => {
 });
 
 describe("写作台 · 深改只诊断、不代笔", () => {
-  it("诊断来自服务端：进深改先取 GET deep-review，标注钉在那一句上；「选中这一句去改写」回到起草姿态并选中那一句；没有「采纳 · 写回正文」", async () => {
+  it("诊断来自服务端：进深改先取 GET deep-review，标注钉在那一句上；「选中去改」回到起草姿态并选中那一句；没有「采纳 · 写回正文」", async () => {
     const { WriterRoom, WrDocs, client } = await loadWriter();
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
     const save = vi.spyOn(WrDocs, "save").mockResolvedValue({});
@@ -211,16 +221,20 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     expect(drawer.textContent).not.toMatch(/采纳|写回正文|没有现成候选|ECH|RDN/);
     expect(drawer.textContent).toContain("AI 深评");
     expect(host.querySelector(".wr-editor").getAttribute("contenteditable")).toBe("false");
-    // 标注：mark.wr-dx 包着「安静，安静」，带发现 id；第一条默认是选中的那条
+    // 标注：mark.wr-dx 包着「安静，安静」，带发现 id；进来不展开哪一条，标注也都没有选中
     const mark = host.querySelector('mark.wr-dx[data-dx="craft:adjacent_echo:11111111"]');
     expect(mark).not.toBeNull();
     expect(mark.textContent).toBe("安静，安静");
-    expect(mark.classList.contains("is-active")).toBe(true);
+    expect(mark.classList.contains("is-active")).toBe(false);
     expect(mark.classList.contains("sev-taste")).toBe(true);
+    expect(drawer.querySelector(".wr-dxd-detail")).toBeNull();
+    // 点那一行：展开它，正文里那一句标成选中
+    await click(drawer.querySelector(".wr-dxd-row"));
+    expect(host.querySelector('mark.wr-dx[data-dx="craft:adjacent_echo:11111111"]').classList.contains("is-active")).toBe(true);
 
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
-      await click(drawerButton(host, "选中这一句去改写"));
+      await click(drawerButton(host, "选中去改"));
       await act(async () => { vi.advanceTimersByTime(120); });
     } finally {
       vi.useRealTimers();
@@ -242,7 +256,7 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     await act(async () => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: { posture: "deep", signal_id: ECHO.signal_id } })));
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
-    // 默认本该停在第一条（无抉择场景）；带着 id 进来就停在那一条
+    // 平常进来不展开哪一条；带着 id 进来就停在那一条（哪怕它排在无抉择场景后面）
     const active = drawer.querySelector('.wr-dxd-row[aria-pressed="true"]');
     expect(active.textContent).toContain("贴邻重复");
     expect(host.querySelector('mark.wr-dx.is-active[data-dx="craft:adjacent_echo:11111111"]')).not.toBeNull();
@@ -263,6 +277,7 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
 
+    await click(drawer.querySelector(".wr-dxd-row"));
     await click(drawerButton(host, "忽略这一项"));
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
       "/api/v1/scenes/s1/deep-review/preferences",
@@ -271,6 +286,9 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     expect(drawer.textContent).toContain("本场没有发现待改的句段");
     expect(drawer.textContent).toContain("已忽略 1 项");
     expect(host.querySelector("mark.wr-dx")).toBeNull();
+    // 最近的决定折叠在底部：展开才看得到这一笔
+    expect(drawer.textContent).not.toContain("忽略 · 贴邻叠句");
+    await click(drawerButton(host, "最近的决定"));
     expect(drawer.textContent).toContain("忽略 · 贴邻叠句");
 
     await click(drawerButton(host, "已忽略 1 项"));
@@ -297,16 +315,22 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
     expect(drawer.textContent).toContain("还没跑过");
+    // 只有一个来源时不出来源下拉
+    expect(sourceSelect(host)).toBeNull();
 
-    await click(drawerButton(host, "AI 深评"));
+    await click(drawerButton(host, "开始深评"));
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/deep-review", {}), T);
     await vi.waitFor(() => expect(drawer.textContent).toContain("选择被说出来了"), T);
     expect(drawer.textContent).toContain("总分 58");
+    // 刚跑完的这一轮：整体建议自己展开
     expect(drawer.textContent).toContain("把选择落成动作。");
+    expect(drawerButton(host, "整体建议 1 条").getAttribute("aria-expanded")).toBe("true");
+    expect(drawerButton(host, "重新深评")).not.toBeUndefined();
     expect(host.querySelector('mark.wr-dx[data-dx="ai:choice_pressure:99999999"]').textContent).toBe("能听见潮水");
     // 来源筛选：只看 AI
-    const chip = [...drawer.querySelectorAll(".wr-dxd-chip")].find((node) => node.textContent.includes("AI 深评"));
-    await click(chip);
+    expect([...sourceSelect(host).options].map((node) => node.textContent)).toEqual(["全部 2", "节奏 1", "AI 深评 1"]);
+    await pickSource(host, "ai");
+    expect(sourceSelect(host).value).toBe("ai");
     expect(drawer.textContent).toContain("选择被说出来了");
     expect(drawer.textContent).not.toContain("贴邻重复。");
     expect(drawer.textContent).toContain("AI 深评 · 故事");
@@ -320,7 +344,7 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     await vi.waitFor(() => expect(host2.textContent).toContain("安静到能听见潮水"), T);
     await click(deepRadio(host2));
     await vi.waitFor(() => expect(host2.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
-    await click(drawerButton(host2, "AI 深评"));
+    await click(drawerButton(host2, "开始深评"));
     await vi.waitFor(() => expect(host2.querySelector(".wr-dxd").textContent).toContain("没有可用的模型"), T);
     await click(drawerButton(host2, "去系统设置"));
     expect(go).toHaveBeenCalledWith("settings", { type: "ws:settings-tab", detail: "ai" });
@@ -335,7 +359,7 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     await click(deepRadio(host));
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
-    await click(drawerButton(host, "AI 深评"));
+    await click(drawerButton(host, "开始深评"));
     await vi.waitFor(() => expect(drawer.textContent).toContain("这一场还没有正文，没有可评的字。"), T);
     const notice = drawer.querySelector(".wr-dxd-ai .wr-dxd-notice");
     expect([...notice.querySelectorAll("button")].map((node) => node.textContent.trim())).toEqual([]);
@@ -349,6 +373,7 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
     await click(deepRadio(host));
     await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+    await click(host.querySelector(".wr-dxd .wr-dxd-row"));
 
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
@@ -449,10 +474,11 @@ describe("写作台 · 1101–1280 宽时的深改（断点在文档刻度上，
     expect(root.getAttribute("data-right")).toBe("on");
     expect(root.getAttribute("data-left")).toBe("on");
     expect(scrim.classList.contains("show")).toBe(false);
+    await click(host.querySelector(".wr-dxd .wr-dxd-row"));
 
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
-      await click(drawerButton(host, "选中这一句去改写"));
+      await click(drawerButton(host, "选中去改"));
       await act(async () => { vi.advanceTimersByTime(120); });
     } finally {
       vi.useRealTimers();
@@ -495,10 +521,14 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("贴邻重复"), T);
 
+    await click(drawer.querySelector(".wr-dxd-row"));
     await click(drawerButton(host, "AI 看这一处"));
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/deep-review/passage", { signal_id: ECHO.signal_id }), T);
     await vi.waitFor(() => expect(drawer.textContent).toContain("AI：不成立"), T);
     expect(drawer.textContent).toContain("这是刻意的回响，不是毛病。");
+    // AI 判了不成立：忽略的按钮就说「按 AI 的判断忽略」，不再另有一个「忽略这一项」
+    expect(drawerButton(host, "忽略这一项")).toBeUndefined();
+    await click(drawerButton(host, "最近的决定"));
     expect(drawer.textContent).toContain("AI 看这一处 · 贴邻叠句");
 
     await click(drawerButton(host, "按 AI 的判断忽略"));
@@ -625,7 +655,9 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     await click(deepRadio(host));
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("与第 2 段矛盾"), T);
-    /* 第一条（阻断 / 修订排前）默认展开：另一段的原话与跳转按钮；正文里另一段那句也标了 */
+    /* 行上就标着「与第 2 段矛盾」；点开这一条：另一段的原话与跳转按钮，正文里另一段那句也标了 */
+    expect(drawer.textContent).not.toContain("三声钟响");
+    await click([...drawer.querySelectorAll(".wr-dxd-row")].find((node) => node.textContent.includes("没有再看他")));
     expect(drawer.textContent).toContain("三声钟响");
     expect(drawerButton(host, "看第 2 段")).not.toBeUndefined();
     await vi.waitFor(() => expect(host.querySelector(".wr-editor mark.wr-dx.is-related")).not.toBeNull(), T);
@@ -660,15 +692,15 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     await act(async () => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: { posture: "deep", source: "style" } })));
     const drawer = host.querySelector(".wr-dxd");
     await vi.waitFor(() => expect(drawer.textContent).toContain("写到潮水时语调忽然庄重"), T);
-    const on = drawer.querySelector('.wr-dxd-chip[aria-pressed="true"]');
-    expect(on.textContent).toContain("风格对照");
+    expect(sourceSelect(host).value).toBe("style");
     expect(drawer.textContent).not.toContain("贴邻重复。");
     expect(drawer.querySelector('.wr-dxd-row[aria-pressed="true"]').textContent).toContain("风格对照");
     expect(drawer.textContent).toContain("改法：在「能听见潮水」处，用一句自嘲压住抒情。");
     expect(host.querySelector('mark.wr-dx.is-active[data-dx="style:theme.emotional_tone:abcd1234"]').textContent).toBe("能听见潮水");
     const meta = drawer.querySelector('[data-testid="dx-style-meta"]').textContent;
     expect(meta).toContain("评审 6.4（6 分以上算像，已校准，3 次取中位）");
-    expect(meta).toContain("对着现在这份正文");
+    // 常态（对着现在这份正文）不再写出来，只有改前时才多说一句
+    expect(meta).not.toMatch(/改前|对着现在/);
 
     await click(drawer.querySelector('[data-testid="dx-style-check"]'));
     await vi.waitFor(() => expect(posted).toEqual({ scene_id: "s1" }), T);
@@ -692,10 +724,147 @@ describe("写作台 · AI 看这一处（局部深评）", () => {
     await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
     await click(deepRadio(host));
     const drawer = host.querySelector(".wr-dxd");
-    await vi.waitFor(() => expect(drawer.textContent).toContain("已按参考书校准"), T);
+    await vi.waitFor(() => expect(drawer.textContent).toContain("规则已按参考书校准 · 本场放过 2 个词"), T);
+    // 校准的全文折叠着：一行说清楚，展开再看口径与放过了哪些词
+    expect(drawer.textContent).not.toContain("按《龙族》校准");
+    await click(drawerButton(host, "规则已按参考书校准"));
     expect(drawer.textContent).toContain("按《龙族》校准");
     expect(drawer.querySelector('[data-testid="dx-waived"]').textContent).toContain("本场按这位作者的密度放过 2 个词：看 ×5、光 ×2");
     expect(drawer.textContent).toContain("参考作者也常见");
     expect(drawer.textContent).toContain("参考作者的常态");
+  });
+});
+
+describe("写作台 · 深改右栏的版面（2026-10-21 重排）", () => {
+  async function openDeep(options) {
+    const loaded = await loadWriter(options);
+    vi.spyOn(loaded.WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<loaded.WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    await click(deepRadio(host));
+    const drawer = host.querySelector(".wr-dxd");
+    await vi.waitFor(() => expect(drawer.querySelector(".wr-dxd-list, .wr-dxd-clear")).not.toBeNull(), T);
+    return { ...loaded, host, drawer };
+  }
+
+  it("清单按严重程度分组、组内照服务端的次序；进来不展开哪一条；展开的卡只有一个主按钮；再点一下收起；忽略后停到下一条", async () => {
+    // 服务端次序故意放反（审美在前）：面板照严重程度分组
+    const { drawer } = await openDeep({ diagnosis: diagnosisPayload([ECHO, ABSENCE, AI_FINDING]) });
+    expect([...drawer.querySelectorAll(".wr-dxd-group-h")].map((node) => node.textContent)).toEqual(["修订2", "审美1"]);
+    expect([...drawer.querySelectorAll(".wr-dxd-t")].map((node) => node.textContent)).toEqual([
+      ABSENCE.issue, AI_FINDING.issue, ECHO.issue,
+    ]);
+    const rowOf = (text) => [...drawer.querySelectorAll(".wr-dxd-row")].find((node) => node.textContent.includes(text));
+    // 进来先看整张清单：哪一条都没展开
+    expect(drawer.querySelector('.wr-dxd-row[aria-pressed="true"]')).toBeNull();
+    expect(drawer.querySelector(".wr-dxd-detail")).toBeNull();
+    // 每一行的说明：维度 · 来源 · 镜头（· 整场）
+    expect(rowOf("看不到明确的抉择").querySelector(".wr-dxd-h").textContent).toBe("无抉择场景 · 规则 · 整场");
+    expect(rowOf("选择被说出来了").querySelector(".wr-dxd-h").textContent).toBe("抉择压力 · AI 深评 · 故事");
+
+    await click(rowOf("选择被说出来了"));
+    expect(rowOf("选择被说出来了").getAttribute("aria-pressed")).toBe("true");
+    const detail = drawer.querySelector(".wr-dxd-item.is-active .wr-dxd-detail");
+    expect([...detail.querySelectorAll(".btn-accent")].map((node) => node.textContent.trim())).toEqual(["按诊断改写"]);
+    expect([...detail.querySelectorAll("button")].map((node) => node.textContent.trim()))
+      .toEqual(["为什么", "按诊断改写", "选中去改", "AI 看这一处", "忽略这一项"]);
+    // 「为什么」折叠着
+    expect(detail.textContent).not.toContain("读者要看见代价。");
+    await click(drawerButton(drawer, "为什么"));
+    expect(detail.textContent).toContain("读者要看见代价。");
+
+    await click(rowOf("选择被说出来了"));
+    expect(drawer.querySelector(".wr-dxd-detail")).toBeNull();
+    expect(drawer.querySelector('.wr-dxd-row[aria-pressed="true"]')).toBeNull();
+
+    // 正在一条条处理：忽略开着的那一条，就按清单次序停到下一条
+    await click(rowOf("选择被说出来了"));
+    await click(drawerButton(drawer, "忽略这一项"));
+    await vi.waitFor(() => expect(drawer.textContent).toContain("已忽略 1 项"), T);
+    expect(rowOf("看不到明确的抉择").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("AI 复核过、认为成立并给了这一处的改法：主按钮就是「按 AI 的改法改写」，改写请求带 AI 的改法；没有第二个主按钮", async () => {
+    const opinion = { evaluation_id: "writer_passage_eval_7", paragraph_index: 0, about_signal_id: ECHO.signal_id, verdict: "holds", verdict_label: "成立", assessment: "两个「安静」贴得太近。", rewrite_brief: "删掉第二个「安静」，改成「静得」。", question: "", findings_count: 0, status: "current" };
+    const { host, drawer, client } = await openDeep({ diagnosis: diagnosisPayload([{ ...ECHO, opinion }]) });
+    expect(drawer.querySelector(".wr-dxd-row .wr-dxd-badge").textContent).toBe("AI：成立");
+    await click(drawer.querySelector(".wr-dxd-row"));
+    const detail = drawer.querySelector(".wr-dxd-item.is-active .wr-dxd-detail");
+    expect([...detail.querySelectorAll(".btn-accent")].map((node) => node.textContent.trim())).toEqual(["按 AI 的改法改写"]);
+    expect(drawerButton(host, "按诊断改写")).toBeUndefined();
+
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      await click(drawerButton(host, "按 AI 的改法改写"));
+      await act(async () => { vi.advanceTimersByTime(120); });
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith("/api/v1/passages/patch-candidates", expect.objectContaining({
+      source_excerpt: "安静，安静",
+      quality_signal_id: "craft:adjacent_echo:11111111",
+      instruction: "删掉第二个「安静」，改成「静得」。",
+    })), T);
+  });
+
+  it("已有的 AI 深评：一行说时间与总分，整体建议折叠着，点开才列出来", async () => {
+    const ai = { status: "current", evaluation_id: "writer_deep_eval_5", overall_score: 0.58, revision_brief: [{ action: "把选择落成动作。" }, { action: "删掉解释动机的旁白。" }], lenses: [], llm_call_id: "c1", created_at: "2026-09-22T10:00:00Z" };
+    const { host, drawer } = await openDeep({ diagnosis: diagnosisPayload([ECHO], { ai }) });
+    const row = drawer.querySelector(".wr-dxd-ai");
+    expect(row.querySelector(".wr-dxd-source-meta").textContent).toContain("总分 58");
+    expect(drawerButton(host, "重新深评")).not.toBeUndefined();
+    expect(drawer.textContent).not.toContain("把选择落成动作。");
+    await click(drawerButton(host, "整体建议 2 条"));
+    expect(drawer.textContent).toContain("把选择落成动作。");
+    expect(drawer.textContent).toContain("删掉解释动机的旁白。");
+  });
+
+  it("「AI 看这一段」的结果放在清单上面，看完可以收起", async () => {
+    const note = { evaluation_id: "writer_passage_eval_8", paragraph_index: 0, about_signal_id: null, verdict: "no_finding", verdict_label: "没有要改的", assessment: "这一段的回响是节奏，不必动。", rewrite_brief: "", question: "", findings_count: 0, status: "current" };
+    const passage = (body) => diagnosisPayload([ECHO], { passage_reviews: [note], passage_review: { ...note, paragraph_index: body.paragraph_index } });
+    const { host, drawer } = await openDeep({ passage });
+    await selectByOffsets(host.querySelector(".wr-editor"), 0, 5);
+    await click([...document.querySelector(".wr-irw-bar").querySelectorAll("button")].find((node) => node.textContent.includes("AI 看这一段")));
+    await vi.waitFor(() => expect(drawer.textContent).toContain("AI 看了第 1 段"), T);
+    const card = drawer.querySelector(".wr-dxd-passage");
+    expect(card.compareDocumentPosition(drawer.querySelector(".wr-dxd-findings")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    await click(card.querySelector('button[aria-label="收起这条结果"]'));
+    expect(drawer.textContent).not.toContain("AI 看了第 1 段");
+    expect(drawer.textContent).toContain("贴邻重复");
+  });
+
+  it("深改时右栏用诊断栏自己的宽度（默认 340），回起草还是上下文栏的；拖分隔线只改此刻这一栏、各记各的；底栏开关叫「诊断」", async () => {
+    // 旧的存法只有 l / r：诊断栏取默认宽度，上下文栏照旧是作者拖过的 250
+    window.localStorage.setItem("wr-rail", JSON.stringify({ l: 240, r: 250 }));
+    const { WriterRoom, WrDocs } = await loadWriter();
+    vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
+    const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);
+    await vi.waitFor(() => expect(host.textContent).toContain("安静到能听见潮水"), T);
+    const dockRight = () => [...host.querySelectorAll(".wr-dock button")].find((node) => /上下文|诊断/.test(node.textContent));
+    expect(railRight(host)).toBe("250px");
+    expect(dockRight().textContent).toBe("上下文");
+
+    await click(deepRadio(host));
+    await vi.waitFor(() => expect(host.querySelector(".wr-dxd").textContent).toContain("贴邻重复"), T);
+    expect(railRight(host)).toBe("340px");
+    expect(dockRight().textContent).toBe("诊断");
+    expect(dockRight().getAttribute("title")).toContain("深改诊断");
+
+    // 右边的分隔线往左拖 60：诊断栏 400，上下文栏不动
+    const handle = host.querySelector(".wr-resize-r");
+    expect(handle.getAttribute("title")).toContain("诊断栏宽");
+    await act(async () => {
+      handle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: 1000 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 940 }));
+      window.dispatchEvent(new MouseEvent("pointerup", { clientX: 940 }));
+    });
+    expect(railRight(host)).toBe("400px");
+    expect(JSON.parse(window.localStorage.getItem("wr-rail"))).toEqual({ l: 240, r: 250, d: 400 });
+
+    const draftRadio = [...host.querySelectorAll('[role="radio"]')].find((node) => node.textContent.includes("起草"));
+    await click(draftRadio);
+    expect(railRight(host)).toBe("250px");
+    expect(dockRight().textContent).toBe("上下文");
   });
 });
