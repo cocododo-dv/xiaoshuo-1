@@ -19,8 +19,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AuthorDraft,
-    ChapterGoal,
-    ProjectWritingStats,
     SceneCard,
     SnowflakeStepRun,
     StoryProject,
@@ -213,64 +211,15 @@ def _seed_work_a_library(session: Session) -> None:
 
 
 def cleanup_fixture_works(session: Session) -> None:
-    from novel_system.db.models import (
-        ChapterState,
-        LibraryEntity,
-        LibraryRelation,
-        OutlinePlan,
-        SceneBundle,
-        SceneRunState,
-        SnowflakeAssistantTurn,
-        SnowflakeCharacterPlan,
-        SnowflakeScenePlan,
-        SnowflakeSceneTriageItem,
-        StoryCharacter,
-        TimelineEvent,
-    )
+    """按固定 id 把两部夹具作品连同名下的一切删掉——与回收站「永久清除」同一份清单（``services/project_purge.py``，
+    从 ORM 元数据推出来，新表自动在内）。
 
-    scene_ids = [
-        row
-        for row in session.execute(
-            select(SceneCard.scene_id).where(SceneCard.project_id.in_(FIXTURE_WORK_IDS))
-        ).scalars().all()
-    ]
-    if scene_ids:
-        session.execute(
-            delete(AuthorDraft).where(
-                AuthorDraft.object_type == "scene", AuthorDraft.object_id.in_(scene_ids)
-            )
-        )
-        session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
-        session.execute(delete(SceneBundle).where(SceneBundle.scene_id.in_(scene_ids)))
-    chapter_ids = [
-        row
-        for row in session.execute(
-            select(ChapterGoal.chapter_id).where(
-                ChapterGoal.project_id.in_(FIXTURE_WORK_IDS)
-            )
-        ).scalars()
-    ]
-    if chapter_ids:
-        session.execute(
-            delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids))
-        )
+    契约冒烟会在夹具作品上真的建章、写稿、提升权威正文（终稿、场景记忆、章滚动笔记、正史待核对……）；以前这里是一份
+    手工表单，跟不上这些运行时行，下一次重灌删场景卡就撞外键（2026-10-21：smoke-phase5 提升了一场，phase6 的重灌失败）。"""
+    from novel_system.services.project_purge import build_project_purge_plan, purge_project_rows
 
-    session.execute(delete(SceneCard).where(SceneCard.project_id.in_(FIXTURE_WORK_IDS)))
-    session.execute(delete(ChapterGoal).where(ChapterGoal.project_id.in_(FIXTURE_WORK_IDS)))
-    for model in (
-        SnowflakeSceneTriageItem,
-        SnowflakeScenePlan,
-        SnowflakeCharacterPlan,
-        SnowflakeAssistantTurn,
-        SnowflakeStepRun,
-        LibraryRelation,
-        LibraryEntity,
-        TimelineEvent,
-        StoryCharacter,
-        OutlinePlan,
-        ProjectWritingStats,
-    ):
-        session.execute(delete(model).where(model.project_id.in_(FIXTURE_WORK_IDS)))
+    for project_id in FIXTURE_WORK_IDS:
+        purge_project_rows(session, build_project_purge_plan(session, project_id))
     session.execute(delete(StoryProject).where(StoryProject.project_id.in_(FIXTURE_WORK_IDS)))
     session.flush()
 

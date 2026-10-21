@@ -299,3 +299,40 @@ def test_fixture_runtime_clears_demo_derived_records(session) -> None:
     assert _count_rows(session, ChapterMemory) == 1
     assert _count_rows(session, ChapterRollingNote) == 0
     assert _count_rows(session, HumanReviewEvent) == 0
+
+
+def test_reseed_after_a_fixture_scene_was_archived_does_not_trip_foreign_keys(session) -> None:
+    """契约冒烟会在夹具作品上真的提升 / 归档一场（终稿、场景记忆、章滚动笔记、正史待核对……）。重灌按「永久清除」
+    同一份清单删掉夹具作品名下的一切——以前的手工表单漏了这些运行时行，删场景卡时撞外键（2026-10-21：smoke-phase5
+    提升了一场之后，phase6 之前的重灌失败）。"""
+    from novel_system.services.archiver import Archiver
+
+    seed_runtime_fixture(session)
+    session.commit()
+    scene = session.execute(
+        select(SceneCard).where(SceneCard.project_id == "work-a", SceneCard.trashed_flag == 0).order_by(SceneCard.scene_id)
+    ).scalars().first()
+    final_id = f"final_{scene.scene_id}_smoke"
+    state = session.get(SceneRunState, scene.scene_id)
+    if state is None:
+        state = SceneRunState(scene_id=scene.scene_id, scene_status="ready")
+        session.add(state)
+    state.current_final_scene_row_id = final_id
+    session.add(
+        FinalScene(
+            row_id=final_id, scene_id=scene.scene_id, chapter_id=scene.chapter_id, content="林昭把旧信塞回案卷。",
+            status="draft", source_bundle_id=f"bundle_{scene.scene_id}", source_bundle_hash=f"hash_{scene.scene_id}",
+        )
+    )
+    session.flush()
+    Archiver(session).archive_final_scene(scene.scene_id, final_id, carry_notes_json=[], author_confirmed_final=True)
+    session.commit()
+    assert session.query(SceneMemory).filter_by(scene_id=scene.scene_id).count() >= 1
+
+    seed_runtime_fixture(session)
+    session.commit()
+
+    assert session.get(FinalScene, final_id) is None
+    assert session.query(SceneMemory).filter_by(scene_id=scene.scene_id).count() == 0
+    assert session.query(ChapterRollingNote).filter_by(chapter_id=scene.chapter_id).count() == 0
+    assert session.get(SceneCard, scene.scene_id) is not None  # 夹具重新种回来
