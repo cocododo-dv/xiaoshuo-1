@@ -53,8 +53,6 @@ from novel_system.db.models.llm_ledger import (
 from novel_system.db.models.review import (
     HumanReviewEvent,
     PassagePatchCandidate,
-    ReviewDerivedSnooze,
-    ReviewItem,
     RevisionCandidate,
     WriterEvaluation,
 )
@@ -136,8 +134,6 @@ __all__ = [
     "PassagePatchCandidate",
     "ProjectWritingStats",
     "QcReport",
-    "ReviewDerivedSnooze",
-    "ReviewItem",
     "RevisionCandidate",
     "SceneBlueprint",
     "SceneBundle",

@@ -19,7 +19,6 @@ from novel_system.db.models import (
     ChapterRollingNote,
     ContinuitySnapshot,
     FinalScene,
-    ReviewItem,
     SceneCard,
     SceneDraft,
     SceneRunState,
@@ -149,7 +148,7 @@ def test_rechaptering_takes_the_written_scene_along_and_the_emptied_chapter_can_
     new = session.get(SceneCard, scene_id).chapter_id
     assert new != old and new == chapters[1]["chapter_id"], "并进了第 2、3 场的那一章（同一行目录章）"
     assert session.get(FinalScene, final.row_id).chapter_id == new
-    for model in (SceneDraft, ReviewItem, ChapterRollingNote):
+    for model in (SceneDraft, ChapterRollingNote):
         assert {row.chapter_id for row in session.execute(select(model).where(model.scene_id == scene_id)).scalars()} == {new}
     snapshots = {(row.scope_type, row.scope_id) for row in session.execute(
         select(ContinuitySnapshot).where(ContinuitySnapshot.project_id == project_id)

@@ -14,6 +14,8 @@ __pycache__/
 *.0098-voice-relation-cards.json
 # 迁移 0099 删三张旧表(旧版雪花规划器、修订链、偏好档案)前把残留行逐表导出到库文件旁边(<库文件>.0099-<表名>.json),可能含作者的构思与偏好文字
 *.0099-*.json
+# 迁移 0102 删待办收件箱的两张表(review_items / review_derived_snoozes)前把残留行逐表导出到库文件旁边(<库文件>.0102-<表名>.json),可能含作者的文字
+*.0102-*.json
 *.egg-info/
 .pytest_cache/
 .venv/

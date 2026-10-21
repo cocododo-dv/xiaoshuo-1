@@ -13,7 +13,6 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     HumanReviewEvent,
-    ReviewItem,
     SceneBundle,
     SceneCard,
     SceneDraft,
@@ -56,7 +55,6 @@ def test_fixture_runtime_creates_first_chapter_and_fixture_works(session) -> Non
 
     assert summary["chapter_id"] == "CH001"
     assert summary["scene_ids"] == ["CH001_SC01", "CH001_SC02", "CH001_SC03"]
-    assert summary["review_ids"] == []
     # 夹具还会内联两部夹具作品（work-a/work-b 完整目录）；runtime 夹具自身仍是 1 章 3 场。
     fixture_projects = ("work-a", "work-b")
     runtime_chapters = session.scalar(
@@ -76,8 +74,6 @@ def test_fixture_runtime_creates_first_chapter_and_fixture_works(session) -> Non
     )
     assert fe_chapters > 0
     assert _count_rows(session, SceneRunState) == 3
-    # 待办收件箱退役（2026-10-21）：夹具不再种待办卡，旧式 legacy 候选行也早已退役——默认夹具一行都没有
-    assert _count_rows(session, ReviewItem) == 0
 
 
 def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_seed(session) -> None:
@@ -86,14 +82,12 @@ def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_run
 
     assert summary["extra_chapter_ids"] == ["CH200"]
     assert summary["extra_scene_ids"] == ["CH200_SC01"]
-    assert summary["extra_review_ids"] == ["review_chapter_ops_pending"]
 
     chapter = session.get(ChapterGoal, "CH200")
     scene = session.get(SceneCard, "CH200_SC01")
     scene_state = session.get(SceneRunState, "CH200_SC01")
     final_scene = session.get(FinalScene, "final_scene_CH200_SC01_seed")
     scene_memory = session.get(SceneMemory, "scene_memory_CH200_SC01_seed")
-    review_item = session.get(ReviewItem, "review_chapter_ops_pending")
 
     assert chapter is not None
     assert scene is not None
@@ -103,15 +97,13 @@ def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_run
     assert scene_state.current_final_scene_row_id == "final_scene_CH200_SC01_seed"
     assert final_scene is not None
     assert scene_memory is not None
-    assert review_item is not None
-    assert review_item.status == "pending"
 
 
 def test_fixture_runtime_cli_accepts_chapter_ops_e2e_fixture(capsys) -> None:
     main(["--fixture", "chapter_ops_e2e"])
 
     summary = json.loads(capsys.readouterr().out)
-    assert summary["review_ids"] == []
+    assert "review_ids" not in summary
     assert summary["extra_chapter_ids"] == ["CH200"]
 
 
@@ -155,7 +147,6 @@ def test_fixture_runtime_is_idempotent(session) -> None:
     seed_runtime_fixture(session)
     session.commit()
     assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
-    assert _count_rows(session, ReviewItem) == 0
 
 
 def test_fixture_runtime_creates_scene_and_chapter_summaries(session) -> None:

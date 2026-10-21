@@ -17,7 +17,6 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     HumanReviewEvent,
-    ReviewItem,
     SceneBundle,
     SceneCard,
     SceneDraft,
@@ -220,20 +219,6 @@ CHAPTER_OPS_SCENE_MEMORY = {
     "runtime_eligible": 1,
     "runtime_eligibility_basis": "direct_read",
 }
-CHAPTER_OPS_PENDING_REVIEW = {
-    "review_id": "review_chapter_ops_pending",
-    "scene_id": "CH200_SC01",
-    "chapter_id": "CH200",
-    "item_type": "scene_summary",
-    "status": "pending",
-    "candidate_text": f"待审摘要仍然引用 {CHAPTER_OPS_MARKER_TOKEN}",
-    "candidate_payload_json": {
-        "lineage_key": "CH200_SC01",
-        "scene_id": "CH200_SC01",
-        "text": f"待审摘要仍然引用 {CHAPTER_OPS_MARKER_TOKEN}",
-    },
-    "active_on_approve": 1,
-}
 
 
 def _upsert(session: Any, model: type[Any], identity: str, payload: dict[str, Any]) -> Any:
@@ -297,10 +282,6 @@ def _upsert_scene(session: Any, payload: dict[str, Any]) -> None:
     )
 
 
-def _upsert_review_item(session: Any, payload: dict[str, Any]) -> None:
-    _upsert(session, ReviewItem, "review_id", payload)
-
-
 def _cleanup_demo_runtime(session: Session) -> None:
     chapter_id = DEMO_CHAPTER["chapter_id"]
 
@@ -326,7 +307,6 @@ def _cleanup_chapter_ops_runtime(session: Session) -> None:
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id == chapter_id))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id == chapter_id))
-    session.execute(delete(ReviewItem).where(ReviewItem.chapter_id == chapter_id))
     session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
     session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
     session.execute(delete(ChapterState).where(ChapterState.chapter_id == chapter_id))
@@ -351,7 +331,6 @@ def _cleanup_preflight_e2e_runtime(session: Session) -> None:
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id.in_(chapter_ids)))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id.in_(chapter_ids)))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id.in_(chapter_ids)))
-    session.execute(delete(ReviewItem).where(ReviewItem.chapter_id.in_(chapter_ids)))
     session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
     session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
     session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
@@ -366,7 +345,6 @@ def _seed_chapter_ops_e2e(session: Session) -> dict[str, list[str] | str]:
     session.flush()
     _upsert(session, FinalScene, "row_id", CHAPTER_OPS_FINAL_SCENE)
     _upsert(session, SceneMemory, "row_id", CHAPTER_OPS_SCENE_MEMORY)
-    _upsert_review_item(session, CHAPTER_OPS_PENDING_REVIEW)
 
     scene_state = session.get(SceneRunState, CHAPTER_OPS_SCENES[0]["scene_id"])
     if scene_state is not None:
@@ -376,7 +354,6 @@ def _seed_chapter_ops_e2e(session: Session) -> dict[str, list[str] | str]:
     return {
         "chapter_id": CHAPTER_OPS_CHAPTER["chapter_id"],
         "scene_ids": [item["scene_id"] for item in CHAPTER_OPS_SCENES],
-        "review_ids": [CHAPTER_OPS_PENDING_REVIEW["review_id"]],
     }
 
 
@@ -416,17 +393,14 @@ def _seed_runtime_fixture(session: Session, *, fixture: str | None = None) -> di
         _upsert(session, SceneMemory, "row_id", payload)
     for payload in DEMO_CHAPTER_SUMMARIES:
         _upsert(session, ChapterMemory, "row_id", payload)
-    review_ids: list[str] = []
     extra_chapter_ids: list[str] = []
     extra_scene_ids: list[str] = []
-    extra_review_ids: list[str] = []
     if fixture is None:
         pass
     elif fixture == DEMO_CHAPTER_OPS_E2E_FIXTURE:
         chapter_ops_summary = _seed_chapter_ops_e2e(session)
         extra_chapter_ids.append(chapter_ops_summary["chapter_id"])
         extra_scene_ids.extend(chapter_ops_summary["scene_ids"])
-        extra_review_ids.extend(chapter_ops_summary["review_ids"])
     elif fixture == DEMO_ALL_E2E_FIXTURE:
         chapter_ops_summary = _seed_chapter_ops_e2e(session)
         preflight_summary = _seed_preflight_e2e(session)
@@ -434,18 +408,15 @@ def _seed_runtime_fixture(session: Session, *, fixture: str | None = None) -> di
         extra_chapter_ids.extend(preflight_summary["chapter_ids"])
         extra_scene_ids.extend(chapter_ops_summary["scene_ids"])
         extra_scene_ids.extend(preflight_summary["scene_ids"])
-        extra_review_ids.extend(chapter_ops_summary["review_ids"])
     else:
         raise ValueError(f"Unsupported demo fixture: {fixture}")
     summary = {
         "chapter_id": DEMO_CHAPTER["chapter_id"],
         "scene_ids": [item["scene_id"] for item in DEMO_SCENES],
-        "review_ids": review_ids,
     }
     if extra_chapter_ids:
         summary["extra_chapter_ids"] = extra_chapter_ids
         summary["extra_scene_ids"] = extra_scene_ids
-        summary["extra_review_ids"] = extra_review_ids
     return summary
 
 

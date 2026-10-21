@@ -88,7 +88,6 @@ _KNOWN_NULLABLE_DRIFT: frozenset[tuple[str, str]] = frozenset(
         ("chapter_goals", "state"),
         ("human_review_events", "details_json"),
         ("outline_plans", "plan_json"),
-        ("review_items", "target_collection"),
         ("revision_candidates", "apply_mode"),
         ("scene_cards", "state"),
         ("scene_cards", "words_current"),

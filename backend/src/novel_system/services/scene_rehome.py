@@ -9,7 +9,7 @@
 - 正史层拿 ``final.chapter_id`` 与 ``scene.chapter_id`` 互相核对——搬过的场直接报「不属于这一章」；
 - 章级连续性快照是按章内的场重建的投影——两头的章都过期了；
 - 这些表的 ``chapter_id`` 多数是真外键：旧章空了进回收站之后，作者清空回收站会撞上外键（500），
-  因为搬走的场的草稿 / 定稿还指着它；待办卡（``ReviewItem``）按章筛选时也还挂在旧章下面。
+  因为搬走的场的草稿 / 定稿还指着它。
 
 章 id 钉住之后（``SnowflakeChapterPlan.catalog_chapter_id``）跨章搬动已经少得多（只有真的换了章的场才搬），
 但挪章界、拆章、并章仍然会搬——搬的时候这些行必须跟着走。
@@ -37,7 +37,6 @@ from novel_system.db.models import (
     NarrativeEvent,
     PassagePatchCandidate,
     QcReport,
-    ReviewItem,
     RevisionCandidate,
     SceneBlueprint,
     SceneBundle,
@@ -67,7 +66,6 @@ REHOMED_MODELS = (
     CanonCommit,
     FactCandidate,
     NarrativeEvent,
-    ReviewItem,
     ChapterRollingNote,  # 名字带「章」，其实一场一条（scene_id 唯一），归档这一场时写下
 )
 

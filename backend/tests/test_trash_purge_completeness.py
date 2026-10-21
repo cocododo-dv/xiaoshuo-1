@@ -29,7 +29,6 @@ from novel_system.db.models import (
     LlmCallAttempt,
     NarrativeEvent,
     QcReport,
-    ReviewItem,
     SceneBundle,
     SceneCard,
     SceneDraft,
@@ -186,9 +185,6 @@ def _seed_full_project(session) -> None:
         fact_key="k", fact_value="v",
     ))
     session.add(ChapterDigest(row_id="cd1", project_id=PROJECT_ID, chapter_id=CHAPTER_ID, digest_json={"summary": "林昭收下旧信。"}))
-    session.add(ReviewItem(
-        review_id="ri1", project_id=PROJECT_ID, item_type="fe_card", candidate_text="卡",
-    ))
     # —— 无 project_id 的间接所有权行（scope / version / interop）——
     session.add(StyleReferenceBook(
         book_id="style_book_shared", title="共享参考书", source_kind="paste",
@@ -268,7 +264,6 @@ def test_purge_project_leaves_no_residual_rows(session):
         "human_review_events": session.query(HumanReviewEvent).filter_by(scene_id=SCENE_ID),
         "narrative_events": session.query(NarrativeEvent).filter_by(project_id=PROJECT_ID),
         "chapter_digests": session.query(ChapterDigest).filter_by(project_id=PROJECT_ID),
-        "review_items": session.query(ReviewItem).filter_by(project_id=PROJECT_ID),
         "author_drafts": session.query(AuthorDraft).filter_by(draft_id="d1"),
         "author_draft_events": session.query(AuthorDraftEvent).filter_by(draft_id="d1"),
         "author_draft_revisions": session.query(AuthorDraftRevision).filter_by(draft_id="d1"),

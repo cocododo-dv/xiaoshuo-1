@@ -10,7 +10,6 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     PassagePatchCandidate,
-    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,
@@ -365,9 +364,6 @@ def test_passage_patch_candidate_accepts_without_overwriting_final_and_learns_no
     assert row.selected_option_id == candidate["replacement_options"][1]["option_id"]
     assert row.author_decision_note == "更有刺。"
 
-    # 写作偏好学习已退役（批准 #6；偏好画像表由迁移 0099 删掉）：采纳只记在候选行上，不往待办里塞「写作偏好」卡
-    assert session.query(ReviewItem).count() == 0
-
 
 def test_rejecting_passage_patch_updates_only_the_candidate(client: TestClient, session) -> None:
     _seed_finished_scene(session)
@@ -395,9 +391,6 @@ def test_rejecting_passage_patch_updates_only_the_candidate(client: TestClient, 
     assert rejected["status"] == "rejected"
     assert rejected["author_decision"] == "rejected"
     assert rejected["author_decision_note"] == "这处重复保留为人物习惯。"
-
-    session.expire_all()
-    assert session.query(ReviewItem).count() == 0
 
 
 class ScriptedPassagePatchClient(OnlineAccountedExecution):

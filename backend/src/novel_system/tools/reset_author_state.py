@@ -30,7 +30,6 @@ from novel_system.db.models import (
     OutlinePlan,
     PassagePatchCandidate,
     QcReport,
-    ReviewItem,
     RevisionCandidate,
     SnowflakeAssistantTurn,
     SceneBlueprint,
@@ -54,11 +53,10 @@ from novel_system.tools._checkout_guard import refuse_foreign_checkout
 from novel_system.tools._cli import open_checked_session
 
 PRESERVED_DOMAINS = [
-    "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
+    "LlmCall 中的历史 reference 审计痕迹",
     "SystemConfigSnapshot / SystemSecret",
     "config/models.yaml and config/prompts.yaml",
 ]
-PRESERVED_REVIEW_SOURCES = {"reference_book_learning", "reference_profile_apply"}
 # 参考书不随作者状态重置(书、画像、绑定都保留),它们的 LLM 账本行也保留:现役风格参考节点全是
 # ``style_ref_*``(分类 / 抽取 / 合成 / 评审…);``reference_`` 是已下线的旧 reference_* 节点族留下的审计行。
 PRESERVED_LLM_NODE_PREFIXES = ("style_ref_", "reference_")
@@ -154,7 +152,6 @@ def _reset_targets() -> list[ResetTarget]:
         ResetTarget("operation_logs", OperationLog),
         ResetTarget("idempotency_keys", IdempotencyKey),
         ResetTarget("human_review_events", HumanReviewEvent),
-        ResetTarget("review_items", ReviewItem, id_attr="review_id", collect_ids=_review_item_ids_to_delete),
         ResetTarget("chapter_run_jobs", ChapterRunJob),
         ResetTarget("attempt_tracker", AttemptTracker),
         ResetTarget(
@@ -206,18 +203,6 @@ def _reset_targets() -> list[ResetTarget]:
     )
     targets.append(project_root)
     return targets
-
-
-def _review_item_ids_to_delete(session: Session) -> list[str]:
-    review_ids: list[str] = []
-    reviews = session.execute(select(ReviewItem)).scalars().all()
-    for review in reviews:
-        payload = dict(review.candidate_payload_json or {})
-        source = str(payload.get("source") or "").strip()
-        if source in PRESERVED_REVIEW_SOURCES:
-            continue
-        review_ids.append(review.review_id)
-    return sorted(review_ids)
 
 
 def _llm_call_ids_to_delete(session: Session) -> list[str]:

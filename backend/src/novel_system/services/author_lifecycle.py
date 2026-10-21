@@ -14,7 +14,6 @@ from novel_system.db.models import (
     FinalScene,
     HumanReviewEvent,
     QcReport,
-    ReviewItem,
     SceneBlueprint,
     SceneBundle,
     SceneCard,
@@ -448,8 +447,6 @@ class AuthorLifecycleService:
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(AttemptTracker.attempt_id).where(AttemptTracker.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(select(ReviewItem.review_id).where(ReviewItem.scene_id == scene.scene_id)):
-            return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(HumanReviewEvent.event_id).where(HumanReviewEvent.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(ChapterRunJob.job_id).where(ChapterRunJob.scene_id == scene.scene_id)):
@@ -466,10 +463,6 @@ class AuthorLifecycleService:
         if self._has_rows(select(ChapterMemory.row_id).where(ChapterMemory.chapter_id == chapter.chapter_id)):
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(ChapterRollingNote.row_id).where(ChapterRollingNote.chapter_id == chapter.chapter_id)):
-            return CHAPTER_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(
-            select(ReviewItem.review_id).where(ReviewItem.chapter_id == chapter.chapter_id, ReviewItem.scene_id.is_(None))
-        ):
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(
             select(HumanReviewEvent.event_id).where(HumanReviewEvent.chapter_id == chapter.chapter_id, HumanReviewEvent.scene_id.is_(None))

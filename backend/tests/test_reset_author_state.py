@@ -27,8 +27,6 @@ from novel_system.db.models import (
     PassagePatchCandidate,
     ProjectWritingStats,
     QcReport,
-    ReviewDerivedSnooze,
-    ReviewItem,
     RevisionCandidate,
     SceneBlueprint,
     SceneBundle,
@@ -81,21 +79,6 @@ def _create_v2_project(client, *, key: str = "after-reset") -> dict:
 
 
 def _seed_preserved_state(session) -> None:
-    session.add(
-        ReviewItem(
-            review_id="review_reference_finding",
-            chapter_id=None,
-            scene_id=None,
-            item_type="style_observation",
-            status="pending",
-            candidate_text="reference-derived style pattern",
-            candidate_payload_json={
-                "source": "reference_book_learning",
-                "reference_book_id": "REF_BOOK",
-                "reference_segment_id": "REF_SEGMENT",
-            },
-        )
-    )
     session.add(
         SystemConfigSnapshot(
             snapshot_id="CFG_ACTIVE",
@@ -194,10 +177,6 @@ def _seed_author_state(session) -> None:
                 project_id="PRJ_RESET_SNOW",
                 chapter_id="CH_RESET_SNOW",
                 digest_json={"summary": "林昭收下旧信。"},
-            ),
-            ReviewDerivedSnooze(
-                project_id="PRJ_RESET_SNOW",
-                fingerprint="review-snooze-reset",
             ),
         ]
     )
@@ -619,24 +598,6 @@ def _seed_author_state(session) -> None:
                 worker_id="worker-1",
                 attempt_no=1,
             ),
-            ReviewItem(
-                review_id="review_author_scene",
-                scene_id="SC_RESET_SNOW_01",
-                chapter_id="CH_RESET_SNOW",
-                item_type="scene_memory",
-                status="pending",
-                candidate_text="promote the scene memory",
-                candidate_payload_json={"source": "scene_qc"},
-            ),
-            ReviewItem(
-                review_id="review_author_global",
-                scene_id=None,
-                chapter_id=None,
-                item_type="author_preference_profile",
-                status="pending",
-                candidate_text="refresh author preference profile",
-                candidate_payload_json={"source": "writer_deep_review"},
-            ),
             HumanReviewEvent(
                 event_id="human_review_reset",
                 scene_id="SC_RESET_SNOW_01",
@@ -702,28 +663,28 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_audit_traces(s
     assert summary["mode"] == "dry_run"
     assert summary["status"] == "ok"
     assert summary["planned_counts"]["story_projects"] == 2
-    assert summary["planned_counts"]["review_items"] == 2
     assert summary["planned_counts"]["llm_calls"] == 1
     assert summary["planned_counts"]["llm_call_attempts"] == 1
     assert summary["planned_counts"]["project_writing_stats"] == 1
     assert summary["planned_counts"]["snowflake_chapter_plans"] == 1
     assert summary["planned_counts"]["narrative_events"] == 1
     assert summary["planned_counts"]["chapter_digests"] == 1
-    assert summary["planned_counts"]["review_derived_snoozes"] == 1
     assert summary["planned_counts"]["author_draft_revisions"] == 1
     assert summary["planned_counts"]["style_reference_scene_windows"] == 1
     assert "reference_books" not in summary["planned_counts"]
     # 声线卡 / 关系卡不再是重置目标（重评 R8：表由迁移 0098 删掉）
     assert "voice_profiles" not in summary["planned_counts"]
     assert "relation_profiles" not in summary["planned_counts"]
+    # 待办收件箱的两张表也不再是（迁移 0102 删掉）
+    assert "review_items" not in summary["planned_counts"]
+    assert "review_derived_snoozes" not in summary["planned_counts"]
     assert summary["preserved_domains"] == [
-        "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
+        "LlmCall 中的历史 reference 审计痕迹",
         "SystemConfigSnapshot / SystemSecret",
         "config/models.yaml and config/prompts.yaml",
     ]
     assert _count(session, StoryProject) == 2
-    assert _count(session, ReviewItem) == 3
-    assert session.get(ReviewItem, "review_reference_finding") is not None
+    assert session.get(LlmCall, "llm_call_reference_profile") is not None
 
 
 def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(session) -> None:
@@ -735,7 +696,6 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
     assert summary["mode"] == "execute"
     assert summary["status"] == "ok"
     assert summary["deleted_counts"]["story_projects"] == 2
-    assert summary["deleted_counts"]["review_items"] == 2
     assert summary["deleted_counts"]["llm_calls"] == 1
     assert summary["deleted_counts"]["llm_call_attempts"] == 1
 
@@ -751,7 +711,6 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
         ProjectWritingStats,
         NarrativeEvent,
         ChapterDigest,
-        ReviewDerivedSnooze,
         ChapterGoal,
         ChapterState,
         SceneCard,
@@ -781,11 +740,9 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
         OperationLog,
     ]
     assert all(_count(session, model) == 0 for model in deleted_models)
-    assert _count(session, ReviewItem) == 1
     assert _count(session, LlmCall) == 1
     assert _count(session, LlmCallAttempt) == 1
     assert session.get(LlmCallAttempt, "attempt_reference_preserved") is not None
-    assert session.get(ReviewItem, "review_reference_finding") is not None
     assert session.get(LlmCall, "llm_call_reference_profile") is not None
     assert _count(session, SystemConfigSnapshot) == 1
     assert _count(session, SystemSecret) == 1
@@ -812,7 +769,7 @@ def test_reset_cli_outputs_json_and_does_not_mutate_without_execute(session, cap
     assert payload["mode"] == "dry_run"
     assert payload["planned_counts"]["story_projects"] == 2
     assert _count(session, StoryProject) == 2
-    assert session.get(ReviewItem, "review_reference_finding") is not None
+    assert session.get(LlmCall, "llm_call_reference_profile") is not None
 
 
 def test_reset_allows_creating_a_new_snowflake_workspace_after_cleanup(session, client) -> None:
