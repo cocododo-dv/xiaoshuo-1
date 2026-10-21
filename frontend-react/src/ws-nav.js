@@ -18,7 +18,6 @@ const WS_NAV_GROUPS = [
       { id: "snowflake", label: "构思", icon: "Snowflake", desc: "雪花十步",         kw: "snowflake gousi xuehua" },
       { id: "writer",    label: "写作", icon: "Pen",       desc: "写作房间",         kw: "writer xiezuo fangjian" },
       { id: "styleref",  label: "风格", icon: "Beaker",    desc: "参考书、学习文风、用于作品、对照检查（像不像）、配置对比", kw: "styleref fengge cankaoshu duizhao xiangbuxiang peizhi duibi" },
-      { id: "review",    label: "待办", icon: "Inbox",     desc: "待办收件箱",       kw: "review daiban shoujianxiang", liveBadge: true },
       { id: "library",   label: "资料", icon: "Library",   desc: "人物、设定与大事记", kw: "library ziliao renwu sheding" },
     ],
   },
@@ -62,8 +61,10 @@ const WS_PROJECT_SCOPED_VIEWS = new Set([
 /* 旧路由别名：独立深改台已并入写作台，深链重定向到深改姿态；
    「流程」视图（#flowmap）于 2026-09-16 并入主页（全书进度脊 + 场景计数），深链回主页；
    「文学质量」（#quality）于 2026-10-20 退役：它的规则发现就是写作台深改清单里「规则」那一部分，各章各场的计数
-   在成稿中心，深链去成稿中心 */
-const WS_VIEW_ALIAS = { deepdesk: "writer", flowmap: "home", quality: "manuscripts" };
+   在成稿中心，深链去成稿中心；
+   「待办」（#review）于 2026-10-21 退役：还有用的两类提醒（AI 稿被管线停下的场、写齐了等你批准的章）由目录现算，
+   列在主页的「等你处理」、数字挂在 AI 起草台 / 成稿中心的侧栏项上（ws-attention.js），深链回主页 */
+const WS_VIEW_ALIAS = { deepdesk: "writer", flowmap: "home", quality: "manuscripts", review: "home" };
 
 function isKnownView(view) {
   return WS_ALL_VIEWS.includes(view);

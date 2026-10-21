@@ -20,7 +20,8 @@ import { useManuFidelity } from "./ws-manuscripts-fidelity.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
 import { ManuDiff } from "./ws-manuscripts-diff.jsx";
 import { ManuApprovalDialog, ManuReopenDialog } from "./ws-manuscripts-dialogs.jsx";
-import { writerIntents } from "./ws-view-intents.js";
+import { setViewIntentTargetReady, writerIntents } from "./ws-view-intents.js";
+import { useWindowEvents } from "./lib/events.js";
 import { readyWorkId } from "./lib/ready-work.js";
 
 /* ==========================================================
@@ -54,8 +55,17 @@ function WsManuscripts({ go }) {
   const defaultPick = manuDefaultPick(chs);
   const picked = chs.find((c) => c.id === pickedId) || defaultPick;
   const activeId = picked ? picked.id : null;
-  /* 默认章一旦落定就钉住：批准 / 重新打开改变了各章阶段时，页面不该自己跳到另一章去 */
-  useEffect(() => { if (!pickedId && defaultPick) setPicked(defaultPick.id); }, [pickedId, defaultPick && defaultPick.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* 默认章一旦落定就钉住：批准 / 重新打开改变了各章阶段时，页面不该自己跳到另一章去。
+     按「眼下还没选」来补（函数式更新）：开发模式把 effect 连跑两遍时，第二遍拿的还是首渲染的 pickedId，
+     直接 setPicked 会把下面点名的那一章盖回默认章 */
+  useEffect(() => { if (!pickedId && defaultPick) setPicked((cur) => cur || defaultPick.id); }, [pickedId, defaultPick && defaultPick.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* 别处点名的章（主页「等你处理」里等你批准的那一章，ws:manu-chapter 的 detail = 目录章 id）：落在那一章。
+     目录还没到时先记下，到了再落定。先挂监听、再报「成稿中心已就绪」——排队的跨页意图在报就绪时立即派发 */
+  useWindowEvents({ "ws:manu-chapter": (e) => { if (e && e.detail) setPicked(String(e.detail)); } });
+  useEffect(() => {
+    setViewIntentTargetReady("manuscripts");
+    return () => setViewIntentTargetReady("manuscripts", false);
+  }, []);
   const catPicked = catChs.find((c) => c.id === activeId) || null;
 
   const [chosenView, setView] = useState("read");

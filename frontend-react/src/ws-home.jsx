@@ -3,9 +3,8 @@ import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork, useWorksStatus, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { useDiagnosisSummary } from "./ws-diagnosis-summary.jsx";
-import { RV_KINDS, rvMarkResolved, useReviewOpenItems } from "./ws-review-store.js";
-import { RV_TONE } from "./ws-review-parts.jsx";
-import { Notice, Tag } from "./ws-ui.jsx";
+import { attentionOf } from "./ws-attention.js";
+import { Tag } from "./ws-ui.jsx";
 import { useWindowEvents } from "./lib/events.js";
 import { LEGACY_DRAFT_PLACEHOLDER, hasAuthorText, stripLegacyDraftPlaceholder } from "./manuscript-html.js";
 import {
@@ -19,47 +18,18 @@ import { LOADING_WORK_ID } from "./lib/work-id.js";
 /* ==========================================================
    WsHome — 项目主页
    一进来就回答一个问题：「现在该写哪一场？」其余都是安静的背景。
-   版面：抬头（书名 + 全书进度）→ 焦点卡（这一场 + 上次写下的句子）→ 雪花 / 待办 → 全书章节
+   版面：抬头（书名 + 全书进度）→ 焦点卡（这一场 + 上次写下的句子）→ 雪花 / 等你处理 → 全书章节
    （进度脊 + 当前章附近的几章，ws-home-chapters.jsx）。
    单一真相：
    · 焦点场景 = WsCatalog.focusScene()（写作台、AI 起草台落点同一条规则），进度脊的「前线」就是它所在的章；
      全书还没有一场时焦点卡是空的（不再拿 dashboard 缓存里的旧场顶上）；
    · 章的阶段与叫法 = ws-labels（与成稿中心同一份）；
    · 雪花卡只读服务端 dashboard 的十步状态；
-   · 待办读收件箱 store（useReviewOpenItems：列表 + 是否已装载 + 装载失败）；
+   · 「等你处理」从目录现算（ws-attention.js：被管线停下的场、写齐了等你批准的章），与侧栏徽标同一份；
    · 「上次写到这里」优先读写作台落盘的正文缓存，服务端 dashboard 作兜底；两边都先去掉旧草稿开头的空白页占位。
    纯派生在 ws-home-derive.js；还没有一本可看的书时（读取中 / 目录读不到 / 书架空 / 空白作品）
    的版面在 ws-home-states.jsx，两边共用的进度环与提示条在 ws-home-parts.jsx。
    ========================================================== */
-
-/* —— 待办速览的数据源 ——
-   收件箱 store（ws-review-store.js）的订阅式读取 useReviewOpenItems：ready = 当前作品的收件箱已从后端拉回来过，
-   error = 最近一次拉取失败（失败不广播 ws:review-changed，只通知这类订阅）。
-   没拉回来之前说「正在读取待办…」，拉回来确实是空的才说「都处理完了」；还没拉到过就失败才说读不到——
-   拉到过之后的失败保留旧列表，不打扰。
-   不能在主页一键划掉的三种卡，与收件箱的 rvNeedsChoice 同一条规则：实时派生项（live，只能去源头改好，
-   后端拒绝直接划掉）、带真实效果的动作、带候选项的卡——这些只给「去收件箱」一个出口。 */
-function useHomeTodos(limit = 3) {
-  const review = useReviewOpenItems();
-  const items = review.items
-    .slice().sort((a, b) => a.priority - b.priority).slice(0, limit)
-    .map(it => ({
-      id: it.id,
-      kind: it.kind,
-      title: String(it.title || "").trim() || "（未命名待办）",
-      live: !!it.live,
-      needsChoice: !!(it.live || (it.actions || []).some(a => a && a.effect) || it.options),
-    }));
-  return { items, ready: review.ready, error: review.error };
-}
-
-/* 行按钮的悬停说明：说清点下去去哪、为什么这一行没有「标记已处理」 */
-function hmTodoOpenTitle(it) {
-  if (it.kind === "decision") return "需要你拍板：去收件箱选一个选项";
-  if (it.live) return "去待办收件箱处理：这一条在源头改好后会自己消失";
-  if (it.needsChoice) return "去待办收件箱处理：这一条要在那里选怎么处理";
-  return "去待办收件箱处理";
-}
 
 /* 写作台落盘的正文缓存是 HTML；用 DOMParser 在惰性文档里解析（不会执行任何东西，也不挂到页面上）。
    旧版本草稿开头可能留着空白页占位句，先按写作台同一条规则去掉，再取段落。
@@ -109,82 +79,55 @@ function HmBeat({ k, tone, v }) {
   );
 }
 
-/* 待办速览卡：与「待办收件箱」同源（store），取优先级最高的几条。
-   在这里「标记已处理」会真实落盘（store 乐观移除并广播），徽标与收件箱同步消失。 */
-function HmTodoCard({ go }) {
-  const { items: todos, ready, error } = useHomeTodos(3);
-  const decisionsLeft = todos.filter(t => t.kind === "decision").length;
-  const listRef = React.useRef(null);
-  const allRef = React.useRef(null);
-  const pendingFocus = React.useRef(null);
+/* 「等你处理」：AI 稿被管线停下的场、写齐了等你批准的章（ws-attention.js 从目录现算，侧栏徽标同一份；
+   取代 2026-10-21 退役的待办收件箱）。一行一件事，点了直达处理它的那一页的那一章 / 那一场；源头处理完自己消失，
+   所以没有「标记已处理」。章在前（按章依次定稿，批了才轮到下一章），场在后，最多列 HM_ATTN_ROWS 行。 */
+const HM_ATTN_ROWS = 4;
 
-  /* 「标记已处理」让这一行连同拿着焦点的按钮一起消失。等这一行真从列表里下去了，
-     把焦点交给顶上来的那一行（划掉的是最后一行就交给上一行），列表空了交给「全部」——
-     键盘和读屏用户不会被甩回页面开头。焦点已经在别处（作者点了别的）就不抢。 */
-  React.useLayoutEffect(() => {
-    const pending = pendingFocus.current;
-    if (!pending || todos.some(t => t.id === pending.id)) return;
-    pendingFocus.current = null;
-    const active = document.activeElement;
-    if (active && active !== document.body && active.isConnected) return;
-    const opens = listRef.current ? listRef.current.querySelectorAll(".home-todo-open") : [];
-    const target = opens.length ? opens[Math.min(pending.index, opens.length - 1)] : allRef.current;
-    if (target) target.focus();
-  });
-
-  const markResolved = (it, index) => {
-    pendingFocus.current = { id: it.id, index };
-    rvMarkResolved([it.id]);
-  };
+function HmAttentionCard({ chapters, go }) {
+  const att = attentionOf(chapters);
+  const rows = [
+    ...att.chapters.map((c) => ({
+      key: c.key, kind: "chapter", tag: "等你批准", tone: "warn", text: c.text,
+      title: "这一章各场都有终稿了：去成稿中心通读，批准为终稿",
+      open: () => go("manuscripts", { type: "ws:manu-chapter", detail: c.id }),
+    })),
+    ...att.scenes.map((s) => ({
+      key: s.key, kind: "scene", tag: s.label, tone: s.tone, text: s.text,
+      title: "AI 起草台把这一场的稿子停下了：去起草台打开这一场处理",
+      open: () => go("scene", { type: "ws:scene-enqueue", detail: { sid: s.sid } }),
+    })),
+  ];
+  const shown = rows.slice(0, HM_ATTN_ROWS);
+  const hidden = rows.slice(HM_ATTN_ROWS);
+  const hiddenScenes = hidden.filter((r) => r.kind === "scene").length;
+  const hiddenChapters = hidden.length - hiddenScenes;
+  const hiddenWhere = [
+    hiddenChapters ? `成稿中心 ${hiddenChapters} 章` : "",
+    hiddenScenes ? `AI 起草台 ${hiddenScenes} 场` : "",
+  ].filter(Boolean).join("、");
 
   return (
-    <article className="home-card">
+    <article className="home-card" aria-label="等你处理" data-testid="home-attention">
       <div className="home-card-head">
-        <h2 className="home-card-title"><span className="ic"><I.Inbox size={17} /></span> 待办收件箱</h2>
-        <button type="button" ref={allRef} className="home-card-go home-card-go-btn" onClick={() => go("review")}>全部 <I.ArrowRight size={13} /></button>
+        <h2 className="home-card-title"><span className="ic"><I.Inbox size={17} /></span> 等你处理</h2>
       </div>
-      <div className="home-todo-list" ref={listRef}>
-        {todos.length === 0 && !ready && error && (
-          <Notice tone="warn" className="home-todo-error" testId="home-todo-error" title="待办暂时读不出来"
-            actions={(
-              <button type="button" className="btn btn-ghost btn-sm" data-testid="home-todo-open-review" onClick={() => go("review")}>
-                去待办里重试
-              </button>
-            )}>
-            后端可能没连上。待办存在后端，不会丢。
-          </Notice>
-        )}
-        {todos.length === 0 && !ready && !error && (
-          <div className="home-todo-empty is-loading" role="status">正在读取待办…</div>
-        )}
-        {todos.length === 0 && ready && (
-          <div className="home-todo-empty"><I.CheckCircle size={18} /> 待办都处理完了，回去继续写吧。</div>
-        )}
-        {todos.map((it, index) => {
-          const m = RV_KINDS[it.kind] || { tone: "slate", label: "待办" };
-          // 决策项、实时派生项、带效果 / 候选项的卡只能去收件箱处理，不给一键划掉
-          const canResolve = it.kind !== "decision" && !it.needsChoice;
-          return (
-            <div className="home-todo" key={it.id}>
-              <button type="button" className="home-todo-open" onClick={() => go("review")} title={hmTodoOpenTitle(it)}>
-                <Tag tone={RV_TONE[m.tone] || "info"} dot>{m.label}</Tag>
-                <span className="home-todo-text">{it.title}</span>
-              </button>
-              {canResolve && (
-                <button type="button" className="home-todo-go" title="标记已处理" aria-label={`标记已处理：${it.title}`}
-                  onClick={() => markResolved(it, index)}>
-                  <I.Check size={14} />
-                </button>
-              )}
-            </div>
-          );
-        })}
-        {todos.length > 0 && (
-          <div className="home-todo-foot">
-            {decisionsLeft
-              ? <>其中 <b>{decisionsLeft}</b> 条需要你拍板；其余在收件箱里。</>
-              : "这里只列最紧要的几条，其余在收件箱里。"}
+      <div className="home-todo-list">
+        {shown.length === 0 && (
+          <div className="home-todo-empty">
+            <I.CheckCircle size={18} /> 现在没有等你处理的事。AI 稿被管线停下、或者一章写齐了等你批准，会列在这里。
           </div>
+        )}
+        {shown.map((row) => (
+          <div className="home-todo" key={row.key}>
+            <button type="button" className="home-todo-open" onClick={row.open} title={row.title}>
+              <Tag tone={row.tone} dot>{row.tag}</Tag>
+              <span className="home-todo-text">{row.text}</span>
+            </button>
+          </div>
+        ))}
+        {hidden.length > 0 && (
+          <div className="home-todo-foot">还有 <b>{hidden.length}</b> 项没列出：{hiddenWhere}。</div>
         )}
       </div>
     </article>
@@ -356,7 +299,7 @@ function WsHomeFull({ work: p, go, mode, chapters, remote }) {
           )}
         </article>
 
-        <HmTodoCard go={go} />
+        <HmAttentionCard chapters={chapters} go={go} />
       </section>
 
       {/* ===== whole book: per-chapter progress spine + chapters around the front ===== */}

@@ -200,7 +200,7 @@ function wsSaveCache() {
   } catch (e) {}
 }
 
-/* ws:work-changed 的语义是「当前作品换了 / 书架成员变了」：目录、回收站、待办、资料、雪花都拿它
+/* ws:work-changed 的语义是「当前作品换了 / 书架成员变了」：目录、回收站、资料、雪花都拿它
    当「重拉本作品的一切」的信号。字数 / 今日 / 连续天数这类派生统计每次自动保存都会回写，过去同样
    广播它，一次字数汇总就引发约 10 个 GET 和整个应用重渲。现在统计与档案字段（书名 / 主色）的变化
    只通知 WsWorks.subscribe 的订阅者（React 侧的 hook 都走它），不上窗口事件。
@@ -213,7 +213,7 @@ let wsBroadcast = { id: WS_ACTIVE_ID, members: wsMembership() };
 function wsNotify() {
   wsSubs.notify();
   /* 新建作品还在等后端给正式 id（临时作品）：切换器 / 主页已经显示它，但不广播——各 store 听到
-     ws:work-changed 就会拿临时 id 去拉目录、回收站、待办、资料、雪花，全是打不中的 GET（审计 F01-06）。
+     ws:work-changed 就会拿临时 id 去拉目录、回收站、资料、雪花，全是打不中的 GET（审计 F01-06）。
      正式 id 回来（或新建失败回滚）时再按那一刻的状态广播。 */
   if (wsIsPending(WS_ACTIVE_ID)) return;
   const members = wsMembership();

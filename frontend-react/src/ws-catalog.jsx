@@ -275,7 +275,7 @@ const WsCatalog = {
   },
   /* —— 查找 —— */
   sceneById(sid) { return catResolveScene(catActiveId(), sid); },
-  /* 后端场景 id → 现在的 sid（待办卡 / 同步状态按后端 id 说话） */
+  /* 后端场景 id → 现在的 sid（同步状态、运行本章按后端 id 说话） */
   sidForBackendId(sceneId) {
     if (!sceneId) return "";
     for (const c of this.get()) { const s = (c.scenes || []).find(x => x.backendId === sceneId); if (s) return s.sid; }

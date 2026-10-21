@@ -3,7 +3,7 @@
 // 运行：node frontend-react/scripts/smoke-acceptance.mjs [BASE] [API]（底座见 scripts/lib/harness.mjs）
 import { api, openApp, send, waitUntil } from "./lib/harness.mjs";
 
-const { page, check, resetSession, goView, finish } = await openApp();
+const { page, check, resetSession, finish } = await openApp();
 const TITLE = "验收之书-" + Date.now().toString(36); // 每轮唯一，避免撞上一轮残留
 
 await resetSession();
@@ -65,19 +65,13 @@ await check("③ 写作：正文写穿 author-drafts → 统计上涨", async ()
   wordsAfterWrite = stats.words_total;
 });
 
-await check("④ 待办：投递卡 → effect 改目录（后端事务闭环）", async () => {
-  const tree = await api(`/api/v2/projects/${pid}/catalog`);
-  const cid = tree.chapters[0].chapter_id;
-  await send("POST", "/api/v1/review-items", {
-    project_id: pid, kind: "decision", priority: 1, title: "验收：定章题",
-    dedupe_key: "acc:rename", options: ["验收·定稿章题"],
-    actions: [{ label: "用这个", intent: "primary", op: "resolve", effect: { type: "rename_chapter", chapter_id: cid, title: "验收·定稿章题" } }],
-  }, { keyPrefix: "acc-card" });
-  await goView("review");
-  await page.click('.rv-item:has-text("验收：定章题")');
-  await page.click('.rv-item:has-text("验收：定章题") button:has-text("用这个")');
+await check("④ 章题：改名经目录 store 写穿后端（PATCH 目录章）", async () => {
+  await page.evaluate(async () => {
+    const { WsCatalog } = await window.__wsStores.load("WsCatalog");
+    WsCatalog.set(WsCatalog.get().map((c, i) => (i === 0 ? { ...c, title: "验收·定稿章题" } : c)));
+  });
   await waitUntil(async () => (await api(`/api/v2/projects/${pid}/catalog`)).chapters[0].title === "验收·定稿章题", {
-    message: "chapter title not renamed by the card effect",
+    message: "chapter title not renamed in the backend catalog",
   });
 });
 

@@ -2,7 +2,7 @@
 
 原 demo seed（潮汐档案/盐镇来信）已随「演示数据退役」删除；本模块是它的
 中性化后继：同样的行结构（项目档案、写作统计基线、雪花步骤状态、目录
-章/场景树、在写场景正文草稿、审阅卡、资料库、审计 findings、锚点库），
+章/场景树、在写场景正文草稿、资料库、审计 findings、锚点库），
 但内容全部是无剧情的占位文本——只服务测试与契约 E2E，绝不进入产品运行时。
 
 目录写入复用 CatalogService.import_catalog —— 与一次性迁移走同一代码路径。
@@ -417,7 +417,6 @@ def _seed_work(
     session.flush()
 
     if project_id == "work-a":
-        _seed_work_a_review_cards(session)
         _seed_work_a_library(session)
 
     WritingStatsService(session).seed_stats(
@@ -425,132 +424,3 @@ def _seed_work(
         streak_days=streak_days,
         streak_last_day=streak_last_day,
     )
-
-
-def _seed_work_a_review_cards(session: Session) -> None:
-    """审阅卡夹具（effect 指向真实章节行；dedupe 幂等）。"""
-    from novel_system.db.models import ReviewItem
-    from novel_system.services.review_cards import ReviewCardService
-
-    session.execute(
-        delete(ReviewItem).where(
-            ReviewItem.project_id == "work-a", ReviewItem.item_type == "fe_card"
-        )
-    )
-    session.flush()
-    chapters = session.execute(
-        select(ChapterGoal)
-        .where(ChapterGoal.project_id == "work-a", ChapterGoal.trashed_flag == 0)
-        .order_by(ChapterGoal.display_order.asc())
-    ).scalars().all()
-    by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
-    # 「回到该段」指向第 8 章第 3 场：场景 sid = 稳定的 scene_id（位置式的 ch08s3 自 R16 起不再解析）
-    ch08_scene_ids = (
-        session.execute(
-            select(SceneCard.scene_id)
-            .where(SceneCard.chapter_id == by_no[8].chapter_id, SceneCard.trashed_flag == 0)
-            .order_by(SceneCard.scene_seq.asc())
-        ).scalars().all()
-        if 8 in by_no
-        else []
-    )
-    note_nav = {"nav_scene": ch08_scene_ids[2]} if len(ch08_scene_ids) >= 3 else {}
-    cards = ReviewCardService(session)
-    # import_catalog 会把显式 current 章之前的历史前缀规范化为 approved；
-    # 可执行的夹具 effect 必须指向 current 章，不能再改已锁定的第 6/7 章。
-    if 8 in by_no:
-        cards.create_card(
-            {
-                "project_id": "work-a",
-                "kind": "decision",
-                "priority": 2,
-                "title": "第 8 章标题在两个候选间未定",
-                "source": "章节编排",
-                "where": "第 8 章 · 标题",
-                "detail": "「候选标题一」与「候选标题二」二选一。选定后会直接改写目录里第 8 章的标题。",
-                "options": ["候选标题一", "候选标题二"],
-                "dedupe_key": "fixture:work-a:ch08-title",
-                "actions": [
-                    {"label": "用「候选标题一」", "intent": "primary", "op": "resolve",
-                     "effect": {"type": "rename_chapter", "chapter_id": by_no[8].chapter_id, "title": "候选标题一"}},
-                    {"label": "用「候选标题二」", "intent": "ghost", "op": "resolve",
-                     "effect": {"type": "rename_chapter", "chapter_id": by_no[8].chapter_id, "title": "候选标题二"}},
-                    {"label": "再想想", "intent": "quiet", "op": "snooze"},
-                ],
-            },
-            actor_ref="test_fixture",
-        )
-    if 8 in by_no:
-        cards.create_card(
-            {
-                "project_id": "work-a",
-                "kind": "qc",
-                "priority": 2,
-                "title": "第 8 章节奏过快，建议补一段反应场景",
-                "source": "文学质检",
-                "where": "第 8 章 · SC 03 之后",
-                "detail": "连续三个主动场景之间没有喘息。采纳会直接在目录第 8 章 SC 03 后插入一个待写的反应场。",
-                "dedupe_key": "fixture:work-a:ch08-reaction",
-                "actions": [
-                    {"label": "去章节编排看结构", "intent": "primary", "op": "nav", "nav_to": "author"},
-                    {"label": "采纳 · 插入反应场", "intent": "ghost", "op": "resolve",
-                     "effect": {"type": "insert_scene", "chapter_id": by_no[8].chapter_id, "at": 3,
-                                "scene": {"title": "样例反应场", "kind": "reactive", "state": "todo",
-                                          "brief": {"reaction": "样例反应：消化上一场的发现", "dilemma": "样例两难", "decision": "（待规划）"}}}},
-                    {"label": "忽略", "intent": "quiet", "op": "resolve"},
-                ],
-            },
-            actor_ref="test_fixture",
-        )
-    cards.create_card(
-        {
-            "project_id": "work-a",
-            "kind": "risk",
-            "priority": 2,
-            "title": "时间线：第 3 章与第 5 章季节描写不一致",
-            "source": "时间线",
-            "where": "第 3 章 → 第 5 章",
-            "detail": "第 3 章与第 5 章的季节锚点冲突，需统一。",
-            "dedupe_key": "fixture:work-a:season",
-            "actions": [
-                {"label": "打开时间线", "intent": "primary", "op": "nav", "nav_to": "library"},
-                {"label": "标记为已核", "intent": "quiet", "op": "resolve"},
-            ],
-        },
-        actor_ref="test_fixture",
-    )
-    cards.create_card(
-        {
-            "project_id": "work-a",
-            "kind": "note",
-            "priority": 3,
-            "title": "批注 · 核心意象是否前后呼应",
-            "source": "写作房间",
-            "where": "第 8 章 · 第 12 段",
-            "detail": "样例批注：开篇的核心意象在结尾是否应再次响起，形成回环？",
-            "dedupe_key": "fixture:work-a:note-motif",
-            "actions": [
-                {"label": "回到该段", "intent": "primary", "op": "nav", "nav_to": "writer", **note_nav},
-                {"label": "标记已读", "intent": "quiet", "op": "resolve"},
-            ],
-        },
-        actor_ref="test_fixture",
-    )
-    cards.create_card(
-        {
-            "project_id": "work-a",
-            "kind": "qc",
-            "priority": 3,
-            "title": "核心意象词出现 47 次，可能过载",
-            "source": "文学质检",
-            "where": "全书 · 用词",
-            "detail": "核心意象高频复现有记忆点，但密度偏高易显刻意。可在非关键段落用近义替换 8–10 处。",
-            "dedupe_key": "fixture:work-a:word-overload",
-            "actions": [
-                {"label": "在深改姿态里看", "intent": "primary", "op": "nav", "nav_to": "writer", "nav_posture": "deep"},
-                {"label": "知道了", "intent": "quiet", "op": "resolve"},
-            ],
-        },
-        actor_ref="test_fixture",
-    )
-    session.flush()

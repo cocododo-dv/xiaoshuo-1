@@ -20,7 +20,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 // 与 src/ws-nav.js 的页面一致；高级页（章节编排起）打开时会自动切到高级模式
 const VIEWS = [
-  "home", "snowflake", "writer", "styleref", "review", "library",
+  "home", "snowflake", "writer", "styleref", "library",
   "author", "scene", "manuscripts", "cost", "settings", "trash",
 ];
 

@@ -167,7 +167,6 @@
  "test_reset_author_state.py": 2.59,
  "test_retired_demo_guard.py": 0.42,
  "test_retired_surface.py": 1.62,
- "test_review_cards.py": 4.91,
  "test_route_mutation_policy.py": 0.38,
  "test_routes_all_manifest.py": 0.02,
  "test_runtime_artifact_cleanup.py": 0.09,

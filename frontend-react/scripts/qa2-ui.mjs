@@ -100,13 +100,12 @@ const bodyTxt = await contentText();
 chk("tide 构思页渲染(含物化/章节字样)", /整理章节结构|章节结构|物化|场景/.test(bodyTxt), bodyTxt.slice(0, 80));
 await shot("q3-tide-construct");
 
-// ---- REVIEW-01：待办加载 + 筛选 chip ----
-ctx = "REVIEW-01";
+// ---- REVIEW-02：待办收件箱 2026-10-21 退役——旧深链 #review 落到主页，「等你处理」卡在那里 ----
+ctx = "REVIEW-02";
 await go("work-a", "review");
-await becomes(() => (document.querySelector(".ws-content")?.innerText || "").length > 60);
-const reviewLen = (await contentText()).length;
-chk("待办视图渲染非空", reviewLen > 60, `len=${reviewLen}`);
-await shot("review-tide");
+const reviewRedirected = await becomes(() => location.hash === "#home" && !!document.querySelector('[data-testid="home-attention"]'));
+chk("旧深链 #review 落到主页的「等你处理」", reviewRedirected, await page.evaluate(() => location.hash));
+await shot("review-retired");
 
 // ---- QUAL-04：文学质量页 2026-10-20 退役——旧深链 #quality 落到成稿中心，不留空页 ----
 ctx = "QUAL-04";

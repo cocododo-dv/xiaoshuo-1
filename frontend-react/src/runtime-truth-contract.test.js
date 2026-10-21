@@ -14,7 +14,7 @@ describe("正式运行时文案与行为一致", () => {
     expect(source).not.toContain("回到示例种子状态");
   });
 
-  it("主页待办没有退役演示种子的回退入口", () => {
+  it("主页没有退役演示种子的回退入口", () => {
     const source = fs.readFileSync(path.join(srcRoot, "ws-home.jsx"), "utf8");
     expect(source).not.toContain("window.RV_SEED");
   });

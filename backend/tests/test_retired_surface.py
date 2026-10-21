@@ -32,6 +32,14 @@ RETIRED_ROUTES: tuple[tuple[str, str, str], ...] = (
     # 收件箱：单独的角标接口与单条详情没有界面在用（批准 #24a）
     ("GET", "/api/v1/review-items/badge", "批准 #24a"),
     ("GET", "/api/v1/review-items/{review_id}", "批准 #24a"),
+    # 待办收件箱整页退役（2026-10-21）：没有任何生产者再投卡，剩下的派生卡要么与源头重复、要么失效；
+    # 管线停下的场与等你批准的章由前端从目录现算（ws-attention.js），进主页「等你处理」与侧栏徽标
+    ("GET", "/api/v1/review-items", "待办收件箱退役"),
+    ("POST", "/api/v1/review-items", "待办收件箱退役"),
+    ("POST", "/api/v1/review-items/{review_id}/resolve", "待办收件箱退役"),
+    ("POST", "/api/v1/review-items/{review_id}/unresolve", "待办收件箱退役"),
+    ("POST", "/api/v1/review-items/{review_id}/snooze", "待办收件箱退役"),
+    ("POST", "/api/v1/review-items/{review_id}/unsnooze", "待办收件箱退役"),
     # 测试夹具导入（test_fixture_import_boundary.py 同样钉着）
     ("POST", "/api/v1/review-items/import-demo", "夹具导入端点"),
     # 起草台预检铸卡：声线卡 / 关系卡闸门退役（2026-09-20），连同铸卡支路
@@ -104,6 +112,7 @@ RETIRED_PREFIXES: tuple[tuple[str, str], ...] = (
     ("/api/v1/projects/{project_id}/snowflake", "批准 #16a"),
     ("/api/v1/demo", "一次性的参考书演示"),
     ("/api/v1/literary-quality", "文学质量页退役"),
+    ("/api/v1/review-items", "待办收件箱退役"),
 )
 
 

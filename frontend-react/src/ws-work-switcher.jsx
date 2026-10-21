@@ -119,7 +119,7 @@ function WorkPopover({ works, activeId, onPick, onNew, onClose }) {
     e.stopPropagation();
     const ok = await wsConfirm({
       title: `删除《${w.title}》？`,
-      body: "这部作品会连同章节、构思、正文和待办一起进入回收站，可以在「回收站」里整体恢复。",
+      body: "这部作品会连同章节、构思和正文一起进入回收站，可以在「回收站」里整体恢复。",
       confirmLabel: "移到回收站",
       tone: "danger",
     });

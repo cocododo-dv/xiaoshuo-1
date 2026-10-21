@@ -1,4 +1,4 @@
-// Phase 6 验收冒烟：资料库（实体/关系/时间线/编辑落库/idea 卡入库）。
+// Phase 6 验收冒烟：资料库（实体/关系/时间线/编辑落库）。
 // 运行：node frontend-react/scripts/smoke-phase6.mjs [BASE] [API]（底座见 scripts/lib/harness.mjs）
 import { api, openApp, send, waitUntil } from "./lib/harness.mjs";
 
@@ -70,27 +70,6 @@ await check("时间线按章排序数据完整", async () => {
   const timeline = await api("/api/v2/projects/work-a/library/timeline");
   if (timeline.items.length < 2) throw new Error(`events: ${timeline.items.length}`);
   if (!timeline.items.every(e => e.label)) throw new Error("labels missing");
-});
-
-await check("idea 卡「确认入库」→ 实体进库进图（D5 半自动）", async () => {
-  await send("POST", "/api/v1/review-items", {
-    project_id: "work-a", kind: "idea", priority: 2,
-    title: "发现新地点：盐雾灯塔", source: "资料派生", where: "成稿归档 · 模拟",
-    dedupe_key: "derive:p6smoke:盐雾灯塔",
-    actions: [
-      { label: "确认入库", intent: "primary", op: "resolve", effect: { type: "create_entity", name: "盐雾灯塔", kind: "location", summary: "P6 冒烟生成" } },
-      { label: "忽略", intent: "quiet", op: "resolve" },
-    ],
-  }, { keyPrefix: "p6-idea" });
-  // 在收件箱里点确认
-  await goView("review");
-  await page.click('.rv-item:has-text("盐雾灯塔")');
-  await page.click('.rv-item:has-text("盐雾灯塔") button:has-text("确认入库")');
-  await waitUntil(async () => (await api("/api/v2/projects/work-a/library")).entities.some(e => e.name === "盐雾灯塔"), {
-    message: "entity not created",
-  });
-  const graph = await api("/api/v2/projects/work-a/library/graph");
-  if (!graph.nodes.some(n => n.name === "盐雾灯塔")) throw new Error("node missing in graph");
 });
 
 await finish();

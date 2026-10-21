@@ -26,7 +26,6 @@ const { useState: useAS, useEffect: useAE } = React;
 
 const LazyWsHome = lazyNamed(() => import("./ws-home.jsx"), "WsHome");
 const LazyWsConstruct = lazyNamed(() => import("./ws-snow.jsx"), "WsConstruct");
-const LazyWsReview = lazyNamed(() => import("./ws-review.jsx"), "WsReview");
 const LazyWsStyleRef = lazyNamed(() => import("./ws-styleref.jsx"), "WsStyleRef");
 const LazyWsLibrary = lazyNamed(() => import("./ws-library.jsx"), "WsLibrary");
 const LazyWsTrash = lazyNamed(() => import("./ws-trash.jsx"), "WsTrash");
@@ -149,7 +148,6 @@ function App() {
     switch (view) {
       case "home":        return <LazyWsHome go={go} mode={mode} />;
       case "snowflake":   return <LazyWsConstruct go={go} />;
-      case "review":      return <LazyWsReview go={go} />;
       case "styleref":    return <LazyWsStyleRef go={go} />;
       case "library":     return <LazyWsLibrary go={go} />;
       case "author":      return <LazyWsAuthor go={go} />;

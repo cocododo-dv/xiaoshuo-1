@@ -1,7 +1,7 @@
 import React from "react";
 import { adoptModuleListeners, emit, retireModuleListeners } from "./lib/events.js";
 import { I } from "./icons.jsx";
-import { useReviewBadge } from "./ws-review-badge.jsx";
+import { attentionBadges, useAttention } from "./ws-attention.js";
 import { ViewErrorBoundary } from "./ws-view-boundary.jsx";
 import { WorkSwitcher } from "./ws-work-switcher.jsx";
 import { lazyNamed } from "./ws-lazy.jsx";
@@ -107,7 +107,7 @@ function RailItem({ item, active, badge, go }) {
   return (
     <button type="button" className={`ws-item ${active ? "is-active" : ""}`} onClick={() => go(item.id)}
       aria-current={active ? "page" : undefined}
-      aria-label={badge ? `${item.label}，${badge} 条紧急待办` : undefined}>
+      aria-label={badge ? `${item.label}，${badge} 项等你处理` : undefined}>
       <span className="ws-item-ic"><Ic size={19} /></span>
       <span className="ws-item-label">{item.label}</span>
       {badge && <span className="ws-item-badge" aria-hidden="true">{badge}</span>}
@@ -115,12 +115,12 @@ function RailItem({ item, active, badge, go }) {
   );
 }
 
-function RailGroup({ group, view, go, badge, divider }) {
+function RailGroup({ group, view, go, badges, divider }) {
   return (
     <div className="ws-nav-group" role="group" aria-label={group.label}>
       {divider && <div className="ws-nav-label" aria-hidden="true"><span>{group.label}</span></div>}
       {group.items.map(n => (
-        <RailItem key={n.id} item={n} active={view === n.id} go={go} badge={n.liveBadge ? badge : null} />
+        <RailItem key={n.id} item={n} active={view === n.id} go={go} badge={(badges && badges[n.id]) || null} />
       ))}
     </div>
   );
@@ -197,7 +197,8 @@ function useScrollFade(navRef, deps) {
 function Rail({ view, go, t, setTweak, mode, onPalette }) {
   const groups = navGroupsForMode(mode);
   const system = systemNavGroup();
-  const reviewBadge = useReviewBadge();  // 订阅式：处理完即消失，按作品隔离
+  // 等你处理的数字挂在处理它的那一页上（作家模式合计挂在主页）：目录现算，源头处理完即消失（ws-attention.js）
+  const badges = attentionBadges(useAttention(), mode);
   const railRef = useRef(null);
   const navRef = useRef(null);
   const expanded = useRailExpansion(railRef);
@@ -223,12 +224,12 @@ function Rail({ view, go, t, setTweak, mode, onPalette }) {
 
       <nav ref={navRef} className="ws-nav ws-nav-scroll" aria-label="页面" data-fade={fade || undefined}>
         {groups.map((g, i) => (
-          <RailGroup key={g.id} group={g} view={view} go={go} badge={reviewBadge} divider={i > 0} />
+          <RailGroup key={g.id} group={g} view={view} go={go} badges={badges} divider={i > 0} />
         ))}
       </nav>
 
       <div className="ws-rail-foot">
-        {system && <RailGroup group={system} view={view} go={go} badge={null} divider />}
+        {system && <RailGroup group={system} view={view} go={go} badges={null} divider />}
         <div className="ws-foot-tools">
           <ViewErrorBoundary silent resetKey="recovery-center">
             <React.Suspense fallback={<RecoveryPlaceholder />}><LazyWrRecoveryCenter /></React.Suspense>

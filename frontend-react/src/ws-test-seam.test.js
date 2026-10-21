@@ -21,7 +21,7 @@ describe("DEV 测试接缝 window.__wsStores", () => {
     const { installTestSeam } = await import("./ws-test-seam.js");
     expect(import.meta.env.DEV).toBe(true);
     installTestSeam();
-    expect(window.__wsStores.names).toEqual(["WsWorks", "WsCatalog", "WrDocs", "rvOpenItems", "libLive", "LIB_persist"]);
+    expect(window.__wsStores.names).toEqual(["WsWorks", "WsCatalog", "WrDocs", "libLive", "LIB_persist"]);
 
     const { WsWorks } = await import("./ws-works.jsx");
     const { WsCatalog } = await import("./ws-catalog.jsx");

@@ -154,7 +154,7 @@ describe("AI 起草台 · 全书书脊", () => {
     expect(queue()).toEqual(["SC_b"]);
   });
 
-  it("「交给 AI」的入列意图（章节编排 / 写作台 / 待办）把这一场变成在办并选中", async () => {
+  it("「交给 AI」的入列意图（章节编排 / 写作台 / 主页「等你处理」）把这一场变成在办并选中", async () => {
     const { WsScene } = await loadScene();
     const host = await render(<WsScene t={{}} go={vi.fn()} />);
     await act(async () => { window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: "SC_e" } })); });

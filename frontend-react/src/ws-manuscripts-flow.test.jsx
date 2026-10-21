@@ -70,6 +70,7 @@ vi.mock("./ws-manuscripts-store.jsx", () => ({
 const dialog = () => document.querySelector('[role="dialog"]');
 
 import { WsManuscripts } from "./ws-manuscripts.jsx";
+import { clearViewIntents, queueViewIntent } from "./ws-view-intents.js";
 const mounted = [];
 
 function chapter(state) {
@@ -818,6 +819,28 @@ describe("成稿中心 · 拆分后的页头、状态行与对话框", () => {
     expect(flow.reopenFinal).toHaveBeenCalledWith("p1", "c1", "第三场时间线需要纠正");
     expect(host.querySelector(".ms-status").textContent).toContain("终稿已重新打开");
     expect(host.textContent).not.toContain("导出前正文核验失败");
+  });
+
+  it("别处点名的章（主页「等你处理」带来的 ws:manu-chapter）：打开就落在那一章，不落在默认的当前章", async () => {
+    const other = { ...chapter("review"), id: "ch02", backendId: "c2", n: "02", title: "雾里的灯", current: false };
+    queueViewIntent("manuscripts", "ws:manu-chapter", "ch02");
+    try {
+      const host = await renderPage([chapter("draft"), other]);
+      expect(host.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
+    } finally {
+      clearViewIntents("manuscripts");
+    }
+    // 开发模式（StrictMode）把 effect 连跑两遍：第二遍「钉住默认章」不能把点名的那一章盖掉
+    queueViewIntent("manuscripts", "ws:manu-chapter", "ch02");
+    try {
+      const strict = await renderPage([chapter("draft"), other], vi.fn(), { strict: true });
+      expect(strict.querySelector(".ms-reader-title").textContent).toBe("雾里的灯");
+    } finally {
+      clearViewIntents("manuscripts");
+    }
+    // 没人点名时照旧落在当前章
+    const plain = await renderPage([chapter("draft"), other]);
+    expect(plain.querySelector(".ms-reader-title").textContent).toBe("盐场的早班");
   });
 
   it("换一章时，上一章的提示不跟过来", async () => {

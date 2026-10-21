@@ -20,7 +20,6 @@ import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import StoryProject, StyleReferenceInjectionBinding, StyleReferenceProfile, StyleReferenceSceneWindows
-from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.reference_copy_gate import check_reference_copy
 from novel_system.services.scene_execution import EMPTY_REFERENCE_RULES, SceneExecutionContractService
@@ -212,15 +211,6 @@ def test_execution_contract_snapshot_hash_is_unchanged_for_a_project_bound_scene
 # ---------------------------------------------------------------------------
 # S1 · 退役
 # ---------------------------------------------------------------------------
-
-
-def test_bind_style_profile_review_effect_is_gone(session) -> None:
-    from novel_system.services.review_effects import run_effect
-
-    with pytest.raises(DomainError) as caught:
-        run_effect(session, "PRJ_X", {"type": "bind_style_profile", "profile_id": "p", "scope": "project"})
-    assert caught.value.code == "REVIEW_EFFECT_UNKNOWN"
-    assert "bind_style_profile" not in caught.value.details["registered"]
 
 
 def test_profile_page_payload_has_no_legacy_view_and_no_sub_dimension_counts(session) -> None:

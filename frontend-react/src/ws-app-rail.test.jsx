@@ -2,7 +2,7 @@
 // 断「可观测结果」——设置 / 回收站常驻底部、当前页 aria-current、同步与恢复入口在侧栏底部、
 // 作家 / 高级是单选组而不是又一个导航项、悬停意图（不是一掠过就展开）、只有用键盘把焦点挪进来才展开
 // （浮层关掉把焦点送回入口不算，哪怕在浮层里按过 Tab / 方向键）、
-// 紧急待办的徽标、删除作品走应用内确认框（ws-notify.jsx）。
+// 「等你处理」的徽标（数字挂在处理它的那一页上，目录现算）、删除作品走应用内确认框（ws-notify.jsx）。
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +19,7 @@ let root;
 async function mountRail(props = {}, apiOpts = {}, { withNotify = false, withPalette = false } = {}) {
   const client = await import("./lib/client.js");
   installApiRouter(client, apiOpts);
-  // 目录先装好（真实应用里启动就装载了）：待办 store 听目录的变化广播，目录晚到的装载广播会先占住节流窗口
+  // 目录先装好（真实应用里启动就装载了）：侧栏的「等你处理」徽标从目录现算
   const { WsCatalog } = await import("./ws-catalog.jsx");
   if ((apiOpts.projects ?? [1]).length) await vi.waitFor(() => expect(WsCatalog.ready()).toBe(true), T);
   const { Rail } = await import("./ws-rail.jsx");
@@ -64,6 +64,30 @@ async function pointerClick(el) {
 const press = (el, key) => act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })); });
 
 const itemLabels = (scope) => [...scope.querySelectorAll(".ws-item .ws-item-label")].map(n => n.textContent);
+const badgeOf = (scope, label) => {
+  const item = [...scope.querySelectorAll(".ws-item")].find(n => n.querySelector(".ws-item-label").textContent === label);
+  const badge = item && item.querySelector(".ws-item-badge");
+  return badge ? badge.textContent : null;
+};
+
+/* 目录（后端形状）：第 1 章两场都有终稿、还没批准 = 等你批准；第 2 章第 1 场被管线停在人工审核 */
+const ATTENTION_CATALOG = [
+  {
+    slug: "ch01", chapter_id: "c1", no: "01", title: "雨城的早班", state: "writing", act: "act1", current: true,
+    words: { cur: 4200, target: 4000 },
+    scenes: [
+      { slug: "s1", scene_id: "s1", title: "交班", kind: "proactive", state: "done", words: 2100, work: { run_status: "archived", has_final: true } },
+      { slug: "s2", scene_id: "s2", title: "旧信", kind: "reactive", state: "done", words: 2100, work: { run_status: "archived", has_final: true } },
+    ],
+  },
+  {
+    slug: "ch02", chapter_id: "c2", no: "02", title: "案卷", state: "planned", act: "act1",
+    words: { cur: 0, target: 4000 },
+    scenes: [
+      { slug: "s3", scene_id: "s3", title: "林昭翻案卷", kind: "proactive", state: "todo", words: 0, work: { run_status: "human_review_required", has_final: false } },
+    ],
+  },
+];
 
 beforeEach(() => {
   vi.resetModules();
@@ -83,7 +107,7 @@ describe("侧栏 · 结构", () => {
     const { host } = await mountRail();
     const nav = host.querySelector(".ws-nav-scroll");
     const foot = host.querySelector(".ws-rail-foot");
-    expect(itemLabels(nav)).toEqual(["主页", "构思", "写作", "风格", "待办", "资料"]);
+    expect(itemLabels(nav)).toEqual(["主页", "构思", "写作", "风格", "资料"]);
     expect(itemLabels(foot)).toEqual(["设置", "回收站"]);
     expect(host.textContent).not.toContain("AI 起草台");
   });
@@ -91,7 +115,7 @@ describe("侧栏 · 结构", () => {
   it("高级模式：生产与运维组进入导航区，分组标题留在 DOM 里（折叠时只是一条线）", async () => {
     const { host } = await mountRail({ mode: "advanced", view: "scene" });
     const nav = host.querySelector(".ws-nav-scroll");
-    expect(itemLabels(nav)).toEqual(["主页", "构思", "写作", "风格", "待办", "资料", "章节编排", "AI 起草台", "成稿中心", "成本看板"]);
+    expect(itemLabels(nav)).toEqual(["主页", "构思", "写作", "风格", "资料", "章节编排", "AI 起草台", "成稿中心", "成本看板"]);
     expect([...nav.querySelectorAll(".ws-nav-label")].map(n => n.textContent)).toEqual(["生产与质控", "运维工具"]);
     expect(itemLabels(host.querySelector(".ws-rail-foot"))).toEqual(["设置", "回收站"]);
   });
@@ -146,38 +170,33 @@ describe("侧栏 · 展开与徽标", () => {
     expect(rail.classList.contains("is-expanded")).toBe(false);
   });
 
-  it("紧急待办：待办项带徽标，读屏名字里说清几条", async () => {
-    const { host } = await mountRail({}, {
-      reviewOpen: [{ id: "rv1", kind: "decision", title: "需要拍板", priority: 1 }, { id: "rv2", kind: "note", title: "普通", priority: 2 }],
-    });
-    await vi.waitFor(() => expect(host.querySelector(".ws-item-badge")).not.toBeNull(), T);
-    const item = host.querySelector(".ws-item-badge").closest(".ws-item");
-    expect(item.textContent).toContain("待办");
-    expect(host.querySelector(".ws-item-badge").textContent).toBe("1");
-    expect(item.getAttribute("aria-label")).toBe("待办，1 条紧急待办");
+  it("等你处理：停下的场数挂在 AI 起草台、等你批准的章数挂在成稿中心，读屏名字里说清几项；作家模式合计挂在主页", async () => {
+    const { host, rerender } = await mountRail({ mode: "advanced", view: "home" }, { catalog: ATTENTION_CATALOG });
+    await vi.waitFor(() => expect(badgeOf(host, "AI 起草台")).toBe("1"), T);
+    expect(badgeOf(host, "成稿中心")).toBe("1");
+    expect(badgeOf(host, "主页")).toBe(null);
+    const desk = [...host.querySelectorAll(".ws-item")].find(n => n.textContent.includes("AI 起草台"));
+    expect(desk.getAttribute("aria-label")).toBe("AI 起草台，1 项等你处理");
+
+    await rerender({ mode: "writer" });
+    expect(badgeOf(host, "主页")).toBe("2");
+    expect(host.querySelector('.ws-item[aria-label="主页，2 项等你处理"]')).not.toBeNull();
   });
 
-  it("目录 / 雪花保存这类高频信号按 20 秒节流合并成一次补拉；作者动作（待办变化）照常即时刷新", async () => {
-    await mountRail();
+  it("徽标跟着目录走：起草台那一场采纳归档、那一章批准之后，数字自己消失（没有「划掉」这一步）", async () => {
+    const { host } = await mountRail({ mode: "advanced", view: "home" }, { catalog: ATTENTION_CATALOG });
+    await vi.waitFor(() => expect(badgeOf(host, "AI 起草台")).toBe("1"), T);
     const client = await import("./lib/client.js");
-    const badgeFetches = () => client.apiGet.mock.calls.filter(([url]) => String(url).startsWith("/api/v1/review-items?state=open")).length;
-    await vi.waitFor(() => expect(badgeFetches()).toBeGreaterThan(0), T);
-    vi.useFakeTimers();
-    const before = badgeFetches();
-    await act(async () => {
-      for (let i = 0; i < 5; i += 1) window.dispatchEvent(new CustomEvent("ws:catalog-changed"));
-      window.dispatchEvent(new CustomEvent("ws:snow-saved"));
-      vi.advanceTimersByTime(1000);
-    });
-    expect(badgeFetches()).toBe(before);
-    await act(async () => { vi.advanceTimersByTime(20_000); });
-    expect(badgeFetches()).toBe(before + 1);
-
-    await act(async () => {
-      window.dispatchEvent(new CustomEvent("ws:review-changed"));
-      vi.advanceTimersByTime(200);
-    });
-    expect(badgeFetches()).toBe(before + 2);
+    const { WsCatalog } = await import("./ws-catalog.jsx");
+    // 第 1 章批准了；第 2 章那一场在起草台采纳归档（它就此写齐，于是也批准了）
+    const settled = ATTENTION_CATALOG.map((c) => ({
+      ...c,
+      state: "approved",
+      scenes: c.scenes.map((sc) => ({ ...sc, state: "done", work: { run_status: "archived", has_final: true } })),
+    }));
+    installApiRouter(client, { catalog: settled });
+    await act(async () => { await WsCatalog.refresh(); });
+    await vi.waitFor(() => expect(host.querySelector(".ws-item-badge")).toBeNull(), T);
   });
 });
 

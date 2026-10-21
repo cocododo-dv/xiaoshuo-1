@@ -9,8 +9,9 @@ import { useChapterRun } from "./ws-chapter-run-state.js";
    纯数据（normalizeRun、文案）在 ws-chapter-run-model.js；这里只画。normalizeRun 照旧从这里转出（单测用）。 */
 
 /* 受阻 / 失败时后端在 author_action 里点名的那扇门，按钮用它给的字：
-   这一场在等你（例如关键场景等你终选）→ 去 AI 起草台打开那一场；有一条待办要处理 → 去待办；
-   模型没配好（没配模型那一种已经有「请配置模型」）→ 去系统设置。过去卡片只念一句话，没有门。 */
+   这一场在等你（关键场景等你终选、管线停在人工审核）→ 去 AI 起草台打开那一场；
+   模型没配好（没配模型那一种已经有「请配置模型」）→ 去系统设置。过去卡片只念一句话，没有门。
+   人工审核以前指去待办收件箱（再从那里点去起草台），收件箱 2026-10-21 退役，后端直接指那一场。 */
 function openSceneOnDesk(backendSceneId) {
   let sid = null;
   try { sid = WsCatalog.sidForBackendId(backendSceneId); } catch (e) { sid = null; }
@@ -23,9 +24,6 @@ function runDoor(run, onConfigureModel) {
   if (!action || (run.status !== "blocked" && run.status !== "failed")) return null;
   if (action.view === "scene" && action.sceneId) {
     return { label: action.label || "去 AI 起草台", icon: I.Play, open: () => openSceneOnDesk(action.sceneId) };
-  }
-  if (action.view === "review") {
-    return { label: action.label || "去待办", icon: I.Inbox, open: () => { window.location.hash = "#review"; } };
   }
   if (action.view === "config" && onConfigureModel && run.errorCode !== "LLM_DISABLED_FOR_CHAPTER_RUN") {
     return { label: action.label || "去系统设置", icon: I.Settings, open: onConfigureModel };

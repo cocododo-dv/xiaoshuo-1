@@ -19,7 +19,6 @@ export function installTestSeam() {
     WsWorks: () => import("./ws-works.jsx").then((m) => m.WsWorks),
     WsCatalog: () => import("./ws-catalog.jsx").then((m) => m.WsCatalog),
     WrDocs: () => import("./wr-doc-store.jsx").then((m) => m.WrDocs),
-    rvOpenItems: () => import("./ws-review-store.js").then((m) => m.rvOpenItems),
     libLive: () => import("./ws-library-store.js").then((m) => m.libLive),
     LIB_persist: () => import("./ws-library-store.js").then((m) => m.LIB_persist),
   };

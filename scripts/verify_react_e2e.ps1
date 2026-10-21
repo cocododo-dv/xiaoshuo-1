@@ -1,6 +1,6 @@
 # React mainline contract E2E lane (run-smokes.mjs).
 # Spins up an ISOLATED seeded backend (its own e2e sqlite, never touching the dev
-# novel_system.db) plus the React app, runs smoke-phase2..7 + ai-settings (run-smokes
+# novel_system.db) plus the React app, runs smoke-phase2..6 + ai-settings (run-smokes
 # reseeds between suites), then tears the whole process tree down. This is the default
 # release-lane regression gate for the production frontend (frontend-react).
 #

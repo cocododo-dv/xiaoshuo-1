@@ -247,7 +247,7 @@ describe("写作台 · 深改只诊断、不代笔", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("从成稿中心 / 待办带着 signal_id 跳进来：诊断到了就选中同一条并高亮；找不到的 id 给一句提示", async () => {
+  it("从成稿中心带着 signal_id 跳进来：诊断到了就选中同一条并高亮；找不到的 id 给一句提示", async () => {
     const { WriterRoom, WrDocs } = await loadWriter({ diagnosis: diagnosisPayload([ABSENCE, ECHO]) });
     vi.spyOn(WrDocs, "load").mockReturnValue("<p>门外很安静，安静到能听见潮水。</p>");
     const host = await render(<WriterRoom t={{}} setTweak={() => {}} />);

@@ -517,10 +517,11 @@ def test_chapter_run_full_blocks_on_human_review_and_resume_retries_blocked_scen
         "message": "scene requires human review before chapter run can continue",
         "author_action": {
             "title": "场景需要人工审核",
-            "message": "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
-            "target_view": "review",
-            "target_ref": "human_review_event:review_CH900_SC01",
-            "primary_button_label": "去待处理建议",
+            "message": "管线把这一场的 AI 稿停在人工审核。去 AI 起草台读这一稿，采纳归档或带着意见重跑；"
+            "处理完回到这里重新运行本章，会从这一场接着往下。",
+            "target_view": "scene",
+            "target_ref": "scene_card:CH900_SC01",
+            "primary_button_label": "去 AI 起草台处理",
             "evidence_summary": ["场景：CH900_SC01", "审核：review_CH900_SC01"],
         },
     }
@@ -636,10 +637,11 @@ def test_chapter_run_full_stays_blocked_until_human_review_resolves(client, sess
         "message": "scene requires human review before chapter run can continue",
         "author_action": {
             "title": "场景需要人工审核",
-            "message": "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
-            "target_view": "review",
-            "target_ref": "human_review_event:review_CH900_SC01",
-            "primary_button_label": "去待处理建议",
+            "message": "管线把这一场的 AI 稿停在人工审核。去 AI 起草台读这一稿，采纳归档或带着意见重跑；"
+            "处理完回到这里重新运行本章，会从这一场接着往下。",
+            "target_view": "scene",
+            "target_ref": "scene_card:CH900_SC01",
+            "primary_button_label": "去 AI 起草台处理",
             "evidence_summary": ["场景：CH900_SC01", "审核：review_CH900_SC01"],
         },
     }

@@ -90,6 +90,7 @@ Alembic 的 `env.py` 与每个 `novel_system.tools.*` 都会拒绝导入另一�
 | `20260929_0098` | 删声线卡 / 关系卡两张表与 13 个没有读写者的死列；万一卡片表还有行，先导出到库文件旁的 `<库文件>.0098-voice-relation-cards.json`（不入仓库） | 结构可回 | 先备份 |
 | `20261004_0099` | 删三张没有读写者的旧表：旧版雪花规划器的 `snowflake_artifacts`、从来没有读者的修订链 `snowflake_revision_links`、写作偏好学习退役后留下的 `author_preference_profiles`；哪张表还有行，先原样逐表导出到库文件旁的 `<库文件>.0099-<表名>.json`（不入仓库，删掉的行只在这里和升级前的备份里） | 结构可回 | 先备份 |
 | `20261012_0100` | 故事记忆：新表 `chapter_digests`（一章写完之后 LLM 写的事实摘要与线索更新，起草后面各章时进「前情」）、`story_thread_marks`（作者对线索台账的标记）、`editorial_reviews` / `editorial_guidance`（编辑通读与它给后面几章的意见，意见随通读级联删除）；删 `volume_summaries`（卷汇总：章汇总的派生缓存、原文拼接，不导出——行可从终稿重新得到） | 结构可回 | 先备份 |
+| `20261021_0101` | 只改数据：已归档、目录字数（`scene_cards.words_current`）还是 0 的场按当前终稿补上字数（AI 起草台归档的场以前不记字数；从这一版起每条归档路径都记）；作者存过字的场不动 | 否（空操作） | |
 
 更早的版本只在 `backend/alembic/versions/` 的模块说明里。
 

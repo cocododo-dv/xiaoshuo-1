@@ -1,6 +1,6 @@
 /* ==========================================================
    ws-manuscripts.css — 成稿中心（ws-manuscripts*.jsx）。原是 screens.css 里的一段；
-   流转对话框的规则原在 ws-review.css 末尾，一并收到这里（放在最后）。
+   流转对话框的规则原在待办收件箱的 ws-review.css 末尾，一并收到这里（放在最后；那份样式表 2026-10-21 随页删掉）。
    ========================================================== */
 
 .ms-page { padding: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: var(--paper-0); }

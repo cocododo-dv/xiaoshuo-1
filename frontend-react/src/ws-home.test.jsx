@@ -8,9 +8,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const fx = vi.hoisted(() => ({
   chapters: [],
-  reviewItems: [],
-  reviewReady: false,
-  reviewError: null,
   aiReady: true,
   catalogReady: true,
   status: null,
@@ -49,28 +46,6 @@ vi.mock("./ws-catalog.jsx", async () => {
       reset: vi.fn(),
     },
     useCatalogChapters: () => fx.chapters,
-  };
-});
-// useReviewOpenItems 照 ws-review-store.js 的订阅式读取来：ws:review-changed 与 store 私有的装载监听都会重渲。
-// 装载失败不广播 ws:review-changed，这里用测试专用事件 hm-test:review-load 代替 store 的 rvLoadListeners。
-vi.mock("./ws-review-store.js", async () => {
-  const React = await import("react");
-  return {
-    RV_KINDS: { decision: { tone: "crimson", label: "决策" } },
-    rvMarkResolved: vi.fn(),
-    useReviewOpenItems: () => {
-      const [, force] = React.useState(0);
-      React.useEffect(() => {
-        const bump = () => force(n => n + 1);
-        window.addEventListener("ws:review-changed", bump);
-        window.addEventListener("hm-test:review-load", bump);
-        return () => {
-          window.removeEventListener("ws:review-changed", bump);
-          window.removeEventListener("hm-test:review-load", bump);
-        };
-      }, []);
-      return { items: fx.reviewItems, snoozed: [], ready: fx.reviewReady, error: fx.reviewError };
-    },
   };
 });
 vi.mock("./ws-ai-providers.jsx", () => ({
@@ -116,9 +91,6 @@ const click = (el) => act(async () => { el.dispatchEvent(new MouseEvent("click",
 beforeEach(() => {
   vi.resetModules();
   fx.chapters = catalogFixture();
-  fx.reviewItems = [];
-  fx.reviewReady = false;
-  fx.reviewError = null;
   fx.aiReady = true;
   fx.catalogReady = true;
   fx.status = { projects: { phase: "ready", error: null }, dashboard: { phase: "ready", error: null } };
@@ -230,81 +202,73 @@ describe("WsHome · 全书进度脊（并入的「流程」内容）", () => {
   });
 });
 
-describe("WsHome · 待办速览跟着收件箱 store 走", () => {
-  const todoCard = () => [...container.querySelectorAll(".home-card")].find(el => el.textContent.includes("待办收件箱"));
+describe("WsHome · 等你处理（从目录现算，取代待办收件箱）", () => {
+  const card = () => container.querySelector('[data-testid="home-attention"]');
+  const rows = () => [...card().querySelectorAll(".home-todo")].map(row => row.textContent);
 
-  it("收件箱还没拉回来时说「正在读取」，拉回来后显示真实待办（不再先报「都处理完了」）", async () => {
-    await mount(vi.fn());
-    expect(todoCard().querySelector('[role="status"]').textContent).toBe("正在读取待办…");
-    expect(todoCard().textContent).not.toContain("待办都处理完了");
-
-    fx.reviewItems = [{ id: "rv1", kind: "decision", title: "需要你拍板：第 3 章结尾", priority: 1 }];
-    fx.reviewReady = true;
-    await act(async () => { window.dispatchEvent(new CustomEvent("ws:review-changed")); });
-    expect(todoCard().textContent).toContain("需要你拍板：第 3 章结尾");
-    expect(todoCard().textContent).not.toContain("正在读取待办");
-  });
-
-  it("「装载过没有」只认 store 的 ready：收到 ws:review-changed 但 store 还没装载好，仍说正在读取", async () => {
-    // 旧实现把「收到过一次 ws:review-changed」当成装载过——这一条会让它先报「都处理完了」
-    await mount(vi.fn());
-    await act(async () => { window.dispatchEvent(new CustomEvent("ws:review-changed")); });
-    expect(todoCard().textContent).toContain("正在读取待办");
-    expect(todoCard().textContent).not.toContain("待办都处理完了");
-  });
-
-  it("没有兜底计时器：迟迟没拉回来就一直说正在读取，不会过几秒自己改口成「都处理完了」", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      await mount(vi.fn());
-      await act(async () => { vi.advanceTimersByTime(10_000); });
-      expect(todoCard().textContent).toContain("正在读取待办");
-      expect(todoCard().textContent).not.toContain("待办都处理完了");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("拉回来确实是空的，才说都处理完了", async () => {
-    fx.reviewReady = true;
-    await mount(vi.fn());
-    expect(todoCard().textContent).toContain("待办都处理完了");
-    expect(todoCard().textContent).not.toContain("正在读取待办");
-  });
-
-  it("还没拉到过就失败：说读不到并给去待办重试的出口，不再一直挂着「正在读取」", async () => {
+  it("列出写齐了等你批准的章与被管线停下的场（章在前）；点章去成稿中心那一章，点场去 AI 起草台那一场", async () => {
+    fx.chapters = [
+      ...catalogFixture().slice(0, 2),
+      CH(3, "writing", [
+        SC("ch03s1", "done"),
+        SC("ch03s2", "writing", { title: "林昭翻案卷", work: { runStatus: "human_review_required" } }),
+        SC("ch03s3", "todo", { title: "旧信", work: { runStatus: "awaiting_candidate_selection" } }),
+      ], { current: true }),
+    ];
     const go = vi.fn();
     await mount(go);
-    expect(todoCard().textContent).toContain("正在读取待办");
+    expect(rows()).toEqual([
+      "等你批准第 2 章",
+      "等你审阅第 3 章 · 第 2 场「林昭翻案卷」",
+      "等你终选第 3 章 · 第 3 场「旧信」",
+    ]);
+    expect(card().textContent).not.toContain("没有等你处理的事");
+    // 没有「标记已处理」：源头处理完自己消失
+    expect(card().querySelectorAll("button").length).toBe(3);
 
-    // 失败不广播 ws:review-changed，只通知订阅者
-    fx.reviewError = { pid: "prj-main", message: "network down" };
-    await act(async () => { window.dispatchEvent(new CustomEvent("hm-test:review-load")); });
-    const notice = container.querySelector('[data-testid="home-todo-error"]');
-    expect(notice).not.toBeNull();
-    expect(notice.textContent).toContain("待办暂时读不出来");
-    expect(todoCard().textContent).not.toContain("正在读取待办");
-    expect(todoCard().textContent).not.toContain("待办都处理完了");
-    await click(container.querySelector('[data-testid="home-todo-open-review"]'));
-    expect(go).toHaveBeenLastCalledWith("review");
+    const [chapterRow, sceneRow] = card().querySelectorAll(".home-todo-open");
+    await click(chapterRow);
+    expect(go).toHaveBeenLastCalledWith("manuscripts", { type: "ws:manu-chapter", detail: "ch2" });
+    await click(sceneRow);
+    expect(go).toHaveBeenLastCalledWith("scene", { type: "ws:scene-enqueue", detail: { sid: "ch03s2" } });
   });
 
-  it("拉到过之后的失败保留原来的说法，不打扰", async () => {
-    fx.reviewReady = true;
-    fx.reviewError = { pid: "prj-main", message: "network down" };
-    await mount(vi.fn());
-    expect(container.querySelector('[data-testid="home-todo-error"]')).toBeNull();
-    expect(todoCard().textContent).toContain("待办都处理完了");
-  });
-
-  it("标题原样显示（旧的 JSON 标题由收件箱 store 转成人话）；空标题有个兜底", async () => {
-    fx.reviewReady = true;
-    fx.reviewItems = [
-      { id: "rv1", kind: "note", title: "写作偏好：少用比喻", priority: 2 },
-      { id: "rv2", kind: "note", title: "  ", priority: 3 },
+  it("作者在写作台采纳了的场（目录标了完成）、管线还在跑的步位、已批准的章都不列；什么都没有时说清它管什么", async () => {
+    fx.chapters = [
+      CH(1, "approved", [SC("ch01s1", "done", { work: { runStatus: "archived", hasFinal: true } })]),
+      CH(2, "writing", [
+        SC("ch02s1", "done", { work: { runStatus: "human_review_required" } }),
+        SC("ch02s2", "writing", { work: { runStatus: "near_final" } }),
+        SC("ch02s3", "todo", { work: { runStatus: "ready" } }),
+      ], { current: true }),
     ];
     await mount(vi.fn());
-    expect([...container.querySelectorAll(".home-todo-text")].map(n => n.textContent)).toEqual(["写作偏好：少用比喻", "（未命名待办）"]);
+    expect(card().querySelectorAll(".home-todo").length).toBe(0);
+    expect(card().textContent).toContain("现在没有等你处理的事");
+    expect(card().textContent).toContain("等你批准");
+  });
+
+  it("各场都有终稿、还没批准的章读作等你批准（与成稿中心同一条规则，不看目录里存的状态）", async () => {
+    fx.chapters = [
+      CH(1, "draft", [
+        SC("ch01s1", "done", { work: { runStatus: "archived", hasFinal: true } }),
+        SC("ch01s2", "done", { work: { runStatus: "archived", hasFinal: true } }),
+      ], { current: true }),
+      CH(2, "planned", [SC("ch02s1", "todo")]),
+    ];
+    await mount(vi.fn());
+    expect(rows()).toEqual(["等你批准第 1 章"]);
+  });
+
+  it("超过四件只列四行，脚注说剩下的在哪一页、有几件", async () => {
+    const stopped = (n) => SC(`ch03s${n}`, "todo", { title: `第${n}场`, work: { runStatus: "hard_qc_full_rewrite_required" } });
+    fx.chapters = [
+      ...catalogFixture().slice(0, 2),
+      CH(3, "writing", [1, 2, 3, 4, 5].map(stopped), { current: true }),
+    ];
+    await mount(vi.fn());
+    expect(card().querySelectorAll(".home-todo").length).toBe(4);
+    expect(card().querySelector(".home-todo-foot").textContent).toBe("还有 2 项没列出：AI 起草台 2 场。");
   });
 });
 
@@ -554,109 +518,6 @@ describe("WsHome · 单一真相（阶段 2 重构）", () => {
     } finally {
       delete window.s2StepSummary;
     }
-  });
-
-  it("不能直接划掉的卡（实时派生项、带真实效果或候选项的卡）只给「去收件箱」，不给「标记已处理」", async () => {
-    // 后端拒绝直接划掉实时派生卡（derived:…）；以前主页按 kind 判，给它们也挂了 ✓：
-    // 点下去先乐观移除、记一笔「今日已处理」，接着报错、刷新后又回来
-    fx.reviewReady = true;
-    fx.reviewItems = [
-      { id: "derived:qc:sc-1", live: true, kind: "qc", title: "第 2 场质检没过", priority: 1 },
-      { id: "rv-effect", kind: "note", title: "绑定参考画像", priority: 2, actions: [{ label: "绑定", effect: { kind: "bind" } }] },
-      { id: "rv-options", kind: "note", title: "选一个结尾", priority: 3, options: ["甲", "乙"] },
-    ];
-    const { rvMarkResolved } = await import("./ws-review-store.js");
-    const go = vi.fn();
-    await mount(go);
-    const rows = [...container.querySelectorAll(".home-todo")];
-    expect(rows.length).toBe(3);
-    expect(container.querySelector("button.home-todo-go")).toBeNull();
-    expect(rows[0].querySelector(".home-todo-open").getAttribute("title")).toContain("源头改好后会自己消失");
-    await click(rows[0].querySelector(".home-todo-open"));
-    expect(go).toHaveBeenLastCalledWith("review");
-    expect(rvMarkResolved).not.toHaveBeenCalled();
-  });
-
-  it("「标记已处理」后焦点交给顶上来的下一行；划掉最后一行交给上一行；列表空了交给「全部」", async () => {
-    fx.reviewReady = true;
-    fx.reviewItems = [
-      { id: "rv1", kind: "note", title: "一条提醒", priority: 1 },
-      { id: "rv2", kind: "note", title: "第二条提醒", priority: 2 },
-      { id: "rv3", kind: "note", title: "第三条提醒", priority: 3 },
-    ];
-    const { rvMarkResolved } = await import("./ws-review-store.js");
-    // 照 store 的行为：同步乐观移除并广播 ws:review-changed
-    rvMarkResolved.mockImplementation((ids) => {
-      fx.reviewItems = fx.reviewItems.filter(it => !ids.includes(it.id));
-      window.dispatchEvent(new CustomEvent("ws:review-changed"));
-    });
-    await mount(vi.fn());
-    const checkOf = (title) => container.querySelector(`button.home-todo-go[aria-label="标记已处理：${title}"]`);
-    const focusedRow = () => document.activeElement.closest(".home-todo");
-
-    // 划掉最后一行：交给上一行
-    checkOf("第三条提醒").focus();
-    await click(checkOf("第三条提醒"));
-    expect(document.activeElement.classList.contains("home-todo-open")).toBe(true);
-    expect(focusedRow().textContent).toContain("第二条提醒");
-
-    // 划掉第一行：交给顶上来的下一行
-    checkOf("一条提醒").focus();
-    await click(checkOf("一条提醒"));
-    expect(document.activeElement.classList.contains("home-todo-open")).toBe(true);
-    expect(focusedRow().textContent).toContain("第二条提醒");
-
-    checkOf("第二条提醒").focus();
-    await click(checkOf("第二条提醒"));
-    expect(container.querySelectorAll(".home-todo").length).toBe(0);
-    const todoAll = [...container.querySelectorAll(".home-card")]
-      .find(el => el.textContent.includes("待办收件箱")).querySelector(".home-card-go");
-    expect(todoAll.textContent).toContain("全部");
-    expect(document.activeElement).toBe(todoAll);
-  });
-
-  it("「标记已处理」后若作者已经把焦点放到别处，不抢焦点", async () => {
-    fx.reviewReady = true;
-    fx.reviewItems = [
-      { id: "rv1", kind: "note", title: "一条提醒", priority: 1 },
-      { id: "rv2", kind: "note", title: "第二条提醒", priority: 2 },
-    ];
-    const { rvMarkResolved } = await import("./ws-review-store.js");
-    let emit;
-    rvMarkResolved.mockImplementation((ids) => {
-      // 移除晚到：作者先点了别的按钮
-      emit = () => {
-        fx.reviewItems = fx.reviewItems.filter(it => !ids.includes(it.id));
-        window.dispatchEvent(new CustomEvent("ws:review-changed"));
-      };
-    });
-    await mount(vi.fn());
-    const enter = container.querySelector('[data-testid="home-enter-writer"]');
-    await click(container.querySelector("button.home-todo-go"));
-    enter.focus();
-    await act(async () => { emit(); });
-    expect(document.activeElement).toBe(enter);
-  });
-
-  it("普通待办行是两个并排的按钮：打开收件箱 / 标记已处理；决策项只能去收件箱拍板（规则同收件箱的 rvNeedsChoice，见上一条）", async () => {
-    fx.reviewItems = [
-      { id: "rv1", kind: "decision", title: "需要你拍板：结尾", priority: 1 },
-      { id: "rv2", kind: "note", title: "一条提醒", priority: 2 },
-    ];
-    const { rvMarkResolved } = await import("./ws-review-store.js");
-    const go = vi.fn();
-    await mount(go);
-    const rows = [...container.querySelectorAll(".home-todo")];
-    expect(rows.length).toBe(2);
-    rows.forEach(row => expect(row.tagName).not.toBe("BUTTON"));
-    expect(rows[0].querySelector(".home-todo-go")).toBeNull();
-    const check = rows[1].querySelector("button.home-todo-go");
-    expect(check.getAttribute("aria-label")).toBe("标记已处理：一条提醒");
-    await click(check);
-    expect(rvMarkResolved).toHaveBeenCalledWith(["rv2"]);
-    expect(go).not.toHaveBeenCalled();
-    await click(rows[0].querySelector("button.home-todo-open"));
-    expect(go).toHaveBeenLastCalledWith("review");
   });
 
   it("目录还没读到时不先说「白纸」，而是说正在读取", async () => {

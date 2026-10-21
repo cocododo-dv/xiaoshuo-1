@@ -76,12 +76,8 @@ def test_fixture_runtime_creates_first_chapter_and_fixture_works(session) -> Non
     )
     assert fe_chapters > 0
     assert _count_rows(session, SceneRunState) == 3
-    # 只剩 work-a 的 5 张待办卡（item_type=fe_card）；旧式 legacy 候选行已退役
-    legacy_reviews = session.scalar(
-        select(func.count()).select_from(ReviewItem).where(ReviewItem.item_type != "fe_card")
-    )
-    assert legacy_reviews == 0
-    assert _count_rows(session, ReviewItem) == 5
+    # 待办收件箱退役（2026-10-21）：夹具不再种待办卡，旧式 legacy 候选行也早已退役——默认夹具一行都没有
+    assert _count_rows(session, ReviewItem) == 0
 
 
 def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_seed(session) -> None:
@@ -159,7 +155,7 @@ def test_fixture_runtime_is_idempotent(session) -> None:
     seed_runtime_fixture(session)
     session.commit()
     assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
-    assert _count_rows(session, ReviewItem) == 5
+    assert _count_rows(session, ReviewItem) == 0
 
 
 def test_fixture_runtime_creates_scene_and_chapter_summaries(session) -> None:

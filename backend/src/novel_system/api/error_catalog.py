@@ -104,16 +104,6 @@ ERROR_MESSAGES: dict[str, str] = {
     # ---- 回收站 ----
     "TRASH_ENTRY_INVALID": "回收站条目编号不对。",
     "TRASH_OPERATION_BLOCKED": "回收站操作被拦下了。",
-    # ---- 待办 ----
-    "REVIEW_NOT_FOUND": "找不到这张待办卡片。",
-    "REVIEW_PROJECT_REQUIRED": "需要指明是哪部作品的待办。",
-    "REVIEW_STATE_INVALID": "待办的筛选只能是「待处理」或「稍后提醒」。",
-    "REVIEW_ACTION_INDEX_INVALID": "卡片上没有这个动作。",
-    "REVIEW_CARD_KIND_INVALID": "待办卡片的类型不在可选的范围里。",
-    "REVIEW_CARD_TITLE_REQUIRED": "待办卡片需要标题。",
-    "REVIEW_EFFECT_INVALID": "这个卡片动作缺少必要的信息。",
-    "REVIEW_EFFECT_PROJECT_REQUIRED": "这个卡片动作需要在一部作品里执行。",
-    "REVIEW_EFFECT_UNKNOWN": "不认识这个卡片动作。",
     # ---- 作者稿 / 权威正文 ----
     "AUTHOR_DRAFT_CONFLICT": "作者稿在别处改过了，请刷新后再操作。",
     "AUTHOR_DRAFT_EMPTY": "空的作者稿不能成为正文。",

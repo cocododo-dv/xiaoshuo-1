@@ -10,7 +10,6 @@ import "./ws-home.css";
 import "./wr-recovery.css";
 import "./ws-library.css";
 import "./ws-author.css";
-import "./ws-review.css";
 import "./ws-cost.css";
 import "./ws-deep.css";
 import "./ws-scene-design.css";

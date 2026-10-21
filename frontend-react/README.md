@@ -4,12 +4,13 @@ Vite + React 18 前端，默认端口 `5174`。仓库根目录的 `scripts/start
 
 ## 当前产品入口
 
-默认路由是 `#home`。作家模式显示主页、构思、写作、风格、待办、资料；高级模式另外显示章节编排、AI 起草台、成稿中心和成本看板。设置、回收站、同步与恢复、主题切换和「排版与舒适度」固定在侧栏底部，任何高度下都看得到。`⌘K`（Windows / Linux 为 `Ctrl+K`）打开命令面板，可跳到任一页面或任一场景。
+默认路由是 `#home`。作家模式显示主页、构思、写作、风格、资料；高级模式另外显示章节编排、AI 起草台、成稿中心和成本看板。设置、回收站、同步与恢复、主题切换和「排版与舒适度」固定在侧栏底部，任何高度下都看得到。`⌘K`（Windows / Linux 为 `Ctrl+K`）打开命令面板，可跳到任一页面或任一场景。
 
 界面能力边界：
 
 - 新建作品、雪花十步、结构物化、逐场 AI 起草、写作草稿同步和权威正文提升都连接真实 API；没有演示作品，也没有离线假生成——模型未配置时明确提示去「设置 · AI 模型」。
 - 高级章节编排中的 `运行本章` 连接持久化章节任务，防重复启动并轮询进度；阻断和失败原样呈现。
+- 主页的「等你处理」从目录现算两类提醒：被 AI 起草管线停下、还没写完的场（等你终选 / 审阅 / 采纳、质检要求重写、上游改了要重新规划），和各场都有终稿、等你批准的章；点一行直达 AI 起草台的那一场或成稿中心的那一章，源头处理完自己消失。数字挂在侧栏的 AI 起草台 / 成稿中心上（作家模式合计挂在主页）。规则在 `src/ws-attention.js`；原「待办」收件箱与 `/api/v1/review-items` 2026-10-21 退役，`#review` 深链回主页。
 - 成稿中心的终稿批准是一个对话框：勾选「我已从头到尾通读当前正文」再「确认通读并批准」，服务端把确认绑定到读到的正文哈希；重新打开终稿需要原因，并由服务端撤销该章及其后的批准链。一章各场都有终稿就列在「等你批准」下、页脚直接给「批准为终稿」（没有「送入审阅」「退回小修」这一步；按章依次定稿，只有项目的当前章批得了，别的章说先批哪一章）；「正史」页签的核对是可选的，不拦批准与导出，未核对的场不进入后续章节的事实记忆。写作台的「提升为权威正文」不再先问「只改了文字吗」，这一场的正史随之待核对。
 - 成稿中心的「统一导出」也导得出没写齐的章：缺终稿的场在文件里留一行「（本场还没有终稿）」，面板里说明几章缺几场；只有整个范围一个字的终稿都没有才拒绝。纯文本段首缩进两个全角空格。
 - 写作房间的内容安全复核按当前响应中的精确发现码重新确认；旧确认不会自动覆盖新发现。
@@ -53,9 +54,9 @@ localStorage 的 `novel-system-api-base` 覆盖只有在同时存在 `novel-syst
 ## 结构约定
 
 - `src/` 是持续维护的正式源代码；早期设计原型和一次性迁移脚本已经退役，不要从历史提交重新生成或覆盖现有实现。
-- **store 一律是 ES 模块**，谁用谁 `import`：`WsWorks`（`ws-works.jsx`）、`WsCatalog`（`ws-catalog.jsx`）、`SnowSync`（`ws-snow-sync.jsx`）、`WrDocs` / `WrDocVersions` / `WrRecovery`（`wr-doc-store.jsx`）、`WsManuStore`（`ws-manuscripts-store.jsx`）、`WsDiagnosis`（`ws-diagnosis-summary.jsx`）、`WsAuthorAi`（`ws-author-ai-store.js`）、待办（`ws-review-store.js`）、资料库（`ws-library-store.js`：`libLive` / `useLibraryLive` / `libEnsureLoaded`）、回收站（`ws-trash-store.js`）、风格参考（`ws-styleref-store.js` 写操作，底座 `ws-styleref-store-core.js`、活动清单 `ws-styleref-store-activity.js`）、成本看板（`ws-cost-store.js`）等。它们是带同步缓存的 API store：先改界面、再等服务端，失败回滚或重拉；变化经各自的 `subscribe(fn)` 通知；每个 store 的契约写在它的文件头。跨视图的窗口事件（`ws:*`）经 `lib/events.js` 的 `emit` / `useWindowEvents` 走；其中 `ws:work-changed` 只在当前作品换了或书架成员变了时发，各 store 听到它就重拉本作品的一切——字数、书名这类变化只通知 `WsWorks.subscribe`，不发窗口事件。
+- **store 一律是 ES 模块**，谁用谁 `import`：`WsWorks`（`ws-works.jsx`）、`WsCatalog`（`ws-catalog.jsx`）、`SnowSync`（`ws-snow-sync.jsx`）、`WrDocs` / `WrDocVersions` / `WrRecovery`（`wr-doc-store.jsx`）、`WsManuStore`（`ws-manuscripts-store.jsx`）、`WsDiagnosis`（`ws-diagnosis-summary.jsx`）、`WsAuthorAi`（`ws-author-ai-store.js`）、资料库（`ws-library-store.js`：`libLive` / `useLibraryLive` / `libEnsureLoaded`）、回收站（`ws-trash-store.js`）、风格参考（`ws-styleref-store.js` 写操作，底座 `ws-styleref-store-core.js`、活动清单 `ws-styleref-store-activity.js`）、成本看板（`ws-cost-store.js`）等。它们是带同步缓存的 API store：先改界面、再等服务端，失败回滚或重拉；变化经各自的 `subscribe(fn)` 通知；每个 store 的契约写在它的文件头。跨视图的窗口事件（`ws:*`）经 `lib/events.js` 的 `emit` / `useWindowEvents` 走；其中 `ws:work-changed` 只在当前作品换了或书架成员变了时发，各 store 听到它就重拉本作品的一切——字数、书名这类变化只通知 `WsWorks.subscribe`，不发窗口事件。
 - **只有 `src/ws-test-seam.js` 写 `window`**：开发态（`import.meta.env.DEV`）装 `window.__wsStores.load(...)`，给契约 E2E 冒烟拿 store 用；生产构建里这一段整个摇掉。`tooling-independence.test.js` 的 `KNOWN_WINDOW_WRITERS` 只剩它，别的模块写 `window`（连 `window.x ===` 这种读法也算）会让测试失败；`globalThis` 上只有 `lib/events.js` 的跨重载去重登记表。
-- **共享界面层**：设计令牌在 `src/styles.css`（语义色 `--accent/--ok/--warn/--danger/--info` 及其 `-wash` / `-ink`、`--scrim`、`--on-accent`、`--z-*` 层级刻度、`--fs-*` 字号刻度）；共用组件在 `src/ws-ui.jsx` + `src/ws-ui.css`（页头、分段、页签、标签 `Tag`、提示条、空态、统计块、图标按钮、进度条 `ProgressBar`、卡片单选 `RadioCards`、非模态浮层 `Popover` / `usePopover`、菜单按钮 `MenuButton` 等）；模态框用 `src/ws-dialog.jsx`（浮层与模态框同一个层栈：Esc 归最上层）；提示与确认用 `src/ws-notify.jsx`（`wsToast` / `wsNotify`（提示层没挂时退回 alert）/ `wsConfirm`，构思页的确认框也走它）；界面偏好的范围与默认值只在 `src/ws-prefs.js` 定义一份；词表按领域住在 `src/labels/`（`catalog.js` 章 / 场叫法、章节状态与戏剧卡栏名 `DRAMA_FIELDS`、`review.js`、`llm.js` 模型节点、`style-reference.js`、`finding.js` 诊断发现、`canon.js` 正史、`library.js` 资料库类别），`src/ws-labels.js` 是转出门面。旧的 `.pill` 样式已删，标签一律用 `<Tag>`。新代码与改到的地方用这些，不要再在视图里写私有的同类控件。
+- **共享界面层**：设计令牌在 `src/styles.css`（语义色 `--accent/--ok/--warn/--danger/--info` 及其 `-wash` / `-ink`、`--scrim`、`--on-accent`、`--z-*` 层级刻度、`--fs-*` 字号刻度）；共用组件在 `src/ws-ui.jsx` + `src/ws-ui.css`（页头、分段、页签、标签 `Tag`、提示条、空态、统计块、图标按钮、进度条 `ProgressBar`、卡片单选 `RadioCards`、非模态浮层 `Popover` / `usePopover`、菜单按钮 `MenuButton` 等）；模态框用 `src/ws-dialog.jsx`（浮层与模态框同一个层栈：Esc 归最上层）；提示与确认用 `src/ws-notify.jsx`（`wsToast` / `wsNotify`（提示层没挂时退回 alert）/ `wsConfirm`，构思页的确认框也走它）；界面偏好的范围与默认值只在 `src/ws-prefs.js` 定义一份；词表按领域住在 `src/labels/`（`catalog.js` 章 / 场叫法、章节状态与戏剧卡栏名 `DRAMA_FIELDS`、`llm.js` 模型节点、`style-reference.js`、`finding.js` 诊断发现、`canon.js` 正史、`library.js` 资料库类别），`src/ws-labels.js` 是转出门面。旧的 `.pill` 样式已删，标签一律用 `<Tag>`。新代码与改到的地方用这些，不要再在视图里写私有的同类控件。
 - **共用小工具的家**（不碰 store、不写 `window`）：`src/lib/client.js`（信封、幂等键、令牌、API 地址）、`lib/store-kit.js`（`createKeyedLoader` / `createStore` / `toStoreError`）、`lib/store-utils.js`（`createSubscribers` / `useStoreTick` / `storeAlert`，多数 store 的订阅与报错都用它）、`lib/events.js`（`emit` / `useWindowEvents`）、`lib/format.js`（时间与数字文案）、`lib/text.js`（`countChars`：按 code point 数字，与后端 `count_words` 同一口径）、`lib/ids.js`、`lib/keyboard.js`、`lib/work-id.js`、`lib/ready-work.js`（`readyWorkId`）、`lib/poll.js`（看页面可见性的轮询）、`lib/revisioned-doc.js`、`lib/platform.js`、`lib/messages.js`；正文 HTML 的消毒、拆段与转纯文本在 `src/manuscript-html.js`。
 - `src/main.jsx` 的样式导入顺序具有层叠语义：`styles.css`、`ws-ui.css` 在最前（`design-guard.test.js` 会检查），各视图的样式在后；调整时必须做视觉回归。
 - API 错误统一为 `ApiRequestError`；界面应优先使用稳定 `code` 和 `details`，不要解析错误文案（后端的说明已经是中文）。
@@ -89,7 +90,7 @@ npm run lint && npm run build
 
 ## 契约 E2E
 
-`scripts/` 下只有契约 E2E 的套件：`run-smokes.mjs` 按清单依次执行主验收、`smoke-phase2..7`、`smoke-ai-settings` 与 `qa2-ui`，每套之前重灌中性夹具；各套共用 `scripts/lib/harness.mjs`（`openApp`、`waitUntil`、`reseedFixtures`、默认地址，并在浏览器上下文里掐断对 `:8000` 的一切请求、拒绝对作者的开发后端跑）。套件经开发态才有的 `window.__wsStores` 拿 store，所以必须对着 `npm run dev` 起的开发服务器跑。不经仓库脚本、手工跑 `node scripts/run-smokes.mjs` 时，要先把 `NOVEL_SYSTEM_DATABASE_URL` 指到那个夹具后端用的一次性库：重灌夹具（`python tests/fixture_runtime.py`）照搬调用者的环境，指向本检出的 `backend/novel_system.db`（或没设）时直接拒跑、退出码 2。`scripts/manual/shoot-views.mjs` 是不在任何 lane 里的手动逐页截图工具，默认同样指向 5176 / 8009、拒绝 `:8000`。
+`scripts/` 下只有契约 E2E 的套件：`run-smokes.mjs` 按清单依次执行主验收、`smoke-phase2..6`、`smoke-ai-settings` 与 `qa2-ui`，每套之前重灌中性夹具；各套共用 `scripts/lib/harness.mjs`（`openApp`、`waitUntil`、`reseedFixtures`、默认地址，并在浏览器上下文里掐断对 `:8000` 的一切请求、拒绝对作者的开发后端跑）。套件经开发态才有的 `window.__wsStores` 拿 store，所以必须对着 `npm run dev` 起的开发服务器跑。不经仓库脚本、手工跑 `node scripts/run-smokes.mjs` 时，要先把 `NOVEL_SYSTEM_DATABASE_URL` 指到那个夹具后端用的一次性库：重灌夹具（`python tests/fixture_runtime.py`）照搬调用者的环境，指向本检出的 `backend/novel_system.db`（或没设）时直接拒跑、退出码 2。`scripts/manual/shoot-views.mjs` 是不在任何 lane 里的手动逐页截图工具，默认同样指向 5176 / 8009、拒绝 `:8000`。
 
 写冒烟时不要把异步谓词交给 Playwright 的 `page.waitForFunction`：它拿到的 Promise 是真值，只求值一次就带着落定的值返回（哪怕是 `false`），条件不满足也不会等到超时；后端行、store 的 Promise 这类异步条件在 Node 一侧用 `harness.mjs` 的 `waitUntil` 轮询。
 

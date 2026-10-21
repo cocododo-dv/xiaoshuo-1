@@ -17,6 +17,7 @@ from novel_system.db.models import (
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
+from novel_system.services.writing_stats import count_words
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -148,10 +149,14 @@ class Archiver:
         if finalize_scene_status:
             state.scene_status = "archived"
         # 目录里这一场算写完了：每条归档路径都在这里标（以前只有写作台「采用」由前端标，AI 起草台自动归档的场
-        # 一直显示「待写」，主页与写作台的落点停在写完的场上，成稿中心的「完成 n/m 场」也少算，2026-10-14）
+        # 一直显示「待写」，主页与写作台的落点停在写完的场上，成稿中心的「完成 n/m 场」也少算，2026-10-14）。
+        # 字数同理：目录字数以前只在写作台保存作者稿时写，AI 起草台归档的场一直记 0，目录、主页进度与全书字数
+        # 都少算（2026-10-21）——归档就按这一稿记
         scene_card = self.session.get(SceneCard, scene_id)
-        if scene_card is not None and scene_card.state != "done":
-            scene_card.state = "done"
+        if scene_card is not None:
+            if scene_card.state != "done":
+                scene_card.state = "done"
+            scene_card.words_current = count_words(final_scene.content)
         # 正文归档与正史完成是两个不同的状态。新终稿先进入待抽取，只有
         # FactCandidate 经裁决并形成 CanonCommit 后才恢复 narrative_sync=synced。
         # 无 project 所属的历史单元数据保留兼容，但正式作品必须进入该闭环。

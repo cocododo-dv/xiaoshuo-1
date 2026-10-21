@@ -34,7 +34,6 @@ from novel_system.api.routes import (
     library,
     project_overview,
     projects,
-    review,
     scenes,
     snowflake_workspace,
     style_fidelity,
@@ -255,7 +254,6 @@ def create_app() -> FastAPI:
     app.include_router(scenes.router)
     app.include_router(snowflake_workspace.router)
     app.include_router(writer_deep_review.router)
-    app.include_router(review.router)
     app.include_router(library.router)
     app.include_router(system_config.router)
     app.include_router(style_reference.router)

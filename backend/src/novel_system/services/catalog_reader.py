@@ -127,7 +127,7 @@ class CatalogReader:
         slug = f"ch{index + 1:02d}"
         if context is None:
             # 单章回包（建章 / 改章）与整本目录说同一套话：结构归属、故事序场次、设计归属都要查表。
-            # 逐章循环的调用方应当自己先取一次 read_context 传进来（review_derived / project_overview 都是）。
+            # 逐章循环的调用方应当自己先取一次 read_context 传进来（project_overview 就是）。
             context = self.read_context(project.project_id, [chapter.chapter_id])
         scenes = (context.get("scenes_by_chapter") or {}).get(chapter.chapter_id)
         if scenes is None:

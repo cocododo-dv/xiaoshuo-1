@@ -256,9 +256,8 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
     client.apiPost.mockImplementation((url) => (url === "/api/v2/projects"
       ? new Promise((resolve) => { releaseCreate = resolve; })
       : Promise.resolve({})));
-    // 目录 / 回收站 / 待办这几个 store 都在听 ws:work-changed
+    // 目录、回收站这些 store 都在听 ws:work-changed
     await import("./ws-catalog.jsx");
-    await import("./ws-review.jsx");
     const { WsWorks } = await import("./ws-works.jsx");
     await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"));
     await vi.waitFor(() => expect(WsWorks.status("prj-main").dashboard.phase).toBe("ready"));
@@ -269,7 +268,7 @@ describe("ws:work-changed 只表示「换了作品 / 书架成员变了」（统
       expect(WsWorks.active().title).toBe("新的一部");
       expect(WsWorks.list().map((w) => w.title)).toContain("新的一部");
       expect(WsWorks.readyId()).toBe(null);
-      // 待办的换作品重读有 600 ms 去抖：等过去再看有没有拿临时 id 发出去的 GET
+      // 换作品之后各 store 的重读（有的带去抖）都过去了，再看有没有拿临时 id 发出去的 GET
       await new Promise((resolve) => setTimeout(resolve, 700));
       expect(client.apiGet.mock.calls.map(([url]) => url).filter((url) => url.includes(temp.id))).toEqual([]);
       expect(rec.seen.filter(([type]) => type === "ws:work-changed")).toEqual([]);

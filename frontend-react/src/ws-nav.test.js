@@ -6,9 +6,9 @@ import {
 } from "./ws-nav.js";
 
 describe("ws-nav", () => {
-  it("全部页面：侧栏与命令面板读同一份（含成本看板；文学质量 2026-10-20 退役）", () => {
+  it("全部页面：侧栏与命令面板读同一份（含成本看板；文学质量 2026-10-20、待办 2026-10-21 退役）", () => {
     expect(WS_ALL_VIEWS).toEqual([
-      "home", "snowflake", "writer", "styleref", "review", "library",
+      "home", "snowflake", "writer", "styleref", "library",
       "author", "scene", "manuscripts", "cost", "settings", "trash",
     ]);
     expect(WS_VIEW_LABELS.cost).toBe("成本看板");
@@ -23,11 +23,13 @@ describe("ws-nav", () => {
     expect(systemNavGroup().items.map(it => it.id)).toEqual(["settings", "trash"]);
   });
 
-  it("旧路由别名只重定向到已知页面；退役的文学质量深链去成稿中心", () => {
+  it("旧路由别名只重定向到已知页面；退役的文学质量深链去成稿中心，退役的待办深链回主页（「等你处理」在那里）", () => {
     Object.values(WS_VIEW_ALIAS).forEach(v => expect(isKnownView(v)).toBe(true));
     expect(isKnownView("deepdesk")).toBe(false);
     expect(isKnownView("quality")).toBe(false);
     expect(WS_VIEW_ALIAS.quality).toBe("manuscripts");
+    expect(isKnownView("review")).toBe(false);
+    expect(WS_VIEW_ALIAS.review).toBe("home");
   });
 
   it("雪花十步：后端 step_key ↔ 前端步骤键一一对应", () => {

@@ -16,7 +16,7 @@ publication arbiter.
 - **Retired, do not re-introduce**: the 2026-09 subtraction (Vue frontend, outcome governance, knowledge / vector
   consoles, interop center, 长篇控制塔, advisory narrative overlays …; full list in the history log) and the 2026-09-29
   refactor (Chroma, global LLM quota fences, `task_routing`, voice / relation cards, the v1 snowflake planner and its
-  routes, author-preference learning). Retired routes: `tests/test_retired_surface.py`.
+  routes, author-preference learning), the 待办 inbox. Retired routes: `tests/test_retired_surface.py`.
 - Kept only because tests build on them (React never calls them): `POST/GET /api/v1/projects`,
   `POST/GET /api/v1/chapters`, `POST /api/v1/scenes`, `GET /api/v1/projects/{id}/dashboard`, the synchronous
   `POST /api/v1/projects/{pid}/chapters/{cid}/run` and `POST /api/v1/chapters/{id}/run/full`, and
@@ -76,7 +76,7 @@ base `VITE_NOVEL_SYSTEM_API_BASE` (default `http://127.0.0.1:8000`).
 ### Contract E2E
 `NOVEL_SYSTEM_PYTHON=$PWD/backend/.venv/bin/python bash scripts/verify_react_e2e.sh` (Windows
 `scripts/verify_react_e2e.ps1`): fresh migrated sqlite under `.codex-run/e2e-linux/`, seeded backend `:8009`, React dev
-server `:5176`, real Chromium, then `frontend-react/scripts/run-smokes.mjs` (acceptance, `smoke-phase2..7`,
+server `:5176`, real Chromium, then `frontend-react/scripts/run-smokes.mjs` (acceptance, `smoke-phase2..6`,
 `smoke-ai-settings`, `qa2-ui`; fixtures reseeded before each suite). Ports via `PLAYWRIGHT_BACKEND_PORT` /
 `PLAYWRIGHT_REACT_PORT` (ps1: `-BackendPort` / `-ReactPort`); the lane refuses (exit 2) a port that already has a listener. `npx playwright install
 chromium` once. The smokes share `frontend-react/scripts/lib/harness.mjs` (`openApp`, `waitUntil`, `reseedFixtures`;
@@ -235,12 +235,12 @@ Retired and ignored except for one startup warning: the LLM quota / cost / auto-
 ### Frontend (`frontend-react/src/`)
 - Stores are plain ES modules — import them (`WsWorks` `ws-works.jsx`, `WsCatalog` `ws-catalog.jsx`, `SnowSync`
   `ws-snow-sync.jsx`, `WrDocs` `wr-doc-store.jsx` over `wr-doc-sync.js`, `WsManuStore`, `WsDiagnosis`, `WsAuthorAi`,
-  `ws-review-store.js`, `ws-library-store.js`, `ws-styleref-store.js` …): sync caches, optimistic write + rollback /
+  `ws-library-store.js`, `ws-styleref-store.js` …): sync caches, optimistic write + rollback /
   refetch, change notifications via `subscribe(fn)`; each module header documents its store's contract.
   `ws:work-changed` (`lib/events.js`) fires only on a work switch or shelf change; stats go via `WsWorks.subscribe`.
   `ws-test-seam.js` is the only `window` writer (`window.__wsStores.load(...)`, DEV only, for the smokes).
 - Shell: `ws-nav.js` is the pure navigation model (`WS_NAV_GROUPS`, `WS_VIEW_ALIAS`: `deepdesk → writer`,
-  `flowmap → home`, `quality → manuscripts`); `ws-app.jsx` keeps routing, the lazy imports and `<ViewReady>`; cross-view intents go through
+  `flowmap → home`, `quality → manuscripts`, `review → home`); `ws-app.jsx` keeps routing, the lazy imports and `<ViewReady>`; cross-view intents go through
   `ws-view-intents.js` (mount handshake). Megafiles are split behind entry modules that re-export what tests import.
 - Shared layer — use it instead of per-view look-alikes: tokens in `styles.css`; `ws-ui.jsx` + `ws-ui.css`
   (`PageHeader`, `Segmented`, `Tabs`, `Tag`, `Notice`, `EmptyState`, `ProgressBar`, `RadioCards`, `Popover` /

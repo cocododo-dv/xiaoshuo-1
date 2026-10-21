@@ -30,7 +30,6 @@ import {
   isPlaceholderChapterTitle,
   llmNodeLabel,
   manuscriptStage,
-  reviewSourceLabel,
   sceneLabel,
   sceneLabelById,
   sceneNoLabel,
@@ -148,10 +147,7 @@ describe("章 / 场的叫法", () => {
 });
 
 describe("其余中文名", () => {
-  it("待办来源、记账状态、模型节点都不把英文键直接给作者", () => {
-    expect(reviewSourceLabel("fe_card")).toBe("工作台");
-    expect(reviewSourceLabel("some_internal_key")).toBe("系统");
-    expect(reviewSourceLabel("成稿中心")).toBe("成稿中心");
+  it("记账状态、模型节点都不把英文键直接给作者", () => {
     expect(accountingStatusMeta("settled").label).toBe("已结算");
     expect(accountingStatusMeta("weird").label).toBe("其他");
     expect(llmNodeLabel("style_draft")).toBe("风格稿");

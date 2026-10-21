@@ -131,9 +131,8 @@
 .home-snow-count { font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 .home-snow-count b { font-size: var(--fs-2xl); font-family: var(--font-serif); font-weight: 600; }
 
-/* todo mini */
+/* 等你处理（ws-attention.js）：一行一件事，整行是一个按钮，点了去处理它的那一页 */
 .home-todo-list { display: flex; flex-direction: column; gap: 2px; }
-/* 每行两个并排的按钮：打开收件箱 / 标记已处理（过去是按钮里套一个只能鼠标点的 span） */
 .home-todo { display: flex; align-items: center; gap: 4px; margin: 0 -8px; }
 .home-todo + .home-todo { border-top: 1px solid var(--line-1); }
 .home-todo-open {
@@ -146,12 +145,6 @@
   flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.45;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.home-todo-go {
-  flex: 0 0 auto; width: 30px; height: 30px; display: grid; place-items: center; margin-right: 4px; padding: 0;
-  border: 0; border-radius: var(--r-sm); color: var(--ink-3); background: transparent; cursor: pointer;
-  transition: background var(--t-fast), color var(--t-fast);
-}
-.home-todo-go:hover { background: var(--ok-wash); color: var(--ok-ink); }
 .home-todo-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-1); font-size: var(--fs-xs); color: var(--ink-3); }
 .home-todo-foot b { color: var(--ink-1); font-variant-numeric: tabular-nums; }
 .home-todo-empty { display: flex; align-items: center; gap: 9px; min-height: 34px; color: var(--ink-3); font-size: var(--fs-sm); padding: 8px 0; }

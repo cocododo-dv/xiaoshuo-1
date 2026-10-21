@@ -11,7 +11,6 @@ __all__ = [
     "library",
     "project_overview",
     "projects",
-    "review",
     "scenes",
     "snowflake_workspace",
     "style_fidelity",

@@ -386,7 +386,7 @@ describe("章节编排 · 运行本章真实接线", () => {
     }
   });
 
-  it("受阻、后端指向待办：按钮去待办；指向系统设置（模型路由没配）：按钮去系统设置", async () => {
+  it("受阻、后端指向已退役的待办页（旧后端）：不给一扇打不开的门；指向系统设置（模型路由没配）：按钮去系统设置", async () => {
     apiGet.mockResolvedValueOnce(runPayload("blocked", {
       latest_error: {
         code: "CHAPTER_RUN_HUMAN_REVIEW_REQUIRED",
@@ -403,8 +403,8 @@ describe("章节编排 · 运行本章真实接线", () => {
     }));
     const review = await renderRun();
     await click(review.host.querySelector(".arr-run-chip"));
-    await click(review.host.querySelector('[data-testid="chapter-run-action"]'));
-    expect(window.location.hash).toBe("#review");
+    expect(review.host.querySelector(".arr-run-card").textContent).toContain("当前场景有一条待处理审核");
+    expect(review.host.querySelector('[data-testid="chapter-run-action"]')).toBeNull();
     await review.unmount();
 
     apiGet.mockResolvedValueOnce(runPayload("failed", {

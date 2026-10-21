@@ -746,13 +746,14 @@ class ChapterRunnerService:
         if not event_id:
             state = self.session.get(SceneRunState, scene_id)
             event_id = str(state.current_human_review_event_id or "").strip() if state is not None else ""
-        target_ref = f"human_review_event:{event_id}" if event_id else f"scene_card:{scene_id}"
         evidence = [f"场景：{scene_id}"]
         if event_id:
             evidence.append(f"审核：{event_id}")
         event = self.session.get(HumanReviewEvent, event_id) if event_id else None
+        # 两种停法都只能在 AI 起草台的那一场处理：指引直接指向那一场（以前人工审核指去待办收件箱，待办再让作者
+        # 点一次「去起草台裁决」；收件箱 2026-10-21 退役）
         if event is not None and event.event_source == "candidate_selection":
-            # 关键场景的匿名候选终选只能在 AI 起草台做（批准#2，重评 R2）：指引直接指向那一场
+            # 关键场景的匿名候选终选（批准#2，重评 R2）
             action = author_action(
                 "这一场在等你终选",
                 "关键场景起草了几份候选，在等你选定一份。去 AI 起草台读完候选再选，选完这一场会自动续跑；"
@@ -765,10 +766,11 @@ class ChapterRunnerService:
         else:
             action = author_action(
                 "场景需要人工审核",
-                "当前场景有一条待处理审核，处理完后章节起草会从这里继续。",
-                target_view="review",
-                target_ref=target_ref,
-                primary_button_label="去待处理建议",
+                "管线把这一场的 AI 稿停在人工审核。去 AI 起草台读这一稿，采纳归档或带着意见重跑；"
+                "处理完回到这里重新运行本章，会从这一场接着往下。",
+                target_view="scene",
+                target_ref=f"scene_card:{scene_id}",
+                primary_button_label="去 AI 起草台处理",
                 evidence_summary=evidence,
             )
         return {

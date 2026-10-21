@@ -420,3 +420,37 @@ def test_every_archive_path_marks_the_catalog_scene_done(client, session) -> Non
     catalog = client.get(f"/api/v2/projects/{project_id}/catalog").json()["data"]
     states = {item["scene_id"]: item["state"] for item in catalog["chapters"][0]["scenes"]}
     assert states == {first: "done", second: "todo"}
+
+
+def test_every_archive_path_records_the_scene_words_from_the_archived_text(client, session) -> None:
+    """2026-10-21：目录字数（words_current）以前只在写作台保存作者稿时写，AI 起草台归档的场一直记 0——目录、主页进度
+    与全书字数都少算（实库里起草台归档、写作台没打开过的场一律记 0 字）。归档就按归档的那一稿记字数，与写作台同一口径。"""
+    project_id, _chapter_id, (first, second) = _seed_chapter(session, "WORDS_ON_ARCHIVE", 2)
+    scene = session.get(SceneCard, first)
+    final_id = f"final_{first}_v1"
+    session.add(SceneRunState(scene_id=first, scene_status="near_final_ready", current_final_scene_row_id=final_id))
+    session.add(
+        FinalScene(
+            row_id=final_id, scene_id=first, chapter_id=scene.chapter_id, content="林昭把旧信\n塞回案卷。",
+            status="near_final_ready", source_bundle_id=f"bundle_{first}", source_bundle_hash=f"hash_{first}",
+        )
+    )
+    session.flush()
+    assert int(scene.words_current or 0) == 0
+
+    Archiver(session).archive_final_scene(
+        first, final_id, carry_notes_json=[], finalize_scene_status=False, fidelity_source="pipeline"
+    )
+    session.commit()
+
+    assert session.get(SceneCard, first).words_current == 10  # 去掉空白后的字数，与写作台同一口径
+    catalog = client.get(f"/api/v2/projects/{project_id}/catalog").json()["data"]
+    chapter = catalog["chapters"][0]
+    assert {item["scene_id"]: item["words"] for item in chapter["scenes"]} == {first: 10, second: 0}
+    assert chapter["words"]["cur"] == 10
+    stats = client.get(f"/api/v2/projects/{project_id}/writing-stats").json()["data"]
+    assert stats["words_total"] == 10
+
+    # 写作台「采用」走的也是同一个归档口：作者改过的稿子再归档，字数跟着新的一稿
+    _pipeline_archive(session, second, "<p>雨城下了一夜。</p><p>案卷 还在桌上。</p>")
+    assert session.get(SceneCard, second).words_current == 14

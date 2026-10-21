@@ -132,18 +132,6 @@ def _create_scene(scene_id: str, *, chapter_id: str, scene_seq: int, is_chapter_
     )
 
 
-def _create_project(session, project_id: str = "PRJ_OPEN") -> None:
-    session.add(
-        StoryProject(
-            project_id=project_id,
-            title=f"Project {project_id}",
-            outline_text="A writer-first project.",
-            planning_mode="snowflake",
-        )
-    )
-    session.commit()
-
-
 def _finalize_scene(session, scene_id: str, chapter_id: str, content: str, *, suffix: str = "v1") -> str:
     row_id = f"final_scene_{scene_id}_{suffix}"
     state = session.get(SceneRunState, scene_id)
@@ -546,27 +534,6 @@ def test_saving_the_author_draft_learns_no_preferences_and_never_diffs(client, s
         revision = saved.json()["data"]["draft"]["revision_no"]
 
     assert session.query(ReviewItem).filter_by(item_type="author_preference_profile").count() == 0
-
-
-def test_retired_preference_cards_are_not_listed_in_the_inbox(client, session) -> None:
-    from novel_system.services.review_cards import ReviewCardService
-
-    _create_project(session, "PRJ_PREF_CARD")
-    session.add(
-        ReviewItem(
-            review_id="review_author_pref_legacy",
-            project_id="PRJ_PREF_CARD",
-            item_type="author_preference_profile",
-            status="pending",
-            candidate_text="{}",
-            candidate_payload_json={},
-        )
-    )
-    session.commit()
-
-    cards = ReviewCardService(session).list_cards("PRJ_PREF_CARD")["items"]
-    assert "review_author_pref_legacy" not in {card["id"] for card in cards}
-    assert session.get(ReviewItem, "review_author_pref_legacy") is not None  # 行留在库里
 
 
 def test_the_continuation_prompt_carries_no_preference_section(client, session, monkeypatch) -> None:

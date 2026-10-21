@@ -1,4 +1,4 @@
-"""FE-ALIGN Phase 6: 资料库（时间线 / 图投影 / 人物资料卡 / 半自动派生）。"""
+"""FE-ALIGN Phase 6: 资料库（时间线 / 图投影 / 人物资料卡）。"""
 from __future__ import annotations
 
 from novel_system.db.models import StoryCharacter
@@ -74,45 +74,6 @@ def test_character_card_update_keeps_id(client, session):
     assert data["name"] == "新名"
     assert data["character_id"] == "char-u1"  # 引用经 id 不断
     assert data["summary"] == "改写后的一行简介"
-
-
-def test_derive_effects_create_entity_and_timeline_via_resolve(client):
-    pid = _create_project(client)
-    entity_card = _post(
-        client,
-        "/api/v1/review-items",
-        {
-            "project_id": pid, "kind": "idea", "title": "发现新设定：盐钟",
-            "dedupe_key": f"derive:ch:盐钟",
-            "actions": [
-                {"label": "确认入库", "intent": "primary", "op": "resolve",
-                 "effect": {"type": "create_entity", "name": "盐钟", "kind": "item", "summary": "潮汐校准装置"}},
-                {"label": "忽略", "intent": "quiet", "op": "resolve"},
-            ],
-        },
-    )["card"]
-    resolved = _post(client, f"/api/v1/review-items/{entity_card['id']}/resolve", {"action_index": 0})
-    assert resolved["effect_result"]["name"] == "盐钟"
-    overview = client.get(f"/api/v2/projects/{pid}/library").json()["data"]
-    assert any(e["name"] == "盐钟" for e in overview["entities"])
-    graph = client.get(f"/api/v2/projects/{pid}/library/graph").json()["data"]
-    assert any(n["name"] == "盐钟" for n in graph["nodes"])
-
-    event_card = _post(
-        client,
-        "/api/v1/review-items",
-        {
-            "project_id": pid, "kind": "idea", "title": "发现新事件：第三潮汐",
-            "actions": [
-                {"label": "确认入库", "intent": "primary", "op": "resolve",
-                 "effect": {"type": "add_timeline_event", "label": "第三潮汐事件", "time_label": "二十年前", "chapter_ref": "CH02"}},
-                {"label": "忽略", "intent": "quiet", "op": "resolve"},
-            ],
-        },
-    )["card"]
-    _post(client, f"/api/v1/review-items/{event_card['id']}/resolve", {"action_index": 0})
-    timeline = client.get(f"/api/v2/projects/{pid}/library/timeline").json()["data"]["items"]
-    assert any(e["label"] == "第三潮汐事件" for e in timeline)
 
 
 def test_fixture_works_populate_the_library(client, session):
