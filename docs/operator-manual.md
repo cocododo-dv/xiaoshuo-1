@@ -3,6 +3,7 @@
 > 适用于正式 React 工作台 `frontend-react/`，核查日期：2026-10-01（2026-09-29 全系统重构之后）。这次重构给作者带来的变化另见
 > [2026-09-29 重构：给作者的说明](refactor-2026-09-29.md)。
 > 本系统面向受控的单机、单作者工作流，不是多用户 SaaS、自动出版裁决器或跨设备备份服务。
+> 这是速查版；设计思路、每个页面的完整说明、排障与参考表见[用户手册](user-manual.md)。
 
 ## 1. 启动与停止
 
@@ -265,6 +266,7 @@ NOVEL_SYSTEM_PYTHON=$PWD/backend/.venv/bin/python bash scripts/verify_react_e2e.
 ## 8. 相关文档
 
 - [项目 README](../README.md)
+- [用户手册](user-manual.md)
 - [文档导航](README.md)
 - [运行安全与资源边界](runtime-safety.md)
 - [正史连续性与长篇记忆](canon-continuity.md)

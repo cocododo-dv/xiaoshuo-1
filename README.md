@@ -105,7 +105,7 @@ $env:NOVEL_SYSTEM_CORS_ORIGINS = "https://你的前端域名"
 
 完整的网络、用量读数、内容复核、路径导入和恢复边界见 [运行安全与资源边界](docs/runtime-safety.md)；正文事实的候选、复核和提交规则见 [正史连续性与长篇记忆](docs/canon-continuity.md)；雪花十步、场景形态与闸门对照原著的契约见 [雪花方法契约](docs/snowflake-method-contract.md)。
 
-完整文档入口、维护状态和历史资料边界见 [文档导航](docs/README.md)。日常使用以 [操作手册](docs/operator-manual.md) 为准；日期化的计划、证据和进度记录只说明当时状态，不替代 README、操作手册和运行时契约。
+完整文档入口、维护状态和历史资料边界见 [文档导航](docs/README.md)。第一次使用、想完整了解系统的设计思路与每个页面，读 [用户手册](docs/user-manual.md)；日常速查以 [操作手册](docs/operator-manual.md) 为准；日期化的计划、证据和进度记录只说明当时状态，不替代 README、操作手册和运行时契约。
 
 ## 恢复与数据重置
 
